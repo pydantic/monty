@@ -25,13 +25,13 @@ use crate::{
     intern::StringId,
     modules::dataclasses,
     types::{
-        Complex, HostClass, HostClassType, LongInt, Module, NamedTuple, OpenFile, Path, PyTrait, TimeZone, Type,
-        allocate_tuple,
+        Complex, HostClass, HostClassType, LongInt, Module, NamedTuple, OpenFile, OwnedTypeRef, Path, PyTrait,
+        TimeZone, Type, allocate_tuple,
         bytes::Bytes,
         date as date_type, datetime as datetime_type, decimal as decimal_type,
         decimal::py as py_decimal,
         dict::Dict,
-        instance::{class_defines, class_defines_not_none, class_name},
+        instance::{class_defines, class_defines_not_none, class_dunder, class_name},
         list::List,
         set::{FrozenSet, Set},
         str::allocate_string,
@@ -397,16 +397,26 @@ impl GraphExporter {
                 })
             }
             HeapReadOutput::Exception(exc) => {
-                let (exc_type, args_copy) = {
-                    let exc_ref = exc.get(vm.heap);
-                    let args = exc_ref.args.clone_with_heap(vm.heap);
-                    (exc_ref.exc_type(), args)
-                };
-                let args = args_copy;
+                let exc_type = exc.get(vm.heap).exc_type();
                 let arg = if self.error.is_some() {
                     None
+                } else if let OwnedTypeRef::Class(cid) = exc.get(vm.heap).class
+                    && class_dunder(cid, "__str__", vm).is_some()
+                {
+                    match exc.py_str(vm) {
+                        Ok(s) => Some(s),
+                        Err(err @ (RunError::UncatchableExc(_) | RunError::Internal(_))) => {
+                            self.error = Some(err);
+                            None
+                        }
+                        Err(RunError::Exc(e)) => {
+                            e.drop_with(vm);
+                            Some("<exception str() failed>".to_owned())
+                        }
+                    }
                 } else {
-                    match args.format_arg(exc_type, vm) {
+                    let args = exc.get(vm.heap).args.clone_with_heap(vm.heap);
+                    let res = match args.format_arg(exc_type, vm) {
                         Ok(s) => s,
                         Err(err @ (RunError::UncatchableExc(_) | RunError::Internal(_))) => {
                             self.error = Some(err);
@@ -416,9 +426,10 @@ impl GraphExporter {
                             exc.drop_with(vm);
                             Some("<exception str() failed>".to_owned())
                         }
-                    }
+                    };
+                    args.drop_with(vm);
+                    res
                 };
-                args.drop_with(vm);
                 MontyNode::Exception { exc_type, arg }
             }
             HeapReadOutput::HostClass(hc) => {

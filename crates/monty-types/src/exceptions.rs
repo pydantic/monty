@@ -24,6 +24,9 @@ pub struct MontyException {
     traceback: Vec<StackFrame>,
     /// Structured payload for exception types that carry more than a message.
     data: ExcData,
+    /// Custom type name for user-defined exception subclasses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    custom_type_name: Option<String>,
 }
 
 /// Number of identical consecutive frames to show before collapsing.
@@ -69,10 +72,11 @@ impl fmt::Display for MontyException {
             }
         }
 
+        let type_name: &str = self.custom_type_name.as_deref().unwrap_or_else(|| self.exc_type.into());
         if let Some(msg) = &self.message {
-            write!(f, "{}: {}", self.exc_type, msg)
+            write!(f, "{type_name}: {msg}")
         } else {
-            write!(f, "{}", self.exc_type)
+            write!(f, "{type_name}")
         }
     }
 }
@@ -90,6 +94,7 @@ impl MontyException {
             message,
             traceback: vec![],
             data: ExcData::None,
+            custom_type_name: None,
         }
     }
 
@@ -107,6 +112,7 @@ impl MontyException {
             message,
             traceback,
             data: ExcData::None,
+            custom_type_name: None,
         }
     }
 
@@ -117,6 +123,19 @@ impl MontyException {
     #[must_use]
     pub fn with_data(mut self, data: ExcData) -> Self {
         self.data = data;
+        self
+    }
+
+    /// Returns the custom type name if this exception came from a custom subclass.
+    #[must_use]
+    pub fn custom_type_name(&self) -> Option<&str> {
+        self.custom_type_name.as_deref()
+    }
+
+    /// Attaches a custom type name for user-defined exception subclasses.
+    #[must_use]
+    pub fn with_custom_type_name(mut self, name: Option<String>) -> Self {
+        self.custom_type_name = name;
         self
     }
 
@@ -164,6 +183,7 @@ impl MontyException {
             message: Some(err.to_string()),
             traceback: vec![],
             data: ExcData::None,
+            custom_type_name: None,
         }
     }
 
@@ -203,10 +223,11 @@ impl MontyException {
     /// If there's no message, just returns the exception type name.
     #[must_use]
     pub fn summary(&self) -> String {
+        let type_name: &str = self.custom_type_name.as_deref().unwrap_or_else(|| self.exc_type.into());
         if let Some(msg) = &self.message {
-            format!("{}: {}", self.exc_type, msg)
+            format!("{type_name}: {msg}")
         } else {
-            self.exc_type.to_string()
+            type_name.to_owned()
         }
     }
 
@@ -216,9 +237,9 @@ impl MontyException {
     /// Uses appropriate quoting for messages containing quotes.
     #[must_use]
     pub fn py_repr(&self) -> String {
-        let type_str: &'static str = self.exc_type.into();
+        let type_str: &str = self.custom_type_name.as_deref().unwrap_or_else(|| self.exc_type.into());
         if let Some(msg) = &self.message {
-            format!("{}({})", type_str, StringRepr(msg))
+            format!("{type_str}({})", StringRepr(msg))
         } else {
             format!("{type_str}()")
         }

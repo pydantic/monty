@@ -1880,6 +1880,16 @@ impl<'h> VM<'h> {
                 // Exception Handling
                 Opcode::Raise => {
                     let exc = self.pop();
+                    let exc = match self.instantiate_if_user_class(exc) {
+                        Ok(val) => val,
+                        Err(err) => {
+                            if let Some(result) = self.handle_exception(err) {
+                                return Err(result);
+                            }
+                            yield_if_parked!(self);
+                            continue;
+                        }
+                    };
                     let error = self.make_exception(&exc, true); // is_raise=true, hide caret
                     // Re-raise an instance as-is so `raise e` preserves `e`'s
                     // identity, like CPython. A bare type or non-exception has

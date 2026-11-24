@@ -2,11 +2,10 @@ use std::{borrow::Cow, fmt::Write, mem};
 
 use monty_types::MontyUuid;
 
-use super::{Dict, LazyHeapSet, PyTrait, Type, TypeRef};
+use super::{Dict, LazyHeapSet, OwnedTypeRef, PyTrait, Type, TypeRef};
 use crate::{
     args::{ArgValues, KwargsValues},
     boundary_uuid::create_uuid,
-    builtins::Builtins,
     bytecode::{CallResult, RunReentryGuard, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
@@ -603,10 +602,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
                     unreachable!("Instance py_exit called with a non-exception heap id");
                 };
                 vm.heap.inc_ref(exc_id);
-                (
-                    Value::Builtin(Builtins::Type(Type::from(e.exc_type()))),
-                    Value::Ref(exc_id),
-                )
+                (e.class().borrow().to_value(vm.heap), Value::Ref(exc_id))
             }
             None => (Value::None, Value::None),
         };
@@ -724,7 +720,7 @@ pub(crate) fn instance_getattr(self_id: HeapId, attr: &EitherStr, vm: &mut VM<'_
 /// A member `object` provides (`obj.__init__`), bound as CPython's slot
 /// wrappers bind: `__new__` stays a plain function, `__init_subclass__`
 /// binds the class and the rest bind the instance.
-fn object_member(self_id: HeapId, attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
+pub(crate) fn object_member(self_id: HeapId, attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
     let member = Type::Object.class_constant(attr, vm)?;
     Some(match attr.as_str(vm.interns) {
         "__new__" => member,
@@ -748,14 +744,29 @@ fn object_member(self_id: HeapId, attr: &EitherStr, vm: &mut VM<'_>) -> Option<V
 /// exactly as `self.field` does, binding a function-valued class member as a
 /// [`BoundMethod`].
 pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &VM<'_>) -> Option<Value> {
-    if let HeapReadOutput::Instance(inst) = vm.heap.read(self_id)
-        && let Some(value) = inst
-            .get(vm.heap)
-            .attrs
-            .get_by_str(attr, vm.heap, vm.interns)
-            .map(|v| v.clone_with_heap(vm.heap))
-    {
-        return Some(value);
+    match vm.heap.read(self_id) {
+        HeapReadOutput::Instance(inst) => {
+            if let Some(value) = inst
+                .get(vm.heap)
+                .attrs
+                .get_by_str(attr, vm.heap, vm.interns)
+                .map(|v| v.clone_with_heap(vm.heap))
+            {
+                return Some(value);
+            }
+        }
+        HeapReadOutput::Exception(exc) => {
+            if let Some(value) = exc
+                .get(vm.heap)
+                .attrs
+                .as_ref()
+                .and_then(|attrs| attrs.get_by_str(attr, vm.heap, vm.interns))
+                .map(|v| v.clone_with_heap(vm.heap))
+            {
+                return Some(value);
+            }
+        }
+        _ => {}
     }
     let class_id = instance_class(self_id, vm);
     match class_member(class_id, attr, vm) {
@@ -807,7 +818,11 @@ pub(crate) fn instance_str(self_id: HeapId, vm: &mut VM<'_>) -> RunResult<Value>
 /// re-enters the VM on the *Rust* stack; `evaluate_function`'s re-entry guard
 /// bounds it with a catchable `RecursionError` — lower than CPython's depth for
 /// deep-but-finite chains, a documented divergence (`limitations/classes.md`).
-fn instance_call_str_dunder(self_id: HeapId, dunder: &'static str, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
+pub(crate) fn instance_call_str_dunder(
+    self_id: HeapId,
+    dunder: &'static str,
+    vm: &mut VM<'_>,
+) -> RunResult<Option<Value>> {
     let Some(result) = instance_call_dunder_sync(self_id, dunder, None, vm)? else {
         return Ok(None);
     };
@@ -1047,9 +1062,13 @@ fn heap_subclass_overrides(lhs_id: HeapId, rhs_id: HeapId, dunder: Option<&str>,
 }
 
 /// Returns the `HeapId` of `self_id`'s class object.
-fn instance_class(self_id: HeapId, vm: &VM<'_>) -> HeapId {
+pub(crate) fn instance_class(self_id: HeapId, vm: &VM<'_>) -> HeapId {
     match vm.heap.get(self_id) {
         HeapData::Instance(inst) => inst.class,
+        HeapData::Exception(exc) => match exc.class {
+            OwnedTypeRef::Class(id) => id,
+            _ => unreachable!("instance_class called on native exception"),
+        },
         _ => unreachable!("instance_class called on non-instance heap value"),
     }
 }
@@ -1098,7 +1117,7 @@ fn instance_user_hash(self_id: HeapId, vm: &mut VM<'_>) -> RunResult<Option<Hash
 }
 
 /// Looks up a member through the class's MRO and clones it out, or `None` if absent.
-fn class_member(class_id: HeapId, name: &str, vm: &VM<'_>) -> Option<Value> {
+pub(crate) fn class_member(class_id: HeapId, name: &str, vm: &VM<'_>) -> Option<Value> {
     class_lookup(class_id, name, vm.heap, vm.interns).map(|v| v.clone_with_heap(vm.heap))
 }
 

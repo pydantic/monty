@@ -15,7 +15,11 @@ use super::{
 use crate::{
     args::{ArgValues, KwargsValues},
     asyncio::Coroutine,
-    builtins::{BuiltinsFunctions, BuiltinsFunctionsExt, object::takes_no_arguments},
+    builtins::{
+        BuiltinsFunctions, BuiltinsFunctionsExt,
+        base_exception::{builtin_base_exception_init, builtin_base_exception_new},
+        object::takes_no_arguments,
+    },
     bytecode::FrameExit,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
@@ -1144,13 +1148,19 @@ impl<'h> VM<'h> {
     /// on external/OS calls; the `is_initializer` flag is threaded through frame
     /// serialization so a suspended initializer resumes correctly.
     pub(crate) fn instantiate_class(&mut self, class_id: HeapId, args: ArgValues) -> Result<CallResult, RunError> {
-        if TypeRef::Class(class_id).nearest_exc_type(self.heap).is_some() {
-            args.drop_with(self);
-            return Err(ExcType::not_implemented("custom exceptions are not yet supported").into());
-        }
         if let Some(new_func) = class_lookup(class_id, "__new__", self.heap, self.interns) {
             let new_func = new_func.clone_with_heap(self.heap);
             return self.instantiate_with_new(class_id, new_func, args);
+        }
+        if TypeRef::Class(class_id).nearest_exc_type(self.heap).is_some() {
+            let init_args = args.clone_with_heap(self.heap);
+            let mut init_args = DropGuard::new(init_args, self);
+            let this = init_args.ctx();
+            this.heap.inc_ref(class_id);
+            let instance = builtin_base_exception_new(this, args.prepend(Value::Ref(class_id)))?;
+            let (init_args, this) = init_args.into_parts();
+            let instance_id = instance.into_ref_id().expect("exception is a heap value");
+            return this.initialize_instance(class_id, instance_id, init_args);
         }
         let instance_id = self
             .heap
@@ -1200,6 +1210,20 @@ impl<'h> VM<'h> {
         let init = class_lookup(class_id, "__init__", self.heap, self.interns).map(|v| v.clone_with_heap(self));
 
         match init {
+            None if TypeRef::Class(class_id).nearest_exc_type(self.heap).is_some() => {
+                let this = self;
+                this.heap.inc_ref(instance_id);
+                match builtin_base_exception_init(this, args.prepend(Value::Ref(instance_id))) {
+                    Ok(res) => {
+                        res.drop_with(this);
+                        Ok(CallResult::Value(Value::Ref(instance_id)))
+                    }
+                    Err(err) => {
+                        Value::Ref(instance_id).drop_with(this);
+                        Err(err)
+                    }
+                }
+            }
             None if matches!(args, ArgValues::Empty) => Ok(CallResult::Value(Value::Ref(instance_id))),
             // `object.__init__` ignores extra arguments when `__new__` is overridden.
             None if class_defines(class_id, "__new__", self) => {

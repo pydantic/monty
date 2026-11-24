@@ -17,13 +17,17 @@ use crate::{
         ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapObjectRead, HeapRead, HeapReadOutput,
     },
     intern::{Interns, StaticStrings, StringId},
-    modules::copy::{Memo, PyDeepCopy, deep_copy, deep_copy_pair},
+    modules::{
+        copy::{Memo, PyDeepCopy, deep_copy, deep_copy_pair},
+        dataclasses,
+    },
     parse::CodeRange,
     source_map::{SourceMap, StackFrameExt},
     types::{
         BoundMethod, Dict, LazyHeapSet, OwnedTypeRef, PyTrait, TupleVec, Type, TypeRef, allocate_tuple,
         dict::DictEntry,
         hash_table::{PyHashTable, TableCursor, TableSource},
+        instance::{class_member, instance_attr, instance_call_str_dunder, object_member},
         iter::collect_owned_iterable,
         long_int::INT_MAX_STR_DIGITS,
         str::{StringRepr, allocate_string, string_repr_fmt},
@@ -2914,6 +2918,9 @@ pub(crate) struct SimpleException {
     /// through catch/re-raise so it reaches the public `MontyException` when
     /// the exception escapes the sandbox.
     data: ExcData,
+    /// Custom type name for user-defined exception subclasses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) custom_type_name: Option<String>,
 }
 
 /// An exception's `__cause__`, `__context__` and `__suppress_context__`.
@@ -2940,6 +2947,7 @@ impl From<MontyException> for SimpleException {
         Self {
             exc_type: exc.exc_type(),
             data: exc.take_data(),
+            custom_type_name: exc.custom_type_name().map(str::to_owned),
             arg: exc.into_message(),
         }
     }
@@ -2953,6 +2961,7 @@ impl SimpleException {
             exc_type,
             arg,
             data: ExcData::None,
+            custom_type_name: None,
         }
     }
 
@@ -2963,6 +2972,7 @@ impl SimpleException {
             exc_type,
             arg: Some(arg.to_string()),
             data: ExcData::None,
+            custom_type_name: None,
         }
     }
 
@@ -2973,6 +2983,7 @@ impl SimpleException {
             exc_type,
             arg: None,
             data: ExcData::None,
+            custom_type_name: None,
         }
     }
 
@@ -2981,6 +2992,20 @@ impl SimpleException {
     pub fn with_data(mut self, data: ExcData) -> Self {
         self.data = data;
         self
+    }
+
+    /// Attaches a custom type name for user-defined exception subclasses.
+    #[must_use]
+    pub fn with_custom_type_name(mut self, name: Option<String>) -> Self {
+        self.custom_type_name = name;
+        self
+    }
+
+    /// Returns the custom type name if this exception came from a custom subclass.
+    #[allow(dead_code)]
+    #[must_use]
+    pub fn custom_type_name(&self) -> Option<&str> {
+        self.custom_type_name.as_deref()
     }
 
     #[must_use]
@@ -3001,7 +3026,7 @@ impl SimpleException {
 
     /// Returns the exception formatted as Python would repr it.
     pub fn py_repr_fmt(&self, f: &mut impl Write) -> fmt::Result {
-        let type_str: &'static str = self.exc_type.into();
+        let type_str: &str = self.custom_type_name.as_deref().unwrap_or_else(|| self.exc_type.into());
         write!(f, "{type_str}(")?;
 
         if let Some(arg) = &self.arg {
@@ -3288,7 +3313,12 @@ impl PyException {
             }
             Err(terminal) => return Err(terminal),
         };
-        Ok(SimpleException { exc_type, arg, data })
+        Ok(SimpleException {
+            exc_type,
+            arg,
+            data,
+            custom_type_name: None,
+        })
     }
 
     #[must_use]
@@ -3425,6 +3455,13 @@ impl<'h> HeapObjectRead<'h, PyException> {
 
     /// Computes `str(exc)`.
     pub fn py_str(&self, vm: &mut VM<'h>) -> RunResult<String> {
+        let class = self.get(vm.heap).class;
+        if let OwnedTypeRef::Class(_) = class {
+            if let Some(s) = instance_call_str_dunder(self.id(), "__str__", vm)? {
+                defer_drop!(s, vm);
+                return Ok(s.as_str(vm).expect("py_str returns str").to_owned());
+            }
+        }
         let (exc_type, args_copy) = {
             let exc = self.get(vm.heap);
             (exc.exc_type, exc.args.clone_with_heap(vm.heap))
@@ -3515,6 +3552,14 @@ impl<'h> HeapObjectRead<'h, PyException> {
     /// Formats `repr(exc)` into a writer.
     pub fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         vm.heap.tracker.check_memory_time()?;
+        let class = self.get(vm.heap).class;
+        if let OwnedTypeRef::Class(_) = class {
+            if let Some(r) = instance_call_str_dunder(self.id(), "__repr__", vm)? {
+                defer_drop!(r, vm);
+                f.write_str(r.as_str(vm).expect("py_repr returns str"))?;
+                return Ok(());
+            }
+        }
         let (type_name, args_copy) = {
             let exc = self.get(vm.heap);
             let name = match exc.class {
@@ -3605,19 +3650,37 @@ impl<'h> HeapObjectRead<'h, PyException> {
             }
             Some(StaticStrings::Args) => {}
             _ if name_str == "args" => {}
-            _ if name_str == "__init__" => {
-                let member = Value::Builtin(Builtins::Function(BuiltinsFunctions::BaseExceptionInit));
-                let self_val = self.clone_value(vm.heap);
-                return Some(CallResult::Value(BoundMethod::allocate(self_val, member, vm.heap)));
+            _ if name_str == "__class__" => {
+                return Some(CallResult::Value(exc.class.borrow().to_value(vm.heap)));
             }
             _ => {
-                if let Some(val) = exc
-                    .attrs
-                    .as_ref()
-                    .and_then(|attrs| attrs.get_by_str(name_str, vm.heap, vm.interns))
-                {
-                    let val = val.clone_with_heap(vm.heap);
-                    return Some(CallResult::Value(val));
+                if let OwnedTypeRef::Class(class_id) = exc.class {
+                    if name_str == "__init__" {
+                        let member = class_member(class_id, "__init__", vm).unwrap_or_else(|| {
+                            Value::Builtin(Builtins::Function(BuiltinsFunctions::BaseExceptionInit))
+                        });
+                        let self_val = self.clone_value(vm.heap);
+                        return Some(CallResult::Value(BoundMethod::allocate(self_val, member, vm.heap)));
+                    }
+                    if let Some(value) =
+                        instance_attr(self.id(), name_str, vm).or_else(|| object_member(self.id(), attr, vm))
+                    {
+                        return Some(CallResult::Value(value));
+                    }
+                } else {
+                    if let Some(val) = exc
+                        .attrs
+                        .as_ref()
+                        .and_then(|attrs| attrs.get_by_str(name_str, vm.heap, vm.interns))
+                    {
+                        let val = val.clone_with_heap(vm.heap);
+                        return Some(CallResult::Value(val));
+                    }
+                    if name_str == "__init__" {
+                        let member = Value::Builtin(Builtins::Function(BuiltinsFunctions::BaseExceptionInit));
+                        let self_val = self.clone_value(vm.heap);
+                        return Some(CallResult::Value(BoundMethod::allocate(self_val, member, vm.heap)));
+                    }
                 }
                 if name_str == "value" && Type::from(exc_type).is_subclass_of(Type::StopIteration) {
                     return Some(CallResult::Value(Value::None));
@@ -3684,8 +3747,102 @@ impl<'h> HeapObjectRead<'h, PyException> {
         Some(CallResult::Value(tuple_val))
     }
 
+    /// Sets an attribute on this exception without checking dataclass frozen restrictions.
+    pub fn set_attr_unchecked(&self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        let name_str = name.as_str(vm.interns);
+        if name_str == "__class__" {
+            self.assign_class(value, vm)
+        } else {
+            let key = name.as_value(vm.heap);
+            let mut attrs = {
+                let exc = self.get_mut(vm.heap);
+                exc.attrs.take().unwrap_or_default()
+            };
+            let old_val = match attrs.set(key, value, vm) {
+                Ok(old) => old,
+                Err(err) => {
+                    let exc = self.get_mut(vm.heap);
+                    exc.attrs = Some(attrs);
+                    return Err(err);
+                }
+            };
+            {
+                let exc = self.get_mut(vm.heap);
+                exc.attrs = Some(attrs);
+            }
+            if let Some(old) = old_val {
+                old.drop_with(vm);
+            }
+            Ok(())
+        }
+    }
+
+    fn assign_class(&self, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        let OwnedTypeRef::Class(self_class_id) = self.get(vm.heap).class else {
+            value.drop_with(vm);
+            return Err(ExcType::type_error(
+                "__class__ assignment only supported for mutable types or ModuleType subclasses",
+            ));
+        };
+        match value {
+            Value::Ref(id) if matches!(vm.heap.get(id), HeapData::Class(_)) => {
+                let new_class_id = value.into_ref_id().expect("matched a reference");
+                let self_nearest = TypeRef::Class(self_class_id).nearest_exc_type(vm.heap);
+                let new_nearest = TypeRef::Class(new_class_id).nearest_exc_type(vm.heap);
+                if self_nearest.is_some() && self_nearest == new_nearest {
+                    let previous = {
+                        let exc = self.get_mut(vm.heap);
+                        let old = match exc.class {
+                            OwnedTypeRef::Class(old_id) => old_id,
+                            _ => unreachable!(),
+                        };
+                        exc.class = OwnedTypeRef::Class(new_class_id);
+                        old
+                    };
+                    Value::Ref(previous).drop_with(vm);
+                    Ok(())
+                } else {
+                    let new = TypeRef::Class(new_class_id).name(vm.heap, vm.interns);
+                    let old = TypeRef::Class(self_class_id).name(vm.heap, vm.interns);
+                    Value::Ref(new_class_id).drop_with(vm);
+                    Err(ExcType::type_error(format!(
+                        "__class__ assignment: '{new}' object layout differs from '{old}'"
+                    )))
+                }
+            }
+            other => {
+                defer_drop!(other, vm);
+                Err(match TypeRef::from_value(other, vm.heap) {
+                    Some(TypeRef::Native(_)) => ExcType::type_error(
+                        "__class__ assignment only supported for mutable types or ModuleType subclasses",
+                    ),
+                    Some(class) => {
+                        let new = class.name(vm.heap, vm.interns);
+                        let old = TypeRef::Class(self_class_id).name(vm.heap, vm.interns);
+                        ExcType::type_error(format!(
+                            "__class__ assignment: '{new}' object layout differs from '{old}'"
+                        ))
+                    }
+                    None => ExcType::type_error(format!(
+                        "__class__ must be set to a class, not '{}' object",
+                        other.py_type_name(vm)
+                    )),
+                })
+            }
+        }
+    }
+
     /// Sets an attribute on this exception.
     pub fn set_attr(&self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        if let OwnedTypeRef::Class(class_id) = self.get(vm.heap).class {
+            let name_val = name.as_value(vm.heap);
+            if let Some(exc) = dataclasses::frozen_assignment_error(class_id, &name_val, vm) {
+                name_val.drop_with(vm);
+                value.drop_with(vm);
+                return Err(exc);
+            }
+            name_val.drop_with(vm);
+        }
         let name_str = name.as_str(vm.interns);
         if name_str == "args" {
             let items: TupleVec = collect_owned_iterable(value, vm)?;
@@ -3749,33 +3906,8 @@ impl<'h> HeapObjectRead<'h, PyException> {
                 exc.set_suppress_context(suppress);
             }
             Ok(())
-        } else if name_str == "__class__" {
-            value.drop_with(vm);
-            Err(ExcType::type_error(
-                "__class__ assignment only supported for mutable types or ModuleType subclasses",
-            ))
         } else {
-            let key = name.as_value(vm.heap);
-            let mut attrs = {
-                let exc = self.get_mut(vm.heap);
-                exc.attrs.take().unwrap_or_default()
-            };
-            let old_val = match attrs.set(key, value, vm) {
-                Ok(old) => old,
-                Err(err) => {
-                    let exc = self.get_mut(vm.heap);
-                    exc.attrs = Some(attrs);
-                    return Err(err);
-                }
-            };
-            {
-                let exc = self.get_mut(vm.heap);
-                exc.attrs = Some(attrs);
-            }
-            if let Some(old) = old_val {
-                old.drop_with(vm);
-            }
-            Ok(())
+            self.set_attr_unchecked(name, value, vm)
         }
     }
 }
@@ -4081,7 +4213,9 @@ impl ExceptionRaise {
             traceback.push(*frame);
         }
 
-        MontyException::with_traceback(self.exc.exc_type, self.exc.arg, traceback).with_data(self.exc.data)
+        MontyException::with_traceback(self.exc.exc_type, self.exc.arg, traceback)
+            .with_data(self.exc.data)
+            .with_custom_type_name(self.exc.custom_type_name)
     }
 }
 
