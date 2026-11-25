@@ -1,5 +1,6 @@
+import sys
 import uuid
-from collections.abc import Awaitable, Mapping
+from collections.abc import Awaitable, Iterable, Mapping
 from pathlib import Path
 from typing import Any, Callable, Literal, NoReturn, final
 
@@ -41,6 +42,7 @@ __all__ = [
     'MontyDisconnectError',
     'MontyError',
     'MontyFileHandle',
+    'MontyNamedTuple',
     'MontyRefusedError',
     'MontyConfigurationError',
     'MontyConnectError',
@@ -505,6 +507,43 @@ class MontyClassTypeProxy:
     def __eq__(self, value: object, /) -> bool: ...
     def __hash__(self) -> int: ...
 
+class MontyNamedTuple(tuple[Any, ...]):
+    """A namedtuple returned by the sandbox: a tuple whose fields are also attributes.
+
+    It supports the instance API of `collections.namedtuple` (`p.x`, `_fields`, `_asdict()`, `_replace()`,
+    `_make()`), but every sandbox namedtuple type shares this one class, so `type(p)` is `MontyNamedTuple`
+    and the sandbox's type name is `p._type_name`, such as `'Point'` or `'os.stat_result'`.
+    """
+
+    _type_name: str
+    """The sandbox type name, qualified by its module unless it is a built-in or `__main__` type."""
+    _fields: tuple[str, ...]
+    """The field names, in order."""
+
+    def __new__(cls, type_name: str, fields: tuple[str, ...], values: Iterable[Any]) -> Self: ...
+    def __getattr__(self, name: str) -> Any: ...
+    @property
+    def _field_defaults(self) -> dict[str, Any]:
+        """Always empty: sandbox namedtuples cross without their defaults."""
+
+    def _make(self, iterable: Iterable[Any]) -> Self:
+        """A new namedtuple of the same type from a sequence or iterable."""
+
+    def _replace(self, /, **kwds: Any) -> Self:
+        """A new namedtuple of the same type with the given fields replaced."""
+
+    if sys.version_info >= (3, 13):
+        def __replace__(self, /, **kwds: Any) -> Self: ...
+
+    def _asdict(self) -> dict[str, Any]:
+        """A new dict mapping field names to values."""
+
+    # tuple methods a field of the same name shadows, as on a real namedtuple
+    @property
+    def count(self) -> Any: ...  # pyright: ignore[reportIncompatibleMethodOverride]
+    @property
+    def index(self) -> Any: ...  # pyright: ignore[reportIncompatibleMethodOverride]
+
 @final
 class MontyStdTypeProxy:
     """Read-only proxy for a builtin function, or a type object outside the
@@ -662,16 +701,19 @@ class MontyRefusedError(MontyError):
     def retryable(self) -> bool:
         """`True` for `RESOURCE_EXHAUSTED` or `UNAVAILABLE`, not for credential errors.
 
-        No automatic retry is performed. A disconnected request must not be replayed.
+        This property classifies the status code. The server requests an
+        automatic checkout retry with `Retry-After`.
         """
 
     @property
     def retry_after(self) -> float | None:
-        """Suggested delay in seconds from `Retry-After`, or `None` if absent or invalid.
+        """Suggested delay in seconds from a single valid `Retry-After`, or `None`.
 
         Both delay-seconds and HTTP dates are accepted. Past dates give zero;
         delays are capped at one hour.
-        A retry delay does not make a permanent refusal retryable.
+        The pool retries a refused checkout once for a delay of at most two
+        seconds, within the five-second retry budget and the original
+        checkout and dial deadlines.
         """
 
 @final
@@ -1209,6 +1251,8 @@ class AsyncMontyRemote:
                 count); checkouts beyond it wait.
             checkout_timeout: Seconds `checkout()` waits for capacity before
                 raising `TimeoutError`. `None` waits forever.
+                This deadline also bounds the wait and stream open for an automatic
+                admission retry.
             request_timeout: Hard per-turn deadline in seconds (default 10.0) — a
                 worker that exceeds it has its connection killed and the call
                 raises `MontyCrashedError` with `timed_out=True`. It also bounds

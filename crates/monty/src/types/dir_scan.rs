@@ -222,7 +222,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DirScan> {
                 iter.position += 1;
                 let path = os_path_join(&iter.dir, &name);
                 let entry = DirScan::Entry(DirEntry { name, path, info });
-                Ok(Some(Value::Ref(vm.heap.allocate(HeapData::DirScan(Box::new(entry))))))
+                Ok(Some(Value::allocate(entry, vm.heap)))
             }
             DirScan::Walk(_) => walk_next(self, vm),
         }
@@ -449,7 +449,7 @@ fn walk_step<'h>(this: &mut HeapObjectRead<'h, DirScan>, vm: &mut VM<'h>) -> Run
                     let exc = raise.instance.map_or_else(
                         || {
                             let py_exc = PyException::from_simple_exception(&raise.exc);
-                            Value::Ref(vm.heap.allocate(HeapData::Exception(Box::new(py_exc))))
+                            Value::allocate(py_exc, vm.heap)
                         },
                         |b| *b,
                     );
@@ -465,7 +465,7 @@ fn walk_step<'h>(this: &mut HeapObjectRead<'h, DirScan>, vm: &mut VM<'h>) -> Run
             } => {
                 let path_flavor = walk_mut(this, vm).path_flavor;
                 let dirpath = if path_flavor {
-                    Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(spelled.clone()))))
+                    Value::allocate(Path::new(spelled.clone()), vm.heap)
                 } else {
                     allocate_string(spelled.as_str(), vm.heap)
                 };
@@ -571,7 +571,7 @@ fn walk_mut<'a, 'h>(this: &'a mut HeapObjectRead<'h, DirScan>, vm: &'a mut VM<'h
 /// Allocates a list of `str`.
 fn string_list(items: Vec<String>, vm: &VM<'_>) -> Value {
     let items = items.into_iter().map(|item| allocate_string(item, vm.heap)).collect();
-    Value::Ref(vm.heap.allocate(HeapData::List(List::new(items))))
+    Value::allocate(List::new(items), vm.heap)
 }
 
 /// What [`WalkIterator::step`] decided, carried out once its borrow ends.
@@ -828,7 +828,7 @@ impl ScanEffect {
                     entries,
                     position: 0,
                 });
-                Ok(Value::Ref(vm.heap.allocate(HeapData::DirScan(Box::new(iter)))))
+                Ok(Value::allocate(iter, vm.heap))
             }
             Self::Walk(setup) => {
                 let (tree, root_error) = match reply {
@@ -854,7 +854,7 @@ impl ScanEffect {
                     root_error,
                     running: false,
                 });
-                Ok(Value::Ref(vm.heap.allocate(HeapData::DirScan(Box::new(walk)))))
+                Ok(Value::allocate(walk, vm.heap))
             }
             Self::Glob(setup) => {
                 let matches = match reply {
@@ -866,12 +866,10 @@ impl ScanEffect {
                 vm.heap.tracker.check_allocation(total)?;
                 let paths = matches
                     .into_iter()
-                    .map(|path| Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(path)))))
+                    .map(|path| Value::allocate(Path::new(path), vm.heap))
                     .collect();
                 let list = vm.heap.allocate(HeapData::List(List::new(paths)));
-                Ok(Value::Ref(
-                    vm.heap.allocate(HeapData::ListIterator(ListIterator::new(list))),
-                ))
+                Ok(Value::allocate(ListIterator::new(list), vm.heap))
             }
         }
     }

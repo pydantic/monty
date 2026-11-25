@@ -1420,6 +1420,19 @@ s.splitlines()
     assert_timeout_in_builtin(code, "bytes.splitlines()");
 }
 
+/// Test that `bytes.translate()` on large bytes respects the time limit even on the no-op path.
+#[test]
+fn timeout_in_bytes_translate() {
+    let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(1));
+    let (elapsed, result) = run_over_bytes("data.translate(None)", 64 * 1024 * 1024, limits);
+    let exc = result.expect_err("expected the time limit to fire");
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "should terminate promptly, took {elapsed:?}"
+    );
+}
+
 // === Timeout truncation in repr ===
 // These tests verify that `repr()` on large containers respects the time limit
 // and terminates promptly instead of hanging indefinitely. The repr methods

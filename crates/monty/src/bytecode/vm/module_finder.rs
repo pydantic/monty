@@ -316,10 +316,7 @@ impl VM<'_> {
         ];
         if let Some(dir) = package_dir {
             let dir = allocate_string(dir, self.heap);
-            entries.push((
-                "__path__",
-                Value::Ref(self.heap.allocate(HeapData::List(List::new(vec![dir])))),
-            ));
+            entries.push(("__path__", Value::allocate(List::new(vec![dir]), self.heap)));
         }
         let mut dict = Dict::new();
         for (key, value) in entries {

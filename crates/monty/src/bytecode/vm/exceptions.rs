@@ -216,10 +216,7 @@ impl VM<'_> {
 
     /// Allocates `exc_type()` with no message, for `raise ExcType from ...` and its cause.
     fn allocate_exception(&mut self, exc_type: ExcType) -> Value {
-        Value::Ref(
-            self.heap
-                .allocate(HeapData::Exception(Box::new(PyException::new(exc_type, None)))),
-        )
+        Value::allocate(PyException::new(exc_type, None), self.heap)
     }
 
     /// Stores `cause` (an owned reference) as `__cause__` of the exception `id`,
@@ -726,8 +723,7 @@ impl VM<'_> {
     /// Allocates an Exception on the heap and returns a Value::Ref to it.
     fn create_exception_value(&mut self, exc: &ExceptionRaise) -> Value {
         let exception = PyException::from_simple_exception(&exc.exc);
-        let heap_id = self.heap.allocate(HeapData::Exception(Box::new(exception)));
-        Value::Ref(heap_id)
+        Value::allocate(exception, self.heap)
     }
 
     /// Checks if an exception matches an `except` clause's exception type.

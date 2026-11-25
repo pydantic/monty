@@ -244,7 +244,7 @@ fn frames_are_identical(a: &StackFrame, b: &StackFrame) -> bool {
 /// `pydantic_monty/__init__.py`. Both are hand-written, so `monty-proto`'s `exc_type_bridges` test
 /// reads them and pins them here — adding a variant without wiring the bridges fails that test.
 /// Explicit discriminants are permanent exception-class identity codes; never change or reuse them.
-#[monty_macros::explicit_discriminants(checksum = 0xcfe4_4685_6ead_4888)]
+#[monty_macros::explicit_discriminants(checksum = 0xd26e_f8bf_1120_6b3d)]
 #[derive(
     Debug,
     Clone,
@@ -446,6 +446,11 @@ pub enum ExcType {
     /// `decimal.FloatOperation`: floats and Decimals were mixed.
     #[strum(serialize = "decimal.FloatOperation")]
     DecimalFloatOperation = 55,
+
+    /// `asyncio.InvalidStateError`, raised by `Task.result()` and
+    /// `Task.exception()` while the task is still pending.
+    #[strum(serialize = "asyncio.exceptions.InvalidStateError")]
+    InvalidStateError = 56,
 }
 /// Structured payload attached to exception types whose CPython counterparts
 /// carry more than a message. Currently unicode and json decode errors have

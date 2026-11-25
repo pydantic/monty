@@ -131,7 +131,7 @@ impl<'h> HeapRead<'h, DictKeysView> {
         let rhs = self.to_set(vm)?;
         defer_drop!(rhs, vm);
         let result = operation(lhs, rhs, vm)?;
-        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Set(result)))))
+        Ok(Some(Value::allocate(result, vm.heap)))
     }
 }
 
@@ -333,7 +333,7 @@ impl<'h> HeapRead<'h, DictItemsView> {
         let rhs = self.to_set(vm)?;
         defer_drop!(rhs, vm);
         let result = operation(lhs, rhs, vm)?;
-        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Set(result)))))
+        Ok(Some(Value::allocate(result, vm.heap)))
     }
 }
 
@@ -755,7 +755,7 @@ fn view_intersection(view: SetLikeView, other: &Value, vm: &mut VM<'_>) -> RunRe
         }
     }
     let (result, vm) = result_guard.into_parts();
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Set(result))))
+    Ok(Value::allocate(result, vm.heap))
 }
 
 /// `view.isdisjoint(other)`, as CPython's `dictviews_isdisjoint`.
@@ -815,8 +815,7 @@ fn dict_view_binary_op_value(
     defer_drop!(rhs_set, vm);
 
     let result = operation(lhs_set, rhs_set, vm)?;
-    let result_id = vm.heap.allocate(HeapData::Set(result));
-    Ok(Some(Value::Ref(result_id)))
+    Ok(Some(Value::allocate(result, vm.heap)))
 }
 
 /// Computes dictionary-view union.

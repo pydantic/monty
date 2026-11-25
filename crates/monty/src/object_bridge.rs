@@ -897,7 +897,8 @@ impl MontyTypeExt for MontyType {
             | Type::DecimalContext
             | Type::DecimalSignalDict
             | Type::DecimalContextManager
-            | Type::ForwardRef => return None,
+            | Type::ForwardRef
+            | Type::Task => return None,
             Type::Decimal => Self::Decimal,
             Type::Tuple => Self::Tuple,
             Type::NamedTuple => Self::NamedTuple,
@@ -954,10 +955,10 @@ fn import_node(
         MontyNode::Float(f) => Ok(Value::Float(f)),
         MontyNode::Complex(c) => Ok(Complex::new(c.real, c.imag).into_value(vm.heap)),
         MontyNode::String(s) => Ok(allocate_string(s, vm.heap)),
-        MontyNode::Bytes(b) => Ok(Value::Ref(vm.heap.allocate(HeapData::Bytes(Bytes::new(b))))),
+        MontyNode::Bytes(b) => Ok(Value::allocate(Bytes::new(b), vm.heap)),
         MontyNode::List(ids) => {
             let values = clone_children(&ids, built, vm);
-            Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(values)))))
+            Ok(Value::allocate(List::new(values), vm.heap))
         }
         MontyNode::Tuple(ids) => {
             let values = clone_children(&ids, built, vm);
@@ -978,27 +979,27 @@ fn import_node(
             let values = clone_children(&values, built, vm);
             let field_name_strs: Vec<EitherStr> = field_names.into_iter().map(Into::into).collect();
             let nt = NamedTuple::new(type_name, field_name_strs, values);
-            Ok(Value::Ref(vm.heap.allocate(HeapData::NamedTuple(Box::new(nt)))))
+            Ok(Value::allocate(nt, vm.heap))
         }
         MontyNode::Dict(pairs) => {
             let pairs = clone_pairs(&pairs, built, vm);
             let dict =
                 Dict::from_pairs(pairs, vm).map_err(|_| InvalidInputError::invalid_type("unhashable dict keys"))?;
-            Ok(Value::Ref(vm.heap.allocate(HeapData::Dict(dict))))
+            Ok(Value::allocate(dict, vm.heap))
         }
         MontyNode::Set(ids) => {
             let set = import_set(&ids, built, vm, "unhashable set element")?;
-            Ok(Value::Ref(vm.heap.allocate(HeapData::Set(set))))
+            Ok(Value::allocate(set, vm.heap))
         }
         MontyNode::FrozenSet(ids) => {
             let set = import_set(&ids, built, vm, "unhashable frozenset element")?;
             let frozenset = FrozenSet::from_set(set);
-            Ok(Value::Ref(vm.heap.allocate(HeapData::FrozenSet(frozenset))))
+            Ok(Value::allocate(frozenset, vm.heap))
         }
         MontyNode::Date(date) => {
             let value = date_type::from_ymd(date.year, i32::from(date.month), i32::from(date.day))
                 .map_err(|_| InvalidInputError::invalid_type("date"))?;
-            Ok(Value::Ref(vm.heap.allocate(HeapData::Date(value))))
+            Ok(Value::allocate(value, vm.heap))
         }
         MontyNode::DateTime(datetime) => {
             let MontyDateTime {
@@ -1032,7 +1033,7 @@ fn import_node(
                 vm.heap,
             )
             .map_err(|_| InvalidInputError::invalid_type("datetime"))?;
-            Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(value))))
+            Ok(Value::allocate(value, vm.heap))
         }
         MontyNode::Time(time) => {
             let MontyTime {
@@ -1061,12 +1062,12 @@ fn import_node(
                 vm.heap,
             )
             .map_err(|_| InvalidInputError::invalid_type("time"))?;
-            Ok(Value::Ref(vm.heap.allocate(HeapData::Time(value))))
+            Ok(Value::allocate(value, vm.heap))
         }
         MontyNode::TimeDelta(delta) => {
             let delta = timedelta_type::new(delta.days, delta.seconds, delta.microseconds)
                 .map_err(|_| InvalidInputError::invalid_type("timedelta"))?;
-            Ok(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(delta))))
+            Ok(Value::allocate(delta, vm.heap))
         }
         // The host's text is untrusted: it must parse as `Decimal(text)` would,
         // a malformed literal or out-of-range exponent being rejected rather than
@@ -1081,12 +1082,12 @@ fn import_node(
             } else {
                 let tz = TimeZone::new(tz.offset_seconds, tz.name)
                     .map_err(|_| InvalidInputError::invalid_type("timezone"))?;
-                Ok(Value::Ref(vm.heap.allocate(HeapData::TimeZone(tz))))
+                Ok(Value::allocate(tz, vm.heap))
             }
         }
         MontyNode::Exception { exc_type, arg } => {
             let exc = PyException::from_simple_exception(&SimpleException::new(exc_type, arg));
-            Ok(Value::Ref(vm.heap.allocate(HeapData::Exception(Box::new(exc)))))
+            Ok(Value::allocate(exc, vm.heap))
         }
         // A sandbox class the host hands back resolves to the class object
         // itself; a host class resolves to its single `HostClassType` entry,
@@ -1134,7 +1135,7 @@ fn import_node(
                     intern_host_class_type(class.name.clone(), class.id, class.is_dataclass, class_attrs, vm)?;
                 let (dict, vm) = dict_guard.into_parts();
                 let hc = HostClass::new(instance_id, class_id, dict);
-                Ok(Value::Ref(vm.heap.allocate(HeapData::HostClass(Box::new(hc)))))
+                Ok(Value::allocate(hc, vm.heap))
             }
             _ => {
                 let Value::Ref(class_id) = built[class_type.index()] else {
@@ -1153,12 +1154,12 @@ fn import_node(
             let dict = Dict::from_pairs(pairs, vm)
                 .map_err(|_| InvalidInputError::invalid_type("unhashable module attr keys"))?;
             let module = Module::host(name, id, dict);
-            Ok(Value::Ref(vm.heap.allocate(HeapData::Module(Box::new(module)))))
+            Ok(Value::allocate(module, vm.heap))
         }
-        MontyNode::Path(s) => Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(s))))),
+        MontyNode::Path(s) => Ok(Value::allocate(Path::new(s), vm.heap)),
         MontyNode::FileHandle(handle) => {
             let file = OpenFile::with_state(handle.path, handle.mode, handle.position);
-            Ok(Value::Ref(vm.heap.allocate(HeapData::OpenFile(Box::new(file)))))
+            Ok(Value::allocate(file, vm.heap))
         }
         MontyNode::Type(t) => Ok(Value::Builtin(Builtins::Type(t.to_internal()))),
         MontyNode::BuiltinFunction(f) => Ok(Value::Builtin(Builtins::Function(f))),

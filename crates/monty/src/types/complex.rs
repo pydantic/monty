@@ -58,7 +58,7 @@ impl Complex {
 
     /// Allocates this complex on the heap, handing back the owning value.
     pub(crate) fn into_value(self, heap: &Heap) -> Value {
-        Value::Ref(heap.allocate(HeapData::Complex(self)))
+        Value::allocate(self, heap)
     }
 
     /// `-z`.

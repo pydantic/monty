@@ -113,7 +113,7 @@ fn algorithm_names(vm: &mut VM<'_>) -> Value {
             .add(name, vm)
             .expect("adding an interned name to a fresh set cannot raise");
     }
-    Value::Ref(vm.heap.allocate(HeapData::Set(names)))
+    Value::allocate(names, vm.heap)
 }
 
 /// Dispatches a call to a `hashlib` module function.

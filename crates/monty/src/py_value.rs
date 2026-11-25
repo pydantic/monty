@@ -13,6 +13,7 @@ use smallvec::smallvec;
 use crate::{
     annotations,
     args::ArgValues,
+    asyncio::TaskFutureState,
     builtins::{Builtins, base_exception::init_exception_instance},
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
@@ -24,7 +25,7 @@ use crate::{
     heap_data::heap_payloads,
     identity::Identity,
     intern::{FunctionId, StaticStrings},
-    modules::{ModuleFunctions, collections::defaultdict::defaultdict_missing},
+    modules::{ModuleFunctions, asyncio::task_call_method, collections::defaultdict::defaultdict_missing},
     types::{
         GenericAlias, LazyHeapSet, LongInt, OwnedTypeRef, Property, PyTrait, Type, TypeRef, Union, allocate_string,
         allocate_tuple,
@@ -32,9 +33,9 @@ use crate::{
         file::unloaded_iteration_error,
         instance::{call_member_bound, class_lookup, implicit_receiver},
         long_int::{PyInt, arithmetic::float_binary},
-        numeric::{float_as_integer_ratio, float_is_integer, round_digits, round_float},
+        numeric::{float_as_integer_ratio, float_fromhex, float_hex, float_is_integer, round_digits, round_float},
         py_trait::PyObjectIdentity,
-        str::PyStr,
+        str::{PyStr, string_repr_fmt},
     },
     value::{EitherStr, Marker, Value, float_divmod_tuple, float_pow_value, py_float_divmod, py_float_mod},
 };
@@ -334,6 +335,18 @@ impl<'h> PyValue<'h> {
             }
             Self::GatherFuture(gather) => Ok(write!(f, "<gather({})>", gather.get(vm.heap).item_count())?),
             Self::ExternalFuture(fut) => Ok(write!(f, "<coroutine external_future({})>", fut.get(vm.heap).call_id.raw())?),
+            Self::Task(task) => {
+                let task = task.get(vm.heap);
+                let status = match &task.state {
+                    TaskFutureState::Pending => "pending",
+                    TaskFutureState::Completed(_) => "finished",
+                    TaskFutureState::Failed(_) => "finished",
+                };
+                write!(f, "<Task {status} name=")?;
+                string_repr_fmt(&task.name, f)?;
+                Ok(f.write_str(">")?)
+            }
+            Self::WaitFuture(_) => Ok(f.write_str("<coroutine object wait>")?),
         })
     }
 }
@@ -474,6 +487,9 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
         forward_py_value!(self, |value| value.py_hash(vm), {
             Self::Cell(value) => Ok(Some(identity_hash(value.id()))),
             Self::Module(value) => Ok(Some(identity_hash(value.id()))),
+            Self::Task(value) => Ok(Some(identity_hash(value.id()))),
+            Self::GatherFuture(value) => Ok(Some(identity_hash(value.id()))),
+            Self::ExternalFuture(value) => Ok(Some(identity_hash(value.id()))),
             Self::Undefined => Value::Undefined.py_hash(vm),
             Self::Ellipsis => Value::Ellipsis.py_hash(vm),
             Self::NotImplemented => Value::NotImplemented.py_hash(vm),
@@ -516,6 +532,8 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
             Self::Exception(e) => e.py_type(vm),
             Self::Module(_) => Type::Module.into(),
             Self::Coroutine(_) | Self::GatherFuture(_) | Self::ExternalFuture(_) => Type::Coroutine.into(),
+            Self::Task(_) => Type::Task.into(),
+            Self::WaitFuture(_) => Type::Coroutine.into(),
         })
     }
 
@@ -860,6 +878,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
                 }
             }
             Self::Module(value) => value.py_call_attr(vm, attr, args),
+            Self::Task(value) => task_call_method(value, attr, args, vm),
             Self::Builtin(Builtins::Type(ty)) => ty.call_class_method(attr, args, vm),
             Self::DefFunction(func_id) => {
                 match annotations::function_call_attr(*func_id, None, attr.as_str(vm.interns), args, vm) {
@@ -904,6 +923,11 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
                         args.check_zero_args("float.is_integer", vm.heap)?;
                         Ok(CallResult::Value(Value::Bool(float_is_integer(*value))))
                     }
+                    Some(StaticStrings::Hex) => {
+                        args.check_zero_args("float.hex", vm.heap)?;
+                        Ok(CallResult::Value(allocate_string(float_hex(*value), vm.heap)))
+                    }
+                    Some(StaticStrings::Fromhex) => float_fromhex(args, vm).map(CallResult::Value),
                     _ => {
                         args.drop_with(vm);
                         Err(ExcType::attribute_error("float", attr.as_str(vm.interns)))
@@ -1052,7 +1076,7 @@ mod tests {
                 Value::InlineString(InlineStr::new("aé🐍b").unwrap()),
                 allocate_string_on_heap("aé🐍b", vm.heap),
                 Value::InternBytes(ids.bytes),
-                Value::Ref(vm.heap.allocate(HeapData::Bytes(Bytes::new(b"a\0\xff".to_vec())))),
+                Value::allocate(Bytes::new(b"a\0\xff".to_vec()), vm.heap),
             ];
             defer_drop!(values, vm);
             for value in values {
@@ -1070,10 +1094,7 @@ mod tests {
             defer_drop!(cell, vm);
             assert_eq!(cell.py_value(vm).py_hash(vm).unwrap(), Some(identity_hash(cell_id)));
 
-            let exception = Value::Ref(vm.heap.allocate(HeapData::Exception(Box::new(PyException::new(
-                ExcType::ValueError,
-                None,
-            )))));
+            let exception = Value::allocate(PyException::new(ExcType::ValueError, None), vm.heap);
             defer_drop!(exception, vm);
             assert_eq!(exception.py_value(vm).py_hash(vm).unwrap(), None);
         });
@@ -1087,7 +1108,7 @@ mod tests {
                 Value::InlineString(InlineStr::new("aé🐍b").unwrap()),
                 allocate_string_on_heap("aé🐍b", vm.heap),
                 Value::InternBytes(ids.bytes),
-                Value::Ref(vm.heap.allocate(HeapData::Bytes(Bytes::new(b"a\0\xff".to_vec())))),
+                Value::allocate(Bytes::new(b"a\0\xff".to_vec()), vm.heap),
             ];
             defer_drop_mut!(values, vm);
             while let Some(value) = values.pop() {

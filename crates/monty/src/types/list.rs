@@ -272,14 +272,10 @@ impl List {
     pub fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         let value = args.get_zero_one_arg("list", vm.heap)?;
         match value {
-            None => {
-                let heap_id = vm.heap.allocate(HeapData::List(Self::new(Vec::new())));
-                Ok(Value::Ref(heap_id))
-            }
+            None => Ok(Value::allocate(Self::new(Vec::new()), vm.heap)),
             Some(v) => {
                 let items = collect_owned_iterable(v, vm)?;
-                let heap_id = vm.heap.allocate(HeapData::List(Self::new(items)));
-                Ok(Value::Ref(heap_id))
+                Ok(Value::allocate(Self::new(items), vm.heap))
             }
         }
     }
@@ -293,8 +289,7 @@ impl<'h> HeapRead<'h, List> {
         let items = slice_collect_iterator(vm, slice, self.get(vm.heap).items.iter(), |item| {
             item.clone_with_heap(vm.heap)
         })?;
-        let heap_id = vm.heap.allocate(HeapData::List(List::new(items)));
-        Ok(Value::Ref(heap_id))
+        Ok(Value::allocate(List::new(items), vm.heap))
     }
 
     /// Clones the item at the given index with proper refcount management.
@@ -579,7 +574,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
     }
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        let Some(HeapReadOutput::List(other)) = other.read_heap(vm) else {
+        let Some(other) = other.read_as::<List>(vm.heap) else {
             return Ok(None);
         };
         if self.get(vm.heap).items.len() != other.get(vm.heap).items.len() {
@@ -620,7 +615,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
     }
 
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let Some(HeapReadOutput::List(other)) = other.read_heap(vm) else {
+        let Some(other) = other.read_as::<List>(vm.heap) else {
             return Ok(None);
         };
         // The guard releases our clones if cloning `other` hits the memory limit.
@@ -628,8 +623,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
         let (left, vm) = items.as_parts_mut();
         left.extend(other.clone_all_items(vm)?);
         let (items, vm) = items.into_parts();
-        let id = vm.heap.allocate(HeapData::List(List::new(items)));
-        Ok(Some(Value::Ref(id)))
+        Ok(Some(Value::allocate(List::new(items), vm.heap)))
     }
 
     fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -640,9 +634,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
         // An empty operand yields `[]` however large `count` is; without this the
         // loop below would spin `count` times over nothing.
         if count == 0 || len == 0 {
-            return Ok(Some(Value::Ref(
-                vm.heap.allocate(HeapData::List(List::new(Vec::new()))),
-            )));
+            return Ok(Some(Value::allocate(List::new(Vec::new()), vm.heap)));
         }
         let total = repeated_len(len, count, VALUE_SIZE)?;
         check_repeat_size(len.saturating_mul(VALUE_SIZE), count, &vm.heap.tracker)?;
@@ -654,7 +646,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
             vm.heap.tracker.check_time_every(rep)?;
         }
         let (items, vm) = result.into_parts();
-        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::List(List::new(items))))))
+        Ok(Some(Value::allocate(List::new(items), vm.heap)))
     }
 
     fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -958,8 +950,7 @@ fn list_clear<'h>(list: &HeapReadMut<'h, List>, vm: &mut VM<'h>) {
 /// `clone_all_items` so a huge copy fails with a graceful `MemoryError`.
 fn list_copy(list: &List, heap: &Heap) -> RunResult<Value> {
     let items = list.items().to_vec(heap)?;
-    let heap_id = heap.allocate(HeapData::List(List::new(items)));
-    Ok(Value::Ref(heap_id))
+    Ok(Value::allocate(List::new(items), heap))
 }
 
 /// Implements Python's `list.extend(iterable)` method.

@@ -18,7 +18,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropGuard, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead},
+    heap::{DropGuard, Heap, HeapId, HeapItem, HeapObjectRead, HeapRead},
     intern::StaticStrings,
     types::{
         Dict, LazyHeapSet, PyTrait, Type, TypeRef, allocate_tuple,
@@ -230,7 +230,7 @@ impl<'h> HeapRead<'h, ReMatch> {
             pairs.push((key, value));
         }
         let dict = Dict::from_pairs(pairs, vm)?;
-        Ok(Value::Ref(vm.heap.allocate(HeapData::Dict(dict))))
+        Ok(Value::allocate(dict, vm.heap))
     }
 }
 

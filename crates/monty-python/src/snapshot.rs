@@ -63,7 +63,7 @@ use crate::{
         ext_to_resume, pool_err_to_py, run_turn_async, run_turn_sync, turn_fn,
     },
     print_target::PrintTarget,
-    telemetry::{capture_otel_context, snapshot_trace_context},
+    telemetry::{capture_otel_context, capture_turn_options, snapshot_trace_context},
 };
 
 /// Shared context threaded across a `feed_start` drive so each `resume` can
@@ -404,6 +404,7 @@ impl SnapshotState {
         // Check resumed only under the checkout lock
         let checkout = SharedCheckout::clone(&self.ctx.checkout);
         let resumed = &self.resumed;
+        let turn = capture_turn_options(py);
         let state = py
             .detach(|| {
                 block_on_sync(async {
@@ -412,7 +413,7 @@ impl SnapshotState {
                         return Ok(None);
                     }
                     match guard.as_mut() {
-                        Some(checkout) => checkout.dump().await.map(Some),
+                        Some(checkout) => checkout.dump_with(turn).await.map(Some),
                         None => Err(PoolError::Finished),
                     }
                 })

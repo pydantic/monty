@@ -21,8 +21,10 @@ these built-ins; `raise MyClass()` on a plain user class raises
 
 Module-specific: `json.JSONDecodeError` and `tomllib.TOMLDecodeError` (subclasses of `ValueError`),
 `re.PatternError` / `re.error`, `io.UnsupportedOperation` (catchable as
-both `OSError` and `ValueError`, matching CPython's dual parentage), and
-`dataclasses.FrozenInstanceError` (a subclass of `AttributeError`).
+both `OSError` and `ValueError`, matching CPython's dual parentage),
+`dataclasses.FrozenInstanceError` (a subclass of `AttributeError`) and
+`asyncio.InvalidStateError` (a subclass of `Exception`). Hosts see the last one
+under CPython's defining-module name, `asyncio.exceptions.InvalidStateError`.
 
 ## Exception classes NOT implemented
 
@@ -48,7 +50,11 @@ An exception from it is replaced by the type name (`KeyError('<K>')`), but a res
 
 `repr(exc)` uses the generic args form; VM-raised `UnicodeDecodeError` and `UnicodeEncodeError` therefore differ from CPython's five-field repr, while missing-key `KeyError` and dotted exception classes have the divergences described above.
 
-The dotted exception classes — `json.JSONDecodeError`, `tomllib.TOMLDecodeError`, `re.PatternError`, `binascii.Error`, `binascii.Incomplete`, `_csv.Error`, `statistics.StatisticsError` — repr under their qualified name: `binascii.Error('bad')` where CPython gives `Error('bad')`.
+The dotted exception classes — `json.JSONDecodeError`, `tomllib.TOMLDecodeError`, `re.PatternError`, `binascii.Error`, `binascii.Incomplete`, `_csv.Error`, `statistics.StatisticsError`, `asyncio.exceptions.InvalidStateError` — repr under their qualified name: `binascii.Error('bad')` where CPython gives `Error('bad')`.
+
+An exception rebuilt from a copy loses its chain: one that escapes a nested synchronous call (a `sorted()` key, `json.dumps(default=...)`, a `__repr__`) reaches the outer handler with `__cause__` reset to `None`, `__suppress_context__` to `False`, and `__context__` set to the exception the *caller* was handling, if any, rather than the one the callee was handling.
+
+A chain that forms a cycle (`raise e from e`) is only reclaimed when the session ends, since exceptions are not cycle-collected.
 
 **Not implemented:** `__traceback__`, `__notes__`, `add_note()`.
 A traceback printed for an exception with a `__cause__` or `__context__` shows that exception alone: CPython's chained output (`The above exception was the direct cause of the following exception:`) is not produced, inside the sandbox or at the host boundary.

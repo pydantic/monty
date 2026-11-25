@@ -4,7 +4,7 @@ use std::{
     mem,
 };
 
-use monty_types::{ExcData, JsonErrorData, MontyException, StackFrame, UnicodeErrorData};
+use monty_types::{ExcData, JsonErrorData, MontyException, StackFrame, UnicodeErrorData, UnicodeErrorObject};
 use smallvec::smallvec;
 
 use crate::{
@@ -254,6 +254,38 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn cannot_reuse_already_awaited_coroutine() -> RunError {
         SimpleException::new_msg(ExcType::RuntimeError, "cannot reuse already awaited coroutine").into()
+    }
+
+    /// Creates the canonical `RuntimeError: cannot reuse already awaited future`,
+    /// raised when an already-consumed future or task is awaited again.
+    #[must_use]
+    fn cannot_reuse_already_awaited_future() -> RunError {
+        SimpleException::new_msg(ExcType::RuntimeError, "cannot reuse already awaited future").into()
+    }
+
+    /// `RuntimeError: coroutine is being awaited already` — a second task
+    /// awaiting a coroutine-like awaitable that another await is still driving.
+    #[must_use]
+    fn coroutine_being_awaited_already() -> RunError {
+        SimpleException::new_msg(ExcType::RuntimeError, "coroutine is being awaited already").into()
+    }
+
+    /// `ValueError: Set of Tasks/Futures is empty.` — `asyncio.wait` given no inputs.
+    #[must_use]
+    fn wait_empty_input() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "Set of Tasks/Futures is empty.").into()
+    }
+
+    /// `AttributeError: '<type>' object has no attribute 'add_done_callback'` —
+    /// an `asyncio.wait` input that is neither a task nor a future. CPython
+    /// fails on the first callback it tries to attach.
+    #[must_use]
+    fn wait_input_not_future(type_name: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::AttributeError,
+            format!("'{type_name}' object has no attribute 'add_done_callback'"),
+        )
+        .into()
     }
 
     /// `ValueError: generator already executing` — a generator advanced from
@@ -3929,6 +3961,21 @@ impl ExceptionRaise {
         self.instance = Some(Box::new(instance));
     }
 
+    /// Heap bytes a clone allocates for the message, structured payload, and frames.
+    fn clone_allocation_size(&self) -> usize {
+        self.exc
+            .arg
+            .as_deref()
+            .map_or(0, str::len)
+            .saturating_add(exc_data_clone_size(&self.exc.data))
+            .saturating_add(self.frame.as_ref().map_or(0, RawStackFrame::clone_allocation_size))
+            .saturating_add(self.snippet_frame.as_ref().map_or(0, |frame| {
+                mem::size_of::<StackFrame>()
+                    .saturating_add(frame.filename.len())
+                    .saturating_add(frame.frame_name.as_ref().map_or(0, String::len))
+            }))
+    }
+
     /// Adds a caller's frame as the outermost frame in the traceback chain.
     ///
     /// This is used when an exception propagates up through call frames.
@@ -4020,6 +4067,23 @@ impl ExceptionRaise {
     }
 }
 
+/// Heap bytes a clone of `data` allocates for its boxed structured payload.
+fn exc_data_clone_size(data: &ExcData) -> usize {
+    match data {
+        ExcData::None => 0,
+        ExcData::Unicode(data) => mem::size_of::<UnicodeErrorData>()
+            .saturating_add(data.encoding.len())
+            .saturating_add(data.reason.len())
+            .saturating_add(match &data.object {
+                UnicodeErrorObject::Bytes(bytes) => bytes.len(),
+                UnicodeErrorObject::Str(text) => text.len(),
+            }),
+        ExcData::Json(data) => mem::size_of::<JsonErrorData>()
+            .saturating_add(data.msg.len())
+            .saturating_add(data.doc.as_ref().map_or(0, String::len)),
+    }
+}
+
 /// A stack frame for traceback information.
 ///
 /// Stores position information and optional function name as StringId.
@@ -4039,6 +4103,11 @@ pub struct RawStackFrame {
 }
 
 impl RawStackFrame {
+    /// Heap bytes a clone allocates for this frame and its boxed parents.
+    fn clone_allocation_size(&self) -> usize {
+        mem::size_of::<Self>().saturating_add(self.parent.as_ref().map_or(0, |parent| parent.clone_allocation_size()))
+    }
+
     pub(crate) fn new(position: CodeRange, frame_name: StringId, parent: Option<&Self>) -> Self {
         Self {
             position,
@@ -4158,6 +4227,17 @@ impl From<fmt::Error> for RunError {
 }
 
 impl RunError {
+    /// Heap bytes a clone allocates for its exception payload, excluding the inline value.
+    pub(crate) fn clone_allocation_size(&self) -> usize {
+        match self {
+            Self::Internal(message) => match message {
+                Cow::Borrowed(_) => 0,
+                Cow::Owned(message) => message.len(),
+            },
+            Self::Exc(exc) | Self::UncatchableExc(exc) => exc.clone_allocation_size(),
+        }
+    }
+
     /// Whether this is a catchable `exc_type`, matching only `Exc` so an uncatchable
     /// host or resource error is never swallowed by a guard that expects one.
     pub(crate) fn is_catchable(&self, exc_type: ExcType) -> bool {

@@ -975,13 +975,19 @@ impl NativeSession {
     /// Resolves to `{kind:'dumped', state}` or a failure turn object; takes
     /// `on_print` to share the turn machinery, never invoking it.
     #[napi]
-    pub fn dump<'env>(&self, env: &'env Env, on_print: PrintCallback<'env>) -> Result<PromiseRaw<'env, Object<'env>>> {
+    pub fn dump<'env>(
+        &self,
+        env: &'env Env,
+        on_print: PrintCallback<'env>,
+        traceparent: Option<String>,
+    ) -> Result<PromiseRaw<'env, Object<'env>>> {
+        let turn = turn_options(traceparent.as_deref());
         self.run_outcome(
             env,
             on_print,
-            outcome_fn(|checkout, _on_print| {
+            outcome_fn(move |checkout, _on_print| {
                 Box::pin(async move {
-                    match checkout.dump().await {
+                    match checkout.dump_with(turn).await {
                         Ok(state) => TurnOutcome::Dumped(state),
                         Err(err) => TurnOutcome::from(Err::<TurnEvent, _>(err)),
                     }
