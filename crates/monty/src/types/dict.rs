@@ -236,12 +236,18 @@ impl Dict {
         }
     }
 
-    pub(crate) fn clone_with_heap(&self, heap: &impl ContainsHeap) -> Self {
+    #[inline]
+    pub(crate) fn from_table(table: PyHashTable<DictEntry>, contains_refs: bool) -> Self {
         Self {
-            table: self.table.clone_with_heap(heap),
-            contains_refs: self.contains_refs,
-            kind: self.cloned_kind(heap),
+            table,
+            contains_refs,
+            kind: DictKind::plain(),
         }
+    }
+
+    #[inline]
+    pub(crate) fn table(&self) -> &PyHashTable<DictEntry> {
+        &self.table
     }
 
     /// The live entries, in insertion order.

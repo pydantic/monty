@@ -166,8 +166,8 @@ fn shallow_copy(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
                 Ok(Value::allocate(settings, vm.heap))
             }
             HeapReadOutput::Exception(exc) => {
-                let new_exc = exc.get(vm.heap).clone_with_heap(vm.heap);
-                Ok(Value::Ref(vm.heap.allocate(HeapData::Exception(Box::new(new_exc)))))
+                let new_exc = exc.shallow_copy(vm)?;
+                Ok(Value::allocate(new_exc, vm.heap))
             }
             _ => unreachable!("`classify` said this type is rebuilt, so `shallow_copy` must rebuild it"),
         },

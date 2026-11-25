@@ -22,7 +22,8 @@ use crate::{
     source_map::{SourceMap, StackFrameExt},
     types::{
         BoundMethod, Dict, LazyHeapSet, OwnedTypeRef, PyTrait, TupleVec, Type, TypeRef, allocate_tuple,
-        hash_table::TableCursor,
+        dict::DictEntry,
+        hash_table::{PyHashTable, TableCursor, TableSource},
         iter::collect_owned_iterable,
         long_int::INT_MAX_STR_DIGITS,
         str::{StringRepr, allocate_string, string_repr_fmt},
@@ -3291,20 +3292,6 @@ impl PyException {
         Ok(SimpleException { exc_type, arg, data })
     }
 
-    /// Clones this exception for shallow copying matching CPython's
-    /// `BaseException.__reduce__`, keeping type, args, and attrs, but clearing
-    /// `__cause__` and `__context__`.
-    pub(crate) fn clone_with_heap(&self, heap: &Heap) -> Self {
-        Self {
-            class: self.class.clone_with_heap(heap),
-            exc_type: self.exc_type,
-            args: self.args.clone_with_heap(heap),
-            data: self.data.clone(),
-            chain: None,
-            attrs: self.attrs.as_ref().map(|d| d.clone_with_heap(heap)),
-        }
-    }
-
     #[must_use]
     pub(crate) fn exc_type(&self) -> ExcType {
         self.exc_type
@@ -3404,7 +3391,39 @@ impl<'h> HeapRead<'h, PyException> {
     }
 }
 
+struct ExceptionAttrsSource<'a, 'h>(&'a HeapObjectRead<'h, PyException>);
+
+impl<'h> TableSource<'h> for ExceptionAttrsSource<'_, 'h> {
+    type Entry = DictEntry;
+
+    fn table<'r>(&'r self, vm: &'r VM<'h>) -> &'r PyHashTable<DictEntry> {
+        self.0.get(vm.heap).attrs.as_ref().expect("attrs exist").table()
+    }
+}
+
 impl<'h> HeapObjectRead<'h, PyException> {
+    /// Copies this exception for shallow copying matching CPython's
+    /// `BaseException.__reduce__`, keeping type, args, and attrs, but clearing
+    /// `__cause__` and `__context__`.
+    pub(crate) fn shallow_copy(&self, vm: &mut VM<'h>) -> RunResult<PyException> {
+        let contains_refs = self.get(vm.heap).attrs.as_ref().map(Dict::has_refs);
+        let attrs = if let Some(contains_refs) = contains_refs {
+            let table = ExceptionAttrsSource(self).copy_table(vm)?;
+            Some(Dict::from_table(table, contains_refs))
+        } else {
+            None
+        };
+        let exc = self.get(vm.heap);
+        Ok(PyException {
+            class: exc.class.clone_with_heap(vm.heap),
+            exc_type: exc.exc_type,
+            args: exc.args.clone_with_heap(vm.heap),
+            data: exc.data.clone(),
+            chain: None,
+            attrs,
+        })
+    }
+
     /// Computes `str(exc)`.
     pub fn py_str(&self, vm: &mut VM<'h>) -> RunResult<String> {
         let (exc_type, args_copy) = {
