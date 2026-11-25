@@ -1,5 +1,6 @@
 """Tests for the callable() builtin function."""
 
+import collections
 import functools
 import math
 
@@ -92,6 +93,15 @@ assert callable(math.sin) is True
 part = functools.partial(len)
 assert callable(part) is True
 assert callable(list[int]) is True
+
+# NamedTuple class vs instance
+Point = collections.namedtuple("Point", ["x", "y"])
+assert callable(Point) is True
+p_nt = Point(1, 2)
+assert callable(p_nt) is False
+part_point = functools.partial(Point, 10)
+assert callable(part_point) is True
+assert part_point(20) == Point(10, 20)
 
 # --- Non-callable primitives ---
 assert callable(0) is False

@@ -752,6 +752,19 @@ fn type_object_missing_attr_uses_type_object_wording() {
 }
 
 #[test]
+fn host_class_type_is_callable() {
+    let mut ex = MontyRun::new(
+        "callable(x)".to_owned(),
+        "test.py",
+        vec!["x".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let result = ex.run_no_limits(vec![host_class_type_input()]).unwrap();
+    assert_eq!(result, MontyObject::bool(true));
+}
+
+#[test]
 fn host_class_type_attr_cycle_is_collected() {
     // Sandbox code can reach a container in a host class type's eager attrs
     // and close a cycle back to the type object. The run must still complete
