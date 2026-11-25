@@ -283,3 +283,7 @@ mod tests {
         assert_eq!(serde_json::to_value(restored).unwrap(), stored);
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/unit/inline_str_deserialization.rs"]
+mod deserialization_tests;
