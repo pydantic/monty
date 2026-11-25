@@ -241,7 +241,7 @@ class _AssertRaisesContext(_AssertRaisesBaseContext):
             # let unexpected exceptions pass through
             return False
         # store exception, without traceback, for later retrieval
-        self.exception = exc_value.with_traceback(None)
+        self.exception = exc_value
         if self.expected_regex is None:
             return True
 

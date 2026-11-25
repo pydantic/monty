@@ -90,3 +90,9 @@ try:
     assert False, 'expected ValueError'
 except ValueError as e:
     assert str(e) == 'placeholder too large for max width'
+
+try:
+    dedent(0)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "expected str object, not 'int'"

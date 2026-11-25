@@ -1,4 +1,5 @@
 Monty does not parse `del` yet (#1032), so the class-body `del` and `del seq[-1]` become a no-op and `.pop()`. It also cannot read a builtin method without calling it, so `patsearch = pattern.search` becomes a direct call. Drop the `del` part once `del` is supported.
+Builtin types have no `__qualname__`, so `dedent`'s type error names `type(text).__name__`, which is the same for every builtin type.
 
 --- a/textwrap.py
 +++ b/textwrap.py
@@ -55,3 +56,12 @@ Monty does not parse `del` yet (#1032), so the class-body `del` and `del seq[-1]
                      else:
                          if lines:
                              prev_line = lines[-1].rstrip()
+@@ -429,7 +426,7 @@
+     try:
+         lines = text.split('\n')
+     except (AttributeError, TypeError):
+-        msg = f'expected str object, not {type(text).__qualname__!r}'
++        msg = f'expected str object, not {type(text).__name__!r}'
+         raise TypeError(msg) from None
+ 
+     # Get length of leading whitespace, inspired by ``os.path.commonprefix()``.

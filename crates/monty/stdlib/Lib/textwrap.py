@@ -426,7 +426,7 @@ def dedent(text):
     try:
         lines = text.split('\n')
     except (AttributeError, TypeError):
-        msg = f'expected str object, not {type(text).__qualname__!r}'
+        msg = f'expected str object, not {type(text).__name__!r}'
         raise TypeError(msg) from None
 
     # Get length of leading whitespace, inspired by ``os.path.commonprefix()``.

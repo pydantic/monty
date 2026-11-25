@@ -8,7 +8,8 @@ The manifest selects whole files, and the harness runs the patched `unittest/uti
 It does not execute `unittest/__init__.py`, which imports the discovery and runner machinery.
 The [shared compatibility patch](patches/0002-unittest.patch) documents the blockers and keeps failed subtests visible without a `TestResult`.
 The [colorsys patch](patches/0001-colorsys.patch) replaces discovery with explicit calls and makes the input generator eager.
+The [textwrap patch](patches/0003-textwrap.patch) replaces discovery with an explicit list of test methods.
 The upstream test vectors, assertions, and tolerances are unchanged.
 
-Run the adapted suite on Monty and CPython with `cargo run -p monty-datatest -- test_colorsys.py`.
+Run an adapted suite on Monty and CPython with `cargo run -p monty-datatest -- test_colorsys.py` (or `test_textwrap.py`).
 Use `make vendor-stdlib` to regenerate the sources and `make check-stdlib` to verify them.
