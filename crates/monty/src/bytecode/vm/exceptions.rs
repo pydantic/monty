@@ -122,7 +122,7 @@ impl VM<'_> {
                         HeapData::Class(c) => Some(c.name().as_str(self.interns).to_owned()),
                         _ => None,
                     },
-                    _ => None,
+                    OwnedTypeRef::Native(_) => None,
                 };
                 (e.exc_type, e.args.clone_with_heap(self.heap), e.data.clone(), name)
             }
@@ -152,7 +152,7 @@ impl VM<'_> {
                             HeapData::Class(c) => Some(c.name().as_str(self.interns).to_owned()),
                             _ => None,
                         },
-                        _ => None,
+                        OwnedTypeRef::Native(_) => None,
                     };
                     SimpleException::new(e.exc_type, arg)
                         .with_data(e.data.clone())
@@ -188,14 +188,13 @@ impl VM<'_> {
 
     /// Instantiates a user exception class with no arguments if `value` is one.
     pub(super) fn instantiate_if_user_class(&mut self, value: Value) -> RunResult<Value> {
-        if let Value::Ref(id) = value {
-            if matches!(self.heap.get(id), HeapData::Class(_))
-                && TypeRef::Class(id).nearest_exc_type(self.heap).is_some()
-            {
-                let this = self;
-                defer_drop!(value, this);
-                return this.evaluate_function(&value, ArgValues::Empty);
-            }
+        if let Value::Ref(id) = value
+            && matches!(self.heap.get(id), HeapData::Class(_))
+            && TypeRef::Class(id).nearest_exc_type(self.heap).is_some()
+        {
+            let this = self;
+            defer_drop!(value, this);
+            return this.evaluate_function(value, ArgValues::Empty);
         }
         Ok(value)
     }
@@ -636,12 +635,10 @@ impl VM<'_> {
                     let (exc_val, vm_ref) = exc_guard.as_parts_mut();
                     if let Value::Ref(id) = exc_val
                         && let HeapData::Exception(e) = vm_ref.heap.get(*id)
+                        && let OwnedTypeRef::Class(cid) = e.class
+                        && let HeapData::Class(c) = vm_ref.heap.get(cid)
                     {
-                        if let OwnedTypeRef::Class(cid) = e.class {
-                            if let HeapData::Class(c) = vm_ref.heap.get(cid) {
-                                exc_raise.exc.custom_type_name = Some(c.name().as_str(vm_ref.interns).to_owned());
-                            }
-                        }
+                        exc_raise.exc.custom_type_name = Some(Box::new(c.name().as_str(vm_ref.interns).to_owned()));
                     }
                     let formatted_opt = if let Value::Ref(id) = exc_val
                         && let HeapData::Exception(e) = vm_ref.heap.get(*id)

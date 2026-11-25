@@ -137,8 +137,8 @@ impl TypeRef {
     #[must_use]
     pub(crate) fn nearest_exc_type(self, heap: &Heap) -> Option<ExcType> {
         self.mro(heap).find_map(|t| match t {
-            TypeRef::Native(ty) => ty.exc_type(),
-            TypeRef::Class(_) => None,
+            Self::Native(ty) => ty.exc_type(),
+            Self::Class(_) => None,
         })
     }
 

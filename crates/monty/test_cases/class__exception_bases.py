@@ -4,14 +4,18 @@
 class MyBaseErr(BaseException):
     pass
 
+
 class MyErr(Exception):
     pass
+
 
 class MyValueErr(ValueError):
     pass
 
+
 class MyKeyErr(KeyError):
     pass
+
 
 class MyOsErr(OSError):
     pass
@@ -22,28 +26,36 @@ class MyOsErr(OSError):
 class Mixin:
     pass
 
+
 class MyMixinErr(Mixin, ValueError):
     pass
 
+
 assert issubclass(MyMixinErr, Mixin)
 assert issubclass(MyMixinErr, ValueError)
+
 
 # Types sharing BaseException layout combine freely
 class KeyAndValue(KeyError, ValueError):
     pass
 
+
 assert issubclass(KeyAndValue, KeyError)
 assert issubclass(KeyAndValue, ValueError)
+
 
 class OsAndValue(OSError, ValueError):
     pass
 
+
 assert issubclass(OsAndValue, OSError)
 assert issubclass(OsAndValue, ValueError)
+
 
 # Same layout group combines
 class SameGroup(FileNotFoundError, OSError):
     pass
+
 
 assert issubclass(SameGroup, FileNotFoundError)
 assert issubclass(SameGroup, OSError)
@@ -67,16 +79,21 @@ for base1, base2 in invalid_pairs:
     except TypeError as e:
         assert str(e) == 'multiple bases have instance lay-out conflict'
 
+
 # Indirect layout conflict: A(OSError) and B(SyntaxError)
 class A(OSError):
     pass
 
+
 class B(SyntaxError):
     pass
 
+
 try:
+
     class IndirectConflict(A, B):
         pass
+
     assert False, 'expected indirect layout conflict'
 except TypeError as e:
     assert str(e) == 'multiple bases have instance lay-out conflict'
@@ -89,9 +106,11 @@ try:
 except TypeError as e:
     assert str(e) == 'object.__new__(MyErr) is not safe, use MyErr.__new__()'
 
+
 class MyErrWithNew(Exception):
-    def __new__(cls):
+    def __new__(cls, *args, **kwargs):
         pass
+
 
 try:
     object.__new__(MyErrWithNew)
@@ -103,6 +122,7 @@ except TypeError as e:
 # 5. Guard: inst.__class__ = MyErr
 class Plain:
     pass
+
 
 p = Plain()
 try:

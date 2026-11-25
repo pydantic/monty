@@ -1067,7 +1067,7 @@ pub(crate) fn instance_class(self_id: HeapId, vm: &VM<'_>) -> HeapId {
         HeapData::Instance(inst) => inst.class,
         HeapData::Exception(exc) => match exc.class {
             OwnedTypeRef::Class(id) => id,
-            _ => unreachable!("instance_class called on native exception"),
+            OwnedTypeRef::Native(_) => unreachable!("instance_class called on native exception"),
         },
         _ => unreachable!("instance_class called on non-instance heap value"),
     }

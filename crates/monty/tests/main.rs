@@ -648,10 +648,7 @@ fn external_function_as_itertools_callable_raises_not_implemented() {
 /// Rust-side test because the comparative test-case suite cannot cover it.
 #[test]
 fn class_with_native_base_raises_type_error() {
-    for (code, base) in [
-        ("type('A', (int,), {})", "int"),
-        ("class E(ValueError):\n    pass", "ValueError"),
-    ] {
+    for (code, base) in [("type('A', (int,), {})", "int"), ("class E(list):\n    pass", "list")] {
         let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
         let err = ex.run_no_limits(vec![]).unwrap_err();
         assert_eq!(

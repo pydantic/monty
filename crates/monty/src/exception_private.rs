@@ -2919,8 +2919,16 @@ pub(crate) struct SimpleException {
     /// the exception escapes the sandbox.
     data: ExcData,
     /// Custom type name for user-defined exception subclasses.
+    ///
+    /// Boxed as `Box<String>` (8 bytes) rather than `String` (24 bytes) or `Box<str>` (16 bytes)
+    /// to keep `SimpleException` small enough to prevent `clippy::result_large_err` on `RunError`
+    /// and `clippy::large_enum_variant` on `DirScan`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) custom_type_name: Option<String>,
+    #[expect(
+        clippy::box_collection,
+        reason = "8-byte thin pointer keeps SimpleException small to prevent clippy::result_large_err"
+    )]
+    pub(crate) custom_type_name: Option<Box<String>>,
 }
 
 /// An exception's `__cause__`, `__context__` and `__suppress_context__`.
@@ -2947,7 +2955,7 @@ impl From<MontyException> for SimpleException {
         Self {
             exc_type: exc.exc_type(),
             data: exc.take_data(),
-            custom_type_name: exc.custom_type_name().map(str::to_owned),
+            custom_type_name: exc.custom_type_name().map(|s| Box::new(s.to_owned())),
             arg: exc.into_message(),
         }
     }
@@ -2997,15 +3005,8 @@ impl SimpleException {
     /// Attaches a custom type name for user-defined exception subclasses.
     #[must_use]
     pub fn with_custom_type_name(mut self, name: Option<String>) -> Self {
-        self.custom_type_name = name;
+        self.custom_type_name = name.map(Box::new);
         self
-    }
-
-    /// Returns the custom type name if this exception came from a custom subclass.
-    #[allow(dead_code)]
-    #[must_use]
-    pub fn custom_type_name(&self) -> Option<&str> {
-        self.custom_type_name.as_deref()
     }
 
     #[must_use]
@@ -3026,7 +3027,10 @@ impl SimpleException {
 
     /// Returns the exception formatted as Python would repr it.
     pub fn py_repr_fmt(&self, f: &mut impl Write) -> fmt::Result {
-        let type_str: &str = self.custom_type_name.as_deref().unwrap_or_else(|| self.exc_type.into());
+        let type_str: &str = self
+            .custom_type_name
+            .as_deref()
+            .map_or_else(|| self.exc_type.into(), String::as_str);
         write!(f, "{type_str}(")?;
 
         if let Some(arg) = &self.arg {
@@ -3456,11 +3460,11 @@ impl<'h> HeapObjectRead<'h, PyException> {
     /// Computes `str(exc)`.
     pub fn py_str(&self, vm: &mut VM<'h>) -> RunResult<String> {
         let class = self.get(vm.heap).class;
-        if let OwnedTypeRef::Class(_) = class {
-            if let Some(s) = instance_call_str_dunder(self.id(), "__str__", vm)? {
-                defer_drop!(s, vm);
-                return Ok(s.as_str(vm).expect("py_str returns str").to_owned());
-            }
+        if let OwnedTypeRef::Class(_) = class
+            && let Some(s) = instance_call_str_dunder(self.id(), "__str__", vm)?
+        {
+            defer_drop!(s, vm);
+            return Ok(s.as_str(vm).expect("py_str returns str").to_owned());
         }
         let (exc_type, args_copy) = {
             let exc = self.get(vm.heap);
@@ -3553,12 +3557,12 @@ impl<'h> HeapObjectRead<'h, PyException> {
     pub fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         vm.heap.tracker.check_memory_time()?;
         let class = self.get(vm.heap).class;
-        if let OwnedTypeRef::Class(_) = class {
-            if let Some(r) = instance_call_str_dunder(self.id(), "__repr__", vm)? {
-                defer_drop!(r, vm);
-                f.write_str(r.as_str(vm).expect("py_repr returns str"))?;
-                return Ok(());
-            }
+        if let OwnedTypeRef::Class(_) = class
+            && let Some(r) = instance_call_str_dunder(self.id(), "__repr__", vm)?
+        {
+            defer_drop!(r, vm);
+            f.write_str(r.as_str(vm).expect("py_repr returns str"))?;
+            return Ok(());
         }
         let (type_name, args_copy) = {
             let exc = self.get(vm.heap);
@@ -3656,9 +3660,8 @@ impl<'h> HeapObjectRead<'h, PyException> {
             _ => {
                 if let OwnedTypeRef::Class(class_id) = exc.class {
                     if name_str == "__init__" {
-                        let member = class_member(class_id, "__init__", vm).unwrap_or_else(|| {
-                            Value::Builtin(Builtins::Function(BuiltinsFunctions::BaseExceptionInit))
-                        });
+                        let member = class_member(class_id, "__init__", vm)
+                            .unwrap_or(Value::Builtin(Builtins::Function(BuiltinsFunctions::BaseExceptionInit)));
                         let self_val = self.clone_value(vm.heap);
                         return Some(CallResult::Value(BoundMethod::allocate(self_val, member, vm.heap)));
                     }
@@ -3792,9 +3795,8 @@ impl<'h> HeapObjectRead<'h, PyException> {
                 if self_nearest.is_some() && self_nearest == new_nearest {
                     let previous = {
                         let exc = self.get_mut(vm.heap);
-                        let old = match exc.class {
-                            OwnedTypeRef::Class(old_id) => old_id,
-                            _ => unreachable!(),
+                        let OwnedTypeRef::Class(old) = exc.class else {
+                            unreachable!()
                         };
                         exc.class = OwnedTypeRef::Class(new_class_id);
                         old
@@ -4215,7 +4217,7 @@ impl ExceptionRaise {
 
         MontyException::with_traceback(self.exc.exc_type, self.exc.arg, traceback)
             .with_data(self.exc.data)
-            .with_custom_type_name(self.exc.custom_type_name)
+            .with_custom_type_name(self.exc.custom_type_name.map(|b| *b))
     }
 }
 
