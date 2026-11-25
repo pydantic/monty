@@ -12,7 +12,7 @@ use strum::{Display, EnumString, FromRepr, IntoStaticStr, VariantNames};
 /// Uses strum derives for automatic `Display`, `FromStr`, and `IntoStaticStr` implementations.
 /// All variants serialize to lowercase (e.g., `Print` -> "print").
 /// Explicit discriminants are bytecode operands and identity codes; never change or reuse them.
-#[monty_macros::explicit_discriminants(checksum = 0x363c_1f03_edf2_19af)]
+#[monty_macros::explicit_discriminants(checksum = 0x2274_6034_2932_540f)]
 #[derive(
     Debug,
     Clone,
@@ -44,7 +44,7 @@ pub enum BuiltinsFunctions {
     // Breakpoint,
     // bytearray - handled by Type enum
     // bytes - handled by Type enum
-    // Callable,
+    // Callable - appended below
     Chr = 4,
     // Classmethod,
     // Compile,
@@ -139,4 +139,6 @@ pub enum BuiltinsFunctions {
     #[strum(serialize = "type.mro")]
     #[serde(rename = "type.mro")]
     TypeMro = 41,
+    /// `callable(obj, /)`, checks whether an object appears callable.
+    Callable = 42,
 }
