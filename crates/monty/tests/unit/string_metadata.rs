@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn character_lengths_survive_text_only_serialization() {
     for text in ["", "a", "ascii literal", "é", "aé🦀", "e\u{301}"] {
-        let entry = InternedString::owned(text.to_owned());
+        let entry = InternedString::owned(Arc::from(text));
         assert_eq!(entry.char_len(), text.chars().count());
         assert_eq!(entry.char_len() == text.len(), text.is_ascii());
         assert_eq!(entry.clone().char_len(), entry.char_len());
@@ -32,10 +32,35 @@ fn character_lengths_survive_text_only_serialization() {
 }
 
 #[test]
+fn interner_restore_rejects_duplicate_and_reserved_strings() {
+    let cases: &[(&[&str], &str)] = &[
+        (&[""], ""),
+        (&["x"], "x"),
+        (&["splitlines", "splitlines"], "splitlines"),
+        (&["ordinary_name", "ordinary_name"], "ordinary_name"),
+    ];
+    let mut state = serde_json::to_value(Interns::new("")).unwrap();
+    for &(strings, rejected) in cases {
+        state["strings"] = serde_json::json!(strings);
+        let error = serde_json::from_value::<Interns>(state.clone()).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("duplicate or reserved interned string {rejected:?}")
+        );
+    }
+}
+
+#[test]
+#[should_panic(expected = "static entries are indexed by tag")]
+fn static_string_has_no_owned_lookup_key() {
+    InternedString::static_string(StaticStrings::Module).owned_text();
+}
+
+#[test]
 fn uncached_character_lengths_are_recounted() {
     // Exercise the overflow fallback without allocating a multi-gigabyte string.
     for text in ["", "ascii", "aé🦀", "e\u{301}"] {
-        let mut entry = InternedString::owned(text.to_owned());
+        let mut entry = InternedString::owned(Arc::from(text));
         entry.char_len = None;
         assert_eq!(entry.char_len(), text.chars().count());
         assert_eq!(entry.char_len() == text.len(), text.is_ascii());
@@ -44,11 +69,11 @@ fn uncached_character_lengths_are_recounted() {
 
 #[test]
 fn cached_character_lengths_use_zero_as_the_sentinel() {
-    let empty = InternedString::owned(String::new());
+    let empty = InternedString::owned(Arc::from(""));
     assert_eq!(empty.char_len, None);
     assert_eq!(empty.char_len(), 0);
 
-    let mut entry = InternedString::owned("é".to_owned());
+    let mut entry = InternedString::owned(Arc::from("é"));
     assert_eq!(entry.char_len, NonZeroU32::new(1));
 
     // The largest u32 count is representable; only zero denotes a missing count.

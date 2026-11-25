@@ -310,6 +310,43 @@ fn a_dumped_host_module_restores_as_the_same_module() {
     );
 }
 
+#[test]
+fn star_import_interns_host_export_names_for_later_feeds() {
+    let repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    let ReplProgress::OsCall(call) = repl
+        .feed_start("from tools import *", vec![], PrintWriter::Stdout)
+        .unwrap()
+    else {
+        panic!("expected the import to suspend");
+    };
+    let module = host_module(
+        "tools",
+        1,
+        vec![
+            ("host_exported_name", MontyObject::int(40)),
+            ("casefold", MontyObject::int(2)),
+        ],
+    );
+    let ReplProgress::Complete { mut repl, .. } = call.resume(module, PrintWriter::Stdout).unwrap() else {
+        panic!("expected the snippet to complete");
+    };
+
+    let code = "host_exported_name + casefold";
+    assert_eq!(
+        repl.feed_run(code, vec![], PrintWriter::Stdout).unwrap(),
+        MontyObject::int(42)
+    );
+
+    let bytes = dump("test.py", None, &[], SessionRef::Idle(&repl)).unwrap();
+    let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else {
+        panic!("dumped while idle");
+    };
+    assert_eq!(
+        restored.feed_run(code, vec![], PrintWriter::Stdout).unwrap(),
+        MontyObject::int(42)
+    );
+}
+
 /// The frame must retain the module name across a dump between two lazy attribute lookups.
 #[test]
 fn a_restored_from_import_still_names_its_module() {
