@@ -116,19 +116,25 @@ impl ModuleStub {
     /// by [`validate_module_name`] or [`CHECKER_MODULE_NAMES`].
     pub fn new(module: impl Into<String>, source: impl Into<String>) -> Result<Self, ModuleStubError> {
         let module = module.into();
-        let mut parts = module.split('.');
-        let top = parts.next().unwrap_or_default();
-        validate_module_name(top).map_err(|_| invalid_path(&module, top))?;
-        if CHECKER_MODULE_NAMES.contains(&top) {
-            return Err(ModuleStubError::ReservedName(top.to_owned()));
-        }
-        if let Some(part) = parts.find(|part| !is_identifier(part)) {
-            return Err(invalid_path(&module, part));
-        }
+        Self::validate_module(&module)?;
         Ok(Self {
             module,
             source: source.into(),
         })
+    }
+
+    /// Validates a borrowed dotted path before constructing a stub.
+    pub fn validate_module(module: &str) -> Result<(), ModuleStubError> {
+        let mut parts = module.split('.');
+        let top = parts.next().unwrap_or_default();
+        validate_module_name(top).map_err(|_| invalid_path(module, top))?;
+        if CHECKER_MODULE_NAMES.contains(&top) {
+            return Err(ModuleStubError::ReservedName(top.to_owned()));
+        }
+        if let Some(part) = parts.find(|part| !is_identifier(part)) {
+            return Err(invalid_path(module, part));
+        }
+        Ok(())
     }
 
     /// The dotted module path.
