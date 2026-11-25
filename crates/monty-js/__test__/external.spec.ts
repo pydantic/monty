@@ -244,6 +244,7 @@ const exceptionTypes: Array<[string, string]> = [
   ['_csv.Error', '_csv.Error'],
   ['decimal.InvalidOperation', 'decimal.InvalidOperation'],
   ['decimal.DivisionByZero', 'decimal.DivisionByZero'],
+  ['asyncio.exceptions.InvalidStateError', 'asyncio.exceptions.InvalidStateError'],
   ['SomeCustomError', 'RuntimeError'],
 ]
 
@@ -336,6 +337,28 @@ caught
     t.is(await run(code, { externalLookup: { fail } }), `${dottedName}: test message`)
   })
 }
+
+// The bridge name keeps CPython's defining module, which the sandbox cannot
+// import, so the class is caught through its `asyncio` re-export.
+test('external function InvalidStateError caught as asyncio.InvalidStateError', async () => {
+  const code = `
+import asyncio
+try:
+    fail()
+except asyncio.InvalidStateError as exc:
+    caught = f'InvalidStateError: {exc}'
+except Exception as exc:
+    caught = f'Exception: {exc}'
+caught
+`
+  const fail = () => {
+    const error = new Error('test message')
+    error.name = 'asyncio.exceptions.InvalidStateError'
+    throw error
+  }
+
+  t.is(await run(code, { externalLookup: { fail } }), 'InvalidStateError: test message')
+})
 
 // =============================================================================
 // Exception in various contexts

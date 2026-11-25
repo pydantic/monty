@@ -23,7 +23,7 @@ use crate::{
     bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
-    heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    heap::{DropWithContext, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StaticStrings,
     types::{LazyHeapSet, PyTrait, Type, TypeRef},
     value::{EitherStr, Value},
@@ -85,7 +85,7 @@ impl CsvObject {
 
     /// Allocates this object on the heap.
     pub(crate) fn allocate(self, vm: &VM<'_>) -> Value {
-        Value::Ref(vm.heap.allocate(HeapData::Csv(Box::new(self))))
+        Value::allocate(self, vm.heap)
     }
 }
 

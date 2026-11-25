@@ -151,6 +151,7 @@ it returns `None` after the worker is released or discarded.
 are `feed_with_cwd` and `restore` plus [`TurnOptions`](../api/rust/monty-pool.md#turnoptions), whose `traceparent` names the caller's span for the turn,
 so a remote server that records the session parents the turn's spans to it.
 A suspension the server named a span for carries it as `traceparent` on the `TurnEvent`.
+[`Checkout::dump_with`](../api/rust/monty-pool.md#checkout) uses the same options to parent the local dump span.
 
 [`Checkout::dump`](../api/rust/monty-pool.md#checkout) and [`Checkout::restore`](../api/rust/monty-pool.md#checkout) snapshot and restore a session, including onto a different worker or machine.
 Restore only unmodified snapshots whose provenance and integrity the caller has established;
@@ -455,6 +456,9 @@ assert_eq!(result, MontyObject::int(42));
 The peer reason is unverified text, and a disconnect does not establish whether the request ran.
 The display text includes that reason.
 `PoolError::Refused` identifies a server refusal before a session exists.
-Its details provide `retryable()` and `retry_after` (a `Duration` from `Retry-After`, capped at one hour), with no automatic retry.
+Its details provide `retryable()` and `retry_after` (a `Duration` from `Retry-After`, capped at one hour).
+The pool retries a refused checkout once when the server sends a single valid `Retry-After` of at most two seconds, whether or not the refusal is `retryable()`.
+The wait and retry dial share a five-second budget and respect the checkout and dial deadlines.
+A retry timeout returns the original `PoolError::Refused`.
 `PoolError::Connect` retains the status or transport error for other connection failures.
 `PoolError::Configuration` identifies invalid or incompatible settings, such as no finite `request_timeout` for a CPU-mode pool or server.

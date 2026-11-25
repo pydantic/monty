@@ -574,6 +574,9 @@ pub enum StaticStrings {
     AlgorithmsAvailable,
     /// `hashlib.algorithms_guaranteed`.
     AlgorithmsGuaranteed,
+    /// `asyncio.ALL_COMPLETED`.
+    #[strum(serialize = "ALL_COMPLETED")]
+    AllCompleted,
     /// `json.dumps(allow_nan=...)` keyword.
     #[strum(serialize = "allow_nan")]
     AllowNan,
@@ -752,6 +755,10 @@ pub enum StaticStrings {
     /// `typing.Callable` marker.
     #[strum(serialize = "Callable")]
     Callable,
+    /// `asyncio.Task.cancel()` method.
+    Cancel,
+    /// `asyncio.Task.cancelled()` method.
+    Cancelled,
     /// `capitalize()` method, shared by `str` and `bytes`.
     Capitalize,
     /// Kwarg name `capitals` — `decimal.Context()`.
@@ -843,6 +850,8 @@ pub enum StaticStrings {
     Copyright,
     /// `math.copysign()` function.
     Copysign,
+    /// `coro` parameter of `asyncio.create_task()`.
+    Coro,
     /// `math.cos()` function.
     Cos,
     /// `math.cosh()` function.
@@ -863,6 +872,9 @@ pub enum StaticStrings {
     /// `binascii.crc_hqx()` function.
     #[strum(serialize = "crc_hqx")]
     CrcHqx,
+    /// `asyncio.create_task()` function.
+    #[strum(serialize = "create_task")]
+    CreateTask,
     /// Module name for `import csv`.
     Csv,
     /// `time.ctime()` function.
@@ -947,6 +959,8 @@ pub enum StaticStrings {
     Degrees,
     /// `delay` parameter of `asyncio.sleep()`.
     Delay,
+    /// `delete` parameter of `bytes.translate()`.
+    Delete,
     /// `delimiter` dialect attribute and `csv` format parameter.
     Delimiter,
     /// `depth` parameter of `hashlib.blake2b()`.
@@ -1007,6 +1021,8 @@ pub enum StaticStrings {
     Dklen,
     /// `field(doc=...)`, CPython's per-field docstring.
     Doc,
+    /// `asyncio.Task.done()` method.
+    Done,
     /// `sys.dont_write_bytecode` attribute.
     DontWriteBytecode,
     /// `re.DOTALL` flag
@@ -1197,6 +1213,8 @@ pub enum StaticStrings {
     Excel,
     /// `csv.excel_tab` dialect.
     ExcelTab,
+    /// `asyncio.Task.exception()` method.
+    Exception,
     /// `sys.exec_prefix` attribute.
     ExecPrefix,
     /// `sys.executable` attribute.
@@ -1278,6 +1296,12 @@ pub enum StaticStrings {
     Findall,
     /// `re.finditer()` / `pattern.finditer()` method
     Finditer,
+    /// `asyncio.FIRST_COMPLETED`.
+    #[strum(serialize = "FIRST_COMPLETED")]
+    FirstCompleted,
+    /// `asyncio.FIRST_EXCEPTION`.
+    #[strum(serialize = "FIRST_EXCEPTION")]
+    FirstException,
     /// `pattern.flags`
     Flags,
     /// `sys.float_info` attribute.
@@ -1332,7 +1356,7 @@ pub enum StaticStrings {
     FromIterable,
     /// `complex.from_number()` classmethod.
     FromNumber,
-    /// `bytes.fromhex()` classmethod.
+    /// `bytes.fromhex()` and `float.fromhex()` classmethods.
     Fromhex,
     /// `date.fromisoformat()` / `datetime.fromisoformat()` classmethod.
     Fromisoformat,
@@ -1350,6 +1374,8 @@ pub enum StaticStrings {
     /// `typing.FrozenSet` marker.
     #[strum(serialize = "FrozenSet")]
     FrozenSet,
+    /// `fs` parameter of `asyncio.wait()`.
+    Fs,
     /// `Path.__fspath__()` method, answered without host I/O.
     #[strum(serialize = "__fspath__")]
     Fspath,
@@ -1383,8 +1409,12 @@ pub enum StaticStrings {
     Get,
     /// `annotationlib.get_annotations()` function.
     GetAnnotations,
+    /// `asyncio.Task.get_coro()` method.
+    GetCoro,
     /// `csv.get_dialect()` function.
     GetDialect,
+    /// `asyncio.Task.get_name()` method.
+    GetName,
     /// `typing.get_type_hints()` function.
     GetTypeHints,
     /// `os.path.getatime()` function.
@@ -1443,7 +1473,7 @@ pub enum StaticStrings {
     /// `header` parameter of the `binascii` quoted-printable pair.
     #[strum(serialize = "header")]
     Header,
-    /// `bytes.hex()` method.
+    /// `bytes.hex()` and `float.hex()` methods.
     Hex,
     /// `hexdigest()` method of a hash object.
     Hexdigest,
@@ -1526,6 +1556,9 @@ pub enum StaticStrings {
     /// `decimal.InvalidOperation` signal.
     #[strum(serialize = "InvalidOperation")]
     InvalidOperation,
+    /// `asyncio.InvalidStateError` class.
+    #[strum(serialize = "InvalidStateError")]
+    InvalidStateError,
     /// `Path.is_absolute()` method, answered without host I/O.
     IsAbsolute,
     /// `is_argument` parameter of `annotationlib.ForwardRef()`.
@@ -1730,6 +1763,8 @@ pub enum StaticStrings {
     Major,
     /// `os.makedirs()` function.
     Makedirs,
+    /// `bytes.maketrans()` staticmethod.
+    Maketrans,
     /// `sys.float_info.mant_dig` field.
     MantDig,
     /// `map01` parameter of `base64.b32decode()`.
@@ -2197,11 +2232,13 @@ pub enum StaticStrings {
     Restkey,
     /// `restval` parameter and attribute of `csv.DictReader` / `csv.DictWriter`.
     Restval,
-    /// `result` parameter of `asyncio.sleep()`.
+    /// `result` parameter of `asyncio.sleep()` and `Task.result()` method.
     #[strum(serialize = "result")]
-    ResultArg,
+    Result,
     /// Kwarg name `return_exceptions` — `asyncio.gather(return_exceptions=...)`.
     ReturnExceptions,
+    /// `return_when` parameter of `asyncio.wait()`.
+    ReturnWhen,
     /// `list.reverse()` method.
     Reverse,
     /// `rfind()` method, shared by `str` and `bytes`.
@@ -2304,6 +2341,8 @@ pub enum StaticStrings {
     Sequence,
     /// `sys.version_info.serial` field.
     Serial,
+    /// `asyncio.Task.set_name()` method.
+    SetName,
     /// `typing.Set` marker.
     #[strum(serialize = "Set")]
     SetType,
@@ -2508,6 +2547,9 @@ pub enum StaticStrings {
     Tanh,
     /// Destination keyword for Path.rename and Path.replace.
     Target,
+    /// `asyncio.Task` class.
+    #[strum(serialize = "Task")]
+    Task,
     /// `math.tau` constant
     Tau,
     /// `itertools.tee()` function.
@@ -2532,6 +2574,8 @@ pub enum StaticStrings {
     TimeNs,
     /// The `datetime.timedelta` type.
     Timedelta,
+    /// `timeout` parameter of `asyncio.wait()`.
+    Timeout,
     /// `times` keyword argument of `itertools.repeat()`.
     Times,
     /// `timespec` keyword of `time.isoformat()` and `datetime.isoformat()`.
@@ -2716,6 +2760,8 @@ pub enum StaticStrings {
     VersionInfo,
     /// `random.vonmisesvariate()` function.
     Vonmisesvariate,
+    /// `asyncio.wait()` function.
+    Wait,
     /// `os.walk()` / `Path.walk()` — yields a host scan.
     Walk,
     /// `sys.flags.warn_default_encoding` field.

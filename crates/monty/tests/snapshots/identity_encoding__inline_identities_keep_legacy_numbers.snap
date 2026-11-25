@@ -99,6 +99,7 @@ decimal.Subnormal: 2107018
 decimal.Overflow: 2107050
 decimal.Underflow: 2107082
 decimal.FloatOperation: 2107114
+asyncio.exceptions.InvalidStateError: 2107146
 bool: 2113674
 int: 2113706
 float: 2113738

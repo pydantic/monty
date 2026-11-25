@@ -794,6 +794,29 @@ fn zero_returns_at_once() {
     assert!(elapsed < Duration::from_secs(1), "took {elapsed:?}");
 }
 
+/// A zero-mode sleep settles at once but its `await` still lets ready tasks
+/// run, and a timeout that expires immediately still gives them CPython's two
+/// turns, so a task finishing in them is reported done.
+#[test]
+fn zero_mode_sleeps_and_timeouts_still_yield_to_ready_tasks() {
+    let code = "import asyncio\n\
+                log = []\n\
+                async def worker():\n    \
+                    log.append('worker')\n    \
+                    await asyncio.sleep(0)\n    \
+                    return 'done'\n\
+                async def main():\n    \
+                    t = asyncio.create_task(worker())\n    \
+                    await asyncio.sleep(5)\n    \
+                    seen = list(log)\n    \
+                    done, pending = await asyncio.wait([asyncio.create_task(worker())], timeout=10)\n    \
+                    return (seen, len(done), len(pending), await t)\n\
+                asyncio.run(main())";
+    let (result, elapsed) = timed_run(code, with_sleep(SleepMode::Zero));
+    assert_eq!(result.to_string(), "(['worker'], 1, 0, 'done')");
+    assert!(elapsed < Duration::from_secs(1), "took {elapsed:?}");
+}
+
 #[test]
 fn the_system_maximum_cuts_a_long_sleep_short() {
     let code = "import asyncio, time\ntime.sleep(5)\nasyncio.run(asyncio.sleep(5, 'woken'))";

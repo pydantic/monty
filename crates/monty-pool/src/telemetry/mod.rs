@@ -219,12 +219,12 @@ impl TelemetryContext {
 }
 
 /// The context whose current span is the remote span `traceparent` names.
-pub(crate) fn remote_context(traceparent: Traceparent) -> Context {
+pub(crate) fn context_from_traceparent(traceparent: Traceparent, is_remote: bool) -> Context {
     Context::new().with_remote_span_context(SpanContext::new(
         TraceId::from(traceparent.trace_id()),
         SpanId::from(traceparent.span_id()),
         TraceFlags::new(traceparent.flags()),
-        true,
+        is_remote,
         TraceState::default(),
     ))
 }
@@ -239,7 +239,7 @@ struct RemoteSuspension(Traceparent);
 pub(crate) fn suspension_context(recorded: Context, traceparent: Option<Traceparent>) -> Context {
     match traceparent {
         Some(traceparent) if recorded.has_active_span() => recorded.with_value(RemoteSuspension(traceparent)),
-        Some(traceparent) => remote_context(traceparent),
+        Some(traceparent) => context_from_traceparent(traceparent, true),
         None => recorded,
     }
 }

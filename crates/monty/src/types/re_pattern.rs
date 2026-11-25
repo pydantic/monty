@@ -23,7 +23,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{HEAP_ENTRY_SIZE, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
+    heap::{HEAP_ENTRY_SIZE, Heap, HeapId, HeapItem, HeapObjectRead, HeapRead},
     intern::StaticStrings,
     modules::re::{ASCII, DOTALL, IGNORECASE, MULTILINE},
     resource_checks::check_estimated_size,
@@ -198,7 +198,7 @@ impl RePattern {
         heap: &Heap,
     ) -> Value {
         let m = ReMatch::from_spans(text, spans, subject.clone_with_heap(heap), all_ascii, &self.compiled);
-        Value::Ref(heap.allocate(HeapData::ReMatch(Box::new(m))))
+        Value::allocate(m, heap)
     }
 
     /// Builds the `ReMatch` for a single-match search (`search`, `match`, `fullmatch`).
@@ -441,7 +441,7 @@ impl RePattern {
             .chunks_exact(stride)
             .map(|spans| self.build_match(text, spans, subject, all_ascii, heap))
             .collect();
-        Ok(Value::Ref(heap.allocate(HeapData::List(List::new(results)))))
+        Ok(Value::allocate(List::new(results), heap))
     }
 }
 
@@ -486,7 +486,7 @@ fn collect_slices<'t>(
 fn allocate_str_list(slices: &[&str], heap: &Heap) -> RunResult<Value> {
     heap.tracker.check_allocation(slices.len().saturating_mul(VALUE_SIZE))?;
     let results = slices.iter().map(|s| allocate_string(*s, heap)).collect();
-    Ok(Value::Ref(heap.allocate(HeapData::List(List::new(results)))))
+    Ok(Value::allocate(List::new(results), heap))
 }
 
 /// [`allocate_str_list`] for a split with capture groups, where a missing group becomes `None`.
@@ -496,7 +496,7 @@ fn allocate_optional_str_list(pieces: &[Option<&str>], heap: &Heap) -> RunResult
         .iter()
         .map(|piece| piece.map_or(Value::None, |s| allocate_string(s, heap)))
         .collect();
-    Ok(Value::Ref(heap.allocate(HeapData::List(List::new(results)))))
+    Ok(Value::allocate(List::new(results), heap))
 }
 
 /// [`allocate_str_list`] for rows of `groups` slices, one tuple per row.
@@ -510,7 +510,7 @@ fn allocate_tuple_list(flat: &[&str], groups: usize, heap: &Heap) -> RunResult<V
             allocate_tuple(elements, heap)
         })
         .collect();
-    Ok(Value::Ref(heap.allocate(HeapData::List(List::new(results)))))
+    Ok(Value::allocate(List::new(results), heap))
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, RePattern> {
@@ -523,7 +523,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RePattern> {
     }
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        let Some(HeapReadOutput::RePattern(other)) = other.read_heap(vm) else {
+        let Some(other) = other.read_as::<RePattern>(vm.heap) else {
             return Ok(None);
         };
         Ok(Some(self.get(vm.heap) == other.get(vm.heap)))

@@ -27,7 +27,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     hash::HashValue,
-    heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput, HeapReader},
+    heap::{Heap, HeapId, HeapItem, HeapObjectRead, HeapReadOutput, HeapReader},
     intern::StaticStrings,
     types::{
         CmpOrder, LazyHeapSet, PyTrait, TimeZone, Type, TypeRef,
@@ -202,7 +202,7 @@ fn allocate_with_tz(vm: &mut VM<'_>, mut time: Time, tz_ref: Option<HeapId>) -> 
         vm.heap.inc_ref(tz_ref);
         time.tzinfo = Some(tz_ref);
     }
-    Value::Ref(vm.heap.allocate(HeapData::Time(time)))
+    Value::allocate(time, vm.heap)
 }
 
 /// `time.min`, `time.max` and `time.resolution`.
@@ -259,7 +259,7 @@ pub(crate) fn class_fromisoformat(vm: &mut VM<'_>, args: ArgValues) -> RunResult
         time.tzinfo = Some(allocate_tzinfo_ref(offset_seconds, None, vm.heap));
     }
 
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Time(time))))
+    Ok(Value::allocate(time, vm.heap))
 }
 
 /// Allocates a naive `time` from already-in-range components.
@@ -270,7 +270,7 @@ pub(crate) fn class_fromisoformat(vm: &mut VM<'_>, args: ArgValues) -> RunResult
 pub(crate) fn allocate_naive(hour: i32, minute: i32, second: i32, microsecond: i32, heap: &Heap) -> Value {
     let time =
         from_components(hour, minute, second, microsecond, 0).expect("caller guarantees in-range time components");
-    Value::Ref(heap.allocate(HeapData::Time(time)))
+    Value::allocate(time, heap)
 }
 
 /// Argument shape for `time(hour=0, minute=0, second=0, microsecond=0,
@@ -500,7 +500,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Time> {
     }
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        let Some(HeapReadOutput::Time(other)) = other.read_heap(vm) else {
+        let Some(other) = other.read_as::<Time>(vm.heap) else {
             return Ok(None);
         };
         let (a, b) = (self.get(vm.heap), other.get(vm.heap));

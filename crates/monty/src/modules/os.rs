@@ -26,7 +26,6 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::HeapData,
     intern::{StaticStrings, StringId},
     modules::{ModuleFunctions, StandardLib},
     object_bridge::MontyObjectExt,
@@ -272,7 +271,7 @@ fn getcwd(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 fn getcwdb(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     args.check_zero_args("getcwdb", vm.heap)?;
     let bytes = Bytes::new(vm.env.cwd.as_bytes().to_vec());
-    Ok(CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::Bytes(bytes)))))
+    Ok(CallResult::Value(Value::allocate(bytes, vm.heap)))
 }
 
 /// `os.chdir(path)` accepts a positional or keyword path, with CPython's total-count check.

@@ -9,7 +9,6 @@ use crate::{
     builtins::Builtins,
     bytecode::VM,
     exception_private::{ExcType, RunResult},
-    heap::HeapData,
     intern::StaticStrings,
     modules::ModuleFunctions,
     types::{
@@ -135,7 +134,7 @@ fn decimal_tuple_class(vm: &mut VM<'_>) -> Value {
     let name = field(StaticStrings::DecimalTuple);
     let module = Value::InternString(vm.interns.intern_static(StaticStrings::DecimalMod));
     let class = NamedTupleClass::new(name, fields, Vec::new(), module);
-    Value::Ref(vm.heap.allocate(HeapData::NamedTupleClass(Box::new(class))))
+    Value::allocate(class, vm.heap)
 }
 
 /// Dispatches a `decimal` module function.

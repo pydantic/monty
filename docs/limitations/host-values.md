@@ -136,7 +136,7 @@ Field access, indexing, equality, `repr`, `_fields`, `_asdict()`, `_replace()` a
 - `_field_defaults` is always empty.
 - Fields starting with `_`, which `rename=True` produces, are kept, though a host namedtuple class cannot have them.
 - Each instance carries a `__dict__`, so it costs more memory than a `collections.namedtuple` instance, and field
-    access runs Python code rather than a C accessor, so it is slower.
+    access goes through `__getattr__` rather than a C accessor, so it is slower.
 
 ## Message size
 

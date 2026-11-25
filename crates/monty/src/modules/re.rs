@@ -205,9 +205,7 @@ fn call_compile(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     match resolve_pattern(pattern, flags, vm)? {
         // Clone out of the shared cache entry: the returned `re.Pattern` is the
         // user's own object, independent of the cache.
-        ResolvedPattern::Cached(compiled) => Ok(Value::Ref(
-            vm.heap.allocate(HeapData::RePattern(Box::new((*compiled).clone()))),
-        )),
+        ResolvedPattern::Cached(compiled) => Ok(Value::allocate((*compiled).clone(), vm.heap)),
         // Ownership of the extracted value transfers straight to the caller,
         // so the refcount taken at argument extraction is the caller's.
         ResolvedPattern::Heap(value) => Ok(value),

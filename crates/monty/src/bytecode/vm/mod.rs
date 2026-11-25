@@ -59,7 +59,7 @@ use crate::{
     name_map::NameMap,
     object_bridge::MontyObjectExt,
     os_dispatch::{
-        PendingEffect, PostConversionEffect, PreConversionEffect, Reshaped, check_raw_call_paths,
+        PendingEffect, PostConversionEffect, PreConversionEffect, Reshaped, SleepDestination, check_raw_call_paths,
         release_pending_effect, resolve_call_paths, urandom_reply_error,
     },
     parse::CodeRange,
@@ -1250,7 +1250,7 @@ impl<'h> VM<'h> {
             CallResult::AwaitValue(value) => {
                 // Push the value and implicitly await it (used by asyncio.run())
                 self.push(value);
-                return match self.exec_get_awaitable()? {
+                return match self.exec_get_awaitable(false)? {
                     AwaitResult::ValueReady(value) => {
                         self.push(value);
                         Ok(None)
@@ -1386,8 +1386,7 @@ impl<'h> VM<'h> {
                 Opcode::LoadTrue => self.push(Value::Bool(true)),
                 Opcode::LoadFalse => self.push(Value::Bool(false)),
                 Opcode::BuildCell => {
-                    let cell_id = self.heap.allocate(HeapData::Cell(CellValue(Value::Undefined)));
-                    self.push(Value::Ref(cell_id));
+                    self.push(Value::allocate(CellValue(Value::Undefined), self.heap));
                 }
                 Opcode::LoadSmallInt => {
                     let n = self.current_frame.fetch_i8();
@@ -1810,12 +1809,14 @@ impl<'h> VM<'h> {
                         }
 
                         // Create FunctionDefaults on heap and push reference
-                        let heap_id = self.heap.allocate(HeapData::FunctionDefaults(FunctionDefaults {
-                            func_id,
-                            defaults,
-                            globals,
-                        }));
-                        self.push(Value::Ref(heap_id));
+                        self.push(Value::allocate(
+                            FunctionDefaults {
+                                func_id,
+                                defaults,
+                                globals,
+                            },
+                            self.heap,
+                        ));
                     }
                 }
                 Opcode::MakeClosure => {
@@ -1861,13 +1862,15 @@ impl<'h> VM<'h> {
                     }
 
                     // Create Closure on heap and push reference
-                    let heap_id = self.heap.allocate(HeapData::Closure(Closure {
-                        func_id,
-                        cells: cells.into_boxed_slice(),
-                        defaults: defaults.into_boxed_slice(),
-                        globals,
-                    }));
-                    self.push(Value::Ref(heap_id));
+                    self.push(Value::allocate(
+                        Closure {
+                            func_id,
+                            cells: cells.into_boxed_slice(),
+                            defaults: defaults.into_boxed_slice(),
+                            globals,
+                        },
+                        self.heap,
+                    ));
                 }
                 // Exception Handling
                 Opcode::Raise => {
@@ -2016,7 +2019,7 @@ impl<'h> VM<'h> {
                 }
                 // Async/Await
                 Opcode::Await => {
-                    let result = self.exec_get_awaitable();
+                    let result = self.exec_get_awaitable(true);
                     match result {
                         Ok(AwaitResult::ValueReady(value)) => {
                             self.push(value);
@@ -2143,9 +2146,24 @@ impl<'h> VM<'h> {
                 self.push(Value::None);
                 return self.run_external();
             }
-            Some(PendingEffect::Post(PostConversionEffect::SleepResult { result })) => {
-                let settled = self.settled_awaitable(result);
-                self.push(settled);
+            Some(PendingEffect::Post(PostConversionEffect::SleepResult { result, destination })) => {
+                match destination {
+                    SleepDestination::Value => {
+                        let settled = self.settled_sleep(result);
+                        self.push(settled);
+                    }
+                    SleepDestination::Wait(wait) => {
+                        // A timer answer is only a wake-up signal: its value is
+                        // irrelevant, and an already-settled timer is what the
+                        // wait reads at first await.
+                        result.drop_with(self);
+
+                        let timer = self.settled_awaitable(Value::None);
+                        let wait = self.install_wait_timer(wait, timer);
+
+                        self.push(wait);
+                    }
+                }
                 return self.run_external();
             }
             Some(PendingEffect::Post(PostConversionEffect::FileSeekEnd { file_id, offset })) => {
@@ -2354,9 +2372,9 @@ impl<'h> VM<'h> {
                     | PostConversionEffect::FileNext { .. }
                     | PostConversionEffect::LoadThenCall { .. }
                     | PostConversionEffect::FileSeekEnd { .. }
-                    | PostConversionEffect::SeedRandom { .. }),
+                    | PostConversionEffect::SeedRandom { .. }
+                    | PostConversionEffect::SleepResult { .. }),
                 ) => effect.release(self.heap),
-                PendingEffect::Post(PostConversionEffect::SleepResult { result }) => result.drop_with(self),
                 // A walk or glob turns an `OSError` into its result, as CPython's
                 // do for a failed `scandir`; anything else still raises.
                 PendingEffect::Scan(effect) if effect.absorbs(&error) => {
@@ -2738,7 +2756,7 @@ impl<'h> VM<'h> {
             "__name__" => Value::InternString(self.interns.intern_static(StaticStrings::DunderMain)),
             "__debug__" => Value::Bool(true),
             "__file__" => allocate_string(self.env.file(), self.heap),
-            "__annotations__" => Value::Ref(self.heap.allocate(HeapData::Dict(Dict::new()))),
+            "__annotations__" => Value::allocate(Dict::new(), self.heap),
             "__doc__" | "__spec__" | "__package__" => Value::None,
             _ => return None,
         };

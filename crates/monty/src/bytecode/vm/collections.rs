@@ -19,8 +19,7 @@ impl VM<'_> {
     pub(super) fn build_list(&mut self, count: usize) {
         let items = self.pop_n(count);
         let list = List::new(items);
-        let heap_id = self.heap.allocate(HeapData::List(list));
-        self.push(Value::Ref(heap_id));
+        self.push(Value::allocate(list, self.heap));
     }
 
     /// Builds a tuple from the top n stack values.
@@ -61,8 +60,7 @@ impl VM<'_> {
             }
         }
         let (dict, this) = dict_guard.into_parts();
-        let heap_id = this.heap.allocate(HeapData::Dict(dict));
-        this.push(Value::Ref(heap_id));
+        this.push(Value::allocate(dict, this.heap));
         Ok(())
     }
 
@@ -84,8 +82,7 @@ impl VM<'_> {
             set.add(item, this)?;
         }
         let (set, this) = set_guard.into_parts();
-        let heap_id = this.heap.allocate(HeapData::Set(set));
-        this.push(Value::Ref(heap_id));
+        this.push(Value::allocate(set, this.heap));
         Ok(())
     }
 
@@ -108,8 +105,7 @@ impl VM<'_> {
         let step = value_to_option_i64(step_val, this)?;
 
         let slice = Slice::new(start, stop, step);
-        let heap_id = this.heap.allocate(HeapData::Slice(slice));
-        this.push(Value::Ref(heap_id));
+        this.push(Value::allocate(slice, this.heap));
         Ok(())
     }
 
@@ -571,8 +567,7 @@ impl VM<'_> {
 
         // Middle items as a list (starred target)
         let middle_list: Vec<Value> = items.drain(before..).collect();
-        let list_id = this.heap.allocate(HeapData::List(List::new(middle_list)));
-        this.push(Value::Ref(list_id));
+        this.push(Value::allocate(List::new(middle_list), this.heap));
 
         // Before items
         for item in items.drain(..).rev() {

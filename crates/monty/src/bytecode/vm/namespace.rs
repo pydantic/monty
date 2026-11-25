@@ -467,7 +467,7 @@ impl<'h> VM<'h> {
             *is_class,
             *globals,
         );
-        Value::Ref(self.heap.allocate(HeapData::ForwardRef(Box::new(forward_ref))))
+        Value::allocate(forward_ref, self.heap)
     }
 
     /// Whether a `FORWARDREF` annotation evaluation is on the stack, during

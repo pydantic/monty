@@ -32,6 +32,11 @@ mod version;
 #[path = "../tests/rust/disconnect.rs"]
 mod disconnect_tests;
 
+// `monty-cpython` decodes in an interpreter without this package; check the class does not need it.
+#[cfg(test)]
+#[path = "../tests/rust/named_tuple.rs"]
+mod named_tuple_tests;
+
 use std::sync::OnceLock;
 
 pub use exceptions::{
@@ -106,6 +111,7 @@ mod _monty {
     use monty_proto::python::PyMontyFileHandle as MontyFileHandle;
     #[pymodule_export]
     use monty_proto::python::PyMontyStdTypeProxy as MontyStdTypeProxy;
+    use monty_proto::python::monty_named_tuple_type;
     use pyo3::prelude::*;
 
     #[pymodule_export]
@@ -173,6 +179,8 @@ mod _monty {
         let py = m.py();
         m.add("__version__", get_version())?;
         m.add("NOT_HANDLED", get_not_handled(py)?.clone_ref(py))?;
+        // built by `monty-proto`, so value decoding never imports this package
+        m.add("MontyNamedTuple", monty_named_tuple_type(py)?)?;
         // the remote pool's former name, kept as a plain alias of the class
         m.add("AsyncMontyWebsocket", m.getattr("AsyncMontyRemote")?)?;
         // cache the binary resolver now so pool construction never imports

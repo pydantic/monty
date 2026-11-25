@@ -414,7 +414,7 @@ fn store_dataclass_params<'h>(
     options: DataclassOptions,
     vm: &mut VM<'h>,
 ) -> RunResult<()> {
-    let params = vm.heap.allocate_as(DataclassParams::new(options)).into_value();
+    let params = Value::allocate(DataclassParams::new(options), vm.heap);
     let name = Value::InternString(vm.interns.intern_static(StaticStrings::DataclassParams));
     let replaced = class.set_attr(name, params, vm)?;
     replaced.drop_with(vm);
@@ -575,7 +575,7 @@ impl<'h> Installer<'_, 'h> {
     /// Allocates `method` and stores it in the class namespace under its dunder.
     fn set_method(&mut self, class: &HeapReadMut<'h, Class>, method: DataclassMethod) -> RunResult<()> {
         let dunder = method.dunder();
-        let method = self.heap().allocate_as(method).into_value();
+        let method = Value::allocate(method, self.heap());
         self.set_member(class, dunder, method)
     }
 
@@ -679,7 +679,7 @@ fn collect_annotated_fields<'h>(class: &HeapRead<'h, Class>, annotations: &Value
             fields.push(bound.expect("adoptable_field matched a bound value"));
         } else {
             let field = DataclassField::new(name_id, annotation, bound);
-            fields.push(vm.heap.allocate_as(field).into_value());
+            fields.push(Value::allocate(field, vm.heap));
         }
     }
     guard.into_parts().0

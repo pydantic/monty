@@ -465,9 +465,8 @@ impl PyMontySession {
     /// Serializes the worker's session state (idle or suspended) into opaque
     /// bytes via monty's existing dump format. The session stays usable.
     fn dump<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let state = py
-            .detach(|| block_on_sync(dump_checkout(&self.checkout)))?
-            .map_err(|e| pool_err_to_py(py, e))?;
+        let dump = dump_checkout(&self.checkout, capture_turn_options(py));
+        let state = py.detach(|| block_on_sync(dump))?.map_err(|e| pool_err_to_py(py, e))?;
         Ok(PyBytes::new(py, &state))
     }
 
@@ -1121,8 +1120,9 @@ impl PyAsyncMontySession {
     /// bytes via monty's existing dump format. The session stays usable.
     fn dump<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let checkout = Arc::clone(&self.checkout);
+        let turn = capture_turn_options(py);
         future_into_py(py, async move {
-            let state = dump_checkout(&checkout)
+            let state = dump_checkout(&checkout, turn)
                 .await
                 .map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
             Ok(Python::attach(|py| PyBytes::new(py, &state).unbind()))
@@ -1545,10 +1545,10 @@ pub(crate) fn active_pool(pool: &SharedPool) -> PyResult<Arc<Pool>> {
 
 /// Dumps the session of a live checkout (shared by the sync and async dump
 /// methods; runs without the GIL).
-async fn dump_checkout(checkout: &SharedCheckout) -> Result<Vec<u8>, PoolError> {
+async fn dump_checkout(checkout: &SharedCheckout, turn: TurnOptions) -> Result<Vec<u8>, PoolError> {
     let mut guard = checkout.lock().await;
     match guard.as_mut() {
-        Some(checkout) => checkout.dump().await,
+        Some(checkout) => checkout.dump_with(turn).await,
         None => Err(PoolError::Finished),
     }
 }

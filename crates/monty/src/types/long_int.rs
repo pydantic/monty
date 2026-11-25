@@ -868,8 +868,7 @@ fn add_bigint(lhs: &BigInt, other: &Value, vm: &VM<'_>) -> RunResult<Option<Valu
 /// Allocates an `i128` already known not to fit the immediate integer representation.
 pub(crate) fn wide_i128_into_value(value: i128, heap: &Heap) -> Value {
     debug_assert!(i64::try_from(value).is_err());
-    let id = heap.allocate(HeapData::LongInt(LongInt::new(BigInt::from(value))));
-    Value::Ref(id)
+    Value::allocate(LongInt::new(BigInt::from(value)), heap)
 }
 
 impl LongInt {
@@ -886,8 +885,7 @@ impl LongInt {
             Value::Int(value)
         } else {
             let long_int = Self::new(BigInt::from(value));
-            let heap_id = heap.allocate(HeapData::LongInt(long_int));
-            Value::Ref(heap_id)
+            Value::allocate(long_int, heap)
         }
     }
 
@@ -920,8 +918,7 @@ impl LongInt {
         if let Some(i) = self.0.to_i64() {
             Value::Int(i)
         } else {
-            let heap_id = heap.allocate(HeapData::LongInt(self));
-            Value::Ref(heap_id)
+            Value::allocate(self, heap)
         }
     }
 
