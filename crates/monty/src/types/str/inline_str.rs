@@ -4,20 +4,22 @@ use std::str;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
 
-use crate::{bytecode::VM, heap::HeapData, value::Value};
+use crate::{bytecode::VM, heap::HeapData, intern::StringId, value::Value};
 
 /// UTF-8 text of at most 15 bytes.
 /// The tag enum supplies niches so a containing `Value` remains 16 bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct InlineStr {
     tag: InlineTag,
-    bytes: [u8; 15],
+    bytes: [u8; Self::CAPACITY],
 }
 
 impl InlineStr {
+    pub(super) const CAPACITY: usize = 15;
+
     /// Returns `None` when the text exceeds the 15-byte inline capacity.
     pub(crate) fn new(text: &str) -> Option<Self> {
-        if text.len() > 15 {
+        if text.len() > Self::CAPACITY {
             return None;
         }
 
@@ -28,9 +30,30 @@ impl InlineStr {
     pub(crate) fn with_ascii(text: &str, ascii: bool) -> Option<Self> {
         let tag = InlineTag::from_len(text.len(), ascii)?;
         debug_assert_eq!(ascii, text.is_ascii());
-        let mut bytes = [0; 15];
+        let mut bytes = [0; Self::CAPACITY];
         bytes[..text.len()].copy_from_slice(text.as_bytes());
         Some(Self { tag, bytes })
+    }
+
+    /// Copies fragments and their known ASCII status into a string value.
+    /// Their combined byte length must fit inline.
+    pub(super) fn allocate_fragments<'a>(fragments: impl IntoIterator<Item = &'a str>, ascii: bool) -> Value {
+        let mut bytes = [0; Self::CAPACITY];
+        let mut len = 0;
+        for fragment in fragments {
+            let end = len + fragment.len();
+            bytes[len..end].copy_from_slice(fragment.as_bytes());
+            len = end;
+        }
+        debug_assert_eq!(ascii, bytes[..len].is_ascii());
+        match len {
+            0 => Value::InternString(StringId::EMPTY),
+            1 => Value::InternString(StringId::from_ascii(bytes[0])),
+            _ => Value::InlineString(Self {
+                tag: InlineTag::from_len(len, ascii).expect("fragments fit inline"),
+                bytes,
+            }),
+        }
     }
 
     #[inline]
@@ -62,8 +85,10 @@ impl InlineStr {
         &self.bytes[..self.tag.byte_len()]
     }
 
+    #[expect(unsafe_code)]
     pub(crate) fn as_str(&self) -> &str {
-        str::from_utf8(self.as_bytes()).expect("inline string contains valid UTF-8")
+        // SAFETY: Constructors copy whole `&str` fragments. Deserialization calls `new` with a `String`.
+        unsafe { str::from_utf8_unchecked(self.as_bytes()) }
     }
 }
 

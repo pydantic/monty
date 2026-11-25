@@ -5,7 +5,7 @@ mod heap_str;
 mod inline_str;
 mod iterator;
 
-use std::{fmt::Write, str};
+use std::{fmt::Write, iter, str};
 
 pub(crate) use heap_str::HeapStr;
 pub(crate) use inline_str::InlineStr;
@@ -411,7 +411,7 @@ fn allocate_string_with_ascii(s: impl AsRef<str> + Into<Box<str>>, ascii: Option
     match bytes.len() {
         0 => Value::InternString(StringId::EMPTY),
         1 => Value::InternString(StringId::from_ascii(bytes[0])),
-        2..=15 => {
+        2..=InlineStr::CAPACITY => {
             let text = s.as_ref();
             let inline = match ascii {
                 Some(ascii) => InlineStr::with_ascii(text, ascii),
@@ -429,7 +429,7 @@ fn allocate_string_with_ascii(s: impl AsRef<str> + Into<Box<str>>, ascii: Option
 /// Creates a string value without checking for reserved string IDs.
 /// The caller must know the text is longer than one byte; otherwise use [`allocate_string`].
 pub fn allocate_string_no_interning(s: impl AsRef<str> + Into<Box<str>>, heap: &Heap) -> Value {
-    if (2..=15).contains(&s.as_ref().len()) {
+    if (2..=InlineStr::CAPACITY).contains(&s.as_ref().len()) {
         return Value::InlineString(InlineStr::new(s.as_ref()).expect("length checked above"));
     }
     allocate_string_on_heap(s, heap)
@@ -447,20 +447,29 @@ pub fn allocate_string_on_heap(s: impl Into<Box<str>>, heap: &Heap) -> Value {
 fn repeat_str<'h>(value: &PyStr<'h>, count: usize, vm: &VM<'h>) -> RunResult<Option<Value>> {
     let text = value.as_str(vm);
     let total = repeated_len(text.len(), count, 1).map_err(|_| ExcType::repeated_string_too_long())?;
+    if total == 0 {
+        return Ok(Some(Value::InternString(StringId::EMPTY)));
+    }
+    if total <= InlineStr::CAPACITY {
+        let ascii = value.is_ascii(vm);
+        return Ok(Some(InlineStr::allocate_fragments(iter::repeat_n(text, count), ascii)));
+    }
+
     check_repeat_size(text.len(), count, &vm.heap.tracker)?;
     let mut repeated = String::new();
     repeated
         .try_reserve_exact(total)
         .map_err(|_| ExcType::allocation_too_large())?;
-    if total > 0 {
-        // Doubling copies: each pass appends a whole number of copies, so every cut is a char boundary.
-        repeated.push_str(text);
-        while repeated.len() < total {
-            repeated.extend_from_within(..repeated.len().min(total - repeated.len()));
-        }
+    // Each pass appends whole copies, so every cut is a char boundary.
+    repeated.push_str(text);
+    while repeated.len() < total {
+        repeated.extend_from_within(..repeated.len().min(total - repeated.len()));
     }
-    let ascii = total == 0 || value.is_ascii(vm);
-    Ok(Some(allocate_string_with_ascii(repeated, Some(ascii), vm.heap)))
+    let ascii = value.is_ascii(vm);
+    Ok(Some(Value::allocate(
+        HeapStr::with_ascii(ascii, repeated.into_boxed_str()),
+        vm.heap,
+    )))
 }
 
 /// Creates a single-character string without allocating.
@@ -474,19 +483,21 @@ pub fn allocate_char(c: char) -> Value {
     }
 }
 
-/// Concatenates two string slices and allocates the result as a Python string.
-///
-/// Backs the `str + str` arms of `py_add`: one exactly-sized allocation filled
-/// via `push_str`, instead of `format!`'s runtime formatting machinery. The
-/// result size is bounded by two already-tracked inputs, so a plain `String`
-/// is fine per the `StringBuilder` rule.
+/// Concatenates two strings inline or allocates a buffer sized for both inputs.
 fn concat_allocate_str(a: &str, b: &str, ascii: bool, heap: &Heap) -> Result<Value, ResourceError> {
     let result_len = a.len().saturating_add(b.len());
+    if result_len <= InlineStr::CAPACITY {
+        return Ok(InlineStr::allocate_fragments([a, b], ascii));
+    }
+
     check_repeat_size(result_len, 1, &heap.tracker)?;
     let mut concat = String::with_capacity(result_len);
     concat.push_str(a);
     concat.push_str(b);
-    Ok(allocate_string_with_ascii(concat, Some(ascii), heap))
+    Ok(Value::allocate(
+        HeapStr::with_ascii(ascii, concat.into_boxed_str()),
+        heap,
+    ))
 }
 
 /// Concatenation shared by logical string views and concrete heap dispatch.
