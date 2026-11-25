@@ -871,14 +871,14 @@ impl<'h> VM<'h> {
         Ok(CallResult::FramePushed)
     }
 
-    /// Calls a defined function by pushing a new frame or creating a coroutine.
+    /// Calls a defined function by pushing a new frame or creating a coroutine or generator.
     ///
     /// For sync functions: sets up the function's namespace with bound arguments,
     /// cell variables, and free variables, then pushes a new frame.
     ///
-    /// For async functions: binds arguments immediately but returns a Coroutine
-    /// instead of pushing a frame. The coroutine stores the pre-bound namespace
-    /// and will be executed when awaited.
+    /// For async and generator functions: binds arguments immediately but returns a
+    /// Coroutine or Generator instead of pushing a frame. It stores the pre-bound
+    /// namespace and runs it when awaited or advanced.
     pub(crate) fn call_def_function(
         &mut self,
         func_id: FunctionId,
@@ -889,7 +889,9 @@ impl<'h> VM<'h> {
     ) -> Result<CallResult, RunError> {
         let func = self.interns.get_function(func_id);
 
-        if func.is_async {
+        if func.is_generator {
+            self.call_generator_function(func_id, func, cells, defaults, globals, args)
+        } else if func.is_async {
             self.create_coroutine(func_id, func, cells, defaults, globals, args)
         } else {
             let namespace = function_namespace(globals, &*self.heap);
@@ -1012,6 +1014,26 @@ impl<'h> VM<'h> {
             Coroutine::new(func_id, namespace, globals),
             this.heap,
         )))
+    }
+
+    /// Binds a generator function's arguments into a new [`Generator`](super::Generator).
+    ///
+    /// Argument errors are raised here, at the call, before any of the body runs.
+    fn call_generator_function(
+        &mut self,
+        func_id: FunctionId,
+        func: &Function,
+        cells: &[HeapId],
+        defaults: &[Value],
+        globals: Option<HeapId>,
+        args: ArgValues,
+    ) -> Result<CallResult, RunError> {
+        let mut locals_guard = DropGuard::new(Vec::with_capacity(func.namespace_size), self);
+        let (locals, this) = locals_guard.as_parts_mut();
+        func.signature.bind(args, defaults, this, func.name, locals)?;
+        this.install_closure_cells(func, cells, locals);
+        let (locals, this) = locals_guard.into_parts();
+        Ok(CallResult::Value(this.create_generator(func_id, locals, globals)))
     }
 
     /// Installs owned cell variables and captured free-var cells into a frame's
@@ -1292,15 +1314,20 @@ impl<'h> VM<'h> {
 
     /// Whether calling `value` would push a regular synchronous frame
     /// (`CallResult::FramePushed`): a plain `def`, closure, function-with-defaults,
-    /// or a bound method wrapping one — but not an `async def`, whose call creates
-    /// a coroutine instead. Used by [`instantiate_class`](Self::instantiate_class)
-    /// to decide whether `__init__` can run as a suspendable initializer frame.
+    /// or a bound method wrapping one — but not an `async def` or generator
+    /// function, whose call creates a coroutine or generator instead. Used by
+    /// [`instantiate_class`](Self::instantiate_class) to decide whether `__init__`
+    /// can run as a suspendable initializer frame.
     fn is_plain_sync_function(&self, value: &Value) -> bool {
+        let pushes_frame = |func_id| {
+            let func = self.interns.get_function(func_id);
+            !func.is_async && !func.is_generator
+        };
         match value {
-            Value::DefFunction(func_id) => !self.interns.get_function(*func_id).is_async,
+            Value::DefFunction(func_id) => pushes_frame(*func_id),
             Value::Ref(id) => match self.heap.get(*id) {
-                HeapData::Closure(closure) => !self.interns.get_function(closure.func_id).is_async,
-                HeapData::FunctionDefaults(fd) => !self.interns.get_function(fd.func_id).is_async,
+                HeapData::Closure(closure) => pushes_frame(closure.func_id),
+                HeapData::FunctionDefaults(fd) => pushes_frame(fd.func_id),
                 // Bound methods never wrap another bound method, so this
                 // recursion is at most one level deep.
                 HeapData::BoundMethod(bm) => self.is_plain_sync_function(&bm.func),

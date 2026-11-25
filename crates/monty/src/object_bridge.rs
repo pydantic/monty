@@ -20,7 +20,7 @@ use crate::{
     builtins::Builtins,
     bytecode::VM,
     defer_drop,
-    exception_private::{RunError, RunResult, SimpleException},
+    exception_private::{ExceptionValue, RunError, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
     intern::StringId,
     modules::dataclasses,
@@ -453,6 +453,7 @@ impl GraphExporter {
             HeapReadOutput::MapFilter(iter) => {
                 MontyNode::Repr(format!("<{} object>", iter.py_type(vm).name(vm.heap, vm.interns)))
             }
+            HeapReadOutput::Generator(_) => MontyNode::Repr("<generator object>".to_owned()),
             HeapReadOutput::DirScan(scan) => MontyNode::Repr(scan.get(vm.heap).boundary_repr()),
             // A placeholder despite the real in-sandbox repr (`count(0)`),
             // which would recurse into `repeat`'s arbitrary object.
@@ -1069,7 +1070,7 @@ fn import_node(
         }
         MontyNode::Exception { exc_type, arg } => {
             let exc = SimpleException::new(exc_type, arg);
-            Ok(Value::allocate(exc, vm.heap))
+            Ok(Value::allocate(ExceptionValue::from(exc), vm.heap))
         }
         // A sandbox class the host hands back resolves to the class object
         // itself; a host class resolves to its single `HostClassType` entry,

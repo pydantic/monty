@@ -22,6 +22,7 @@ For compilation and runtime limits, see [resource limits](resource_limits.md).
 **Supported:**
 
 - `def`, `async def`, nested functions, closures, `lambda`
+- Generator functions, `yield`, `yield from` and `send()`, see [generators.md](generators.md)
 - Decorators on functions and classes
 - Simple classes: instance methods, `__init__`, `__repr__`/`__str__`, `__eq__`/`__hash__`, `__iter__`/`__next__`,
     `__contains__`, `__index__`, `__int__`/`__float__`, `__abs__`, `__round__`, `__floor__`/`__ceil__`/`__trunc__`,
@@ -52,8 +53,7 @@ For compilation and runtime limits, see [resource limits](resource_limits.md).
 **Rejected at parse time**, with `NotImplementedError` before any code runs:
 
 - Metaclasses (`class Foo(metaclass=M):`)
-- `yield` / `yield from` — there are no generator functions.
-    Generator *expressions* parse, but currently materialise to a `list`
+- Async generators (`async def` containing `yield`)
 - `del x`, `del d[k]`, and multiple deletion targets; single attribute deletion is supported
 - `try*` / `except*` exception groups
 - PEP 695 `type` aliases
@@ -62,6 +62,8 @@ For compilation and runtime limits, see [resource limits](resource_limits.md).
 
 **Missing in other ways:**
 
+- Lazy generator expressions.
+    `(x for x in iterable)` parses, but currently materialises to a `list`; see [comprehensions.md](comprehensions.md).
 - User-defined exception classes, and subclasses of other native types.
     Classes inherit only from classes defined in Python and `object`, so the built-in exception types are a fixed set.
 - Function attributes.

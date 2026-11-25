@@ -769,7 +769,8 @@ native_types! {
     ScandirIterator("posix.ScandirIterator")
         .attrs(<super::dir_scan::PyScandirImpl as PyAttrs<'static>>::TABLE)
         .iterator(),
-    /// The iterator `os.walk()` and `Path.walk()` return; CPython's is a generator.
+    /// CPython's `generator`: a generator object, and the iterator `os.walk()` and
+    /// `Path.walk()` return. The variant name predates generator functions; dumps store it.
     WalkGenerator("generator")
         .iterator(),
     TupleIterator("tuple_iterator")

@@ -15,10 +15,11 @@ any code runs.
     from other classes and `object` but not from native types, and there is no
     general dunder protocol. See [classes.md](classes.md).
 - **`async with` statements** — not yet supported.
-- **`yield` / `yield from` expressions** — no generator functions. Generator
-    *expressions* (`(x for x in ...)`) parse but currently materialize to a
-    `list` rather than a lazy iterator, a known temporary divergence; see
-    `iter__generator_expr_type.py`.
+- **Async generators** (`async def` containing `yield`) — rejected with
+    `NotImplementedError`. Generator functions are supported; see
+    [generators.md](generators.md). Generator *expressions* (`(x for x in ...)`)
+    parse but currently materialize to a `list` rather than a lazy iterator; see
+    [comprehensions.md](comprehensions.md).
 - **Unsupported `del` forms** — `del x`, `del d[k]`, and multiple targets.
 - **`try*` / `except*` exception groups** — PEP 654 syntax rejected.
 - **`type` aliases** (PEP 695 `type Foo = int`).

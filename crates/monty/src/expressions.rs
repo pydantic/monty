@@ -301,6 +301,10 @@ pub enum Expr {
     /// Raises `TypeError` for non-awaitable values.
     /// Unlike standard Python, `await` is allowed at module level (like Jupyter notebooks).
     Await(Box<ExprLoc>),
+    /// `yield value`: suspends the enclosing generator; evaluates to the value sent on resume.
+    Yield(Box<ExprLoc>),
+    /// `yield from iterable`: delegates to an iterator; evaluates to its `StopIteration` value.
+    YieldFrom(Box<ExprLoc>),
     /// F-string expression containing literal and interpolated parts.
     ///
     /// At evaluation time, each part is processed in sequence:
@@ -362,6 +366,8 @@ pub enum Expr {
         signature: ParsedSignature,
         /// The lambda body expression (not yet prepared).
         body: Box<ExprLoc>,
+        /// Whether the body contains `yield`, so calling the lambda creates a generator.
+        is_generator: bool,
     },
     /// Lambda expression: `lambda args: body` (prepared form).
     ///
@@ -997,6 +1003,9 @@ pub struct PreparedFunctionDef {
     /// When true, calling this function creates a `Coroutine` object instead of
     /// immediately pushing a frame.
     pub is_async: bool,
+    /// Whether the body yields: calling this function creates a `Generator` instead of
+    /// pushing a frame. Set from the parser's scope tracking, never inferred here.
+    pub is_generator: bool,
     /// The prepared `__annotate__(format)` of an annotated `def`, compiled as a
     /// nested function and recorded on the [`Function`](crate::function::Function).
     pub annotate: Option<Box<Self>>,

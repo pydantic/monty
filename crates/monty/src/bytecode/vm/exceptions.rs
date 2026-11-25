@@ -9,7 +9,9 @@ use crate::{
     builtins::Builtins,
     bytecode::code::HandlerKind,
     defer_drop,
-    exception_private::{ExcType, ExcTypeExt, ExceptionRaise, RawStackFrame, RunError, RunResult, SimpleException},
+    exception_private::{
+        ExcType, ExcTypeExt, ExceptionRaise, ExceptionValue, RawStackFrame, RunError, RunResult, SimpleException,
+    },
     expressions::CmpOperator,
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::{StaticStrings, StringId},
@@ -30,7 +32,14 @@ pub(super) enum CaughtException {
 
 impl CaughtException {
     /// Borrows the exception object without exposing its internal traceback metadata.
-    fn value(&self) -> &Value {
+    pub(super) fn value(&self) -> &Value {
+        match self {
+            Self::Value(value) | Self::Frozen { value, .. } => value,
+        }
+    }
+
+    /// Mutably borrows the exception object, for a saved generator frame's cleanup.
+    pub(super) fn value_mut(&mut self) -> &mut Value {
         match self {
             Self::Value(value) | Self::Frozen { value, .. } => value,
         }
@@ -78,6 +87,14 @@ impl VM<'_> {
             .is_some_and(|id| self.interns.is_internal_function(id))
     }
 
+    /// Whether the current frame runs an `async def` body, whose `StopIteration`
+    /// PEP 479 turns into `RuntimeError` like a generator's.
+    fn current_frame_is_coroutine(&self) -> bool {
+        self.current_frame()
+            .function_id
+            .is_some_and(|id| self.interns.get_function(id).is_async)
+    }
+
     /// Attaches initial frame information to an error if it doesn't have any.
     ///
     /// Only sets the innermost frame if the exception doesn't already have one.
@@ -117,7 +134,7 @@ impl VM<'_> {
     pub(super) fn make_exception(&mut self, exc_value: &Value, is_raise: bool) -> RunError {
         let simple_exc = match exc_value {
             // Exception instance on heap
-            value if let Some(exc) = value.get_as::<SimpleException>(self.heap) => exc.clone(),
+            value if let Some(exc) = value.get_as::<ExceptionValue>(self.heap) => exc.exception.clone(),
             // Exception type (e.g., `raise ValueError` instead of `raise ValueError()`)
             // Instantiate with no message
             Value::Builtin(Builtins::Type(ty)) if let Some(exc_type) = ty.exc_type() => {
@@ -194,7 +211,7 @@ impl VM<'_> {
 
     /// Allocates `exc_type()` with no message, for `raise ExcType from ...` and its cause.
     fn allocate_exception(&mut self, exc_type: ExcType) -> Value {
-        Value::allocate(SimpleException::new_none(exc_type), self.heap)
+        Value::allocate(ExceptionValue::from(SimpleException::new_none(exc_type)), self.heap)
     }
 
     /// Stores `cause` (an owned reference) as `__cause__` of the exception `id`,
@@ -525,6 +542,32 @@ impl VM<'_> {
                 return ExceptionHandlingResult::Caught;
             }
 
+            // A `StopIteration` leaving a generator or coroutine becomes `RuntimeError`
+            // (PEP 479); leaving a `yield from` delegate, it ends the delegation instead.
+            if error.is_stop_iteration() {
+                let role = &this.current_frame.generator;
+                let kind = if role.is_generator() {
+                    Some("generator")
+                } else if role.is_plain() {
+                    this.current_frame_is_coroutine().then_some("coroutine")
+                } else {
+                    None
+                };
+                let is_delegate = !role.is_plain() && kind.is_none();
+                if is_delegate {
+                    let (stop, this) = exc_guard.into_parts();
+                    this.end_yield_from_with(stop);
+                    return ExceptionHandlingResult::Caught;
+                }
+                if let Some(kind) = kind {
+                    let (stop, this) = exc_guard.into_parts();
+                    let (runtime_error, replacement) = this.stop_iteration_runtime_error(stop, kind);
+                    error = runtime_error;
+                    exc_guard = DropGuard::new(replacement, this);
+                    continue;
+                }
+            }
+
             // No handler in this frame - pop frame and try outer
             if this.suspended_frames.is_empty() {
                 // No more frames - exception is unhandled
@@ -622,7 +665,22 @@ impl VM<'_> {
     /// Allocates an Exception on the heap and returns a Value::Ref to it.
     fn create_exception_value(&mut self, exc: &ExceptionRaise) -> Value {
         let exception = exc.exc.clone();
-        Value::allocate(exception, self.heap)
+        Value::allocate(ExceptionValue::from(exception), self.heap)
+    }
+
+    /// PEP 479: the `RuntimeError` a `StopIteration` escaping the current generator
+    /// or coroutine frame becomes, with the owned `stop` exception as its `__cause__`.
+    fn stop_iteration_runtime_error(&mut self, stop: Value, kind: &str) -> (RunError, Value) {
+        let error = self.attach_frame_to_error(ExcType::runtime_error_raised_stop_iteration(kind));
+        let RunError::Exc(raise) = &error else {
+            unreachable!("a fresh RuntimeError is catchable")
+        };
+        let replacement = self.create_exception_value(raise);
+        let Value::Ref(id) = &replacement else {
+            unreachable!("raised exceptions are heap objects")
+        };
+        self.set_exception_cause(*id, stop.into_ref_id());
+        (error, replacement)
     }
 
     /// Checks if an exception matches an `except` clause's exception type.

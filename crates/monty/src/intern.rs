@@ -3235,7 +3235,7 @@ pub enum StaticStrings {
     /// `validate` parameter of `base64.b64decode()`.
     #[strum(serialize = "validate")]
     Validate,
-    /// Kwarg name `value` — `decimal.Decimal()`.
+    /// Kwarg name `value` — `decimal.Decimal()`; also `StopIteration.value`.
     Value,
     /// `annotationlib.Format.VALUE` member.
     #[strum(serialize = "VALUE")]

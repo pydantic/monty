@@ -1,4 +1,4 @@
-use std::{borrow::Cow, cmp::Ordering, fmt};
+use std::{borrow::Cow, cmp::Ordering, fmt, mem};
 
 use ahash::AHashSet;
 use monty_types::{FormatComplex, FormatFloat, MontyException, StackFrame, StringRepr, bytes_repr};
@@ -148,6 +148,8 @@ pub struct RawFunctionDef {
     pub body: Vec<ParseNode>,
     /// Whether this is an async function (`async def`).
     pub is_async: bool,
+    /// Whether the body contains `yield` in its own scope, making a call create a generator.
+    pub is_generator: bool,
     /// The `__annotate__(format)` function of an annotated `def` (PEP 649), built by
     /// [`Parser::synthesize_annotate`]; `None` when nothing is annotated.
     pub annotate: Option<Box<Self>>,
@@ -435,6 +437,22 @@ pub struct Parser<'a, 'i> {
     /// Whether a `__future__` import may still appear: only a docstring and
     /// other `__future__` imports precede one, at module level.
     future_allowed: bool,
+    /// Where a `yield` parsed now would bind; see [`YieldScope`].
+    yield_scope: YieldScope,
+}
+
+/// The scope a `yield` would belong to, tracked so the enclosing `def` or `lambda`
+/// learns it is a generator and misplaced yields get CPython's `SyntaxError`s.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum YieldScope {
+    /// Module or class body, where `yield` is an error.
+    Outside,
+    /// A `def` or `lambda` body; `yields` records whether one has been seen, and
+    /// `is_async` rejects `yield from`.
+    Function { yields: bool, is_async: bool },
+    /// A comprehension's own scope, named for the error message. Its first
+    /// iterable is evaluated in the enclosing scope, so it is not in here.
+    Comprehension(&'static str),
 }
 
 impl<'a, 'i> Parser<'a, 'i> {
@@ -453,6 +471,7 @@ impl<'a, 'i> Parser<'a, 'i> {
             class_keyword_offsets,
             future_annotations,
             future_allowed: true,
+            yield_scope: YieldScope::Outside,
         }
     }
 
@@ -1183,9 +1202,15 @@ impl<'a, 'i> Parser<'a, 'i> {
                 name.position,
             )?))
         };
-        // Parse function body recursively
-        let body = self.parse_statements(function.body)?;
+        // Parse function body recursively, recording whether its own scope yields.
         let is_async = function.is_async;
+        let (body, is_generator) = self.in_function_scope(is_async, |parser| parser.parse_statements(function.body))?;
+        if is_async && is_generator {
+            return Err(ParseError::not_implemented(
+                "async generator functions",
+                self.convert_range(function.range),
+            ));
+        }
 
         Ok((
             RawFunctionDef {
@@ -1193,6 +1218,7 @@ impl<'a, 'i> Parser<'a, 'i> {
                 signature,
                 body,
                 is_async,
+                is_generator,
                 annotate,
                 is_annotate: false,
             },
@@ -1286,6 +1312,7 @@ impl<'a, 'i> Parser<'a, 'i> {
             },
             body,
             is_async: false,
+            is_generator: false,
             annotate: None,
             is_annotate: true,
         })
@@ -1403,6 +1430,9 @@ impl<'a, 'i> Parser<'a, 'i> {
         // StaticStrings::DunderClass even if no method body explicitly mentions the identifier.
         self.interner.intern("__class__");
 
+        // A class body cannot yield, even inside a function; methods open their own scope.
+        // Not restored on error, which abandons the whole parse.
+        let outer_yield_scope = mem::replace(&mut self.yield_scope, YieldScope::Outside);
         for (i, stmt) in class.body.into_iter().enumerate() {
             match stmt {
                 Stmt::FunctionDef(function) => {
@@ -1507,6 +1537,7 @@ impl<'a, 'i> Parser<'a, 'i> {
                 }
             }
         }
+        self.yield_scope = outer_yield_scope;
 
         // The synthesized `__doc__` binding runs first (like CPython's docstring
         // store); the namespace assembly loads final local values, so an explicit
@@ -1562,6 +1593,7 @@ impl<'a, 'i> Parser<'a, 'i> {
             signature: ParsedSignature::default(),
             body,
             is_async: false,
+            is_generator: false,
             annotate: None,
             is_annotate: false,
         };
@@ -1898,15 +1930,16 @@ impl<'a, 'i> Parser<'a, 'i> {
                     ParsedSignature::default()
                 };
 
-                // Parse the body expression
-                let body = Box::new(self.parse_expression(*body)?);
+                // Parse the body expression; `lambda: (yield)` is a generator.
+                let (body, is_generator) = self.in_function_scope(false, |parser| parser.parse_expression(*body))?;
 
                 Ok(ExprLoc::new(
                     position,
                     Expr::LambdaRaw {
                         name_id,
                         signature,
-                        body,
+                        body: Box::new(body),
+                        is_generator,
                     },
                 ))
             }
@@ -1951,8 +1984,9 @@ impl<'a, 'i> Parser<'a, 'i> {
             AstExpr::ListComp(ast::ExprListComp {
                 elt, generators, range, ..
             }) => {
-                let elt = Box::new(self.parse_expression(*elt)?);
-                let generators = self.parse_comprehension_generators(generators)?;
+                let scope = YieldScope::Comprehension("list comprehension");
+                let elt = Box::new(self.in_yield_scope(scope, |parser| parser.parse_expression(*elt))?);
+                let generators = self.parse_comprehension_generators(generators, scope)?;
                 Ok(ExprLoc::new(
                     self.convert_range(range),
                     Expr::ListComp {
@@ -1965,8 +1999,9 @@ impl<'a, 'i> Parser<'a, 'i> {
             AstExpr::SetComp(ast::ExprSetComp {
                 elt, generators, range, ..
             }) => {
-                let elt = Box::new(self.parse_expression(*elt)?);
-                let generators = self.parse_comprehension_generators(generators)?;
+                let scope = YieldScope::Comprehension("set comprehension");
+                let elt = Box::new(self.in_yield_scope(scope, |parser| parser.parse_expression(*elt))?);
+                let generators = self.parse_comprehension_generators(generators, scope)?;
                 Ok(ExprLoc::new(
                     self.convert_range(range),
                     Expr::SetComp {
@@ -1994,9 +2029,12 @@ impl<'a, 'i> Parser<'a, 'i> {
                         self.convert_range(range),
                     )
                 })?;
-                let key = Box::new(self.parse_expression(*key)?);
-                let value = Box::new(self.parse_expression(*value)?);
-                let generators = self.parse_comprehension_generators(generators)?;
+                let scope = YieldScope::Comprehension("dict comprehension");
+                let (key, value) = self.in_yield_scope(scope, |parser| {
+                    Ok((parser.parse_expression(*key)?, parser.parse_expression(*value)?))
+                })?;
+                let (key, value) = (Box::new(key), Box::new(value));
+                let generators = self.parse_comprehension_generators(generators, scope)?;
                 Ok(ExprLoc::new(
                     self.convert_range(range),
                     Expr::DictComp {
@@ -2010,11 +2048,11 @@ impl<'a, 'i> Parser<'a, 'i> {
             AstExpr::Generator(ast::ExprGenerator {
                 elt, generators, range, ..
             }) => {
-                // TODO: When proper generators are implemented, this should produce
-                // Expr::Generator instead of Expr::ListComp. Currently we treat generator
-                // expressions as list comprehensions since we don't have generator support.
-                let elt = Box::new(self.parse_expression(*elt)?);
-                let generators = self.parse_comprehension_generators(generators)?;
+                // TODO: Generator expressions still evaluate eagerly, as list comprehensions;
+                // making them lazy means compiling the body as a generator function.
+                let scope = YieldScope::Comprehension("generator expression");
+                let elt = Box::new(self.in_yield_scope(scope, |parser| parser.parse_expression(*elt))?);
+                let generators = self.parse_comprehension_generators(generators, scope)?;
                 Ok(ExprLoc::new(
                     self.convert_range(range),
                     Expr::ListComp {
@@ -2028,14 +2066,19 @@ impl<'a, 'i> Parser<'a, 'i> {
                 let value = self.parse_expression(*a.value)?;
                 Ok(ExprLoc::new(self.convert_range(a.range), Expr::Await(Box::new(value))))
             }
-            AstExpr::Yield(y) => Err(ParseError::not_implemented(
-                "yield expressions",
-                self.convert_range(y.range),
-            )),
-            AstExpr::YieldFrom(y) => Err(ParseError::not_implemented(
-                "yield from expressions",
-                self.convert_range(y.range),
-            )),
+            AstExpr::Yield(y) => {
+                let position = self.mark_generator_scope(y.range, "yield")?;
+                let value = match y.value {
+                    Some(value) => self.parse_expression(*value)?,
+                    None => ExprLoc::new(position, Expr::Literal(Literal::None)),
+                };
+                Ok(ExprLoc::new(position, Expr::Yield(Box::new(value))))
+            }
+            AstExpr::YieldFrom(y) => {
+                let position = self.mark_generator_scope(y.range, "yield from")?;
+                let value = self.parse_expression(*y.value)?;
+                Ok(ExprLoc::new(position, Expr::YieldFrom(Box::new(value))))
+            }
             AstExpr::Compare(ast::ExprCompare {
                 ops, operands, range, ..
             }) => {
@@ -2541,13 +2584,16 @@ impl<'a, 'i> Parser<'a, 'i> {
     /// Each generator represents one `for` clause with zero or more `if` filters.
     /// Multiple generators create nested iteration. Supports both single identifiers
     /// (`for x in ...`) and tuple unpacking (`for x, y in ...`).
+    /// Parses a comprehension's `for` clauses; all but the first iterable are in `scope`.
     fn parse_comprehension_generators(
         &mut self,
         generators: impl IntoIterator<Item = ast::Comprehension>,
+        scope: YieldScope,
     ) -> Result<Vec<Comprehension>, ParseError> {
         generators
             .into_iter()
-            .map(|comp| {
+            .enumerate()
+            .map(|(index, comp)| {
                 if comp.is_async {
                     return Err(ParseError::not_implemented(
                         "async comprehensions",
@@ -2555,12 +2601,18 @@ impl<'a, 'i> Parser<'a, 'i> {
                     ));
                 }
                 let target = self.parse_unpack_target_root(comp.target)?;
-                let iter = self.parse_expression(comp.iter)?;
-                let ifs = comp
-                    .ifs
-                    .into_iter()
-                    .map(|cond| self.parse_expression(cond))
-                    .collect::<Result<Vec<_>, _>>()?;
+                // The first iterable is evaluated in the enclosing scope (PEP 709).
+                let iter = if index == 0 {
+                    self.parse_expression(comp.iter)?
+                } else {
+                    self.in_yield_scope(scope, |parser| parser.parse_expression(comp.iter))?
+                };
+                let ifs = self.in_yield_scope(scope, |parser| {
+                    comp.ifs
+                        .into_iter()
+                        .map(|cond| parser.parse_expression(cond))
+                        .collect::<Result<Vec<_>, _>>()
+                })?;
                 Ok(Comprehension { target, iter, ifs })
             })
             .collect()
@@ -2797,6 +2849,51 @@ impl<'a, 'i> Parser<'a, 'i> {
 
     fn convert_range(&self, range: TextRange) -> CodeRange {
         code_range(self.filename_id, range)
+    }
+
+    /// Parses a `def` or `lambda` body in its own yield scope, returning whether it yields.
+    fn in_function_scope<T>(
+        &mut self,
+        is_async: bool,
+        parse: impl FnOnce(&mut Self) -> Result<T, ParseError>,
+    ) -> Result<(T, bool), ParseError> {
+        let scope = YieldScope::Function {
+            yields: false,
+            is_async,
+        };
+        let outer = mem::replace(&mut self.yield_scope, scope);
+        let result = parse(self);
+        let inner = mem::replace(&mut self.yield_scope, outer);
+        result.map(|parsed| (parsed, matches!(inner, YieldScope::Function { yields: true, .. })))
+    }
+
+    /// Parses part of a class body or comprehension, where a `yield` is an error.
+    fn in_yield_scope<T>(
+        &mut self,
+        scope: YieldScope,
+        parse: impl FnOnce(&mut Self) -> Result<T, ParseError>,
+    ) -> Result<T, ParseError> {
+        let outer = mem::replace(&mut self.yield_scope, scope);
+        let result = parse(self);
+        self.yield_scope = outer;
+        result
+    }
+
+    /// Marks the innermost function as a generator, or rejects a `yield` it cannot own.
+    /// `keyword` is `yield` or `yield from`, which CPython names only outside a function.
+    fn mark_generator_scope(&mut self, range: TextRange, keyword: &str) -> Result<CodeRange, ParseError> {
+        let position = self.convert_range(range);
+        match &mut self.yield_scope {
+            YieldScope::Function { is_async: true, .. } if keyword == "yield from" => {
+                Err(ParseError::syntax("'yield from' inside async function", position))
+            }
+            YieldScope::Function { yields, .. } => {
+                *yields = true;
+                Ok(position)
+            }
+            YieldScope::Outside => Err(ParseError::syntax(format!("'{keyword}' outside function"), position)),
+            YieldScope::Comprehension(kind) => Err(ParseError::syntax(format!("'yield' inside {kind}"), position)),
+        }
     }
 
     /// Decrements the depth remaining for nested parentheses.

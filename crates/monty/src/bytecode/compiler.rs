@@ -18,7 +18,7 @@ use super::{
     code::{Code, HandlerKind},
     op::{
         FORMAT_VALUE_HAS_SPEC, FORMAT_VALUE_STATIC_SPEC, IMPORT_STAR_BIND, IMPORT_STAR_LOAD, IMPORT_STAR_NAMES,
-        NAME_CALLABLE, NAME_GLOBAL_ONLY, Opcode, assert_flags,
+        NAME_CALLABLE, NAME_GLOBAL_ONLY, Opcode, YIELD_FROM, YIELD_VALUE, assert_flags,
     },
 };
 use crate::{
@@ -148,7 +148,12 @@ fn target_position(target: &UnpackTarget) -> CodeRange {
 /// Whether an expression can resume a pushed/suspended call at its end offset.
 fn return_expr_needs_padding(expr: &ExprLoc) -> bool {
     match &expr.expr {
-        Expr::Call { .. } | Expr::AttrCall { .. } | Expr::IndirectCall { .. } | Expr::Await(_) => true,
+        Expr::Call { .. }
+        | Expr::AttrCall { .. }
+        | Expr::IndirectCall { .. }
+        | Expr::Await(_)
+        | Expr::Yield(_)
+        | Expr::YieldFrom(_) => true,
         Expr::IfElse { orelse, .. } => return_expr_needs_padding(orelse),
         Expr::Op {
             op: Operator::And | Operator::Or,
@@ -981,6 +986,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             func_def.is_async,
             body_code,
         )
+        .with_generator(func_def.is_generator)
         .with_annotate(annotate);
         let func_id = self.interns.push_function(function);
 
@@ -1606,6 +1612,21 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 // Restore the full expression's position for traceback caret range
                 self.code.set_location(expr_loc.position, None);
                 self.code.emit(Opcode::Await)?;
+            }
+
+            Expr::Yield(value) => {
+                self.compile_expr(value)?;
+                self.code.set_location(expr_loc.position, None);
+                self.code.emit_u8(Opcode::Yield, YIELD_VALUE)?;
+            }
+
+            Expr::YieldFrom(value) => {
+                // `[iterator, sent]`: the first advance sends `None`, as `next()` does.
+                self.compile_expr(value)?;
+                self.code.set_location(expr_loc.position, None);
+                self.code.emit(Opcode::GetIter)?;
+                self.code.emit(Opcode::LoadNone)?;
+                self.code.emit_u8(Opcode::Yield, YIELD_FROM)?;
             }
 
             Expr::Slice { lower, upper, step } => {
