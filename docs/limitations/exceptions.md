@@ -120,6 +120,9 @@ Tracebacks are formatted to match CPython, including the
 uses `~` where CPython uses `^`; the test harness normalizes between
 them). Frame names use `<module>` for top-level code.
 
+If a function uses a bare `raise` for an exception handled by its caller, Monty reports the bare `raise`
+as the innermost frame and omits the original raise site.
+
 Known caret divergences:
 
 - CPython suppresses carets on a frame whose location is exactly the call in a
