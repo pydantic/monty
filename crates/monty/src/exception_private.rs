@@ -3044,20 +3044,15 @@ pub(crate) enum ExceptionArgs {
 
 impl ExceptionArgs {
     /// Constructs `ExceptionArgs` from a list of argument values.
-    pub(crate) fn from_values(mut values: Vec<Value>, vm: &mut VM<'_>) -> RunResult<Self> {
+    pub(crate) fn from_values(mut values: Vec<Value>, vm: &mut VM<'_>) -> Self {
         match values.len() {
-            0 => Ok(Self::Empty),
-            1 => Ok(Self::OneValue(values.remove(0))),
+            0 => Self::Empty,
+            1 => Self::OneValue(values.remove(0)),
             _ => {
-                let slots = values.len().checked_next_power_of_two().unwrap_or(usize::MAX);
-                if let Err(err) = vm.heap.tracker.check_allocation(slots.saturating_mul(VALUE_SIZE)) {
-                    values.drop_with(vm);
-                    return Err(err.into());
-                }
                 let items = TupleVec::from_vec(values);
                 let tuple_val = allocate_tuple(items, vm.heap);
                 let tuple_id = tuple_val.into_ref_id().expect("tuple is a heap reference");
-                Ok(Self::Tuple(tuple_id))
+                Self::Tuple(tuple_id)
             }
         }
     }
