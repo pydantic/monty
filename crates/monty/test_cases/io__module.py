@@ -39,7 +39,7 @@ except OSError as e:
 
 # === the file classes `open()` returns ===
 assert io.open is open
-with open(root / 'io_text.txt', 'w') as f:
+with open(root / 'io_text.txt', 'w', newline='') as f:
     assert type(f) is io.TextIOWrapper
     assert isinstance(f, io.TextIOWrapper)
     f.write('one\ntwo\n')
