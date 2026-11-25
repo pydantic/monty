@@ -30,7 +30,12 @@ use opentelemetry::trace::{FutureExt, TraceContextExt};
 use tokio::{task::spawn_blocking, time::Instant as DeadlineInstant};
 
 #[cfg(feature = "telemetry")]
-use crate::telemetry::{TelemetryContext, metrics::outcome, suspension_context};
+use crate::telemetry::{
+    TelemetryContext,
+    metrics::outcome,
+    suspension_context,
+    tracing::{SnapshotOperation, SnapshotSpan},
+};
 use crate::{
     CrashCause, PoolConfig, PoolError, RemoteCause, cpu,
     pool::{CapacityGuard, PoolInner},
@@ -263,13 +268,13 @@ pub enum MountSpecMode {
     Overlay,
 }
 
-/// Options for one turn-starting request: a feed or a restore.
+/// Trace options for a feed, restore, or dump.
 #[derive(Debug, Clone, Copy, Default)]
 #[non_exhaustive]
 pub struct TurnOptions {
-    /// The span current where the caller started the turn, sent as the
-    /// request's `traceparent` so a server recording the session parents the
-    /// turn's spans to it. Advisory: execution never depends on it.
+    /// The span active when the caller starts the operation. Feed and restore
+    /// propagate the turn's parent to the server. Dump uses it for its local API span.
+    /// Execution does not depend on this value.
     pub traceparent: Option<Traceparent>,
 }
 
@@ -1004,6 +1009,38 @@ impl Checkout {
         options: TurnOptions,
         on_print: OnPrint<'_>,
     ) -> Result<(Option<TurnEvent>, Option<String>), PoolError> {
+        #[cfg(feature = "telemetry")]
+        let span = self
+            .worker
+            .as_ref()
+            .and_then(|worker| worker.snapshot_span(SnapshotOperation::Restore, options.traceparent));
+        let result = self
+            .restore_inner(
+                state,
+                mounts,
+                options,
+                on_print,
+                #[cfg(feature = "telemetry")]
+                span.as_ref(),
+            )
+            .await;
+        #[cfg(feature = "telemetry")]
+        if let Some(span) = span {
+            // Restore errors can include host paths or an unexpected snapshot payload.
+            span.finish(result.as_ref().err().map(|_| &"restore failed"));
+        }
+        result
+    }
+
+    /// Restores session state while the API span records the whole call.
+    async fn restore_inner(
+        &mut self,
+        state: Vec<u8>,
+        mounts: Vec<MountSpec>,
+        options: TurnOptions,
+        on_print: OnPrint<'_>,
+        #[cfg(feature = "telemetry")] snapshot: Option<&SnapshotSpan>,
+    ) -> Result<(Option<TurnEvent>, Option<String>), PoolError> {
         self.ensure_ready()?;
         let feed_mounts = Self::build_feed_mounts(mounts)?;
         // the dump carries its own limits/consumed time/script name — forget
@@ -1019,8 +1056,11 @@ impl Checkout {
             pb::client_request::Kind::Load(pb::Load { state: state.into() }),
             options,
         );
+        let turn = TurnRequest::new(&request);
+        #[cfg(feature = "telemetry")]
+        let turn = turn.with_snapshot(snapshot);
         let outcome = self
-            .request_turn(&request, self.pool.config.request_timeout, on_print)
+            .request_turn(turn, self.pool.config.request_timeout, on_print)
             .await;
         self.end_load();
         // A `Runtime` error that named no session leaves the worker's as it
@@ -1450,7 +1490,10 @@ impl Checkout {
         }));
         let mut no_print = on_print_sync(|_, _| {});
         let deadline = self.pool.config.request_timeout;
-        match self.request_turn(&request, deadline, &mut no_print).await? {
+        match self
+            .request_turn(TurnRequest::new(&request), deadline, &mut no_print)
+            .await?
+        {
             ControlEvent::Ok => Ok(()),
             other => Err(self.protocol_violation(format!("unexpected reply to InstallDependencies: {other:?}"))),
         }
@@ -1460,14 +1503,41 @@ impl Checkout {
     /// [`Checkout::restore`] can restore — including into a
     /// different worker after this one crashes. The session stays live.
     pub async fn dump(&mut self) -> Result<Vec<u8>, PoolError> {
-        self.open().await?;
-        let request = request(pb::client_request::Kind::Dump(pb::Dump {}));
-        let mut no_print = on_print_sync(|_, _| {});
-        let deadline = self.pool.config.request_timeout;
-        match self.request_turn(&request, deadline, &mut no_print).await? {
-            ControlEvent::Dump(state) => Ok(state),
-            other => Err(self.protocol_violation(format!("unexpected reply to Dump: {other:?}"))),
+        self.dump_with(TurnOptions::default()).await
+    }
+
+    /// [`Checkout::dump`] with a caller trace parent.
+    pub async fn dump_with(&mut self, options: TurnOptions) -> Result<Vec<u8>, PoolError> {
+        #[cfg(not(feature = "telemetry"))]
+        let _ = options;
+        #[cfg(feature = "telemetry")]
+        let span = self
+            .worker
+            .as_ref()
+            .and_then(|worker| worker.snapshot_span(SnapshotOperation::Dump, options.traceparent));
+        let result = async {
+            self.open_inner(
+                #[cfg(feature = "telemetry")]
+                span.as_ref(),
+            )
+            .await?;
+            let request = request(pb::client_request::Kind::Dump(pb::Dump {}));
+            let mut no_print = on_print_sync(|_, _| {});
+            let deadline = self.pool.config.request_timeout;
+            let turn = TurnRequest::new(&request);
+            #[cfg(feature = "telemetry")]
+            let turn = turn.with_snapshot(span.as_ref());
+            match self.request_turn(turn, deadline, &mut no_print).await? {
+                ControlEvent::Dump(state) => Ok(state),
+                other => Err(self.protocol_violation(format!("unexpected reply to Dump: {other:?}"))),
+            }
         }
+        .await;
+        #[cfg(feature = "telemetry")]
+        if let Some(span) = span {
+            span.finish(result.as_ref().err());
+        }
+        result
     }
 
     /// Discard the worker and wait for its subprocess to exit, including after a cancelled turn.
@@ -1523,7 +1593,10 @@ impl Checkout {
         let request = request(pb::client_request::Kind::Reset(pb::Reset {}));
         let mut no_print = on_print_sync(|_, _| {});
         let deadline = self.pool.config.request_timeout;
-        match self.request_turn(&request, deadline, &mut no_print).await? {
+        match self
+            .request_turn(TurnRequest::new(&request), deadline, &mut no_print)
+            .await?
+        {
             ControlEvent::Ok => {
                 if let Some(mut worker) = self.worker.take() {
                     worker.checkouts_served += 1;
@@ -1597,13 +1670,28 @@ impl Checkout {
     /// session is open, even if its worker has since gone. Otherwise the
     /// `Configure` carries the first `Feed` / `Load`, saving this round trip.
     pub async fn open(&mut self) -> Result<(), PoolError> {
+        self.open_inner(
+            #[cfg(feature = "telemetry")]
+            None,
+        )
+        .await
+    }
+
+    /// Opens the session for the API call that needs it.
+    async fn open_inner(
+        &mut self,
+        #[cfg(feature = "telemetry")] snapshot: Option<&SnapshotSpan>,
+    ) -> Result<(), PoolError> {
         let Some(configure) = self.pending_configure.take() else {
             return Ok(());
         };
         let request = request(pb::client_request::Kind::Configure(*configure));
         let mut no_print = on_print_sync(|_, _| {});
         let deadline = self.pool.config.request_timeout;
-        match self.request_turn(&request, deadline, &mut no_print).await {
+        let turn = TurnRequest::new(&request);
+        #[cfg(feature = "telemetry")]
+        let turn = turn.with_snapshot(snapshot);
+        match self.request_turn(turn, deadline, &mut no_print).await {
             Ok(ControlEvent::Ok) => Ok(()),
             Ok(other) => Err(self.protocol_violation(format!("unexpected reply to Configure: {other:?}"))),
             // the session never opened, so the worker goes with the refusal
@@ -1625,7 +1713,7 @@ impl Checkout {
         on_print: OnPrint<'_>,
     ) -> Result<TurnEvent, PoolError> {
         let deadline = min_deadline(self.pool.config.request_timeout, self.backstop_deadline());
-        match self.request_turn(request, deadline, on_print).await? {
+        match self.request_turn(TurnRequest::new(request), deadline, on_print).await? {
             ControlEvent::Turn(event) => Ok(event),
             other => Err(self.protocol_violation(format!("expected a turn event, got {other:?}"))),
         }
@@ -1784,7 +1872,7 @@ impl Checkout {
         let Some(worker) = self.worker.as_mut() else {
             return Err(PoolError::Finished);
         };
-        match worker.send(&abort, None).await {
+        match worker.send(TurnRequest::new(&abort), None).await {
             Ok(()) => {
                 self.abort_in_flight = true;
                 Ok(true)
@@ -1808,14 +1896,14 @@ impl Checkout {
     /// trip opens the session and runs the request.
     async fn request_turn(
         &mut self,
-        request: &pb::ClientRequest,
+        request: TurnRequest<'_>,
         deadline: Option<Duration>,
         on_print: OnPrint<'_>,
     ) -> Result<ControlEvent, PoolError> {
         self.ensure_ready()?;
-        let opening = self.pending_configure.take_if(|_| opens_session(request));
+        let opening = self.pending_configure.take_if(|_| opens_session(request.message));
         let wall_deadline = deadline.and_then(|limit| DeadlineInstant::now().checked_add(limit));
-        let monitor = self.cpu_monitor(request).await?;
+        let monitor = self.cpu_monitor(request.message).await?;
         self.turn_in_flight = true;
         self.armed_deadline = deadline;
         let turn = self.turn_io(request, opening.as_deref(), &mut *on_print);
@@ -1847,12 +1935,12 @@ impl Checkout {
     async fn after_shutdown(
         &mut self,
         dump: Option<Vec<u8>>,
-        request: &pb::ClientRequest,
+        request: TurnRequest<'_>,
         deadline: Option<Duration>,
         on_print: OnPrint<'_>,
     ) -> Result<ControlEvent, PoolError> {
         let outcome = match dump {
-            Some(state) if self.can_resume(request) => {
+            Some(state) if self.can_resume(request.message) => {
                 self.resume_after_shutdown(state, request, deadline, on_print).await
             }
             dump => Err(PoolError::Shutdown { dump }),
@@ -1892,7 +1980,7 @@ impl Checkout {
     async fn resume_after_shutdown(
         &mut self,
         state: Vec<u8>,
-        request: &pb::ClientRequest,
+        request: TurnRequest<'_>,
         deadline: Option<Duration>,
         on_print: OnPrint<'_>,
     ) -> Result<ControlEvent, PoolError> {
@@ -1906,12 +1994,12 @@ impl Checkout {
             Ok(()) => {
                 // as `feed_with_cwd`: the worker restarts its feed clock on a
                 // `Feed`, and the `Load` reply reported the dump's last feed
-                if matches!(request.kind, Some(pb::client_request::Kind::Feed(_))) {
+                if matches!(request.message.kind, Some(pb::client_request::Kind::Feed(_))) {
                     self.budget.begin_feed();
                 }
                 // the `Load` reply may have tightened the budget, so an
                 // execution turn's backstop is re-derived as `expect_turn` did
-                let deadline = if is_execution_turn(request) {
+                let deadline = if is_execution_turn(request.message) {
                     min_deadline(self.pool.config.request_timeout, self.backstop_deadline())
                 } else {
                     deadline
@@ -1959,7 +2047,7 @@ impl Checkout {
             state: state.to_vec().into(),
         }));
         self.reloading = true;
-        let reply = self.request_turn(&load, timeout, &mut no_print).await;
+        let reply = self.request_turn(TurnRequest::new(&load), timeout, &mut no_print).await;
         self.reloading = false;
         // the session's script name is the one it already had
         self.restored_script_name = None;
@@ -2093,9 +2181,10 @@ impl Checkout {
         mut opening: Option<&pb::Configure>,
         on_event: OnRawEvent<'_>,
     ) -> Result<pb::WorkerEvent, PoolError> {
-        self.send_request(request, opening).await?;
+        let turn = TurnRequest::new(request);
+        self.send_request(turn, opening).await?;
         loop {
-            let mut event = match self.worker.as_mut().expect("checked by send_request").recv().await {
+            let mut event = match self.worker.as_mut().expect("checked by send_request").recv(turn).await {
                 Ok(event) => event,
                 Err(FrameError::Decode(err)) => {
                     return Err(self.protocol_violation(format!("invalid payload from worker: {err}")));
@@ -2218,7 +2307,7 @@ impl Checkout {
     /// `Runtime` / `Typing`, which are sandbox-level outcomes.
     async fn turn_io(
         &mut self,
-        request: &pb::ClientRequest,
+        request: TurnRequest<'_>,
         mut opening: Option<&pb::Configure>,
         on_print: OnPrint<'_>,
     ) -> Result<ControlEvent, PoolError> {
@@ -2226,7 +2315,13 @@ impl Checkout {
         let answered = self.suspension_traceparent;
         self.send_request(request, opening).await?;
         loop {
-            let mut event = match self.worker.as_mut().expect("checked by send_request").recv().await {
+            let mut event = match self
+                .worker
+                .as_mut()
+                .expect("checked by send_request")
+                .recv(request)
+                .await
+            {
                 Ok(event) => event,
                 // a decode failure means the frame arrived intact but its
                 // payload was garbage (including values that fail semantic
@@ -2244,7 +2339,7 @@ impl Checkout {
             // the first turn-ending reply to a `Configure` carrying `request`
             // answers both, not an abort's after it
             let opened = ends_turn(&event) && opening.take().is_some();
-            let lone_configure = matches!(request.kind, Some(pb::client_request::Kind::Configure(_)));
+            let lone_configure = matches!(request.message.kind, Some(pb::client_request::Kind::Configure(_)));
             let configuring = opened || lone_configure;
             if (opened && acknowledges_configure(&event))
                 || (lone_configure && matches!(event.kind, Some(pb::worker_event::Kind::Ok(_))))
@@ -2260,7 +2355,7 @@ impl Checkout {
             // a suspension past `max_suspensions` is aborted here and never
             // reaches the caller; the abort's reply is the next event
             if self
-                .abort_if_over_budget(&mut event, !is_execution_turn(request))
+                .abort_if_over_budget(&mut event, !is_execution_turn(request.message))
                 .await?
             {
                 continue;
@@ -2272,7 +2367,7 @@ impl Checkout {
             }
             let traceparent = event.parsed_traceparent().filter(|_| is_suspension(&event));
             // a `Dump` reply ends its turn with the suspension still pending
-            if ends_turn(&event) && !matches!(request.kind, Some(pb::client_request::Kind::Dump(_))) {
+            if ends_turn(&event) && !matches!(request.message.kind, Some(pb::client_request::Kind::Dump(_))) {
                 let rejected =
                     event.feed_suspended == Some(true) && matches!(event.kind, Some(pb::worker_event::Kind::Error(_)));
                 self.suspension_traceparent = if rejected { answered } else { traceparent };
@@ -2476,7 +2571,7 @@ impl Checkout {
                     // end the in-flight feed — the worker stays suspended and
                     // resumable, so keep the pending call and mounts
                     if event.feed_suspended != Some(true)
-                        && !matches!(request.kind, Some(pb::client_request::Kind::Dump(_)))
+                        && !matches!(request.message.kind, Some(pb::client_request::Kind::Dump(_)))
                     {
                         self.pending = None;
                         self.feed_mounts = None;
@@ -2492,7 +2587,7 @@ impl Checkout {
                 Some(pb::worker_event::Kind::TypingError(typing)) => {
                     // TypingError can only end a checked feed or its pending import_stubs call.
                     // Accepting it elsewhere would falsely mark a suspended feed complete.
-                    let type_checked = match &request.kind {
+                    let type_checked = match &request.message.kind {
                         Some(pb::client_request::Kind::Feed(feed)) => !feed.skip_type_check,
                         Some(pb::client_request::Kind::ResumeCall(resume)) => resume.call_id == IMPORT_STUBS_CALL_ID,
                         _ => false,
@@ -2599,7 +2694,7 @@ impl Checkout {
     /// I/O break (dead worker / closed pipe).
     async fn send_request(
         &mut self,
-        request: &pb::ClientRequest,
+        request: TurnRequest<'_>,
         opening: Option<&pb::Configure>,
     ) -> Result<(), PoolError> {
         self.request_sent = false;
@@ -2610,20 +2705,20 @@ impl Checkout {
             Ok(()) => {
                 self.request_sent = true;
                 // prints in the turn an answer starts are not part of the answered suspension
-                if is_execution_turn(request) {
+                if is_execution_turn(request.message) {
                     self.suspension_traceparent = None;
                 }
                 // a new turn starts only once its request is out, so a refused
                 // request leaves the previous feed's state as it was
                 // the host is done with these calls' arguments once their results are out
-                if let Some(pb::client_request::Kind::ResumeFutures(resume)) = &request.kind {
+                if let Some(pb::client_request::Kind::ResumeFutures(resume)) = &request.message.kind {
                     for result in &resume.results {
                         self.streamed_args.release(result.call_id);
                     }
                 }
                 if !self.reloading
                     && matches!(
-                        request.kind,
+                        request.message.kind,
                         Some(
                             pb::client_request::Kind::Feed(_)
                                 | pb::client_request::Kind::Load(_)
@@ -2633,7 +2728,7 @@ impl Checkout {
                 {
                     self.streamed_args.clear();
                     // a restored or reset session runs no streaming feed until the next `Feed`
-                    if !matches!(request.kind, Some(pb::client_request::Kind::Feed(_))) {
+                    if !matches!(request.message.kind, Some(pb::client_request::Kind::Feed(_))) {
                         self.feed_handler = None;
                     }
                 }
@@ -2981,6 +3076,32 @@ enum ControlEvent {
 /// a scheduling allowance rather than a real wait — and it is only ever spent
 /// on a turn that has already failed.
 const FATAL_EXIT_GRACE: Duration = Duration::from_millis(100);
+
+/// Carries the request and its API trace through all attempts of the turn.
+#[derive(Clone, Copy)]
+pub(crate) struct TurnRequest<'a> {
+    pub(crate) message: &'a pb::ClientRequest,
+    #[cfg(feature = "telemetry")]
+    pub(crate) snapshot: Option<&'a SnapshotSpan>,
+}
+
+impl<'a> TurnRequest<'a> {
+    /// Creates a turn that has no snapshot API span.
+    pub(crate) const fn new(message: &'a pb::ClientRequest) -> Self {
+        Self {
+            message,
+            #[cfg(feature = "telemetry")]
+            snapshot: None,
+        }
+    }
+
+    /// Associates a snapshot call with the turns it sends.
+    #[cfg(feature = "telemetry")]
+    const fn with_snapshot(mut self, snapshot: Option<&'a SnapshotSpan>) -> Self {
+        self.snapshot = snapshot;
+        self
+    }
+}
 
 /// Wraps a request kind that starts no turn in a `ClientRequest`, which
 /// carries no `traceparent`: its spans belong to the turn already running.

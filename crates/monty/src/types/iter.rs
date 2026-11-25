@@ -10,9 +10,9 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{DropGuard, DropWithContext, HeapReadOutput},
+    heap::{DropGuard, DropWithContext},
     resource_checks::check_estimated_size,
-    types::PyTrait,
+    types::{Instance, PyTrait},
     value::{VALUE_SIZE, Value, ValueRead},
 };
 
@@ -26,7 +26,7 @@ def __monty_iter(object, get_iter, validate):
 pub(crate) fn call_get_iter(args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
     let object = args.get_one_arg("get_iter", vm.heap)?;
     defer_drop!(object, vm);
-    let Some(HeapReadOutput::Instance(instance)) = object.read_heap(vm) else {
+    let Some(instance) = object.read_as::<Instance>(vm.heap) else {
         unreachable!("only instances need frozen iterator validation")
     };
     instance.call_iter(vm)
@@ -125,7 +125,7 @@ impl<'h> CollectIter<'h> for ValueRead<'h, '_> {
 /// Whether `iterator` is a user instance, whose `__next__` a native consumer must call through a
 /// [`NativeCont`](crate::bytecode::NativeCont) so it can suspend.
 pub(crate) fn is_user_iterator(iterator: &Value, vm: &VM<'_>) -> bool {
-    matches!(iterator.read_heap(vm), Some(HeapReadOutput::Instance(_)))
+    iterator.read_as::<Instance>(vm.heap).is_some()
 }
 
 /// Collects every item yielded by an iterable into a `Vec`.

@@ -284,10 +284,11 @@ fn fixture_dump_loads_and_resumes() {
     );
 }
 
-/// Older fixtures remain readable after adding inline strings and the star-import opcode.
+/// Older fixtures remain readable after adding inline strings, the star-import opcode, suspendable
+/// iteration (version 17) and native continuations (version 18).
 #[test]
 fn older_version_fixtures_load_and_resume() {
-    for version in [14, 15, 16] {
+    for version in [14, 15, 16, 17] {
         let bytes = fs::read(fixture_path_for(version)).expect("older fixture exists");
         let loaded = Dump::load(&bytes).expect("older dumps remain supported");
         assert_eq!(loaded.script_name, "fixture.py");
@@ -301,7 +302,7 @@ fn older_version_fixtures_load_and_resume() {
     }
 }
 
-/// Classes for `native_continuations_v17_suspended.bin`: three consumers of user iterators, each
+/// Classes for `native_continuations_v18_suspended.bin`: three consumers of user iterators, each
 /// waiting on the `__next__` frame of the next, with the innermost suspended on `host_item`.
 /// `sum()` and `list()` park a `NativeCont`; the `for` in between uses the `ForIter` catcher frame.
 const NATIVE_CONT_STATE: &str = r"
@@ -354,7 +355,7 @@ const NATIVE_CONT_CALL: &str = "sum(Once(top_row), 5)";
 /// incompatibly, with `UPDATE_DUMP_FIXTURE=1 cargo test -p monty --test dump_compat`.
 #[test]
 fn native_continuations_fixture_loads_and_resumes() {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/native_continuations_v17_suspended.bin");
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/native_continuations_v18_suspended.bin");
     if env::var_os(UPDATE_FIXTURE).is_some() {
         let mut repl = MontyRepl::new("native.py", ResourceTracker::default(), CompileOptions::default());
         repl.feed_run(NATIVE_CONT_STATE, vec![], PrintWriter::Stdout).unwrap();

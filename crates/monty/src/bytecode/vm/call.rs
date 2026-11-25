@@ -842,8 +842,7 @@ impl<'h> VM<'h> {
         debug_assert_exact_callable(&callable, func_id);
 
         let coroutine = Coroutine::new(func_id, namespace, None);
-        let coroutine_id = self.heap.allocate(HeapData::Coroutine(coroutine));
-        CallResult::Value(Value::Ref(coroutine_id))
+        CallResult::Value(Value::allocate(coroutine, self.heap))
     }
 
     /// Calls an internal function, compiling it on first use.

@@ -26,6 +26,47 @@ test('MontyInstrumentation accepts SDK providers', () => {
   `)
 })
 
+test('snapshot calls use the active app span', () => {
+  runTelemetryChild(`
+    import { context, ROOT_CONTEXT, trace } from '@opentelemetry/api'
+    import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks'
+    import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base'
+    import { flushTelemetry, instrumentTelemetry, Monty } from ${JSON.stringify(new URL('../dist/node.js', import.meta.url).href)}
+
+    context.setGlobalContextManager(new AsyncLocalStorageContextManager().enable())
+    const exporter = new InMemorySpanExporter()
+    const provider = new BasicTracerProvider({ spanProcessors: [new SimpleSpanProcessor(exporter)] })
+    const tracer = provider.getTracer('test')
+    instrumentTelemetry({ tracer })
+    const withSpan = async (name, run) => {
+      const span = tracer.startSpan(name, {}, ROOT_CONTEXT)
+      try { return await context.with(trace.setSpan(ROOT_CONTEXT, span), run) }
+      finally { span.end() }
+    }
+    const pool = await Monty.create()
+    const original = await withSpan('app checkout', () => pool.checkout())
+    if (await original.feedRun('x = 42\\nx') !== 42) throw new Error('unexpected original value')
+    const state = await withSpan('app dump', () => original.dump())
+    await original.close()
+    const restored = await withSpan('app second checkout', () => pool.checkout())
+    await withSpan('app restore', () => restored.loadSession(state))
+    if (await restored.feedRun('x') !== 42) throw new Error('unexpected restored value')
+    await restored.close()
+    await pool.close()
+    await flushTelemetry()
+    const spans = exporter.getFinishedSpans()
+    for (const [childName, parentName] of [['dump', 'app dump'], ['restore', 'app restore'], ['load', 'restore']]) {
+      const child = spans.find((span) => span.name === childName)
+      const parent = spans.find((span) => span.name === parentName)
+      if (!child || !parent || child.parentSpanContext?.spanId !== parent.spanContext().spanId ||
+          child.spanContext().traceId !== parent.spanContext().traceId) {
+        throw new Error(childName + ' has the wrong parent')
+      }
+    }
+    await provider.shutdown()
+  `)
+})
+
 test('a second MontyInstrumentation is rejected', () => {
   runTelemetryChild(`
     import { MontyInstrumentation } from ${JSON.stringify(new URL('../dist/node.js', import.meta.url).href)}

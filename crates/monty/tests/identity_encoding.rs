@@ -126,6 +126,7 @@ fn inline_identities_keep_legacy_numbers() {
             "map" => "legacy_map",
             "filter" => "legacy_filter",
             "FrozenInstanceError" => "dataclasses.FrozenInstanceError",
+            "asyncio.exceptions.InvalidStateError" => "asyncio.InvalidStateError",
             "io.UnsupportedOperation" => "unsupported_operation",
             _ => name,
         };

@@ -846,7 +846,7 @@ fn sample(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<V
             .map(|s| bisect_right(&cum_counts, i128::try_from(s).expect("selection below total")));
         collect_items(population, indices, vm)?
     };
-    Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(picks)))))
+    Ok(Value::allocate(List::new(picks), vm.heap))
 }
 
 /// The positions `sample` picks from a population of `n` — the whole
@@ -1039,7 +1039,7 @@ fn choices(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<
         }
     };
     let picks = collect_items(population, indices.into_iter(), vm)?;
-    Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(picks)))))
+    Ok(Value::allocate(List::new(picks), vm.heap))
 }
 
 /// `list(accumulate(weights))` for `choices`, as floats.

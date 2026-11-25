@@ -268,7 +268,7 @@ which ignores any argument:
 
 `MontyCrashedError` adds `timedOut` and `exitStatus`; `MontyShutdown` adds `dump`; `MontyRefusedError` adds
 `statusCode`, `statusMessage`, `remoteCause`, `retryable` and `retryAfter`.
-`retryAfter` is the server's suggested delay in seconds, capped at one hour, or `null` if absent or invalid.
+`retryAfter` is the server's suggested delay in seconds, capped at one hour, or `null` if the hint is absent, invalid or repeated.
 `retryable` is true for `RESOURCE_EXHAUSTED` and `UNAVAILABLE`, not for credential errors.
 `checkout()` rejects with the same classes when the session cannot be created.
 Options the binding can check, such as `osPolicy`, are rejected by `checkout()` itself.
@@ -439,7 +439,9 @@ console.log(await session.feedRun('1 + 1')) // 2
 A server that refuses the stream rejects `checkout()` with `MontyRefusedError`; one that cannot be reached, with a
 `MontyConnectError`.
 Use `MontyRefusedError.retryable` and `MontyRefusedError.retryAfter` to decide whether and when to try a new checkout.
-No automatic retry is performed for these errors.
+The pool retries a refused checkout once when the server sends a single valid `Retry-After` of at most two seconds.
+The wait and retry dial share a five-second budget and respect the checkout and dial deadlines.
+A retry timeout rejects `checkout()` with the original `MontyRefusedError`.
 
 A dropped connection raises `MontyDisconnectError`, and a draining server raises `MontyShutdown`; both lose the session.
 Disconnect text includes the server's code, `remoteCause` and message, or the transport error.

@@ -237,6 +237,14 @@ def defaulted(x=1):
     return x
 
 
+def other_defaulted(x=1):
+    return x
+
+
+assert defaulted == defaulted
+assert defaulted != other_defaulted
+assert defaulted != 1
+
 assert bool(add1), 'a closure is truthy'
 assert bool(defaulted), 'a function with defaults is truthy'
 

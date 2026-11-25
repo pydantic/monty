@@ -147,7 +147,7 @@ fn consumers_at(block_id: HeapId, index: usize, consumers: usize, vm: &mut VM<'_
                 block: Value::Ref(block_id),
                 index,
             });
-            Value::Ref(vm.heap.allocate(HeapData::Itertools(tee)))
+            Value::allocate(tee, vm.heap)
         })
         .collect()
 }

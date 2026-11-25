@@ -6,8 +6,9 @@
 //! inside the callback therefore leaves only the main loop on the Rust stack, and the continuation is
 //! dumped with its frame.
 //!
-//! Variant and field names are the dump format. A dump does not capture [`NativeCont::resume`], so
-//! changing what a stored state means needs a `DUMP_VERSION` bump or an upgrade.
+//! Variant and field names are the dump format, added in dump version 18: a 1.7.0 reader would
+//! ignore a frame's continuation. A dump does not capture [`NativeCont::resume`], so changing what
+//! a stored state means needs compatibility handling or a `DUMP_VERSION` bump.
 
 use serde::{Deserialize, Serialize};
 
@@ -15,8 +16,8 @@ use super::{CallResult, VM};
 use crate::{
     builtins::SumPhase,
     exception_private::{RunError, RunResult},
-    heap::{ContainsHeap, DropWithContext, HeapData, HeapReadOutput},
-    types::{List, TupleVec, allocate_tuple},
+    heap::{ContainsHeap, DropWithContext},
+    types::{Instance, List, TupleVec, allocate_tuple},
     value::{VALUE_SIZE, Value},
 };
 
@@ -87,12 +88,9 @@ impl NativeCont {
     /// Calls the iterator's `__next__` without completing it: a user method returns `FramePushed`.
     fn call_next(&self, vm: &mut VM<'_>) -> RunResult<CallResult> {
         let (Self::Collect { iterator, .. } | Self::Sum { iterator, .. }) = self;
-        let &Value::Ref(id) = iterator else {
-            return Err(RunError::internal("native continuation iterator is not a heap value"));
-        };
-        match vm.heap.read(id) {
-            HeapReadOutput::Instance(instance) => instance.call_next(vm),
-            _ => Err(RunError::internal(
+        match iterator.read_as::<Instance>(vm.heap) {
+            Some(instance) => instance.call_next(vm),
+            None => Err(RunError::internal(
                 "native continuation iterator is not a user instance",
             )),
         }
@@ -140,7 +138,7 @@ impl NativeCont {
             Self::Collect { iterator, items, kind } => {
                 iterator.drop_with(vm);
                 Step::Value(match kind {
-                    CollectKind::List => Value::Ref(vm.heap.allocate(HeapData::List(List::new(items)))),
+                    CollectKind::List => Value::allocate(List::new(items), vm.heap),
                     CollectKind::Tuple => allocate_tuple(TupleVec::from_vec(items), vm.heap),
                 })
             }
