@@ -1,7 +1,7 @@
 from collections.abc import Callable
 from re import Pattern
 
-__all__ = ['TextWrapper', 'wrap', 'fill', 'dedent', 'indent', 'shorten']
+__all__ = ["TextWrapper", "wrap", "fill", "dedent", "indent", "shorten"]
 
 class TextWrapper:
     width: int
@@ -28,8 +28,8 @@ class TextWrapper:
     def __init__(
         self,
         width: int = 70,
-        initial_indent: str = '',
-        subsequent_indent: str = '',
+        initial_indent: str = "",
+        subsequent_indent: str = "",
         expand_tabs: bool = True,
         replace_whitespace: bool = True,
         fix_sentence_endings: bool = False,
@@ -39,7 +39,7 @@ class TextWrapper:
         tabsize: int = 8,
         *,
         max_lines: int | None = None,
-        placeholder: str = ' [...]',
+        placeholder: str = " [...]",
     ) -> None: ...
     # Private methods *are* part of the documented API for subclasses.
     def _munge_whitespace(self, text: str) -> str: ...
@@ -55,8 +55,8 @@ def wrap(
     text: str,
     width: int = 70,
     *,
-    initial_indent: str = '',
-    subsequent_indent: str = '',
+    initial_indent: str = "",
+    subsequent_indent: str = "",
     expand_tabs: bool = True,
     tabsize: int = 8,
     replace_whitespace: bool = True,
@@ -65,14 +65,14 @@ def wrap(
     break_on_hyphens: bool = True,
     drop_whitespace: bool = True,
     max_lines: int | None = None,
-    placeholder: str = ' [...]',
+    placeholder: str = " [...]",
 ) -> list[str]: ...
 def fill(
     text: str,
     width: int = 70,
     *,
-    initial_indent: str = '',
-    subsequent_indent: str = '',
+    initial_indent: str = "",
+    subsequent_indent: str = "",
     expand_tabs: bool = True,
     tabsize: int = 8,
     replace_whitespace: bool = True,
@@ -81,14 +81,14 @@ def fill(
     break_on_hyphens: bool = True,
     drop_whitespace: bool = True,
     max_lines: int | None = None,
-    placeholder: str = ' [...]',
+    placeholder: str = " [...]",
 ) -> str: ...
 def shorten(
     text: str,
     width: int,
     *,
-    initial_indent: str = '',
-    subsequent_indent: str = '',
+    initial_indent: str = "",
+    subsequent_indent: str = "",
     expand_tabs: bool = True,
     tabsize: int = 8,
     replace_whitespace: bool = True,
@@ -97,7 +97,7 @@ def shorten(
     break_on_hyphens: bool = True,
     drop_whitespace: bool = True,
     # Omit `max_lines: int = None`, it is forced to 1 here.
-    placeholder: str = ' [...]',
+    placeholder: str = " [...]",
 ) -> str: ...
 def dedent(text: str) -> str: ...
 def indent(text: str, prefix: str, predicate: Callable[[str], bool] | None = None) -> str: ...
