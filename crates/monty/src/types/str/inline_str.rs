@@ -1,8 +1,8 @@
 //! Fixed-capacity UTF-8 strings shared by values, views and iterators.
 
-use std::str;
+use std::{fmt, str};
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 use crate::{bytecode::VM, heap::HeapData, intern::StringId, value::Value};
 
@@ -36,7 +36,9 @@ impl InlineStr {
     }
 
     /// Copies fragments and their known ASCII status into a string value.
-    /// Their combined byte length must fit inline.
+    ///
+    /// # Panics
+    /// Panics if the fragments total more than [`Self::CAPACITY`] bytes.
     pub(super) fn allocate_fragments<'a>(fragments: impl IntoIterator<Item = &'a str>, ascii: bool) -> Value {
         let mut bytes = [0; Self::CAPACITY];
         let mut len = 0;
@@ -87,7 +89,7 @@ impl InlineStr {
 
     #[expect(unsafe_code)]
     pub(crate) fn as_str(&self) -> &str {
-        // SAFETY: Constructors copy whole `&str` fragments. Deserialization calls `new` with a `String`.
+        // SAFETY: Constructors copy whole `&str` fragments. Deserialization calls `new` with decoded text.
         unsafe { str::from_utf8_unchecked(self.as_bytes()) }
     }
 }
@@ -100,8 +102,27 @@ impl Serialize for InlineStr {
 
 impl<'de> Deserialize<'de> for InlineStr {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let text = String::deserialize(deserializer)?;
-        Self::new(&text).ok_or_else(|| D::Error::custom("inline string exceeds capacity"))
+        deserializer.deserialize_str(InlineStrVisitor)
+    }
+}
+
+/// Copies decoded text directly into inline storage.
+struct InlineStrVisitor;
+
+impl de::Visitor<'_> for InlineStrVisitor {
+    type Value = InlineStr;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a string")
+    }
+
+    fn visit_str<E: de::Error>(self, text: &str) -> Result<Self::Value, E> {
+        InlineStr::new(text).ok_or_else(|| E::custom("inline string exceeds capacity"))
+    }
+
+    fn visit_bytes<E: de::Error>(self, bytes: &[u8]) -> Result<Self::Value, E> {
+        let text = str::from_utf8(bytes).map_err(|_| E::invalid_value(de::Unexpected::Bytes(bytes), &self))?;
+        self.visit_str(text)
     }
 }
 
