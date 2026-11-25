@@ -9,7 +9,7 @@ use crate::{
     asyncio::{Awaiter, ExternalFutureState, TaskFuture, TaskFutureState},
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, PyException, RunError, RunResult, SimpleException},
     heap::{HEAP_ENTRY_SIZE, HeapData, HeapId, HeapObjectRead, HeapReadOutput},
     heap_traits::{DropGuard, DropWithContext},
     intern::StaticStrings,
@@ -274,8 +274,15 @@ fn exception_value_allocation_size(error: &RunError) -> usize {
 /// surface as a `RuntimeError` carrying the internal message.
 fn exception_value(error: &RunError, vm: &mut VM<'_>) -> Value {
     let exception = match error {
-        RunError::Exc(raise) | RunError::UncatchableExc(raise) => raise.exc.clone(),
-        RunError::Internal(message) => SimpleException::new_msg(ExcType::RuntimeError, message),
+        RunError::Exc(raise) | RunError::UncatchableExc(raise) => {
+            if let Some(inst) = &raise.instance {
+                return inst.clone_with_heap(vm.heap);
+            }
+            PyException::from_simple_exception(&raise.exc)
+        }
+        RunError::Internal(message) => {
+            PyException::from_simple_exception(&SimpleException::new_msg(ExcType::RuntimeError, message))
+        }
     };
     Value::allocate(exception, vm.heap)
 }

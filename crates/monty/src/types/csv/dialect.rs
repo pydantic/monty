@@ -285,7 +285,10 @@ impl Base<'_> {
                 match object.py_getattr(&name, vm) {
                     Ok(CallResult::Value(value)) => Ok(Some(value)),
                     // A missing attribute means "use the default", as CPython's `PyErr_Clear` does.
-                    Err(err) if err.is_catchable(ExcType::AttributeError) => Ok(None),
+                    Err(err) if err.is_catchable(ExcType::AttributeError) => {
+                        err.drop_with(vm);
+                        Ok(None)
+                    }
                     Err(err) => Err(err),
                     Ok(other) => {
                         other.drop_with(vm);

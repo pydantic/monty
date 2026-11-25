@@ -20,7 +20,8 @@ use strum::VariantNames;
 use crate::{
     args::ArgValues,
     builtins::{
-        filter::builtin_filter, iter::builtin_iter, map::builtin_map, object::object_class_attr, type_::builtin_type,
+        base_exception::base_exception_class_attr, filter::builtin_filter, iter::builtin_iter, map::builtin_map,
+        object::object_class_attr, type_::builtin_type,
     },
     bytecode::{CallResult, VM},
     exception_private::{ExcType, RunResult, exc_new},
@@ -939,6 +940,7 @@ native_types! {
     /// The root of every exception class.
     BaseException("BaseException", Object)
         .builtin()
+        .class_attr(base_exception_class_attr)
         .exc(ExcType::BaseException),
     SystemExit("SystemExit", BaseException)
         .builtin()

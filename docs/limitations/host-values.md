@@ -22,6 +22,7 @@ Python and JavaScript hosts cannot distinguish these from ordinary sandbox strin
 Rust hosts can distinguish the corresponding `MontyNode` variants.
 Sandbox-defined class *instances* instead return structured proxies;
 see [classes](classes.md#crossing-the-host-boundary-pydantic_monty-pydanticmonty).
+Unhandled user-defined exceptions that escape to the host are reported as their nearest built-in exception type (e.g., `ExcType::Exception` or `ExcType::ValueError`), with the custom class name preserved in formatted tracebacks.
 
 Builtin functions and type objects outside the data-type allowlist never resolve to the host's own objects.
 Python receives a read-only [`MontyStdTypeProxy`][pydantic_monty.MontyStdTypeProxy] with `kind` and `name`,

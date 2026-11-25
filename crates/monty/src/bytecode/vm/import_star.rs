@@ -77,7 +77,10 @@ impl VM<'_> {
                 .check_growth(names.len(), names.capacity(), size_of::<Value>())?;
             let item = match all.py_getitem(&Value::Int(index), this) {
                 Ok(item) => item,
-                Err(error) if error.is_catchable(ExcType::IndexError) => break,
+                Err(error) if error.is_catchable(ExcType::IndexError) => {
+                    error.drop_with(this);
+                    break;
+                }
                 Err(error) => return Err(error),
             };
             let is_str = item.as_str(this).is_some();

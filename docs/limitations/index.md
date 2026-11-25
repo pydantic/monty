@@ -61,8 +61,8 @@ For compilation and runtime limits, see [resource limits](resource_limits.md).
 
 **Missing in other ways:**
 
-- User-defined exception classes, and subclasses of other native types.
-    Classes inherit only from classes defined in Python and `object`, so the built-in exception types are a fixed set.
+- Subclasses of non-exception native types (`int`, `list`, `dict`, etc.).
+    Classes can inherit from classes defined in Python, built-in exception types, and `object`.
 - Function attributes.
     `fn.__name__`, `fn.__doc__` and friends raise `AttributeError`, and new attributes cannot be set — so
     `functools.wraps`-style metadata copying and registries keyed on `fn.__name__` have no equivalent.

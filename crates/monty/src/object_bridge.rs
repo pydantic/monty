@@ -20,18 +20,18 @@ use crate::{
     builtins::Builtins,
     bytecode::VM,
     defer_drop,
-    exception_private::{RunError, RunResult, SimpleException},
+    exception_private::{PyException, RunError, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
     intern::StringId,
     modules::dataclasses,
     types::{
-        Complex, HostClass, HostClassType, LongInt, Module, NamedTuple, OpenFile, Path, PyTrait, TimeZone, Type,
-        allocate_tuple,
+        Complex, HostClass, HostClassType, LongInt, Module, NamedTuple, OpenFile, OwnedTypeRef, Path, PyTrait,
+        TimeZone, Type, allocate_tuple,
         bytes::Bytes,
         date as date_type, datetime as datetime_type, decimal as decimal_type,
         decimal::py as py_decimal,
         dict::Dict,
-        instance::{class_defines, class_defines_not_none, class_name},
+        instance::{class_defines, class_defines_not_none, class_dunder, class_name},
         list::List,
         set::{FrozenSet, Set},
         str::allocate_string,
@@ -397,11 +397,40 @@ impl GraphExporter {
                 })
             }
             HeapReadOutput::Exception(exc) => {
-                let exc_ref = exc.get(vm.heap);
-                MontyNode::Exception {
-                    exc_type: exc_ref.exc_type(),
-                    arg: exc_ref.arg().map(ToString::to_string),
-                }
+                let exc_type = exc.get(vm.heap).exc_type();
+                let arg = if self.error.is_some() {
+                    None
+                } else if let OwnedTypeRef::Class(cid) = exc.get(vm.heap).class
+                    && class_dunder(cid, "__str__", vm).is_some()
+                {
+                    match exc.py_str(vm) {
+                        Ok(s) => Some(s),
+                        Err(err @ (RunError::UncatchableExc(_) | RunError::Internal(_))) => {
+                            self.error = Some(err);
+                            None
+                        }
+                        Err(RunError::Exc(e)) => {
+                            e.drop_with(vm);
+                            Some("<exception str() failed>".to_owned())
+                        }
+                    }
+                } else {
+                    let args = exc.get(vm.heap).args.clone_with_heap(vm.heap);
+                    let res = match args.format_arg(exc_type, vm) {
+                        Ok(s) => s,
+                        Err(err @ (RunError::UncatchableExc(_) | RunError::Internal(_))) => {
+                            self.error = Some(err);
+                            None
+                        }
+                        Err(RunError::Exc(exc)) => {
+                            exc.drop_with(vm);
+                            Some("<exception str() failed>".to_owned())
+                        }
+                    };
+                    args.drop_with(vm);
+                    res
+                };
+                MontyNode::Exception { exc_type, arg }
             }
             HeapReadOutput::HostClass(hc) => {
                 let (class_id, instance_id) = {
@@ -539,7 +568,9 @@ impl GraphExporter {
                 }
                 Err(RunError::Exc(exc)) => {
                     let ty = value.py_type_name(vm);
-                    MontyNode::Repr(format!("<{ty} object, error on repr(): {}>", exc.exc))
+                    let repr = format!("<{ty} object, error on repr(): {}>", exc.exc);
+                    exc.drop_with(vm);
+                    MontyNode::Repr(repr)
                 }
             }
         }
@@ -1066,7 +1097,7 @@ fn import_node(
             }
         }
         MontyNode::Exception { exc_type, arg } => {
-            let exc = SimpleException::new(exc_type, arg);
+            let exc = PyException::from_simple_exception(&SimpleException::new(exc_type, arg));
             Ok(Value::allocate(exc, vm.heap))
         }
         // A sandbox class the host hands back resolves to the class object

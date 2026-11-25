@@ -32,7 +32,7 @@ use crate::{
         py_trait::PyObjectIdentity,
         str::allocate_string,
     },
-    value::Value,
+    value::{EitherStr, Value},
 };
 
 /// One method `@dataclass` generated, stored in the class namespace under the
@@ -552,18 +552,30 @@ fn store_fields(
     vm: &mut VM<'_>,
 ) -> RunResult<()> {
     defer_drop_mut!(values, vm);
-    let HeapReadOutput::Instance(instance) = vm.heap.read(instance_id) else {
-        unreachable!("init_instance runs on an instance")
+    let (instance, exception) = match vm.heap.read(instance_id) {
+        HeapReadOutput::Instance(inst) => (Some(inst), None),
+        HeapReadOutput::Exception(exc) => (None, Some(exc)),
+        _ => unreachable!("init_instance runs on an instance or exception"),
     };
     for i in 0..values.len() {
         let value = mem::replace(&mut values[i], Value::None);
         let name = Value::InternString(names[i]);
-        let replaced = if frozen {
-            instance.set_attr_unchecked(name, value, vm)?
-        } else {
-            instance.set_attr(name, value, vm)?
-        };
-        replaced.drop_with(vm);
+        if let Some(inst) = &instance {
+            let replaced = if frozen {
+                inst.set_attr_unchecked(name, value, vm)?
+            } else {
+                inst.set_attr(name, value, vm)?
+            };
+            replaced.drop_with(vm);
+        } else if let Some(exc) = &exception {
+            let either = EitherStr::Interned(names[i]);
+            name.drop_with(vm);
+            if frozen {
+                exc.set_attr_unchecked(&either, value, vm)?;
+            } else {
+                exc.set_attr(&either, value, vm)?;
+            }
+        }
     }
     Ok(())
 }

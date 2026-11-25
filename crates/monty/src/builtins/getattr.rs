@@ -58,6 +58,7 @@ pub fn builtin_getattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult
             Some(d) => match CallResult::FramePushed.require_synchronous(vm) {
                 Ok(value) => Ok(CallResult::Value(value)),
                 Err(RunError::Exc(e)) if e.exc.exc_type() == ExcType::AttributeError => {
+                    e.drop_with(vm);
                     Ok(CallResult::Value(d.clone_with_heap(vm)))
                 }
                 Err(e) => Err(e),
@@ -88,6 +89,7 @@ pub fn builtin_getattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult
             if let Some(d) = default
                 && e.exc.exc_type() == ExcType::AttributeError =>
         {
+            e.drop_with(vm);
             Ok(CallResult::Value(d.clone_with_heap(vm)))
         }
         Err(e) => Err(e),

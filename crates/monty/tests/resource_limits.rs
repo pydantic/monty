@@ -1703,6 +1703,24 @@ fn refused_dict_copy_releases_default_factory() {
     );
 }
 
+/// Shallow-copying an exception with attributes preflights allocation for the attribute table.
+#[test]
+fn memory_preflight_in_exception_shallow_copy() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        "import copy\nexc = ValueError('msg')\nexc.foo = 1\nexc.bar = 2",
+        vec![],
+        PrintWriter::Disabled,
+    )
+    .unwrap();
+    repl.tracker_mut()
+        .tighten_limits(&ResourceLimits::default().max_memory(0));
+    let error = repl
+        .feed_run("copy.copy(exc)", vec![], PrintWriter::Disabled)
+        .expect_err("the table-copy preflight must reject the copy");
+    assert_eq!(error.exc_type(), ExcType::MemoryError);
+}
+
 /// Full set copies must stop mid-fill and release every retained member on failure.
 #[test]
 #[cfg(feature = "ref-count-return")]
