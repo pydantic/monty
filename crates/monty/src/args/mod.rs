@@ -213,6 +213,19 @@ impl ArgValues {
         }
     }
 
+    /// Consumes the arguments into an owned vector of positional arguments and keyword arguments.
+    ///
+    /// Reuses the existing vector when present to avoid allocating an extra buffer.
+    pub fn into_vec_parts(self) -> (Vec<Value>, KwargsValues) {
+        match self {
+            Self::Empty => (Vec::new(), KwargsValues::Empty),
+            Self::One(v) => (vec![v], KwargsValues::Empty),
+            Self::Two(v1, v2) => (vec![v1, v2], KwargsValues::Empty),
+            Self::Kwargs(kwargs) => (Vec::new(), kwargs),
+            Self::ArgsKargs { args, kwargs } => (args, kwargs),
+        }
+    }
+
     /// Variant of [`into_parts()`](Self::into_parts) that accepts no kwargs, returning an error if any are present.
     pub fn into_pos_only(self, method_name: &str, heap: &mut Heap) -> RunResult<ArgPosIter> {
         match self {

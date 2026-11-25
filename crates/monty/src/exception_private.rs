@@ -2884,6 +2884,7 @@ impl ExcTypeExt for ExcType {}
 
 /// The constructor of every native exception class, for the native type table.
 pub(crate) fn exc_new(ty: Type, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    let (pos_vec, kwargs) = args.into_vec_parts();
     let exc_type = ty.exc_type().expect("exception types carry their ExcType");
     let exc = PyException {
         class: OwnedTypeRef::Native(ty),
@@ -2894,8 +2895,6 @@ pub(crate) fn exc_new(ty: Type, vm: &mut VM<'_>, args: ArgValues) -> RunResult<V
         attrs: None,
     };
     let heap_id = vm.heap.allocate(HeapData::Exception(Box::new(exc)));
-    let (pos_iter, kwargs) = args.into_parts();
-    let pos_vec: Vec<Value> = pos_iter.collect();
     if let Err(err) = init_exception_instance(heap_id, pos_vec, kwargs, vm) {
         vm.heap.dec_ref(heap_id);
         return Err(err);
@@ -3045,15 +3044,20 @@ pub(crate) enum ExceptionArgs {
 
 impl ExceptionArgs {
     /// Constructs `ExceptionArgs` from a list of argument values.
-    pub(crate) fn from_values(mut values: Vec<Value>, vm: &mut VM<'_>) -> Self {
+    pub(crate) fn from_values(mut values: Vec<Value>, vm: &mut VM<'_>) -> RunResult<Self> {
         match values.len() {
-            0 => Self::Empty,
-            1 => Self::OneValue(values.remove(0)),
+            0 => Ok(Self::Empty),
+            1 => Ok(Self::OneValue(values.remove(0))),
             _ => {
-                let items: TupleVec = values.into_iter().collect();
+                let slots = values.len().checked_next_power_of_two().unwrap_or(usize::MAX);
+                if let Err(err) = vm.heap.tracker.check_allocation(slots.saturating_mul(VALUE_SIZE)) {
+                    values.drop_with(vm);
+                    return Err(err.into());
+                }
+                let items = TupleVec::from_vec(values);
                 let tuple_val = allocate_tuple(items, vm.heap);
                 let tuple_id = tuple_val.into_ref_id().expect("tuple is a heap reference");
-                Self::Tuple(tuple_id)
+                Ok(Self::Tuple(tuple_id))
             }
         }
     }

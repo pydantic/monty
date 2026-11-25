@@ -859,8 +859,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
                     };
                 }
                 if attr_str == "__init__" {
-                    let (pos_iter, kwargs) = args.into_parts();
-                    let pos_vec: Vec<Value> = pos_iter.collect();
+                    let (pos_vec, kwargs) = args.into_vec_parts();
                     init_exception_instance(value.id(), pos_vec, kwargs, vm)?;
                     Ok(CallResult::Value(Value::None))
                 } else if let Some(callable) = value

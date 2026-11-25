@@ -139,7 +139,21 @@ pub(crate) fn init_exception_instance(
         }
     }
 
-    let new_args = ExceptionArgs::from_values(args, vm);
+    let new_args = match ExceptionArgs::from_values(args, vm) {
+        Ok(args) => args,
+        Err(err) => {
+            if let Some(n) = name_val {
+                n.drop_with(vm);
+            }
+            if let Some(o) = obj_val {
+                o.drop_with(vm);
+            }
+            if let Some(p) = path_val {
+                p.drop_with(vm);
+            }
+            return Err(err);
+        }
+    };
     let mut attrs_to_set = Vec::new();
     if is_attr_err {
         attrs_to_set.push(("name", name_val.unwrap_or(Value::None)));
@@ -256,7 +270,7 @@ pub(crate) fn builtin_base_exception_new(vm: &mut VM<'_>, args: ArgValues) -> Ru
         })
         .unwrap_or(ExcType::BaseException);
 
-    let exc_args = ExceptionArgs::from_values(args, vm);
+    let exc_args = ExceptionArgs::from_values(args, vm)?;
     let exc = PyException::from_parts(type_ref.to_owned(vm.heap), exc_type, exc_args);
     let heap_id = vm.heap.allocate(HeapData::Exception(Box::new(exc)));
     Ok(Value::Ref(heap_id))

@@ -1721,6 +1721,20 @@ fn memory_preflight_in_exception_shallow_copy() {
     assert_eq!(error.exc_type(), ExcType::MemoryError);
 }
 
+/// Constructing an exception with multiple arguments preflights tuple allocation.
+#[test]
+fn memory_preflight_in_exception_constructor_args() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run("items = (1, 2, 3)", vec![], PrintWriter::Disabled)
+        .unwrap();
+    repl.tracker_mut()
+        .tighten_limits(&ResourceLimits::default().max_memory(0));
+    let error = repl
+        .feed_run("ValueError(*items)", vec![], PrintWriter::Disabled)
+        .expect_err("the args tuple preflight must reject constructor call");
+    assert_eq!(error.exc_type(), ExcType::MemoryError);
+}
+
 /// Full set copies must stop mid-fill and release every retained member on failure.
 #[test]
 #[cfg(feature = "ref-count-return")]
