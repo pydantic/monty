@@ -389,18 +389,14 @@ pub struct RaisedException {
     /// Outermost frame first, matching Python traceback order.
     #[prost(message, repeated, tag = "3")]
     pub traceback: ::prost::alloc::vec::Vec<StackFrame>,
-    /// Structured payload for exception types that carry more than a message;
-    /// absent for most exceptions. Mirrors monty's `ExcData`.
+    /// Additional exception data, absent for most exceptions.
     #[prost(message, optional, tag = "4")]
     pub data: ::core::option::Option<ExcData>,
 }
-/// Structured exception payload, mirroring monty's `ExcData` enum. Future
-/// exception types that carry more than a message (e.g. OSError's errno)
-/// get new oneof arms with fresh tags. An absent/empty kind means "no
-/// payload" (`ExcData::None`).
+/// Structured payload or formatting information for the exception.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExcData {
-    #[prost(oneof = "exc_data::Kind", tags = "1, 2")]
+    #[prost(oneof = "exc_data::Kind", tags = "1, 2, 3")]
     pub kind: ::core::option::Option<exc_data::Kind>,
 }
 /// Nested message and enum types in `ExcData`.
@@ -411,6 +407,9 @@ pub mod exc_data {
         Unicode(super::UnicodeErrorData),
         #[prost(message, tag = "2")]
         Json(super::JsonErrorData),
+        /// The KeyError message is a raw string key. Render it with Python repr.
+        #[prost(message, tag = "3")]
+        QuotedKeyError(super::Unit),
     }
 }
 /// CPython's UnicodeDecodeError/UnicodeEncodeError constructor fields

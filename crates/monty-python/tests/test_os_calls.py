@@ -678,7 +678,7 @@ def test_os_environ_key_missing_raises(monty_run: RunMonty):
 
     with pytest.raises(MontyRuntimeError) as exc_info:
         monty_run("import os; os.environ['MISSING']", os=os_handler)
-    assert str(exc_info.value) == snapshot('KeyError: MISSING')
+    assert str(exc_info.value) == snapshot("KeyError: 'MISSING'")
 
 
 def test_os_environ_get_method(monty_run: RunMonty):

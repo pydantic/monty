@@ -359,19 +359,17 @@ message RaisedException {
   optional string message = 2;
   // Outermost frame first, matching Python traceback order.
   repeated StackFrame traceback = 3;
-  // Structured payload for exception types that carry more than a message;
-  // absent for most exceptions. Mirrors monty's `ExcData`.
+  // Additional exception data, absent for most exceptions.
   ExcData data = 4;
 }
 
-// Structured exception payload, mirroring monty's `ExcData` enum. Future
-// exception types that carry more than a message (e.g. OSError's errno)
-// get new oneof arms with fresh tags. An absent/empty kind means "no
-// payload" (`ExcData::None`).
+// Structured payload or formatting information for the exception.
 message ExcData {
   oneof kind {
     UnicodeErrorData unicode = 1;
     JsonErrorData json = 2;
+    // The KeyError message is a raw string key. Render it with Python repr.
+    Unit quoted_key_error = 3;
   }
 }
 

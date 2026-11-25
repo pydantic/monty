@@ -224,6 +224,50 @@ def test_key_error(monty_run: RunMonty):
     assert isinstance(exc_info.value.exception(), KeyError)
 
 
+@pytest.mark.parametrize(
+    'code, message, rendered',
+    [
+        ("{}['missing']", 'missing', "'missing'"),
+        ('raise KeyError("can\'t\\n")', "can't\n", '"can\'t\\n"'),
+        ("{'a': 1}.pop('missing')", 'missing', "'missing'"),
+        ("set().remove('missing')", 'missing', "'missing'"),
+        ('set().pop()', 'pop from an empty set', "'pop from an empty set'"),
+        ('{}.popitem()', 'popitem(): dictionary is empty', "'popitem(): dictionary is empty'"),
+        ("{}['']", '', "''"),
+        ("{}['1']", '1', "'1'"),
+        ('{}[1]', '1', '1'),
+    ],
+)
+def test_key_error_display(monty_run: RunMonty, code: str, message: str, rendered: str):
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run(code)
+    error = exc_info.value
+    assert error.display('msg') == message
+    assert error.display('type-msg') == f'KeyError: {rendered}'
+    assert str(error) == f'KeyError: {rendered}'
+    assert error.display().splitlines()[-1] == f'KeyError: {rendered}'
+    assert error.exception().args == (message,)
+
+
+def test_key_error_no_args_display(monty_run: RunMonty):
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run('raise KeyError()')
+    assert exc_info.value.display('type-msg') == 'KeyError'
+    assert exc_info.value.display().splitlines()[-1] == 'KeyError'
+
+
+def test_key_error_display_after_dump(pool: Monty):
+    with pool.checkout() as session:
+        session.feed_run("error = KeyError('1')")
+        dump = session.dump()
+
+    with pool.checkout() as session:
+        session.load_session(dump)
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            session.feed_run('raise error')
+    assert exc_info.value.display('type-msg') == "KeyError: '1'"
+
+
 def test_attribute_error(monty_run: RunMonty):
     with pytest.raises(MontyRuntimeError) as exc_info:
         monty_run("raise AttributeError('no such attr')")

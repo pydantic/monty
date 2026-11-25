@@ -315,6 +315,9 @@ impl MontyRuntimeError {
     #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
     fn __str__(slf: PyRef<'_, Self>) -> String {
         let parent = slf.as_super();
+        if parent.exc.quotes_key_error() {
+            return parent.exc.summary();
+        }
         let exc_type_name = parent.exc_type();
         if let Some(msg) = parent.message()
             && !msg.is_empty()

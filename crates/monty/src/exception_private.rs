@@ -346,20 +346,20 @@ pub(crate) trait ExcTypeExt: Sized {
     /// An uncatchable error (a resource limit hit inside a user `__str__`) is
     /// returned as is, so it cannot become a catchable `KeyError`.
     fn key_error(key: &Value, vm: &mut VM<'_>) -> RunError {
-        match key.py_str(vm) {
-            Ok(key_value) => {
-                // `key_value` is a heap `str` `Value`; extract its text and drop it.
-                defer_drop!(key_value, vm);
-                let key_str = if let Some(s) = key_value.as_str(vm) {
-                    s.to_owned()
-                } else {
-                    format!("<{}>", key.py_type_name(vm))
-                };
-                SimpleException::new_msg(ExcType::KeyError, key_str).into()
-            }
-            Err(err @ RunError::UncatchableExc(_)) => err,
-            Err(_) => SimpleException::new_msg(ExcType::KeyError, format!("<{}>", key.py_type_name(vm))).into(),
+        if let Some(key) = key.as_str(vm) {
+            return SimpleException::new_msg(ExcType::KeyError, key).into();
         }
+
+        let key_str = match key.py_str(vm) {
+            Ok(key_value) => {
+                defer_drop!(key_value, vm);
+                key_value.as_str(vm).map(str::to_owned)
+            }
+            Err(err @ RunError::UncatchableExc(_)) => return err,
+            Err(_) => None,
+        };
+        let key_str = key_str.unwrap_or_else(|| format!("<{}>", key.py_type_name(vm)));
+        SimpleException::new(ExcType::KeyError, Some(key_str)).into()
     }
 
     /// Creates a KeyError for popping from an empty set.
@@ -2392,7 +2392,7 @@ pub(crate) trait ExcTypeExt: Sized {
     /// Matches CPython's format: `KeyError: 'popitem(): dictionary is empty'`
     #[must_use]
     fn key_error_popitem_empty_dict() -> RunError {
-        SimpleException::new_msg(ExcType::KeyError, "'popitem(): dictionary is empty'").into()
+        SimpleException::new_msg(ExcType::KeyError, "popitem(): dictionary is empty").into()
     }
 
     /// Creates a LookupError for unknown encoding.
@@ -2861,6 +2861,9 @@ impl ExcTypeExt for ExcType {
 pub(crate) struct SimpleException {
     exc_type: ExcType,
     arg: Option<String>,
+    /// Whether the original argument was a string key.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    quote_key_error: bool,
     /// Structured payload (e.g. unicode-error constructor fields), carried
     /// through catch/re-raise so it reaches the public `MontyException` when
     /// the exception escapes the sandbox.
@@ -2880,6 +2883,7 @@ impl Clone for SimpleException {
         Self {
             exc_type: self.exc_type,
             arg: self.arg.clone(),
+            quote_key_error: self.quote_key_error,
             data: self.data.clone(),
             chain: None,
         }
@@ -2911,6 +2915,7 @@ impl From<MontyException> for SimpleException {
     fn from(mut exc: MontyException) -> Self {
         Self {
             exc_type: exc.exc_type(),
+            quote_key_error: exc.quotes_key_error(),
             data: exc.take_data(),
             arg: exc.into_message(),
             chain: None,
@@ -2925,6 +2930,7 @@ impl SimpleException {
         Self {
             exc_type,
             arg,
+            quote_key_error: false,
             data: ExcData::None,
             chain: None,
         }
@@ -2934,22 +2940,15 @@ impl SimpleException {
     #[must_use]
     pub fn new_msg(exc_type: ExcType, arg: impl fmt::Display) -> Self {
         Self {
-            exc_type,
-            arg: Some(arg.to_string()),
-            data: ExcData::None,
-            chain: None,
+            quote_key_error: exc_type == ExcType::KeyError,
+            ..Self::new(exc_type, Some(arg.to_string()))
         }
     }
 
     /// Creates a new exception with the given type and no argument message.
     #[must_use]
     pub fn new_none(exc_type: ExcType) -> Self {
-        Self {
-            exc_type,
-            arg: None,
-            data: ExcData::None,
-            chain: None,
-        }
+        Self::new(exc_type, None)
     }
 
     /// Attaches a structured payload — see [`ExcData`].
@@ -2973,7 +2972,6 @@ impl SimpleException {
     #[must_use]
     pub fn py_str(&self) -> String {
         match (self.exc_type, &self.arg) {
-            // KeyError expecificaly uses repr of the key for str(exc)
             (ExcType::KeyError, Some(exc)) => StringRepr(exc).to_string(),
             (_, Some(arg)) => arg.to_owned(),
             (_, None) => String::new(),
@@ -3225,7 +3223,9 @@ impl ExceptionRaise {
             traceback.push(*frame);
         }
 
-        MontyException::with_traceback(self.exc.exc_type, self.exc.arg, traceback).with_data(self.exc.data)
+        MontyException::with_traceback(self.exc.exc_type, self.exc.arg, traceback)
+            .with_data(self.exc.data)
+            .with_quoted_key_error(self.exc.quote_key_error)
     }
 }
 
