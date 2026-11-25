@@ -2388,6 +2388,52 @@ fn batched_without_a_size_hint_is_refused_before_the_hard_limit() {
     child.shutdown();
 }
 
+/// `sum()` over a user iterator whose `__next__` pushes no frame steps in a native loop that reaches
+/// no dispatch checkpoint, while a user `__add__` allocates a cycle per item. Only that loop's
+/// amortized memory poll stops it, so this pins the property rather than a byte figure.
+#[test]
+fn frameless_native_sum_is_refused_before_the_hard_limit() {
+    const SOFT_LIMIT: u64 = 1024 * 1024;
+    const HARD_CEILING: u64 = SOFT_LIMIT + 4 * 1024 * 1024;
+
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(SOFT_LIMIT));
+    let code = "\
+class It:
+    __next__ = bool
+
+    def __iter__(self):
+        return self
+
+class Acc:
+    def __add__(self, other):
+        x = [None] * 1000
+        x[0] = x
+        return self
+
+sum(It(), Acc())";
+    let (_, event) = child.feed(code);
+    let error = expect_error(event);
+    assert_eq!(error.exc_type, "MemoryError");
+    let message = error.message.expect("MemoryError should have a message");
+    let used = reported_usage(&message, code);
+    assert!(
+        (SOFT_LIMIT..HARD_CEILING).contains(&used),
+        "reported {used} bytes, expected a refusal between {SOFT_LIMIT} and {HARD_CEILING}"
+    );
+    // The cycles stay allocated until the collector next runs, so the session may still be over
+    // the soft limit; what matters is that the worker survived to answer.
+    let (_, event) = child.feed("1 + 1");
+    assert!(
+        matches!(
+            event,
+            pb::worker_event::Kind::Complete(_) | pb::worker_event::Kind::Error(_)
+        ),
+        "{event:?}"
+    );
+    child.shutdown();
+}
+
 /// `tomllib` turns a couple of source bytes into a tree node (`[[a]]` into a
 /// whole table), so a document that fits can build a tree that does not. Only
 /// the parser's per-element / per-statement poll stops it, and where that

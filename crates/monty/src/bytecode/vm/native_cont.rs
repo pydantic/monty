@@ -245,9 +245,10 @@ impl VM<'_> {
                 Step::Value(value) => return Ok(NativeExit::Value(value)),
                 Step::Next(cont) => cont,
             };
-            // Only frameless items repeat this loop, and they reach no dispatch checkpoint.
+            // Only frameless items repeat this loop, and they reach no dispatch checkpoint, though each
+            // may allocate (collected items, a user `__add__`), so poll memory as well as time.
             steps += 1;
-            if let Err(error) = self.heap.tracker.check_time_every(steps) {
+            if let Err(error) = self.heap.tracker.check_memory_time_every(steps) {
                 cont.drop_with(self);
                 return Err(error.into());
             }
