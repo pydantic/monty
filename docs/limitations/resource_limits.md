@@ -27,13 +27,18 @@ Snippets rejected before execution retain none of their compilation products (se
 
 ## Memory / size limits
 
+- Source code is limited to `u32::MAX` (4,294,967,295) UTF-8 bytes because parser offsets are 32 bits.
+    Oversized source raises `SyntaxError`.
+
 - Memory usage is measured by the worker's process-global allocator, while the
     configured budget belongs to one session.
+
 - Workers count bytes requested from their global allocator. Direct Rust users
     must install `monty-alloc` as the global allocator and arm its hard ceiling
     with `set_hard_limit(memory_limit_with_headroom(...))` before using
     `max_memory`; without it usage always reads as zero and the limit is silently
     not enforced.
+
 - Operations whose result is bounded by simple arithmetic on input sizes
     are **pre-checked** before allocating: integer multiplication, left
     shift, integer power, sequence repeat (`'x' * n`), replacement
@@ -49,9 +54,14 @@ Snippets rejected before execution retain none of their compilation products (se
     where Ascii85's `z` (and `y` with `foldspaces=True`) stands for a whole
     four-byte word. Each of these reserves what it pre-checked, so the buffer
     never grows past it.
+    `re.escape` and the `str` case methods (`lower`, `upper`, `casefold`,
+    `capitalize`, `title`, `swapcase`) are pre-checked too; a case mapping
+    that outgrows its input (`'ΐ'.upper()` is three characters) is checked
+    as the result grows.
     The pre-check threshold is 100 KB:
     estimates above that are checked against the remaining budget and rejected
     with `MemoryError` before allocation when they would exceed it.
+
 - `bigint.pow(base, exp)` estimates result size as `bits(base) * exp` with
     a 4× safety multiplier to cover repeated-squaring intermediate values.
 
@@ -106,6 +116,8 @@ without one is unlimited.
     and re-derives the cap for each session, always from the leanest the process
     has been, plus process-wide typeshed and lint-registry initialization.
     The session's type-checker database and caches are released on reset.
+    A worker started with `--prewarm-type-checker` (`PoolConfig::prewarm_type_checker`) instead keeps a checker with the
+    builtins resolved in its baseline, about 6 MiB, and rebuilds it after each type-checked session.
     Other memory retained between sessions therefore consumes the headroom
     rather than raising the cap, and a worker whose residue outgrows it is killed
     and replaced rather than allowed to grow indefinitely.
@@ -162,13 +174,15 @@ indistinguishable from a stack overflow.
     as one frame, so `await`-chains do not amplify depth.
 - Callbacks evaluated synchronously by the interpreter itself re-enter on the
     native Rust call stack rather than the heap-allocated frame stack used by
-    ordinary function calls. This includes `map()`, `filter()`,
+    ordinary function calls. This includes consuming `map()` or `filter()` through native loops such as `list()`,
     `sorted()`/`list.sort(key=...)`, `min()`/`max(key=...)`, recursive
     `__repr__`/`__str__`, non-plain-function `__init__` values that recurse
     during construction, and calling a `functools.partial`. Native re-entry is
     capped independently at a lower fixed depth than the 1000-frame Python
     limit, so Monty raises `RecursionError` before a native stack overflow would
-    abort the process. See the `__repr__`/`__str__` entry in [classes.md](classes.md) for
+    abort the process. This cap also applies when a `map` callback such as `next` advances another map inline,
+    even if the outer map is driven by a `for` loop.
+    See the `__repr__`/`__str__` entry in [classes.md](classes.md) for
     the main user-visible divergence this causes.
 - Operations that walk a nested container in Rust — `==`, `<`, `repr()`,
     `hash()`, `isinstance()`, `json.dumps()`, `copy.deepcopy()` — charge one

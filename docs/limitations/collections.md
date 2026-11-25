@@ -2,8 +2,7 @@
 
 `deque`, `namedtuple`, `defaultdict`, and `Counter` are implemented and
 feature-complete against CPython 3.14 apart from the divergences below. The
-exact supported surface is pinned by the custom typeshed stub
-(`crates/monty-typeshed/custom/collections/__init__.pyi`) and
+exact supported surface is pinned by the narrowed typeshed stub and
 `crates/monty/tests/collections.rs`. `defaultdict` and `Counter` are exposed as
 the type objects themselves (like `deque`), so `type(d) is defaultdict` and
 `isinstance(c, Counter)` hold.
@@ -30,17 +29,15 @@ too, rather than something that type-checks and then fails at runtime.
 - **Returned to the host as a plain `list`**, so the `maxlen` bound and the
     deque-ness are lost; sending it back yields a `list`. (Same as
     defaultdict/Counter, which arrive as plain dicts.)
-- **Mutation during iteration is not detected through `enumerate`/`zip`/`map`/
-    `filter`/`reversed`**: those are eager (see [builtins.md](builtins.md)), so
+- **Mutation during iteration is not detected through `enumerate`/`zip`/`reversed`**:
+    those are eager (see [builtins.md](builtins.md)), so
     the deque is fully read before the loop body runs. `for x in d` and explicit
     `iter()`/`next()` detect it exactly as CPython does.
 - **Extending from an eager builtin loses the partial result when it raises.**
     `extend`/`extendleft`/`+=` append each item as the source yields it, so an
     iterator raising part-way leaves the earlier items in place, as in CPython.
-    But `map`/`filter`/`zip`/`enumerate` are eager (see
-    [builtins.md](builtins.md)), so `d += map(f, xs)` with a raising `f` raises
-    before the extend begins and appends nothing, where CPython appends whatever
-    was yielded first.
+    But `zip` and `enumerate` are eager (see [builtins.md](builtins.md)), so `d += enumerate(xs)` with a raising
+    source raises before the extend begins and appends nothing, where CPython appends whatever was yielded first.
 
 `del d[i]` fails at *compile* time, since the `del` statement is unimplemented
 Monty-wide (see [language.md](language.md)), and subclassing (`class Q(deque)`)
@@ -58,9 +55,8 @@ divergences. `repr(Point)` is `<class 'Point'>` where CPython gives
 
 - **A `default_factory` cannot call an external or `os` function**; a
     missing-key access then raises `NotImplementedError`. Plain factories (`int`,
-    `list`, `lambda`, ordinary functions) work. This applies to every callback
-    Monty invokes mid-expression (the `key=` of `sorted`/`min`/`max`, `map`,
-    `filter`, `__repr__`), not just defaultdict.
+    `list`, `lambda`, ordinary functions) work.
+    Other synchronous callbacks, such as the `key=` of `sorted`/`min`/`max` and `__repr__`, have the same restriction.
 - **Crosses the host boundary as a plain `dict`**: the `default_factory` is a
     function and cannot cross, so sending the dict back yields a plain `dict`.
 

@@ -1,0 +1,10 @@
+# Monty-only exclusions. Keys under `exclude` are exact unittest IDs.
+[suites."test_fnmatch.py".exclude]
+"test.test_fnmatch.FilterFalseTestCase.test_case" = "Monty does not implement fnmatch.filterfalse."
+"test.test_fnmatch.FilterFalseTestCase.test_filterfalse" = "Monty does not implement fnmatch.filterfalse."
+"test.test_fnmatch.FilterFalseTestCase.test_mix_bytes_str" = "Monty does not implement fnmatch.filterfalse."
+"test.test_fnmatch.FilterFalseTestCase.test_sep" = "Monty does not implement fnmatch.filterfalse."
+"test.test_fnmatch.FnmatchTestCase.test_char_set" = "Monty does not provide the string module."
+"test.test_fnmatch.FnmatchTestCase.test_range" = "Monty does not provide the string module."
+"test.test_fnmatch.FnmatchTestCase.test_warnings" = "Monty does not provide the warnings module."
+"test.test_fnmatch.TranslateTestCase.test_star_indices_locations" = "Monty does not expose the private fnmatch._translate helper."

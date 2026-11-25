@@ -187,11 +187,9 @@ fn collection_too_large(count: usize, position: CodeRange) -> CompileError {
     )
 }
 
-/// Converts the index of a newly-defined function into the `u16` operand used
-/// by `MakeFunction`/`MakeClosure`. The cap is the total number of
-/// `def`/`lambda`/comprehension function objects in the *whole module*, since
-/// `FunctionId`s are allocated linearly across nested scopes.
-fn check_function_count_u16(func_id: usize, position: CodeRange) -> Result<u16, CompileError> {
+/// Checks that an index in the interner's function table fits the `u16` bytecode operand.
+/// Nested definitions and frozen functions created at runtime share that table.
+pub(super) fn check_function_count_u16(func_id: usize, position: CodeRange) -> Result<u16, CompileError> {
     u16::try_from(func_id).map_err(|_| too_many_functions(func_id, position))
 }
 
@@ -295,12 +293,19 @@ pub struct Compiler<'a, 'i> {
     flags: ScopeFlags,
 }
 
-/// Compiler settings inherited by nested scopes, with await restrictions reset for functions.
+/// Scope-level permission for `await` expressions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AwaitScope {
+    /// `await` is permitted (in an `async def` body or top-level script).
+    Allowed,
+    /// In a synchronous function (`def`, `lambda`): raises "'await' outside async function".
+    OutsideAsyncFunction,
+    /// In a non-script snippet (`eval()`, `exec()`) or class body: raises "'await' outside function".
+    OutsideFunction,
+}
+
+/// Compiler settings inherited by nested scopes, with await restrictions updated for functions.
 #[derive(Debug, Clone, Copy)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "independent switches copied into nested scopes"
-)]
 struct ScopeFlags {
     /// Whether to compile pytest-style assert failure annotations.
     assert_message_annotations: bool,
@@ -308,9 +313,8 @@ struct ScopeFlags {
     /// `NAME_GLOBAL_ONLY`) because the running frame's globals are an explicit
     /// `exec()` / `eval()` dict.
     globals_by_name: bool,
-    /// Rejects `await` at snippet top level and in its class bodies.
-    /// Nested function bodies reset this restriction.
-    forbid_await: bool,
+    /// Controls whether and how `await` expressions are rejected.
+    await_scope: AwaitScope,
     /// Whether the compile unit runs under `from __future__ import annotations`,
     /// stamped on every `Code` it produces.
     future_annotations: bool,
@@ -585,10 +589,15 @@ impl<'a, 'i> Compiler<'a, 'i> {
         // Module frames have `locals_count = 0` at runtime (globals live in
         // `self.globals`), so comp-var offsets are emitted as plain operand-
         // stack indices.
+        let await_scope = if snippet.is_some() {
+            AwaitScope::OutsideFunction
+        } else {
+            AwaitScope::Allowed
+        };
         let flags = ScopeFlags {
             assert_message_annotations: options.assert_message_annotations.enabled(),
             globals_by_name: snippet.unwrap_or(false),
-            forbid_await: snippet.is_some(),
+            await_scope,
             future_annotations,
         };
         let mut compiler = Compiler::new(interns, true, 0, flags);
@@ -624,10 +633,12 @@ impl<'a, 'i> Compiler<'a, 'i> {
         // Function frames have `locals_count = num_locals` at runtime, so
         // comp-var load/store opcodes use `num_locals + offset` to skip past
         // the locals region into the operand-stack region.
-        let flags = ScopeFlags {
-            forbid_await: false,
-            ..flags
+        let await_scope = if func_def.is_async {
+            AwaitScope::Allowed
+        } else {
+            AwaitScope::OutsideAsyncFunction
         };
+        let flags = ScopeFlags { await_scope, ..flags };
         let mut compiler = Compiler::new(interns, false, num_locals, flags);
         // Parameters, and the cells captured parameters live in, are named up
         // front: a body that never mentions one still reports it from `locals()`.
@@ -1147,7 +1158,10 @@ impl<'a, 'i> Compiler<'a, 'i> {
         members: &[Identifier],
         position: CodeRange,
     ) -> Result<(), CompileError> {
-        let flags = self.flags;
+        let flags = ScopeFlags {
+            await_scope: AwaitScope::OutsideFunction,
+            ..self.flags
+        };
         debug_assert!(
             body.cell_var_slots.len() <= 1,
             "class body owns at most the implicit __class__ cell"
@@ -1577,8 +1591,14 @@ impl<'a, 'i> Compiler<'a, 'i> {
             }
 
             Expr::Await(value) => {
-                if self.flags.forbid_await {
-                    return Err(CompileError::new("'await' outside function", expr_loc.position));
+                match self.flags.await_scope {
+                    AwaitScope::OutsideAsyncFunction => {
+                        return Err(CompileError::new("'await' outside async function", expr_loc.position));
+                    }
+                    AwaitScope::OutsideFunction => {
+                        return Err(CompileError::new("'await' outside function", expr_loc.position));
+                    }
+                    AwaitScope::Allowed => {}
                 }
                 // Await expressions: compile the inner expression, then emit Await
                 // Await handles ExternalFuture, Coroutine, and GatherFuture
@@ -2802,7 +2822,6 @@ impl<'a, 'i> Compiler<'a, 'i> {
             break_jumps: Vec::new(),
         }));
 
-        // ForIter: advance iterator or jump to end
         let end_jump = self.code.emit_jump(Opcode::ForIter)?;
 
         // Store current value to target (handles both single identifiers and tuple unpacking)
@@ -2813,7 +2832,6 @@ impl<'a, 'i> Compiler<'a, 'i> {
 
         // Jump back to loop start
         self.code.emit_jump_to(Opcode::Jump, loop_start)?;
-        // End of loop - ForIter jumps here when iterator is exhausted
         self.code.patch_jump(end_jump)?;
 
         // Pop loop block before compiling else block
@@ -3285,7 +3303,6 @@ impl<'a, 'i> Compiler<'a, 'i> {
         // Loop start
         let loop_start = self.code.current_jump_target();
 
-        // FOR_ITER: pushes value, or pops iter and jumps to end on exhaustion.
         let end_jump = self.code.emit_jump(Opcode::ForIter)?;
 
         // Unpack target and record each leaf's active storage.

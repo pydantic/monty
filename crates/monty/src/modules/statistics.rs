@@ -22,7 +22,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{DropGuard, HeapData, HeapReadOutput},
+    heap::{DropGuard, HeapReadOutput},
     intern::StaticStrings,
     modules::{ModuleFunctions, collections::counter_init, math},
     resource_checks::try_vec_with_capacity,
@@ -36,21 +36,22 @@ use crate::{
 };
 
 /// The functions of the `statistics` module.
+#[monty_macros::explicit_discriminants(checksum = 0xfb2d_44e2_bb70_c85c)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum StatisticsFunctions {
-    Mean,
-    Fmean,
-    Median,
-    MedianLow,
-    MedianHigh,
-    Mode,
-    Multimode,
-    Pstdev,
-    Pvariance,
-    Stdev,
-    Variance,
-    Quantiles,
+    Mean = 0,
+    Fmean = 1,
+    Median = 2,
+    MedianLow = 3,
+    MedianHigh = 4,
+    Mode = 5,
+    Multimode = 6,
+    Pstdev = 7,
+    Pvariance = 8,
+    Stdev = 9,
+    Variance = 10,
+    Quantiles = 11,
 }
 
 /// Creates the module and its `StatisticsError` exception type.
@@ -605,7 +606,7 @@ data_args!(MultimodeArgs, "multimode");
 
 /// Allocates `items` as a new `list`.
 fn list_value(items: Vec<Value>, vm: &mut VM<'_>) -> Value {
-    Value::Ref(vm.heap.allocate(HeapData::List(List::new(items))))
+    Value::allocate(List::new(items), vm.heap)
 }
 
 /// An empty buffer with room for exactly `count` values, after checking that it fits the memory budget.

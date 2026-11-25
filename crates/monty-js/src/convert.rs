@@ -33,10 +33,16 @@
 //! - `Cycle` → placeholder `string`
 #![expect(unsafe_code, reason = "napi API is unsafe")]
 
-use std::{borrow::Cow, collections::HashMap, ptr, vec::IntoIter};
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    ptr,
+    time::{Duration, Instant},
+    vec::IntoIter,
+};
 
 use monty_types::{
-    unstable::{self, ClassTypeNode, MontyGraph, MontyNode, NodeId},
+    unstable::{self, ClassEq, ClassHash, ClassTypeNode, MontyGraph, MontyNode, NodeId},
     BuiltinsFunctions, ExcType, FileMode, MontyComplex, MontyDate, MontyDateTime, MontyFileHandle, MontyObject,
     MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
 };
@@ -48,6 +54,16 @@ const JS_SAFE_INT_MIN: i64 = -(1_i64 << 53);
 const JS_SAFE_INT_MAX: i64 = 1_i64 << 53;
 const JS_MAX_SAFE_POSITION: u64 = (1_u64 << 53) - 1;
 const JS_MAX_SAFE_POSITION_F64: f64 = 9_007_199_254_740_991.0;
+
+/// Insert time every arena may spend on `Map` and `Set` keys, whatever its size.
+const INSERT_TIME_FLOOR: Duration = Duration::from_millis(250);
+/// Insert time each `Map` or `Set` key adds to its arena's allowance.
+const INSERT_TIME_PER_KEY: Duration = Duration::from_micros(1);
+/// Keys inserted between clock reads, so timing stays cheap next to the inserts.
+const INSERT_CHECK_INTERVAL: u32 = 256;
+/// The error message for a value whose keys exceed the insert budget, matching the WASM decoder.
+const INSERT_BUDGET_EXCEEDED: &str =
+    "dict and set keys took too long to insert on the host, likely from hash collisions";
 
 /// Wrapper letting `monty_to_js` return a dynamically typed JS value from a
 /// napi function.
@@ -80,8 +96,9 @@ impl<'e> DecodedArena<'e> {
     /// Decodes every node of `graph`.
     pub fn new(graph: &MontyGraph, env: &'e Env) -> Result<Self> {
         let mut built = Vec::with_capacity(graph.len());
+        let mut budget = InsertBudget::default();
         for node in graph.nodes() {
-            let value = decode_node(node, graph, &built, env)?;
+            let value = decode_node(node, graph, &built, &mut budget, env)?;
             built.push(value);
         }
         Ok(Self { built })
@@ -95,7 +112,13 @@ impl<'e> DecodedArena<'e> {
 }
 
 /// Converts one node; every child id is lower, so already in `built`.
-fn decode_node<'e>(node: &MontyNode, graph: &MontyGraph, built: &[Unknown<'e>], env: &'e Env) -> Result<Unknown<'e>> {
+fn decode_node<'e>(
+    node: &MontyNode,
+    graph: &MontyGraph,
+    built: &[Unknown<'e>],
+    budget: &mut InsertBudget,
+    env: &'e Env,
+) -> Result<Unknown<'e>> {
     let child = |id: &NodeId| built[id.index()];
     let children = |ids: &[NodeId]| ids.iter().map(child).collect::<Vec<_>>();
     match node {
@@ -114,8 +137,8 @@ fn decode_node<'e>(node: &MontyNode, graph: &MontyGraph, built: &[Unknown<'e>], 
         MontyNode::Tuple(items) => create_js_tuple(&children(items), env),
         // NamedTuple is converted to a tuple (loses named access in JS)
         MontyNode::NamedTuple { values, .. } => create_js_tuple(&children(values), env),
-        MontyNode::Dict(pairs) => create_js_map(pairs.iter().map(|(k, v)| (child(k), child(v))), env),
-        MontyNode::Set(items) | MontyNode::FrozenSet(items) => create_js_set(&children(items), env),
+        MontyNode::Dict(pairs) => create_js_map(pairs.iter().map(|(k, v)| (child(k), child(v))), budget, env),
+        MontyNode::Set(items) | MontyNode::FrozenSet(items) => create_js_set(&children(items), budget, env),
         MontyNode::Exception { exc_type, arg } => create_js_exception(*exc_type, arg.as_deref(), env),
         MontyNode::Date(date) => create_js_date(date, env),
         MontyNode::DateTime(datetime) => create_js_datetime(datetime, env),
@@ -251,12 +274,19 @@ fn create_js_tuple<'e>(items: &[Unknown<'e>], env: &'e Env) -> Result<Unknown<'e
 /// - Non-string key types (numbers, booleans, etc.)
 /// - Insertion order
 /// - Proper equality semantics for keys
-fn create_js_map<'e>(pairs: impl Iterator<Item = (Unknown<'e>, Unknown<'e>)>, env: &'e Env) -> Result<Unknown<'e>> {
+fn create_js_map<'e>(
+    pairs: impl Iterator<Item = (Unknown<'e>, Unknown<'e>)>,
+    budget: &mut InsertBudget,
+    env: &'e Env,
+) -> Result<Unknown<'e>> {
     let map = new_js_map(env)?;
     let set_method: Unknown = map.get_named_property("set")?;
+    let mut timer = budget.start();
     for (js_key, js_value) in pairs {
         call_method_2_args(env.raw(), map.raw(), set_method.raw(), js_key.raw(), js_value.raw())?;
+        timer.tick()?;
     }
+    timer.finish()?;
     map.into_unknown(env)
 }
 
@@ -291,16 +321,91 @@ fn call_method_2_args(
 }
 
 /// Creates a native JS Set from already-decoded items.
-fn create_js_set<'e>(items: &[Unknown<'e>], env: &'e Env) -> Result<Unknown<'e>> {
+fn create_js_set<'e>(items: &[Unknown<'e>], budget: &mut InsertBudget, env: &'e Env) -> Result<Unknown<'e>> {
     let global = env.get_global()?;
     let set_constructor: Function<()> = global.get_named_property("Set")?;
     let set: Object<'e> = set_constructor.new_instance(())?.coerce_to_object()?;
 
     let add_method: Function = set.get_named_property("add")?;
+    let mut timer = budget.start();
     for item in items {
         add_method.apply(set, *item)?;
+        timer.tick()?;
     }
+    timer.finish()?;
     set.into_unknown(env)
+}
+
+/// Bounds the time one arena spends inserting `Map` and `Set` keys.
+///
+/// JS engines hash numbers and BigInts without a secret seed (V8 hashes a BigInt
+/// by its low 64 bits), so the sandbox can pick keys that share one bucket and make
+/// each insert walk every earlier key: O(n²) on the host. Engines expose no hashes,
+/// so this bounds time instead, at [`INSERT_TIME_FLOOR`] plus [`INSERT_TIME_PER_KEY`] per key.
+#[derive(Default)]
+struct InsertBudget {
+    /// Insert time charged so far.
+    spent: Duration,
+    /// Keys inserted so far, each widening the allowance.
+    keys: u32,
+}
+
+impl InsertBudget {
+    /// Starts timing one container's inserts.
+    fn start(&mut self) -> InsertTimer<'_> {
+        InsertTimer {
+            budget: self,
+            start: Instant::now(),
+            pending: 0,
+        }
+    }
+
+    /// Charges `elapsed` for `keys` inserts, failing once the arena exceeds its allowance.
+    fn charge(&mut self, elapsed: Duration, keys: u32) -> Result<()> {
+        self.spent += elapsed;
+        self.keys = self.keys.saturating_add(keys);
+        if self.spent > INSERT_TIME_FLOOR + INSERT_TIME_PER_KEY.saturating_mul(self.keys) {
+            Err(Error::from_reason(INSERT_BUDGET_EXCEEDED))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// Times one container's inserts in batches of [`INSERT_CHECK_INTERVAL`].
+///
+/// Call [`InsertTimer::finish`] after the last insert: dropping it charges nothing.
+struct InsertTimer<'b> {
+    budget: &'b mut InsertBudget,
+    /// When the current batch started.
+    start: Instant,
+    /// Inserts in the current batch.
+    pending: u32,
+}
+
+impl InsertTimer<'_> {
+    /// Records one insert, charging the batch once it is full.
+    fn tick(&mut self) -> Result<()> {
+        self.pending += 1;
+        if self.pending == INSERT_CHECK_INTERVAL {
+            self.flush()
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Charges the final, partial batch.
+    fn finish(mut self) -> Result<()> {
+        self.flush()
+    }
+
+    /// Charges the current batch and starts the next.
+    fn flush(&mut self) -> Result<()> {
+        self.budget.charge(self.start.elapsed(), self.pending)?;
+        self.start = Instant::now();
+        self.pending = 0;
+        Ok(())
+    }
 }
 
 /// Creates a JS object representing Ellipsis: `{ __monty_type__: 'Ellipsis' }`.
@@ -1051,6 +1156,10 @@ impl ClassHeader {
             host_defined: self.host_defined,
             is_dataclass: self.is_dataclass,
             attrs,
+            // JS proxies compare by reference, and the sandbox reads no rule
+            // for a class it receives, so none is sent.
+            eq: ClassEq::Identity,
+            hash: ClassHash::Identity,
         }))
     }
 }

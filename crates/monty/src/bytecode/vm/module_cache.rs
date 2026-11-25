@@ -13,7 +13,8 @@ use crate::{
 /// Each file runs once: a later import of the name binds the cached module. A
 /// module is cached before its body runs, so a circular import binds it partly
 /// initialised, and dropped again if the body raises, so the next import retries.
-/// Bundled and host modules are never cached. Every `HeapId` is OWNED.
+/// Native and host modules are never cached; vendored CPython modules are cached like
+/// file modules. Every `HeapId` is OWNED.
 // TODO: back a live `sys.modules` dict with this, and add `importlib.reload`.
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ModuleCache(BTreeMap<String, CachedModule>);

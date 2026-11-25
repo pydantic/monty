@@ -231,15 +231,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "atomic-polyfill"
-version = "1.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8cf2bce30dfe09ef0bfaef228b9d414faaf7e563035494d7fe092dba54b300f4"
-dependencies = [
- "critical-section",
-]
-
-[[package]]
 name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -455,16 +446,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
+name = "bytecount"
+version = "0.6.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "175812e0be2bccb6abe50bb8d566126198344f707e304f45c648fd8f2cc0365e"
+
+[[package]]
 name = "bytemuck"
 version = "1.25.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "95832e849adfb21180ccb6826a99da14e5d266ae5c2e668e1602cf234f153797"
-
-[[package]]
-name = "byteorder"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
 name = "bytes"
@@ -582,7 +573,6 @@ dependencies = [
  "iana-time-zone",
  "js-sys",
  "num-traits",
- "serde",
  "wasm-bindgen",
  "windows-link",
 ]
@@ -670,15 +660,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c0f78a02292a74a88ac736019ab962ece0bc380e3f977bf72e376c5d78ff0678"
 dependencies = [
  "cc",
-]
-
-[[package]]
-name = "cobs"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0fa961b519f0b462e3a3b4a34b64d119eeaca1d59af726fe450bbba07a9fc0a1"
-dependencies = [
- "thiserror",
 ]
 
 [[package]]
@@ -913,12 +894,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "critical-section"
-version = "1.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "790eea4361631c5e7d22598ecd5723ff611904e3344ce8720784c93e3d83d40b"
-
-[[package]]
 name = "crossbeam-deque"
 version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1094,18 +1069,6 @@ name = "either"
 version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "252afb9ae5eaa683babdc6a068b3f5726eb19e05070c731f9b2a23a7c3e8ed34"
-
-[[package]]
-name = "embedded-io"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef1a6892d9eef45c8fa6b9e0086428a2cca8491aca8f787c534a3d6d0bcb3ced"
-
-[[package]]
-name = "embedded-io"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
 
 [[package]]
 name = "encode_unicode"
@@ -1492,15 +1455,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hash32"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b0c35f58762feb77d74ebe43bdbc3210f09be9fe6742234d573bacc26ed92b67"
-dependencies = [
- "byteorder",
-]
-
-[[package]]
 name = "hashbrown"
 version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1533,20 +1487,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a596f1b20ed2cc5ecac41a164aaebc7258057060f06c0cf7a2ba3991ee7990fb"
 dependencies = [
  "hashbrown 0.17.1",
-]
-
-[[package]]
-name = "heapless"
-version = "0.7.17"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cdc6457c0eb62c71aac4bc17216026d8410337c4126773b9c5daba343f17964f"
-dependencies = [
- "atomic-polyfill",
- "hash32",
- "rustc_version",
- "serde",
- "spin 0.9.9",
- "stable_deref_trait",
 ]
 
 [[package]]
@@ -1986,9 +1926,9 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "jiff"
-version = "0.2.43"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "26699905cc795a23e3949585cc7ba3ee8ade090872a27e4316304a777297894a"
+checksum = "ed5d126d72eb017f10b302e73bdeca446bea405ee449af4d9e7866d6b082d83e"
 dependencies = [
  "jiff-core",
  "jiff-static",
@@ -2001,30 +1941,30 @@ dependencies = [
 
 [[package]]
 name = "jiff-core"
-version = "0.1.5"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ffe6854081f5ac0a3046a9b223729ccd7a20b1e0e8277e44dc0660eedf67dfe2"
+checksum = "b6b46a105a9874634dd96231021526bf24ca04955a5998c59a9c7666e634b7b8"
 dependencies = [
  "log",
 ]
 
 [[package]]
 name = "jiff-static"
-version = "0.2.43"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b4ff49b2887190c760b86207b55cdcaabbdecaf7a0660d68aa2ed6f652abf0a"
+checksum = "c0127e9bde3c6130d6169e7d8d68676e4be69c4bf7573c308b6f960a5089c428"
 dependencies = [
  "jiff-core",
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.9",
 ]
 
 [[package]]
 name = "jiff-tzdb"
-version = "0.1.9"
+version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fa8377070c6bae868759445e5a77f66d84f0b72f3a054bfb00e6d038b8282da7"
+checksum = "12e71a1b68a875a44a33bb7a1dd84392cb77145a3367a552a3cfe6a4f5cf3afc"
 
 [[package]]
 name = "jiter"
@@ -2429,10 +2369,10 @@ dependencies = [
 
 [[package]]
 name = "monty"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "ahash",
- "chrono",
+ "bytecount",
  "cpu-time",
  "fancy-regex 0.20.0",
  "getrandom 0.4.3",
@@ -2440,6 +2380,7 @@ dependencies = [
  "indexmap",
  "insta",
  "itoa",
+ "jiff",
  "jiter",
  "libm",
  "memchr",
@@ -2449,7 +2390,6 @@ dependencies = [
  "num-bigint",
  "num-integer",
  "num-traits",
- "postcard",
  "ruff_python_ast",
  "ruff_python_codegen",
  "ruff_python_parser",
@@ -2467,18 +2407,19 @@ dependencies = [
  "unicode-general-category",
  "unicode-normalization",
  "unicode_names2",
+ "wide",
 ]
 
 [[package]]
 name = "monty-alloc"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "monty-types",
 ]
 
 [[package]]
 name = "monty-apidoc"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "insta",
  "rustdoc-types",
@@ -2487,7 +2428,7 @@ dependencies = [
 
 [[package]]
 name = "monty-bench"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "codspeed-criterion-compat",
  "criterion",
@@ -2507,23 +2448,27 @@ dependencies = [
 
 [[package]]
 name = "monty-datatest"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "ahash",
  "datatest-stable",
  "monty",
  "monty-fixture",
  "monty-fs",
+ "monty-type-checking",
  "monty-types",
  "pyo3",
  "pyo3-build-config",
+ "regex-syntax",
+ "serde",
  "similar 3.2.1",
  "tempfile",
+ "toml",
 ]
 
 [[package]]
 name = "monty-doctest"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "monty",
  "monty-pool",
@@ -2533,7 +2478,7 @@ dependencies = [
 
 [[package]]
 name = "monty-fixture"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "insta",
  "serde",
@@ -2542,7 +2487,7 @@ dependencies = [
 
 [[package]]
 name = "monty-fs"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "ahash",
  "cap-std",
@@ -2555,7 +2500,7 @@ dependencies = [
 
 [[package]]
 name = "monty-fuzz"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "arbitrary",
  "libfuzzer-sys",
@@ -2565,7 +2510,7 @@ dependencies = [
 
 [[package]]
 name = "monty-js"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "monty-pool",
  "monty-types",
@@ -2582,7 +2527,7 @@ dependencies = [
 
 [[package]]
 name = "monty-macros"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "insta",
  "proc-macro2",
@@ -2592,7 +2537,7 @@ dependencies = [
 
 [[package]]
 name = "monty-pgo"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "monty-pool",
  "monty-types",
@@ -2601,7 +2546,7 @@ dependencies = [
 
 [[package]]
 name = "monty-pool"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "bytes",
  "cpu-time",
@@ -2638,13 +2583,14 @@ dependencies = [
 
 [[package]]
 name = "monty-proto"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "allocation-counter",
  "bytes",
  "heck",
  "insta",
  "monty",
+ "monty-alloc",
  "monty-proto",
  "monty-type-checking",
  "monty-types",
@@ -2660,7 +2606,7 @@ dependencies = [
 
 [[package]]
 name = "monty-runtime"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "anstream",
  "anstyle",
@@ -2679,7 +2625,7 @@ dependencies = [
 
 [[package]]
 name = "monty-type-checking"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "codspeed-criterion-compat",
  "criterion",
@@ -2700,9 +2646,8 @@ dependencies = [
 
 [[package]]
 name = "monty-types"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
- "chrono",
  "cpu-time",
  "jiff",
  "minicbor-serde",
@@ -2721,7 +2666,7 @@ dependencies = [
 
 [[package]]
 name = "monty-typeshed"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "path-slash",
  "ruff_db",
@@ -2731,7 +2676,7 @@ dependencies = [
 
 [[package]]
 name = "monty-wasm-runtime"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "monty-alloc",
  "monty-proto",
@@ -3297,19 +3242,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "postcard"
-version = "1.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6764c3b5dd454e283a30e6dfe78e9b31096d9e32036b5d1eaac7a6119ccb9a24"
-dependencies = [
- "cobs",
- "embedded-io 0.4.0",
- "embedded-io 0.6.1",
- "heapless",
- "serde",
-]
-
-[[package]]
 name = "potential_utf"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3341,7 +3273,7 @@ dependencies = [
  "nix 0.26.4",
  "once_cell",
  "smallvec",
- "spin 0.10.1",
+ "spin",
  "symbolic-demangle",
  "tempfile",
  "thiserror",
@@ -3514,11 +3446,11 @@ dependencies = [
 
 [[package]]
 name = "pydantic-monty-client"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "ahash",
- "chrono",
  "futures-util",
+ "jiff",
  "monty-fs",
  "monty-pool",
  "monty-proto",
@@ -4353,6 +4285,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
+name = "safe_arch"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42c6efa15875e6ecb39ca61fb0b0c1a40b84fac5a5ffe71eef7d1000c8eb3f5f"
+dependencies = [
+ "bytemuck",
+]
+
+[[package]]
 name = "salsa"
 version = "0.28.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4636,15 +4577,6 @@ dependencies = [
  "lexical-parse-float",
  "strum",
  "strum_macros",
-]
-
-[[package]]
-name = "spin"
-version = "0.9.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e"
-dependencies = [
- "lock_api",
 ]
 
 [[package]]
@@ -5640,6 +5572,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "58ec80e73fd8baf57bf0d9615554c75348bda990d6d5bbeab964dd068319fecb"
 dependencies = [
  "rustls-pki-types",
+]
+
+[[package]]
+name = "wide"
+version = "1.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d920ac99c3c8edce110cb8d07dbb324d6d026011dce85b1e9355b70f0adacc4f"
+dependencies = [
+ "bytemuck",
+ "safe_arch",
 ]
 
 [[package]]

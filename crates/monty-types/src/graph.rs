@@ -286,9 +286,16 @@ impl MontyNode {
             }
             Self::Dict(entries) => pairs(entries),
             // The boxed payload is outside `size_of::<Self>()`, so charge it too.
-            Self::ClassType(class) => size_of::<ClassTypeNode>()
-                .saturating_add(class.name.len())
-                .saturating_add(pairs(&class.attrs)),
+            Self::ClassType(class) => {
+                let names: usize = (class.eq.field_names().iter())
+                    .chain(class.hash.field_names())
+                    .map(|name| Self::metadata_string_size(name))
+                    .sum();
+                size_of::<ClassTypeNode>()
+                    .saturating_add(class.name.len())
+                    .saturating_add(pairs(&class.attrs))
+                    .saturating_add(names)
+            }
             Self::ClassInstance { attrs, .. } => pairs(attrs),
             Self::Module { name, attrs, .. } => name.len().saturating_add(pairs(attrs)),
             _ => 0,
@@ -311,6 +318,69 @@ pub struct ClassTypeNode {
     pub is_dataclass: bool,
     /// Eagerly-sent class attributes as `(name, value)` id pairs.
     pub attrs: Vec<(NodeId, NodeId)>,
+    /// How the sandbox compares instances with `==`, so a host proxy can
+    /// follow it. Only sandbox classes report anything but identity.
+    #[serde(default)]
+    pub eq: ClassEq,
+    /// How the sandbox hashes instances; see [`eq`](Self::eq).
+    #[serde(default)]
+    pub hash: ClassHash,
+}
+
+/// How a class's instances compare with `==` in the sandbox.
+///
+/// A host cannot run sandbox code, so only rules it can replay exactly carry
+/// detail; anything else is [`Custom`](Self::Custom).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ClassEq {
+    /// No `__eq__`: equal only to the same object.
+    #[default]
+    Identity,
+    /// A `@dataclass`-generated `__eq__`: equal to an instance of the same
+    /// class whose named fields, in order, are all `==`.
+    Fields(Vec<String>),
+    /// A user-defined `__eq__`, or a rule this peer does not know. Replaying it
+    /// would mean running sandbox code, so a host compares by identity instead.
+    Custom,
+}
+
+/// How a class's instances hash in the sandbox.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ClassHash {
+    /// No `__hash__` and no `__eq__`: hashed by identity.
+    #[default]
+    Identity,
+    /// A `@dataclass`-generated `__hash__`: the hash of the named fields' values
+    /// as a tuple.
+    Fields(Vec<String>),
+    /// `__hash__ = None`, explicit or implied by defining `__eq__`.
+    Unhashable,
+    /// A user-defined `__hash__`, or a rule this peer does not know. A host
+    /// cannot run it, so it hashes by identity, or by the fields a
+    /// [`ClassEq::Fields`] rule compares, keeping equal proxies' hashes equal.
+    Custom,
+}
+
+impl ClassEq {
+    /// The field names this rule reads, empty unless [`Fields`](Self::Fields).
+    #[must_use]
+    pub fn field_names(&self) -> &[String] {
+        match self {
+            Self::Fields(names) => names,
+            Self::Identity | Self::Custom => &[],
+        }
+    }
+}
+
+impl ClassHash {
+    /// The field names this rule reads, empty unless [`Fields`](Self::Fields).
+    #[must_use]
+    pub fn field_names(&self) -> &[String] {
+        match self {
+            Self::Fields(names) => names,
+            Self::Identity | Self::Unhashable | Self::Custom => &[],
+        }
+    }
 }
 
 impl PartialEq for MontyNode {

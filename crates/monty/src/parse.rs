@@ -358,7 +358,7 @@ pub(crate) fn source_nesting_exception(
 /// as `1+1+...` builds one deep enough to overflow the stack.
 ///
 /// # Errors
-/// The `SyntaxError: Source is too deeply nested` located in the source.
+/// A located `SyntaxError` if source exceeds `u32::MAX` UTF-8 bytes or its nesting/depth limit.
 pub fn type_check_nesting_exception(
     code: &str,
     script_name: &str,
@@ -374,16 +374,29 @@ pub fn type_check_nesting_exception(
     }
 }
 
-/// Rejects a source over `source_scan_threshold` bytes whose estimated parser
-/// nesting exceeds [`MAX_NESTING_DEPTH`] before ruff can grow its stack on it.
-///
-/// Same message as the converter's exact check, so either path reads alike.
+/// Rejects source lengths that Ruff's 32-bit offsets cannot represent.
+pub(crate) fn check_source_length(byte_len: usize, filename_id: StringId) -> Result<(), ParseError> {
+    u32::try_from(byte_len).map(|_| ()).map_err(|_| {
+        ParseError::syntax(
+            "source exceeds maximum length of 4294967295 bytes",
+            CodeRange {
+                filename: filename_id,
+                ..CodeRange::default()
+            },
+        )
+    })
+}
+
+/// Rejects source above `u32::MAX` bytes regardless of `source_scan_threshold`.
+/// Sources above `source_scan_threshold` also get a nesting check against [`MAX_NESTING_DEPTH`].
 fn check_source_nesting(
     code: &str,
     mode: Mode,
     filename_id: StringId,
     source_scan_threshold: usize,
 ) -> Result<(), ParseError> {
+    check_source_length(code.len(), filename_id)?;
+
     if code.len() > source_scan_threshold
         && let Some(range) = nesting_bound_exceeded(code, mode, MAX_NESTING_DEPTH)
     {
@@ -958,7 +971,7 @@ impl<'a, 'i> Parser<'a, 'i> {
                 let import_names = names
                     .iter()
                     .map(|alias_node| {
-                        let (module_name, submodules) = self.import_path(&alias_node.name, position)?;
+                        let (module_name, submodules) = self.import_path("", &alias_node.name, position)?;
                         // `import a.b` loads `a.b` but binds `a`; an alias binds `a.b` itself.
                         let binds_top_level = alias_node.asname.is_none() && !submodules.is_empty();
                         // The binding name is the alias if present, otherwise the module
@@ -990,7 +1003,7 @@ impl<'a, 'i> Parser<'a, 'i> {
                 // to a no-op, so real-world modules import cleanly. Anything Monty
                 // does not implement is rejected rather than quietly failing to do
                 // what it says. `level == 0` keeps `from .__future__ import x` an
-                // ordinary relative import, falling through to the `ImportError`.
+                // ordinary relative import.
                 if level == 0 && module.as_ref().is_some_and(|m| m.as_str() == "__future__") {
                     if !self.future_allowed {
                         return Err(ParseError::syntax(
@@ -1031,25 +1044,10 @@ impl<'a, 'i> Parser<'a, 'i> {
                         }
                     };
                 }
-                // We only support absolute imports (level 0)
-                // TODO(site-packages): relative imports in modules imported from files,
-                // resolved against the importing module's `__package__`.
-                if level != 0 {
-                    return Err(ParseError::import_error(
-                        "attempted relative import with no known parent package",
-                        position,
-                    ));
-                }
-                // Module name is required for absolute imports
-                let (module_name, submodules) = match module {
-                    Some(m) => self.import_path(&m, position)?,
-                    None => {
-                        return Err(ParseError::import_error(
-                            "attempted relative import with no known parent package",
-                            position,
-                        ));
-                    }
-                };
+                // For `..pkg.mod`, the VM resolves `..` against the importing module's `__package__`.
+                let dots = ".".repeat(level as usize);
+                let module = module.as_ref().map_or("", |m| m.as_str());
+                let (module_name, submodules) = self.import_path(&dots, module, position)?;
                 // The grammar only allows `*` as the sole imported name.
                 if let [alias] = names.as_slice()
                     && alias.name.as_str() == "*"
@@ -2745,22 +2743,41 @@ impl<'a, 'i> Parser<'a, 'i> {
     }
 
     /// Interns dotted-import components and prefixes; rejects more than [`MAX_IMPORT_COMPONENTS`].
-    fn import_path(&mut self, dotted: &str, position: CodeRange) -> Result<(StringId, Vec<Submodule>), ParseError> {
+    /// A relative import (non-empty `dots`) loads the package its dots name, then each
+    /// component of `dotted`, whose paths keep the dots (`..pkg`, `..pkg.mod`).
+    fn import_path(
+        &mut self,
+        dots: &str,
+        dotted: &str,
+        position: CodeRange,
+    ) -> Result<(StringId, Vec<Submodule>), ParseError> {
         if dotted.split('.').nth(MAX_IMPORT_COMPONENTS).is_some() {
             return Err(ParseError::syntax(
                 format!("dotted import has more than {MAX_IMPORT_COMPONENTS} components"),
                 position,
             ));
         }
-        let mut parts = dotted.split('.');
-        let module_name = self.interner.intern(parts.next().unwrap_or_default());
-        let mut end = dotted.find('.').unwrap_or(dotted.len());
-        let submodules = parts
+        let path = format!("{dots}{dotted}");
+        let mut end = if dots.is_empty() {
+            dotted.find('.').unwrap_or(dotted.len())
+        } else {
+            dots.len()
+        };
+        let module_name = self.interner.intern(&path[..end]);
+        // `.b.c` after an absolute head, `pkg.mod` after a relative one.
+        let (rest, mut separator) = match path[end..].strip_prefix('.') {
+            Some(rest) => (rest, 1),
+            None => (&path[end..], 0),
+        };
+        let submodules = rest
+            .split('.')
+            .filter(|part| !part.is_empty())
             .map(|part| {
-                end += 1 + part.len();
+                end += separator + part.len();
+                separator = 1;
                 Submodule {
                     name: self.interner.intern(part),
-                    path: self.interner.intern(&dotted[..end]),
+                    path: self.interner.intern(&path[..end]),
                 }
             })
             .collect();
@@ -3089,23 +3106,11 @@ pub enum ParseError {
         msg: Cow<'static, str>,
         position: CodeRange,
     },
-    /// Import error (e.g., relative imports without a package).
-    Import {
-        msg: Cow<'static, str>,
-        position: CodeRange,
-    },
 }
 
 impl ParseError {
     pub(crate) fn not_implemented(msg: impl Into<Cow<'static, str>>, position: CodeRange) -> Self {
         Self::NotImplemented {
-            msg: msg.into(),
-            position,
-        }
-    }
-
-    fn import_error(msg: impl Into<Cow<'static, str>>, position: CodeRange) -> Self {
-        Self::Import {
             msg: msg.into(),
             position,
         }
@@ -3139,9 +3144,6 @@ impl ParseError {
                     .with_snippet_position(position, source)
                     .into()
             }
-            Self::Import { msg, position } => SimpleException::new_msg(ExcType::ImportError, msg)
-                .with_snippet_position(position, source)
-                .into(),
         }
     }
 
@@ -3175,11 +3177,6 @@ impl ParseError {
                 ExcType::NotImplementedError,
                 format!("The monty syntax parser does not yet support {msg}"),
                 StackFrame::from_position(position, filename, &mut source_map),
-            ),
-            Self::Import { msg, position } => (
-                ExcType::ImportError,
-                msg.into_owned(),
-                StackFrame::from_position_no_caret(position, filename, &mut source_map),
             ),
         }
     }
@@ -3424,3 +3421,7 @@ impl ConstantNumber {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/source_length.rs"]
+mod source_length_tests;

@@ -1,5 +1,6 @@
+import sys
 import uuid
-from collections.abc import Awaitable, Mapping
+from collections.abc import Awaitable, Iterable, Mapping
 from pathlib import Path
 from typing import Any, Callable, Literal, NoReturn, final
 
@@ -41,6 +42,7 @@ __all__ = [
     'MontyDisconnectError',
     'MontyError',
     'MontyFileHandle',
+    'MontyNamedTuple',
     'MontyRefusedError',
     'MontyConfigurationError',
     'MontyConnectError',
@@ -446,6 +448,15 @@ class MontyClassProxy:
     instance's `id`, so passed back in it resolves to the live sandbox object
     (`attributes` not applied; a freed one raises) or, after a restore, re-enters
     as a host-backed copy built from `attributes`.
+
+    `==` and `hash()` follow the sandbox class where the host can replay it: a
+    `@dataclass` compares (and, when frozen, hashes) its fields. Sandbox code
+    never runs on the host, so a user-defined `__eq__` is replaced by `id`
+    comparison, as is any rule for a proxy whose attributes hold a host
+    object (whose own `__eq__` / `__hash__` would run). The hash follows `==`: the compared fields, or the `id` (even
+    for a user-defined `__hash__`). A class the sandbox cannot hash raises
+    `TypeError` from `hash()`, and proxies nested over 1000 deep through their
+    fields raise `RecursionError`.
     """
 
     @property
@@ -462,17 +473,18 @@ class MontyClassProxy:
 
     @property
     def attributes(self) -> dict[str, Any]:
-        """The instance's attributes as a plain dict."""
+        """A copy of the instance's attributes as a plain dict; editing it changes nothing."""
 
     def __repr__(self) -> str: ...
     def __eq__(self, value: object, /) -> bool: ...
+    def __hash__(self) -> int: ...
 
 @final
 class MontyClassTypeProxy:
     """Read-only proxy for a host class the session has no class object for: a
     `ClassType`, or `type(x)` of a `ClassInstance`, returned after a session
     restore. It keeps the class `id`, so passed back in it is the same sandbox
-    type object.
+    type object. Proxies compare and hash by `id`.
     """
 
     @property
@@ -489,10 +501,48 @@ class MontyClassTypeProxy:
 
     @property
     def attributes(self) -> dict[str, Any]:
-        """The eager class attrs that crossed with the class, as a plain dict."""
+        """A copy of the eager class attrs that crossed with the class, as a plain dict; editing it changes nothing."""
 
     def __repr__(self) -> str: ...
     def __eq__(self, value: object, /) -> bool: ...
+    def __hash__(self) -> int: ...
+
+class MontyNamedTuple(tuple[Any, ...]):
+    """A namedtuple returned by the sandbox: a tuple whose fields are also attributes.
+
+    It supports the instance API of `collections.namedtuple` (`p.x`, `_fields`, `_asdict()`, `_replace()`,
+    `_make()`), but every sandbox namedtuple type shares this one class, so `type(p)` is `MontyNamedTuple`
+    and the sandbox's type name is `p._type_name`, such as `'Point'` or `'os.stat_result'`.
+    """
+
+    _type_name: str
+    """The sandbox type name, qualified by its module unless it is a built-in or `__main__` type."""
+    _fields: tuple[str, ...]
+    """The field names, in order."""
+
+    def __new__(cls, type_name: str, fields: tuple[str, ...], values: Iterable[Any]) -> Self: ...
+    def __getattr__(self, name: str) -> Any: ...
+    @property
+    def _field_defaults(self) -> dict[str, Any]:
+        """Always empty: sandbox namedtuples cross without their defaults."""
+
+    def _make(self, iterable: Iterable[Any]) -> Self:
+        """A new namedtuple of the same type from a sequence or iterable."""
+
+    def _replace(self, /, **kwds: Any) -> Self:
+        """A new namedtuple of the same type with the given fields replaced."""
+
+    if sys.version_info >= (3, 13):
+        def __replace__(self, /, **kwds: Any) -> Self: ...
+
+    def _asdict(self) -> dict[str, Any]:
+        """A new dict mapping field names to values."""
+
+    # tuple methods a field of the same name shadows, as on a real namedtuple
+    @property
+    def count(self) -> Any: ...  # pyright: ignore[reportIncompatibleMethodOverride]
+    @property
+    def index(self) -> Any: ...  # pyright: ignore[reportIncompatibleMethodOverride]
 
 @final
 class MontyStdTypeProxy:
@@ -651,16 +701,19 @@ class MontyRefusedError(MontyError):
     def retryable(self) -> bool:
         """`True` for `RESOURCE_EXHAUSTED` or `UNAVAILABLE`, not for credential errors.
 
-        No automatic retry is performed. A disconnected request must not be replayed.
+        This property classifies the status code. The server requests an
+        automatic checkout retry with `Retry-After`.
         """
 
     @property
     def retry_after(self) -> float | None:
-        """Suggested delay in seconds from `Retry-After`, or `None` if absent or invalid.
+        """Suggested delay in seconds from a single valid `Retry-After`, or `None`.
 
         Both delay-seconds and HTTP dates are accepted. Past dates give zero;
         delays are capped at one hour.
-        A retry delay does not make a permanent refusal retryable.
+        The pool retries a refused checkout once for a delay of at most two
+        seconds, within the five-second retry budget and the original
+        checkout and dial deadlines.
         """
 
 @final
@@ -719,6 +772,7 @@ class Monty:
         max_checkouts_per_worker: int | None = 1000,
         feed_duration_limit_grace: float | None = 1.0,
         turn_duration_limit_grace: float | None = 1.0,
+        pre_warm: int = 0,
     ) -> Self:
         """
         Configure a worker pool; the workers are spawned by `with`.
@@ -731,6 +785,10 @@ class Monty:
             min_processes: Workers spawned eagerly, and a floor on live workers:
                 while the pool is open, background refills restore it after a
                 worker is recycled, crashes or is discarded.
+            pre_warm: Idle workers to keep ready beyond those checked out: each
+                one a checkout takes is replaced in the background, so the next
+                checkout usually finds one ready. They count against
+                `max_processes`; a larger `pre_warm` raises `MontyConfigurationError`.
             max_processes: Cap on live workers (defaults to the CPU count);
                 checkouts beyond it wait for a worker to be returned.
             checkout_timeout: Seconds `checkout()` waits for a free worker
@@ -851,7 +909,8 @@ class MontySession:
 
         Blocks the calling thread (with the GIL released) while the worker
         runs; external functions, the `os` fallback, and print callbacks are
-        invoked in this process. Async external functions are not supported
+        invoked inline on the calling thread. Their context-variable changes
+        persist in the calling context. Async external functions are not supported
         here — use `AsyncMonty`.
 
         Arguments:
@@ -1061,7 +1120,7 @@ class AsyncMonty:
     """
     Async context manager owning a pool of `monty` subprocess workers.
 
-    The async counterpart of `Monty`: worker I/O runs off the event loop, and
+    The async counterpart of `Monty`: worker I/O is non-blocking, and
     external functions may be coroutines.
 
     ```python
@@ -1084,6 +1143,7 @@ class AsyncMonty:
         feed_duration_limit_grace: float | None = 1.0,
         turn_duration_limit_grace: float | None = 1.0,
         stream_async_calls: bool = False,
+        pre_warm: int = 0,
     ) -> Self:
         """
         Configure a worker pool; the workers are spawned by `async with`.
@@ -1175,10 +1235,12 @@ class AsyncMontyRemote:
         max_decode_bytes: int | None = None,
         connect_headers: Callable[[], Mapping[str, str]] | None = None,
         stream_async_calls: bool = True,
+        pre_warm: int = 0,
+        pre_warm_wait: bool = True,
     ) -> Self:
         """
         Configure a remote worker pool; the connection is made by the first
-        checkout (no workers are pre-warmed).
+        checkout, unless `pre_warm` opens sessions ahead of it.
 
         Arguments:
             url: `http://`/`https://` URL of the server — a relay, or any
@@ -1189,6 +1251,8 @@ class AsyncMontyRemote:
                 count); checkouts beyond it wait.
             checkout_timeout: Seconds `checkout()` waits for capacity before
                 raising `TimeoutError`. `None` waits forever.
+                This deadline also bounds the wait and stream open for an automatic
+                admission retry.
             request_timeout: Hard per-turn deadline in seconds (default 10.0) — a
                 worker that exceeds it has its connection killed and the call
                 raises `MontyCrashedError` with `timed_out=True`. It also bounds
@@ -1230,15 +1294,32 @@ class AsyncMontyRemote:
                 on the checking-out task, so it sees that task's contextvars
                 and must not block. Monty never interprets the values; names
                 are lowercase ASCII and values ASCII, duplicate names are
-                last-wins, also over the `traceparent` the Logfire integration
-                adds, a `user-agent` entry is put in front of the default one,
-                and a malformed name or value raises `MontyConfigurationError` as the
-                session is entered.
+                last-wins, a `user-agent` entry is put in front of the default
+                one, and a malformed name or value raises
+                `MontyConfigurationError` as the session is entered.
             feed_duration_limit_grace: Client wall-time grace beyond
                 `max_feed_duration_secs` when the server uses wall time.
                 CPU mode uses the server's supervisor and grace instead.
                 `None` disables this client backstop. `request_timeout` stays independent.
             turn_duration_limit_grace: The same, for `max_turn_duration_secs`.
+            pre_warm: Sessions to keep open and ready, so a checkout takes one
+                instead of dialing. `__aenter__` opens them (see `pre_warm_wait`)
+                and they are replaced in the background as checkouts take them; a
+                checkout waits for one already dialing. They count against
+                `max_processes`; a larger `pre_warm` raises
+                `MontyConfigurationError`. A server may close one that waits too
+                long, which is then replaced. `metadata` is also called for each
+                of these sessions, from a pool thread without the caller's
+                contextvars. A checkout takes one only if its own `metadata` call
+                returned the same value; otherwise it closes the ready sessions
+                and dials for itself, so this helps only while `metadata` is stable:
+                leave it off when one pool's checkouts send different metadata,
+                such as per-user credentials.
+            pre_warm_wait: `__aenter__` waits until the `pre_warm` sessions are
+                open, raising if one cannot open (the default); `False` opens them
+                in the background instead, where a failed open is retried with a
+                backoff and not raised; a checkout that finds none ready dials
+                for itself and raises what that dial does.
             auto_resume: When a server that stores sessions drains one, open a
                 new stream, load the state it named into a new session and re-send the
                 request it did not run, instead of raising `MontyShutdown`; the
@@ -1317,14 +1398,14 @@ class AsyncMontySession:
         """
         Execute one snippet in the worker and return its result.
 
-        Worker I/O runs off the event loop; external functions (the callable
-        entries in `external_lookup`) may be coroutines, awaited concurrently.
+        Synchronous callbacks run inline in the awaiting task and can change its
+        context variables. Host coroutine functions inherit that context in separate
+        tasks. Print callbacks must be synchronous; blocking callback code blocks
+        the event loop.
         See `MontySession.feed_run` for the shared error types.
 
-        Host callbacks run in copies of the caller's Python context. With tracing
-        enabled, telemetry emitted inside callbacks is parented to the corresponding
-        Monty operation: the execution span for prints, or the host-call span for
-        external functions. Async external functions retain that context across awaits.
+        With tracing enabled, callback telemetry is parented to the execution span
+        for prints or to the corresponding host-call span for other callbacks.
 
         Arguments:
             code: The Python snippet to execute; its trailing expression value
@@ -1569,8 +1650,9 @@ class FunctionSnapshot:
     def trace_context(self) -> Context:
         """Return the suspension's OTel context, without activating it or resuming.
 
-        Preserves context entries captured at `feed_start` / `load_snapshot`; without Monty tracing,
-        returns that captured context unchanged. Raises `ImportError` without `opentelemetry-api`
+        Preserves context entries captured at `feed_start` / `load_snapshot`. Without Monty tracing,
+        its span is the one a remote server named for the suspension, else the captured context is
+        returned unchanged. Raises `ImportError` without `opentelemetry-api`
         or `RuntimeError` after resume. Previously returned contexts do not keep the span open.
         """
 
@@ -1670,7 +1752,7 @@ class FutureSnapshot:
 
 @final
 class AsyncFunctionSnapshot:
-    """Async sibling of `FunctionSnapshot`; `resume`/`resume_not_handled` are awaitable."""
+    """Async sibling of `FunctionSnapshot`; a resume claims it when the coroutine starts."""
 
     @property
     def allow_eager_await(self) -> bool:
@@ -1709,7 +1791,7 @@ class AsyncFunctionSnapshot:
 
 @final
 class AsyncNameLookupSnapshot:
-    """Async sibling of `NameLookupSnapshot`."""
+    """Async sibling of `NameLookupSnapshot`; a resume claims it when the coroutine starts."""
 
     @property
     def script_name(self) -> str: ...
@@ -1734,7 +1816,7 @@ class AsyncNameLookupSnapshot:
 
 @final
 class AsyncFutureSnapshot:
-    """Async sibling of `FutureSnapshot`."""
+    """Async sibling of `FutureSnapshot`; a resume claims it when the coroutine starts."""
 
     @property
     def script_name(self) -> str: ...

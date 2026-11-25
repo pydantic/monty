@@ -39,7 +39,7 @@ use crate::{
         typing::{self, HintFormat, HintsRequest, HintsTask},
     },
     types::{
-        Class, Dict, Module, PyTrait, TupleVec, Type, TypeRef, allocate_tuple,
+        Class, Dict, ForwardRef, GenericAlias, Module, PyTrait, TupleVec, Type, TypeRef, allocate_tuple,
         generic_alias::AliasOrigin,
         host_class::host_class_type,
         instance::{class_defines, namespace_member},
@@ -296,13 +296,11 @@ fn decorate_class(cls: &Value, class_id: HeapId, options: DataclassOptions, vm: 
 fn check_frozen_inheritance(class: &Class, options: DataclassOptions, vm: &VM<'_>) -> RunResult<()> {
     let base_params = class.ancestors().iter().filter_map(|ancestor| match ancestor {
         TypeRef::Class(id) => match vm.heap.get(*id) {
-            HeapData::Class(base) => match base.namespace().get_by_str("__dataclass_params__", vm.heap, vm.interns) {
-                Some(Value::Ref(params_id)) => match vm.heap.get(*params_id) {
-                    HeapData::DataclassParams(params) => Some(params.options()),
-                    _ => None,
-                },
-                _ => None,
-            },
+            HeapData::Class(base) => base
+                .namespace()
+                .get_by_str("__dataclass_params__", vm.heap, vm.interns)
+                .and_then(|params| params.get_as::<DataclassParams>(vm.heap))
+                .map(DataclassParams::options),
             _ => None,
         },
         TypeRef::Native(_) => None,
@@ -414,7 +412,7 @@ fn store_dataclass_params<'h>(
     options: DataclassOptions,
     vm: &mut VM<'h>,
 ) -> RunResult<()> {
-    let params = vm.heap.allocate_as(DataclassParams::new(options)).into_value();
+    let params = Value::allocate(DataclassParams::new(options), vm.heap);
     let name = Value::InternString(vm.interns.intern_static(StaticStrings::DataclassParams));
     let replaced = class.set_attr(name, params, vm)?;
     replaced.drop_with(vm);
@@ -575,7 +573,7 @@ impl<'h> Installer<'_, 'h> {
     /// Allocates `method` and stores it in the class namespace under its dunder.
     fn set_method(&mut self, class: &HeapReadMut<'h, Class>, method: DataclassMethod) -> RunResult<()> {
         let dunder = method.dunder();
-        let method = self.heap().allocate_as(method).into_value();
+        let method = Value::allocate(method, self.heap());
         self.set_member(class, dunder, method)
     }
 
@@ -679,7 +677,7 @@ fn collect_annotated_fields<'h>(class: &HeapRead<'h, Class>, annotations: &Value
             fields.push(bound.expect("adoptable_field matched a bound value"));
         } else {
             let field = DataclassField::new(name_id, annotation, bound);
-            fields.push(vm.heap.allocate_as(field).into_value());
+            fields.push(Value::allocate(field, vm.heap));
         }
     }
     guard.into_parts().0
@@ -708,10 +706,7 @@ fn field_annotation(annotations: &Value, name: StringId, vm: &VM<'_>) -> Value {
 
 /// The evaluated annotations as a dict (`get_annotations` always returns one).
 fn annotations_dict<'a>(annotations: &Value, vm: &'a VM<'_>) -> &'a Dict {
-    let Value::Ref(id) = annotations else {
-        unreachable!("get_annotations returns a dict")
-    };
-    let HeapData::Dict(dict) = vm.heap.get(*id) else {
+    let Some(dict) = annotations.get_as::<Dict>(vm.heap) else {
         unreachable!("get_annotations returns a dict")
     };
     dict
@@ -721,7 +716,7 @@ fn annotations_dict<'a>(annotations: &Value, vm: &'a VM<'_>) -> &'a Dict {
 /// also matches by name; `None` for an evaluated object.
 fn annotation_text(annotation: &Value, vm: &VM<'_>) -> Option<String> {
     match annotation {
-        Value::Ref(id) if let HeapData::ForwardRef(forward_ref) = vm.heap.get(*id) => forward_ref
+        value if let Some(forward_ref) = value.get_as::<ForwardRef>(vm.heap) => forward_ref
             .arg()
             .as_either_str(vm.heap)
             .map(|s| s.into_string(vm.interns)),
@@ -773,8 +768,7 @@ fn validate_fields(vm: &mut VM<'_>, fields: &[Value]) -> RunResult<()> {
 /// A collected field's name, annotation text, and a **cloned** default — the
 /// three things validation needs, read before it takes the heap mutably.
 fn read_field(field: &Value, vm: &VM<'_>) -> Option<(StringId, Option<Value>, Option<Value>)> {
-    let Value::Ref(id) = field else { return None };
-    let field = field_at_id(vm.heap, *id)?;
+    let field = field.get_as::<DataclassField>(vm.heap)?;
     Some((
         field.name().expect("collection adopts every field"),
         field.annotation().map(|a| a.clone_with_heap(vm.heap)),
@@ -790,8 +784,7 @@ fn read_field(field: &Value, vm: &VM<'_>) -> Option<(StringId, Option<Value>, Op
 fn first_non_default_after_default(fields: &[Value], vm: &VM<'_>) -> Option<(StringId, StringId)> {
     let mut last_default = None;
     fields.iter().find_map(|field| {
-        let Value::Ref(id) = field else { return None };
-        let field = field_at_id(vm.heap, *id)?;
+        let field = field.get_as::<DataclassField>(vm.heap)?;
         let name = field.name().expect("collection adopts every field");
         match (field.has_default(), last_default) {
             (true, _) => {
@@ -814,7 +807,7 @@ fn first_non_default_after_default(fields: &[Value], vm: &VM<'_>) -> Option<(Str
 fn is_classvar(annotation: &Value, vm: &VM<'_>) -> bool {
     match annotation {
         Value::Marker(Marker(StaticStrings::ClassVar)) => true,
-        Value::Ref(id) if let HeapData::GenericAlias(alias) = vm.heap.get(*id) => {
+        value if let Some(alias) = value.get_as::<GenericAlias>(vm.heap) => {
             alias.origin() == AliasOrigin::Special(Marker(StaticStrings::ClassVar))
         }
         _ => annotation_text(annotation, vm).is_some_and(|text| annotation_head(&text, "ClassVar")),

@@ -64,6 +64,23 @@ fn an_unknown_import_suspends_and_binds_the_answer() {
     assert_eq!(done.into_complete(), Some(MontyObject::int(42)));
 }
 
+/// `stat` uses its Python implementation without asking the host for an accelerator.
+#[test]
+fn stat_import_does_not_suspend() {
+    let done = start("import stat\nstat.filemode(0o100644)");
+    assert_eq!(done.into_complete(), Some(MontyObject::string("-rw-r--r--")));
+}
+
+/// A reserved accelerator is unavailable even when the host can answer imports.
+#[test]
+fn stat_accelerator_import_fails_without_suspending() {
+    let done = start("try:\n    import _stat\nexcept ModuleNotFoundError as exc:\n    message = str(exc)\nmessage");
+    assert_eq!(
+        done.into_complete(),
+        Some(MontyObject::string("No module named '_stat'"))
+    );
+}
+
 #[test]
 fn a_host_module_is_a_module_object() {
     let code = "import tools\n(type(tools).__name__, repr(tools), hasattr(tools, '__name__'))";
@@ -290,6 +307,43 @@ fn a_dumped_host_module_restores_as_the_same_module() {
     assert_eq!(
         err.error.to_string().lines().last(),
         Some("AttributeError: module 'tools' has no attribute 'nope'")
+    );
+}
+
+#[test]
+fn star_import_interns_host_export_names_for_later_feeds() {
+    let repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    let ReplProgress::OsCall(call) = repl
+        .feed_start("from tools import *", vec![], PrintWriter::Stdout)
+        .unwrap()
+    else {
+        panic!("expected the import to suspend");
+    };
+    let module = host_module(
+        "tools",
+        1,
+        vec![
+            ("host_exported_name", MontyObject::int(40)),
+            ("casefold", MontyObject::int(2)),
+        ],
+    );
+    let ReplProgress::Complete { mut repl, .. } = call.resume(module, PrintWriter::Stdout).unwrap() else {
+        panic!("expected the snippet to complete");
+    };
+
+    let code = "host_exported_name + casefold";
+    assert_eq!(
+        repl.feed_run(code, vec![], PrintWriter::Stdout).unwrap(),
+        MontyObject::int(42)
+    );
+
+    let bytes = dump("test.py", None, &[], SessionRef::Idle(&repl)).unwrap();
+    let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else {
+        panic!("dumped while idle");
+    };
+    assert_eq!(
+        restored.feed_run(code, vec![], PrintWriter::Stdout).unwrap(),
+        MontyObject::int(42)
     );
 }
 

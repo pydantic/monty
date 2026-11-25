@@ -171,7 +171,7 @@ impl Module {
             })
             .map(Value::InternString)
             .collect();
-        let all = Value::Ref(vm.heap.allocate(HeapData::List(List::new(names))));
+        let all = Value::allocate(List::new(names), vm.heap);
         self.set_attr(StaticStrings::DunderAll, all, vm);
     }
 

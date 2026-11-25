@@ -11,12 +11,15 @@ use monty_types::ExcType;
 use crate::{
     annotations,
     args::ArgValues,
-    asyncio::{Awaiter, Coroutine, ExternalFuture, ExternalFutureState, GatherFuture, GatherState},
+    asyncio::{
+        Awaiter, Coroutine, ExternalFuture, ExternalFutureState, GatherFuture, GatherState, TaskFuture,
+        TaskFutureState, WaitFuture, WaitFutureState,
+    },
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcTypeExt, RunResult, SimpleException},
     hash::HashValue,
-    heap::{HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    heap::{HeapId, HeapItem, HeapObjectRead},
     intern::FunctionId,
     types::{LazyHeapSet, LongInt, PyTrait, Type, TypeRef},
     value::{EitherStr, Value},
@@ -120,6 +123,8 @@ macro_rules! heap_payloads {
             SetIterator(inline $crate::types::SetIterator),
             /// A `callable_iterator` object from `iter(callable, sentinel)`.
             CallableIterator(inline $crate::types::callable_iterator::CallableIterator),
+            /// A lazy `map` or `filter`, retaining its callback and source iterators.
+            MapFilter(boxed $crate::types::map_filter::MapFilter),
             /// An arbitrary-precision integer used when a Python `int` does not fit in `i64`.
             #[serde(rename = "G")]
             LongInt(inline $crate::types::LongInt),
@@ -135,6 +140,10 @@ macro_rules! heap_payloads {
             GatherFuture(boxed $crate::asyncio::GatherFuture),
             /// An external future driven by the host.
             ExternalFuture(boxed $crate::asyncio::ExternalFuture),
+            /// A Python-visible `asyncio.Task` handle and completion record.
+            Task(boxed $crate::asyncio::TaskFuture),
+            /// An `asyncio.wait()` result tracking its inputs to completion.
+            WaitFuture(boxed $crate::asyncio::WaitFuture),
             /// A filesystem path from `pathlib.Path`.
             Path(inline $crate::types::Path),
             /// A path-backed file object returned by `open()`.
@@ -266,10 +275,13 @@ impl HeapData {
             | Self::DictValueIterator(_)
             | Self::SetIterator(_)
             | Self::CallableIterator(_)
+            | Self::MapFilter(_)
             | Self::Module(_)
             | Self::Coroutine(_)
             | Self::GatherFuture(_)
             | Self::ExternalFuture(_)
+            | Self::Task(_)
+            | Self::WaitFuture(_)
             | Self::Partial(_)
             | Self::GenericAlias(_)
             | Self::Union(_)
@@ -377,6 +389,8 @@ impl HeapData {
             Self::Complex(_) => Type::Complex,
             Self::Module(_) => Type::Module,
             Self::Coroutine(_) | Self::GatherFuture(_) | Self::ExternalFuture(_) => Type::Coroutine,
+            Self::Task(_) => Type::Task,
+            Self::WaitFuture(_) => Type::Coroutine,
             Self::Path(_) => Type::Path,
             Self::OpenFile(file) => file.file_type(),
             Self::RePattern(_) => Type::RePattern,
@@ -397,6 +411,7 @@ impl HeapData {
             Self::DictValueIterator(_) => Type::DictValueIterator,
             Self::SetIterator(_) => Type::SetIterator,
             Self::CallableIterator(_) => Type::CallableIterator,
+            Self::MapFilter(iter) => iter.py_type(),
             Self::Itertools(i) => i.py_type(),
             Self::DirScan(scan) => scan.py_type(),
             Self::Csv(csv) => csv.py_type(),
@@ -527,8 +542,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Closure> {
     /// Two closures over the same `def` are equal only if they captured the
     /// same cells; the defaults play no part, as in CPython.
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        Ok(match other.read_heap(vm) {
-            Some(HeapReadOutput::Closure(other)) => {
+        Ok(match other.read_as::<Closure>(vm.heap) {
+            Some(other) => {
                 let this = self.get(vm.heap);
                 let other = other.get(vm.heap);
                 Some(this.func_id == other.func_id && this.cells == other.cells)
@@ -584,10 +599,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, FunctionDefaults> {
     /// Equal when they decorate the same `def`: with no captured scope, the
     /// defaults are all that could differ and CPython ignores those too.
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        Ok(match other.read_heap(vm) {
-            Some(HeapReadOutput::FunctionDefaults(other)) => {
-                Some(self.get(vm.heap).func_id == other.get(vm.heap).func_id)
-            }
+        Ok(match other.read_as::<FunctionDefaults>(vm.heap) {
+            Some(other) => Some(self.get(vm.heap).func_id == other.get(vm.heap).func_id),
             _ => None,
         })
     }
@@ -668,9 +681,7 @@ impl HeapItem for GatherFuture {
         // completed successfully. `Pending` and `Failed` carry no heap refs.
         match &mut self.state {
             GatherState::Awaited(awaited) => {
-                if let Awaiter::GatherSlot { gather, .. } = &awaited.awaiter {
-                    stack.push(*gather);
-                }
+                stack.extend(awaited.awaiter.heap_ref());
                 for result in awaited.results.iter_mut().flatten() {
                     result.py_dec_ref_ids(stack);
                 }
@@ -683,23 +694,50 @@ impl HeapItem for GatherFuture {
 
 impl HeapItem for ExternalFuture {
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-        // `Pending { awaiter: Some(Awaiter::GatherSlot { gather, .. }) }`
-        // owns an inc_ref on `gather` — release it when this entry is
-        // freed. `Awaiter::Task` and `None` own nothing. `Resolved` owns
-        // the cached value; `Failed` carries no heap refs. A pending sleep
-        // result is owned until resolution takes it.
+        // A pending awaiter owns the reference reported by
+        // `Awaiter::heap_ref` (a gather, wait future or task) — release it
+        // when this entry is freed. `Awaiter::Task` and `None` own nothing.
+        // `Resolved` owns the cached value; `Failed` carries no heap refs. A
+        // pending sleep result is owned until resolution takes it.
         if let Some(result) = &mut self.sleep_result {
             result.py_dec_ref_ids(stack);
         }
         match &mut self.state {
             ExternalFutureState::Resolved(value) => value.py_dec_ref_ids(stack),
-            ExternalFutureState::Pending {
-                awaiter: Some(Awaiter::GatherSlot { gather, .. }),
-            } => stack.push(*gather),
-            ExternalFutureState::Pending {
-                awaiter: None | Some(Awaiter::Task(_)),
+            ExternalFutureState::Pending { awaiter: Some(awaiter) } => {
+                stack.extend(awaiter.heap_ref());
             }
-            | ExternalFutureState::Failed(_) => {}
+            ExternalFutureState::Pending { awaiter: None } | ExternalFutureState::Failed(_) => {}
+        }
+    }
+}
+
+impl HeapItem for TaskFuture {
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        stack.push(self.coroutine_id);
+        stack.extend(self.awaiters.iter().filter_map(Awaiter::heap_ref));
+        if let TaskFutureState::Completed(value) = &mut self.state {
+            value.py_dec_ref_ids(stack);
+        }
+    }
+}
+
+impl HeapItem for WaitFuture {
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        match &mut self.state {
+            WaitFutureState::Unawaited(wait) => {
+                wait.fs.py_dec_ref_ids(stack);
+                if let Some(return_when) = &mut wait.return_when {
+                    return_when.py_dec_ref_ids(stack);
+                }
+                stack.extend(wait.timer);
+            }
+            WaitFutureState::Pending(wait) => {
+                stack.extend(wait.inputs.iter().copied());
+                stack.extend(wait.awaiter.as_ref().and_then(Awaiter::heap_ref));
+                stack.extend(wait.timer);
+            }
+            WaitFutureState::Consumed => {}
         }
     }
 }

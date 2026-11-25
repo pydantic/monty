@@ -12,7 +12,6 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::HeapData,
     intern::StaticStrings,
     modules::{
         ModuleFunctions,
@@ -41,10 +40,11 @@ pub fn create_module(vm: &mut VM<'_>) -> Module {
 }
 
 /// `annotationlib` module functions, each a Python-visible callable.
+#[monty_macros::explicit_discriminants(checksum = 0xec85_305b_4380_4f1f)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum AnnotationlibFunctions {
-    GetAnnotations,
+    GetAnnotations = 0,
 }
 
 /// Dispatches an `annotationlib` module function call.
@@ -74,7 +74,7 @@ fn format_class(vm: &mut VM<'_>) -> Value {
             .expect("class attribute keys are interned, so hashing cannot fail");
     }
     let name = EitherStr::Interned(vm.interns.intern_static(StaticStrings::FormatClass));
-    Value::Ref(vm.heap.allocate(HeapData::Class(Box::new(Class::new(name, namespace)))))
+    Value::allocate(Class::new(name, namespace), vm.heap)
 }
 
 /// Arguments of `get_annotations(obj, *, globals=None, locals=None, eval_str=False, format=Format.VALUE)`.

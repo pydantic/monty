@@ -18,12 +18,12 @@ use num_bigint::Sign;
 use num_traits::ToPrimitive;
 
 use crate::{
-    args::{ArgValues, FromArgs, KwargsValues, LaxBool, StrArg, long_int},
+    args::{ArgValues, FromArgs, KwargsValues, LaxBool, StrArg},
     builtins::Builtins,
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{ContainsHeap, DropWithContext, HeapData},
+    heap::{ContainsHeap, DropWithContext},
     intern::StaticStrings,
     modules::ModuleFunctions,
     types::{
@@ -39,25 +39,26 @@ use crate::{
 /// `blake2b` and `blake2s` are types rather than functions, as in CPython, so
 /// they are not here. Serialized into dumps by variant name, so renaming one
 /// needs `#[serde(alias)]`.
+#[monty_macros::explicit_discriminants(checksum = 0x05ef_ded8_6896_9495)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum HashlibFunctions {
-    Md5,
-    Sha1,
-    Sha224,
-    Sha256,
-    Sha384,
-    Sha512,
-    Sha3_224,
-    Sha3_256,
-    Sha3_384,
-    Sha3_512,
+    Md5 = 0,
+    Sha1 = 1,
+    Sha224 = 2,
+    Sha256 = 3,
+    Sha384 = 4,
+    Sha512 = 5,
+    Sha3_224 = 6,
+    Sha3_256 = 7,
+    Sha3_384 = 8,
+    Sha3_512 = 9,
     #[strum(serialize = "shake_128")]
-    Shake128,
+    Shake128 = 10,
     #[strum(serialize = "shake_256")]
-    Shake256,
-    New,
-    Pbkdf2Hmac,
+    Shake256 = 11,
+    New = 12,
+    Pbkdf2Hmac = 13,
 }
 
 /// Static mapping of attribute names to functions for module creation.
@@ -112,7 +113,7 @@ fn algorithm_names(vm: &mut VM<'_>) -> Value {
             .add(name, vm)
             .expect("adding an interned name to a fresh set cannot raise");
     }
-    Value::Ref(vm.heap.allocate(HeapData::Set(names)))
+    Value::allocate(names, vm.heap)
 }
 
 /// Dispatches a call to a `hashlib` module function.
@@ -494,9 +495,9 @@ pub(crate) fn blake2_init(kind: Blake2Kind, vm: &mut VM<'_>, args: ArgValues) ->
         .digest_size
         .as_ref()
         .map_or(Ok(i32::from(max_digest)), |v| c_int(v, vm))?;
-    let key = args.key.as_ref().map_or(Ok(&[][..]), |v| buffer(v, vm))?;
-    let salt = args.salt.as_ref().map_or(Ok(&[][..]), |v| buffer(v, vm))?;
-    let person = args.person.as_ref().map_or(Ok(&[][..]), |v| buffer(v, vm))?;
+    let key = args.key.as_ref().map_or(Ok(&[][..]), |v| v.try_as_bytes(vm))?;
+    let salt = args.salt.as_ref().map_or(Ok(&[][..]), |v| v.try_as_bytes(vm))?;
+    let person = args.person.as_ref().map_or(Ok(&[][..]), |v| v.try_as_bytes(vm))?;
     let fanout = args.fanout.as_ref().map_or(Ok(1), |v| c_int(v, vm))?;
     let depth = args.depth.as_ref().map_or(Ok(1), |v| c_int(v, vm))?;
     let leaf_size = args
@@ -577,34 +578,13 @@ pub(crate) fn blake2_init(kind: Blake2Kind, vm: &mut VM<'_>, args: ArgValues) ->
     Ok(hash.allocate(vm.heap))
 }
 
-/// Borrows a `bytes` argument with the `Py_buffer` converter's message, which
-/// differs from the data argument's (see [`hash_input`]).
-fn buffer<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<&'a [u8]> {
-    match value {
-        Value::InternBytes(id) => Ok(vm.interns.get_bytes(*id)),
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Bytes(bytes) => Ok(bytes.as_slice()),
-            _ => Err(not_bytes_like(value, vm)),
-        },
-        _ => Err(not_bytes_like(value, vm)),
-    }
-}
-
-/// `TypeError: a bytes-like object is required, not 'X'`.
-fn not_bytes_like(value: &Value, vm: &VM<'_>) -> RunError {
-    ExcType::type_error(format!(
-        "a bytes-like object is required, not '{}'",
-        value.py_type_name(vm)
-    ))
-}
-
 /// Argument Clinic's `int` converter: a C `int`, overflowing with
 /// `PyLong_AsInt`'s message.
 fn c_int(value: &Value, vm: &VM<'_>) -> RunResult<i32> {
     match value {
         Value::Bool(b) => Ok(i32::from(*b)),
         Value::Int(i) => i32::try_from(*i).map_err(|_| overflow_error("Python int too large to convert to C int")),
-        _ if long_int(value, vm).is_some() => Err(overflow_error("Python int too large to convert to C int")),
+        _ if value.as_long_int(vm).is_some() => Err(overflow_error("Python int too large to convert to C int")),
         _ => Err(ExcType::type_error_not_integer(&value.py_type_name(vm))),
     }
 }
@@ -615,7 +595,7 @@ fn c_long(value: &Value, vm: &VM<'_>) -> RunResult<i64> {
     match value {
         Value::Bool(b) => Ok(i64::from(*b)),
         Value::Int(i) => Ok(*i),
-        _ if long_int(value, vm).is_some() => Err(ExcType::overflow_c_long()),
+        _ if value.as_long_int(vm).is_some() => Err(ExcType::overflow_c_long()),
         _ => Err(ExcType::type_error_not_integer(&value.py_type_name(vm))),
     }
 }
@@ -626,7 +606,7 @@ fn c_unsigned(value: &Value, c_type: &str, vm: &VM<'_>) -> RunResult<u64> {
     match value {
         Value::Bool(b) => Ok(u64::from(*b)),
         Value::Int(i) => u64::try_from(*i).map_err(|_| ExcType::value_error_negative_int()),
-        _ => match long_int(value, vm) {
+        _ => match value.as_long_int(vm) {
             Some(big) if big.sign() == Sign::Minus => Err(ExcType::value_error_negative_int()),
             Some(big) => big
                 .to_u64()
@@ -675,8 +655,8 @@ fn call_pbkdf2_hmac(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(salt, vm);
     defer_drop!(iterations, vm);
     defer_drop!(dklen, vm);
-    let password = buffer(password, vm)?;
-    let salt = buffer(salt, vm)?;
+    let password = password.try_as_bytes(vm)?;
+    let salt = salt.try_as_bytes(vm)?;
     let iterations = c_long(iterations, vm)?;
     let name = hash_name.as_str(vm);
     let algorithm = HashAlgorithm::from_name(name).ok_or_else(|| unsupported_hash_type(name))?;

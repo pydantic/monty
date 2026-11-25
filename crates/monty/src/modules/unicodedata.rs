@@ -49,15 +49,16 @@ use crate::{
 const UNIDATA_VERSION: &str = "16.0.0";
 
 /// `unicodedata` module functions — each variant corresponds to a Python-visible function.
+#[monty_macros::explicit_discriminants(checksum = 0xd863_1aaf_1194_df41)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum UnicodedataFunctions {
-    Category,
-    Name,
-    Lookup,
-    Combining,
-    Normalize,
-    IsNormalized,
+    Category = 0,
+    Name = 1,
+    Lookup = 2,
+    Combining = 3,
+    Normalize = 4,
+    IsNormalized = 5,
 }
 
 /// Static mapping of attribute names to functions for module creation.
@@ -139,7 +140,7 @@ fn uni_name(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 fn uni_lookup(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("lookup", vm.heap)?;
     defer_drop!(value, vm);
-    let name = value.try_to_str(vm)?;
+    let name = value.try_as_str(vm)?;
     match unicode_names2::character(name) {
         Some(c) => Ok(allocate_string(c.to_string(), vm.heap)),
         None => Err(SimpleException::new_msg(ExcType::KeyError, format!("undefined character name '{name}'")).into()),

@@ -150,7 +150,7 @@ impl Random {
         } else {
             Self::seeded(Mt19937::from_key(&seed_key_from_value(x, SEED_VERSION_DEFAULT, vm)?))
         };
-        Ok(Value::Ref(vm.heap.allocate(HeapData::Random(Box::new(random)))))
+        Ok(Value::allocate(random, vm.heap))
     }
 }
 
@@ -650,7 +650,7 @@ impl<'h> HeapRead<'h, Random> {
             rng: source.rng.clone(),
             gauss_next: source.gauss_next,
         };
-        Value::Ref(vm.heap.allocate(HeapData::Random(Box::new(copy))))
+        Value::allocate(copy, vm.heap)
     }
 }
 

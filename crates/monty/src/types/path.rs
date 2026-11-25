@@ -12,7 +12,7 @@ use std::{
 };
 
 use monty_macros::pyattrs;
-use monty_types::MontyPath;
+use monty_types::{MontyPath, scan::SegmentPattern};
 use smallvec::SmallVec;
 
 use crate::{
@@ -22,7 +22,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     hash::HashValue,
-    heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    heap::{DropWithContext, Heap, HeapId, HeapItem, HeapObjectRead},
     intern::{Interns, StaticStrings},
     os_dispatch::{build_path_os_call, value_as_path_str},
     py_attrs::PyAttrs,
@@ -167,6 +167,71 @@ impl Path {
         self.path.starts_with('/')
     }
 
+    /// Returns the drive component of the path.
+    ///
+    /// For POSIX paths, this is always an empty string.
+    #[must_use]
+    #[expect(clippy::unused_self, reason = "mirrors Path method signature")]
+    pub fn drive(&self) -> &'static str {
+        ""
+    }
+
+    /// Returns the root component of the path.
+    ///
+    /// Returns "/" for absolute paths, and "" for relative paths.
+    #[must_use]
+    pub fn root(&self) -> &str {
+        if self.is_absolute() { "/" } else { "" }
+    }
+
+    /// Returns the anchor component (drive + root).
+    ///
+    /// For POSIX paths, this is equal to the root ("/" or "").
+    #[must_use]
+    pub fn anchor(&self) -> &str {
+        self.root()
+    }
+
+    /// Checks if the path is reserved (Windows DOS device names).
+    ///
+    /// For POSIX paths, this always returns `false`.
+    #[must_use]
+    #[expect(clippy::unused_self, reason = "mirrors Path method signature")]
+    pub fn is_reserved(&self) -> bool {
+        false
+    }
+
+    /// Returns `true` if this path matches the given glob pattern.
+    ///
+    /// # Errors
+    /// Returns `ValueError` if the pattern has no parts (e.g. `""` or `"."`).
+    pub fn match_pattern(&self, pattern: &str, case_sensitive: bool) -> RunResult<bool> {
+        let pattern_path = Self::new(pattern.to_owned());
+        let pattern_parts = pattern_path.parts();
+        if pattern_parts.is_empty() {
+            return Err(SimpleException::new_msg(ExcType::ValueError, "empty pattern").into());
+        }
+
+        let path_parts = self.parts();
+        if path_parts.len() < pattern_parts.len() {
+            return Ok(false);
+        }
+        if path_parts.len() > pattern_parts.len() && !pattern_path.anchor().is_empty() {
+            return Ok(false);
+        }
+
+        for (path_part, pattern_part) in path_parts.iter().rev().zip(pattern_parts.iter().rev()) {
+            if *path_part == "/" || *pattern_part == "/" {
+                if path_part != pattern_part {
+                    return Ok(false);
+                }
+            } else if !SegmentPattern::new(pattern_part, case_sensitive).matches(path_part) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     /// Joins this path with another path component.
     ///
     /// If `other` is an absolute path, it replaces `self` entirely.
@@ -278,7 +343,7 @@ impl Path {
                 fold_joinpath(base, rest, vm)?
             }
         };
-        Ok(Value::Ref(vm.heap.allocate(HeapData::Path(path))))
+        Ok(Value::allocate(path, vm.heap))
     }
 }
 
@@ -315,7 +380,7 @@ pub(crate) fn class_cwd(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         });
     }
     let path = Path::new(vm.env.cwd.to_string());
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Path(path))))
+    Ok(Value::allocate(path, vm.heap))
 }
 
 /// `Path.glob(pattern, *, case_sensitive=None, recurse_symlinks=False)`.
@@ -340,6 +405,16 @@ struct PathRglobArgs {
     case_sensitive: Value,
     #[from_args(kw_only, default = LaxBool::new(false))]
     recurse_symlinks: LaxBool,
+}
+
+/// `Path.match(path_pattern, *, case_sensitive=None)`.
+#[derive(FromArgs)]
+#[from_args(name = "Path.match", style = def)]
+struct PathMatchArgs {
+    #[from_args(static_string = "PathPattern")]
+    path_pattern: Value,
+    #[from_args(kw_only, default = Value::None)]
+    case_sensitive: Value,
 }
 
 /// `Path.walk(top_down=True, on_error=None, follow_symlinks=False)`.
@@ -411,14 +486,14 @@ fn fold_joinpath(mut path: Path, parts: &[Value], vm: &VM<'_>) -> RunResult<Path
 fn path_div(path: &Path, other: &Value, heap: &Heap, interns: &Interns) -> Option<Value> {
     let other = value_as_path_str(other, heap, interns)?;
     let result = path.joinpath(other);
-    Some(Value::Ref(heap.allocate(HeapData::Path(Path::new(result)))))
+    Some(Value::allocate(Path::new(result), heap))
 }
 
 /// Prepends a path-like left operand for `Path.__rtruediv__`.
 fn path_rdiv(path: &Path, other: &Value, heap: &Heap, interns: &Interns) -> Option<Value> {
     let base = value_as_path_str(other, heap, interns)?;
     let result = Path::new(base.to_owned()).joinpath(path.as_str());
-    Some(Value::Ref(heap.allocate(HeapData::Path(Path::new(result)))))
+    Some(Value::allocate(Path::new(result), heap))
 }
 
 /// Normalizes a path string to POSIX format, matching CPython's `pathlib.PurePosixPath`.
@@ -484,11 +559,11 @@ impl Path {
             StaticStrings::Parent => {
                 if let Some(parent) = self.parent() {
                     let parent_path = Self::new(parent.to_owned());
-                    Value::Ref(heap.allocate(HeapData::Path(parent_path)))
+                    Value::allocate(parent_path, heap)
                 } else {
                     // Return self when there's no parent (root or relative path)
                     let same_path = Self::new(self.as_str().to_owned());
-                    Value::Ref(heap.allocate(HeapData::Path(same_path)))
+                    Value::allocate(same_path, heap)
                 }
             }
             StaticStrings::Stem => allocate_string(self.stem(), heap),
@@ -499,7 +574,7 @@ impl Path {
                 for suffix in suffixes {
                     items.push(allocate_string(suffix, heap));
                 }
-                Value::Ref(heap.allocate(HeapData::List(List::new(items))))
+                Value::allocate(List::new(items), heap)
             }
             StaticStrings::Parts => {
                 let parts = self.parts();
@@ -509,6 +584,9 @@ impl Path {
                 }
                 allocate_tuple(items, heap)
             }
+            StaticStrings::Anchor => allocate_string(self.anchor(), heap),
+            StaticStrings::Drive => allocate_string(self.drive(), heap),
+            StaticStrings::Root => allocate_string(self.root(), heap),
             _ => return None,
         };
         Some(v)
@@ -526,7 +604,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
     }
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        let Some(HeapReadOutput::Path(other)) = other.read_heap(vm) else {
+        let Some(other) = other.read_as::<Path>(vm.heap) else {
             return Ok(None);
         };
         Ok(Some(self.get(vm.heap).path == other.get(vm.heap).path))
@@ -576,12 +654,15 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
         // Slow path: heap-allocated strings need string comparison
         let attr_str = attr.as_str(vm.interns);
         let ss = match attr_str {
+            "anchor" => StaticStrings::Anchor,
+            "drive" => StaticStrings::Drive,
             "name" => StaticStrings::Name,
             "parent" => StaticStrings::Parent,
+            "parts" => StaticStrings::Parts,
+            "root" => StaticStrings::Root,
             "stem" => StaticStrings::Stem,
             "suffix" => StaticStrings::Suffix,
             "suffixes" => StaticStrings::Suffixes,
-            "parts" => StaticStrings::Parts,
             _ => return Err(ExcType::attribute_error(Type::Path, attr_str)),
         };
         let v = self
@@ -652,13 +733,41 @@ impl<'heap> PyAttrs<'heap> for PyPathImpl {
         .map(CallResult::Value)
     }
 
+    #[pymethod(Match)]
+    fn matches<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let PathMatchArgs {
+            path_pattern,
+            case_sensitive,
+        } = PathMatchArgs::from_args(args, vm)?;
+        defer_drop!(path_pattern, vm);
+        defer_drop!(case_sensitive, vm);
+        let case_sensitive = match case_sensitive {
+            Value::None => true,
+            value => value.py_bool(vm)?,
+        };
+        let Some(pattern_text) = value_as_path_str(path_pattern, vm.heap, vm.interns) else {
+            return Err(ExcType::type_error(format!(
+                "argument should be a str or an os.PathLike object where __fspath__ returns a str, not '{}'",
+                path_pattern.py_type_name(vm)
+            )));
+        };
+        let matched = this.get(vm.heap).match_pattern(pattern_text, case_sensitive)?;
+        Ok(Value::Bool(matched))
+    }
+
+    #[pymethod(IsReserved)]
+    fn is_reserved<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        args.check_zero_args("is_reserved", vm.heap)?;
+        Ok(Value::Bool(this.get(vm.heap).is_reserved()))
+    }
+
     #[pymethod(Joinpath)]
     fn joinpath<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         ({
             let pos_args = args.into_pos_only("joinpath", vm.heap)?;
             defer_drop!(pos_args, vm);
             let path = fold_joinpath(this.get(vm.heap).clone(), pos_args.as_slice(), vm)?;
-            Ok(Value::Ref(vm.heap.allocate(HeapData::Path(path))))
+            Ok(Value::allocate(path, vm.heap))
         })
         .map(CallResult::Value)
     }
@@ -668,12 +777,12 @@ impl<'heap> PyAttrs<'heap> for PyPathImpl {
         ({
             let name_val = args.get_one_arg("with_name", vm.heap)?;
             defer_drop!(name_val, vm);
-            let name = name_val.try_to_str(vm)?.to_owned();
+            let name = name_val.try_as_str(vm)?.to_owned();
             let result = this
                 .get(vm.heap)
                 .with_name(&name)
                 .map_err(|e| SimpleException::new_msg(ExcType::ValueError, &e))?;
-            Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(result)))))
+            Ok(Value::allocate(Path::new(result), vm.heap))
         })
         .map(CallResult::Value)
     }
@@ -683,12 +792,12 @@ impl<'heap> PyAttrs<'heap> for PyPathImpl {
         ({
             let stem_val = args.get_one_arg("with_stem", vm.heap)?;
             defer_drop!(stem_val, vm);
-            let stem = stem_val.try_to_str(vm)?.to_owned();
+            let stem = stem_val.try_as_str(vm)?.to_owned();
             let result = this
                 .get(vm.heap)
                 .with_stem(&stem)
                 .map_err(|e| SimpleException::new_msg(ExcType::ValueError, &e))?;
-            Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(result)))))
+            Ok(Value::allocate(Path::new(result), vm.heap))
         })
         .map(CallResult::Value)
     }
@@ -698,12 +807,12 @@ impl<'heap> PyAttrs<'heap> for PyPathImpl {
         ({
             let suffix_val = args.get_one_arg("with_suffix", vm.heap)?;
             defer_drop!(suffix_val, vm);
-            let suffix = suffix_val.try_to_str(vm)?.to_owned();
+            let suffix = suffix_val.try_as_str(vm)?.to_owned();
             let result = this
                 .get(vm.heap)
                 .with_suffix(&suffix)
                 .map_err(|e| SimpleException::new_msg(ExcType::ValueError, &e))?;
-            Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(result)))))
+            Ok(Value::allocate(Path::new(result), vm.heap))
         })
         .map(CallResult::Value)
     }

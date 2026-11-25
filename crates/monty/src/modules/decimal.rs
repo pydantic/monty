@@ -9,7 +9,6 @@ use crate::{
     builtins::Builtins,
     bytecode::VM,
     exception_private::{ExcType, RunResult},
-    heap::HeapData,
     intern::StaticStrings,
     modules::ModuleFunctions,
     types::{
@@ -23,16 +22,17 @@ use crate::{
 };
 
 /// The functions of the `decimal` module.
+#[monty_macros::explicit_discriminants(checksum = 0x99d1_733d_2b53_6f20)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 pub(crate) enum DecimalFunctions {
     #[strum(serialize = "getcontext")]
-    Getcontext,
+    Getcontext = 0,
     #[strum(serialize = "setcontext")]
-    Setcontext,
+    Setcontext = 1,
     #[strum(serialize = "localcontext")]
-    Localcontext,
+    Localcontext = 2,
     #[strum(serialize = "IEEEContext")]
-    IeeeContext,
+    IeeeContext = 3,
 }
 
 /// The signal and condition classes, as `(attribute, exception type)`.
@@ -134,7 +134,7 @@ fn decimal_tuple_class(vm: &mut VM<'_>) -> Value {
     let name = field(StaticStrings::DecimalTuple);
     let module = Value::InternString(vm.interns.intern_static(StaticStrings::DecimalMod));
     let class = NamedTupleClass::new(name, fields, Vec::new(), module);
-    Value::Ref(vm.heap.allocate(HeapData::NamedTupleClass(Box::new(class))))
+    Value::allocate(class, vm.heap)
 }
 
 /// Dispatches a `decimal` module function.

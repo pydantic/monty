@@ -13,7 +13,7 @@ use ahash::{AHashMap, AHashSet};
 use monty_types::{
     CallArgs, InvalidInputError, MontyComplex, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime,
     MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
-    unstable::{self, ClassTypeNode, MontyGraph, MontyNode, NodeId},
+    unstable::{self, ClassEq, ClassHash, ClassTypeNode, MontyGraph, MontyNode, NodeId},
 };
 
 use crate::{
@@ -22,6 +22,7 @@ use crate::{
     defer_drop,
     exception_private::{RunError, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
+    intern::StringId,
     modules::dataclasses,
     types::{
         Complex, HostClass, HostClassType, LongInt, Module, NamedTuple, OpenFile, Path, PyTrait, TimeZone, Type,
@@ -30,7 +31,7 @@ use crate::{
         date as date_type, datetime as datetime_type, decimal as decimal_type,
         decimal::py as py_decimal,
         dict::Dict,
-        instance::class_name,
+        instance::{class_defines, class_defines_not_none, class_name},
         list::List,
         set::{FrozenSet, Set},
         str::allocate_string,
@@ -273,12 +274,7 @@ impl GraphExporter {
             HeapReadOutput::Bytes(b) => MontyNode::Bytes(b.get(vm.heap).as_slice().to_owned()),
             HeapReadOutput::List(list) => {
                 // Snapshot before recursing: a nested `__repr__` may mutate this list.
-                let children: Vec<Value> = list
-                    .get(vm.heap)
-                    .as_slice()
-                    .iter()
-                    .map(|item| item.clone_with_heap(vm.heap))
-                    .collect();
+                let children: Vec<Value> = list.get(vm.heap).items().cloned(vm.heap).collect();
                 defer_drop!(children, vm);
                 MontyNode::List(self.push_all(children, vm))
             }
@@ -453,6 +449,9 @@ impl GraphExporter {
             HeapReadOutput::DictValueIterator(_) => MontyNode::Repr("<dict_valueiterator object>".to_owned()),
             HeapReadOutput::SetIterator(_) => MontyNode::Repr("<set_iterator object>".to_owned()),
             HeapReadOutput::CallableIterator(_) => MontyNode::Repr("<callable_iterator object>".to_owned()),
+            HeapReadOutput::MapFilter(iter) => {
+                MontyNode::Repr(format!("<{} object>", iter.py_type(vm).name(vm.heap, vm.interns)))
+            }
             HeapReadOutput::DirScan(scan) => MontyNode::Repr(scan.get(vm.heap).boundary_repr()),
             // A placeholder despite the real in-sandbox repr (`count(0)`),
             // which would recurse into `repeat`'s arbitrary object.
@@ -528,7 +527,7 @@ impl GraphExporter {
                 Ok(s) => {
                     // `py_repr` yields a heap `str` `Value`; extract its text and drop it.
                     defer_drop!(s, vm);
-                    MontyNode::Repr(s.try_to_str(vm).map_or_default(str::to_owned))
+                    MontyNode::Repr(s.try_as_str(vm).map_or_default(str::to_owned))
                 }
                 Err(err @ RunError::UncatchableExc(_)) => {
                     self.error = Some(err);
@@ -564,6 +563,8 @@ impl GraphExporter {
             host_defined: false,
             is_dataclass: dataclasses::is_dataclass_class(class_id, vm),
             attrs: Vec::new(),
+            eq: class_eq(class_id, vm),
+            hash: class_hash(class_id, vm),
         }));
         let node_id = self.push_node(node);
         self.memoize(class_id, node_id, vm);
@@ -599,6 +600,8 @@ impl GraphExporter {
             host_defined: true,
             is_dataclass: class_type.is_dataclass,
             attrs,
+            eq: class_type.eq,
+            hash: class_type.hash,
         })));
         if !self.in_progress.contains(&type_id) {
             self.memoize(type_id, node_id, vm);
@@ -624,6 +627,39 @@ impl GraphExporter {
             })
             .collect()
     }
+}
+
+/// How instances of sandbox class `class_id` compare, read the way
+/// `instance_user_eq` dispatches: a generated `__eq__` names its fields, any
+/// other `__eq__` is user code the host cannot replay.
+fn class_eq(class_id: HeapId, vm: &VM<'_>) -> ClassEq {
+    if let Some(fields) = dataclasses::generated_fields(class_id, "__eq__", vm) {
+        ClassEq::Fields(field_strings(&fields, vm))
+    } else if class_defines(class_id, "__eq__", vm) {
+        ClassEq::Custom
+    } else {
+        ClassEq::Identity
+    }
+}
+
+/// How instances of sandbox class `class_id` hash, following the precedence of
+/// `Instance::py_hash`: generated `__hash__`, then `__hash__`, then the
+/// implicit opt-out a defined `__eq__` makes, then identity.
+fn class_hash(class_id: HeapId, vm: &VM<'_>) -> ClassHash {
+    if let Some(fields) = dataclasses::generated_fields(class_id, "__hash__", vm) {
+        ClassHash::Fields(field_strings(&fields, vm))
+    } else if class_defines_not_none(class_id, "__hash__", vm) {
+        ClassHash::Custom
+    } else if class_defines(class_id, "__hash__", vm) || class_defines(class_id, "__eq__", vm) {
+        ClassHash::Unhashable
+    } else {
+        ClassHash::Identity
+    }
+}
+
+/// Resolves interned field names to the strings the wire carries.
+fn field_strings(fields: &[StringId], vm: &VM<'_>) -> Vec<String> {
+    fields.iter().map(|name| vm.interns.get_str(*name).to_owned()).collect()
 }
 
 /// Crate-internal export of call arguments: one arena for every argument.
@@ -697,6 +733,8 @@ impl MontyTypeExt for MontyType {
             Self::DictValueIterator => Type::DictValueIterator,
             Self::SetIterator => Type::SetIterator,
             Self::CallableIterator => Type::CallableIterator,
+            Self::Map => Type::Map,
+            Self::Filter => Type::Filter,
             Self::ItertoolsPairwise => Type::ItertoolsPairwise,
             Self::ItertoolsCompress => Type::ItertoolsCompress,
             Self::ItertoolsIslice => Type::ItertoolsIslice,
@@ -794,6 +832,8 @@ impl MontyTypeExt for MontyType {
             Type::DictValueIterator => Self::DictValueIterator,
             Type::SetIterator => Self::SetIterator,
             Type::CallableIterator => Self::CallableIterator,
+            Type::Map => Self::Map,
+            Type::Filter => Self::Filter,
             Type::ItertoolsPairwise => Self::ItertoolsPairwise,
             Type::ItertoolsCompress => Self::ItertoolsCompress,
             Type::ItertoolsIslice => Self::ItertoolsIslice,
@@ -837,7 +877,8 @@ impl MontyTypeExt for MontyType {
             | Type::DecimalContext
             | Type::DecimalSignalDict
             | Type::DecimalContextManager
-            | Type::ForwardRef => return None,
+            | Type::ForwardRef
+            | Type::Task => return None,
             Type::Decimal => Self::Decimal,
             Type::Tuple => Self::Tuple,
             Type::NamedTuple => Self::NamedTuple,
@@ -894,10 +935,10 @@ fn import_node(
         MontyNode::Float(f) => Ok(Value::Float(f)),
         MontyNode::Complex(c) => Ok(Complex::new(c.real, c.imag).into_value(vm.heap)),
         MontyNode::String(s) => Ok(allocate_string(s, vm.heap)),
-        MontyNode::Bytes(b) => Ok(Value::Ref(vm.heap.allocate(HeapData::Bytes(Bytes::new(b))))),
+        MontyNode::Bytes(b) => Ok(Value::allocate(Bytes::new(b), vm.heap)),
         MontyNode::List(ids) => {
             let values = clone_children(&ids, built, vm);
-            Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(values)))))
+            Ok(Value::allocate(List::new(values), vm.heap))
         }
         MontyNode::Tuple(ids) => {
             let values = clone_children(&ids, built, vm);
@@ -918,27 +959,27 @@ fn import_node(
             let values = clone_children(&values, built, vm);
             let field_name_strs: Vec<EitherStr> = field_names.into_iter().map(Into::into).collect();
             let nt = NamedTuple::new(type_name, field_name_strs, values);
-            Ok(Value::Ref(vm.heap.allocate(HeapData::NamedTuple(Box::new(nt)))))
+            Ok(Value::allocate(nt, vm.heap))
         }
         MontyNode::Dict(pairs) => {
             let pairs = clone_pairs(&pairs, built, vm);
             let dict =
                 Dict::from_pairs(pairs, vm).map_err(|_| InvalidInputError::invalid_type("unhashable dict keys"))?;
-            Ok(Value::Ref(vm.heap.allocate(HeapData::Dict(dict))))
+            Ok(Value::allocate(dict, vm.heap))
         }
         MontyNode::Set(ids) => {
             let set = import_set(&ids, built, vm, "unhashable set element")?;
-            Ok(Value::Ref(vm.heap.allocate(HeapData::Set(set))))
+            Ok(Value::allocate(set, vm.heap))
         }
         MontyNode::FrozenSet(ids) => {
             let set = import_set(&ids, built, vm, "unhashable frozenset element")?;
             let frozenset = FrozenSet::from_set(set);
-            Ok(Value::Ref(vm.heap.allocate(HeapData::FrozenSet(frozenset))))
+            Ok(Value::allocate(frozenset, vm.heap))
         }
         MontyNode::Date(date) => {
             let value = date_type::from_ymd(date.year, i32::from(date.month), i32::from(date.day))
                 .map_err(|_| InvalidInputError::invalid_type("date"))?;
-            Ok(Value::Ref(vm.heap.allocate(HeapData::Date(value))))
+            Ok(Value::allocate(value, vm.heap))
         }
         MontyNode::DateTime(datetime) => {
             let MontyDateTime {
@@ -972,7 +1013,7 @@ fn import_node(
                 vm.heap,
             )
             .map_err(|_| InvalidInputError::invalid_type("datetime"))?;
-            Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(value))))
+            Ok(Value::allocate(value, vm.heap))
         }
         MontyNode::Time(time) => {
             let MontyTime {
@@ -1001,12 +1042,12 @@ fn import_node(
                 vm.heap,
             )
             .map_err(|_| InvalidInputError::invalid_type("time"))?;
-            Ok(Value::Ref(vm.heap.allocate(HeapData::Time(value))))
+            Ok(Value::allocate(value, vm.heap))
         }
         MontyNode::TimeDelta(delta) => {
             let delta = timedelta_type::new(delta.days, delta.seconds, delta.microseconds)
                 .map_err(|_| InvalidInputError::invalid_type("timedelta"))?;
-            Ok(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(delta))))
+            Ok(Value::allocate(delta, vm.heap))
         }
         // The host's text is untrusted: it must parse as `Decimal(text)` would,
         // a malformed literal or out-of-range exponent being rejected rather than
@@ -1021,12 +1062,12 @@ fn import_node(
             } else {
                 let tz = TimeZone::new(tz.offset_seconds, tz.name)
                     .map_err(|_| InvalidInputError::invalid_type("timezone"))?;
-                Ok(Value::Ref(vm.heap.allocate(HeapData::TimeZone(tz))))
+                Ok(Value::allocate(tz, vm.heap))
             }
         }
         MontyNode::Exception { exc_type, arg } => {
             let exc = SimpleException::new(exc_type, arg);
-            Ok(Value::Ref(vm.heap.allocate(HeapData::Exception(exc))))
+            Ok(Value::allocate(exc, vm.heap))
         }
         // A sandbox class the host hands back resolves to the class object
         // itself; a host class resolves to its single `HostClassType` entry,
@@ -1074,7 +1115,7 @@ fn import_node(
                     intern_host_class_type(class.name.clone(), class.id, class.is_dataclass, class_attrs, vm)?;
                 let (dict, vm) = dict_guard.into_parts();
                 let hc = HostClass::new(instance_id, class_id, dict);
-                Ok(Value::Ref(vm.heap.allocate(HeapData::HostClass(Box::new(hc)))))
+                Ok(Value::allocate(hc, vm.heap))
             }
             _ => {
                 let Value::Ref(class_id) = built[class_type.index()] else {
@@ -1093,12 +1134,12 @@ fn import_node(
             let dict = Dict::from_pairs(pairs, vm)
                 .map_err(|_| InvalidInputError::invalid_type("unhashable module attr keys"))?;
             let module = Module::host(name, id, dict);
-            Ok(Value::Ref(vm.heap.allocate(HeapData::Module(Box::new(module)))))
+            Ok(Value::allocate(module, vm.heap))
         }
-        MontyNode::Path(s) => Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(s))))),
+        MontyNode::Path(s) => Ok(Value::allocate(Path::new(s), vm.heap)),
         MontyNode::FileHandle(handle) => {
             let file = OpenFile::with_state(handle.path, handle.mode, handle.position);
-            Ok(Value::Ref(vm.heap.allocate(HeapData::OpenFile(Box::new(file)))))
+            Ok(Value::allocate(file, vm.heap))
         }
         MontyNode::Type(t) => Ok(Value::Builtin(Builtins::Type(t.to_internal()))),
         MontyNode::BuiltinFunction(f) => Ok(Value::Builtin(Builtins::Function(f))),

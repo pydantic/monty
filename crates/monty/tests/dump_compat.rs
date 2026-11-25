@@ -117,6 +117,13 @@ next(di_it)
 s_it = iter(st)
 next(s_it)
 call_it = iter(lambda: 7, 0)
+rows = map(next, [iter([3]), iter([]), iter([5])])
+
+
+def consume_rows():
+    return [value for value in rows]
+
+
 joined = '-'.join(['x', 'y'])
 str_it = iter('abc')
 next(str_it)
@@ -131,6 +138,8 @@ next(counter)
 alias = list[int]
 opt = int | None
 where = pathlib.Path('/data') / 'file.txt'
+relative_globals = {'__package__': 'os'}
+exec('def leaf(path):\n    from .path import basename\n    return basename(path)', relative_globals)
 
 
 def with_default(x, y=[1]):
@@ -190,20 +199,22 @@ assert rnd.random() == fresh.random()
 assert list(dq_it) == [2, 3] and list(t_it) == ['two'] and list(b_it) == [8, 9]
 assert list(di_it) == [('b', [2, 3]), (3, 'int key')] and len(list(s_it)) == 2
 assert next(call_it) == 7
+assert consume_rows() == [3] and consume_rows() == [5]
 assert pending_log == ['finally']
 assert joined == 'x-y' and list(str_it) == ['b', 'c'] and list(range_it) == [1, 2]
 assert list(dk_it) == ['b', 3] and list(dv_it) == [[2, 3], 'int key'] and next(counter) == 6
 assert alias == list[int] and opt == (int | None) and str(where) == '/data/file.txt'
 assert with_default(1) == 2
+assert relative_globals['leaf']('/data/file.txt') == 'file.txt'
 assert functools.reduce(lambda a, b: a + b, [1, 2, 3]) == 6
 assert add5(2) == 7
 (result, c.value)
 ";
 
-/// A dump written by an earlier build at this `DUMP_VERSION` still loads and
-/// runs. Failing here means a data-layout change broke older dumps: add a
-/// `#[serde(alias)]` or `#[serde(default)]`, or bump `DUMP_VERSION` and
-/// regenerate with `UPDATE_DUMP_FIXTURE=1 cargo test -p monty --test dump_compat`.
+/// Checks that the current-version fixture still loads and runs.
+/// If the format changed, check both compatibility directions against published releases
+/// before updating the fixture with `UPDATE_DUMP_FIXTURE=1 cargo test -p monty --test dump_compat`.
+/// Do not overwrite a fixture for a published dump version to make this test pass.
 #[test]
 fn fixture_dump_loads_and_resumes() {
     let path = fixture_path();
@@ -278,10 +289,10 @@ fn fixture_dump_loads_and_resumes() {
     );
 }
 
-/// Older fixtures remain readable after adding inline strings and the star-import opcode.
+/// Suspended sessions from older supported versions resume their host call.
 #[test]
 fn older_version_fixtures_load_and_resume() {
-    for version in [14, 15] {
+    for version in 14..DUMP_VERSION {
         let bytes = fs::read(fixture_path_for(version)).expect("older fixture exists");
         let loaded = Dump::load(&bytes).expect("older dumps remain supported");
         assert_eq!(loaded.script_name, "fixture.py");
@@ -698,6 +709,77 @@ fn builtin_ids_are_stable() {
         )
         .unwrap();
     assert_snapshot!(ids.py_repr(), @"(2097610, 2098122, 2105898, 2105642, 2113706, 2114058)");
+}
+
+/// Date and timedelta hashes must survive the storage-library migration because
+/// dicts and sets persist them. Expected values come from the former storage types.
+#[test]
+fn persisted_calendar_hashes_are_stable() {
+    let mut repl = MontyRepl::new("hashes.py", ResourceTracker::default(), CompileOptions::default());
+    let hashes = repl
+        .feed_run(
+            "from datetime import date, timedelta\n\
+         values = [date(1, 1, 1), date(1900, 3, 1), date(2000, 2, 29), date(2024, 6, 15), date.max, \
+         timedelta(), timedelta(microseconds=-1), timedelta(days=-2, seconds=86399, microseconds=1), \
+         timedelta(days=1, microseconds=1), timedelta.max]\n\
+         tuple(hash(value) for value in values)",
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_snapshot!(hashes.py_repr(), @"(5726848817805768197, -5905029044664614831, 8287707130111363081, -7491674403021461934, -4854198610469465321, 2435999049025295583, -7668848667738911443, 8954133621882991626, 1789700847611459173, -7132049192933483870)");
+    repl.feed_run(
+        "values.append(timedelta.min)\nby_value = {value: index for index, value in enumerate(values)}",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    let bytes = dump("hashes.py", None, &[], SessionRef::Idle(&repl)).unwrap();
+    let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else {
+        panic!("dump was idle");
+    };
+    let lookups = restored
+        .feed_run(
+            "tuple(by_value[value + timedelta(0)] for value in values)",
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_snapshot!(lookups.py_repr(), @"(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10)");
+}
+
+/// Parsed timezones retain their Python identity and ownership across a dump.
+#[test]
+fn parsed_datetime_retains_timezone_identity() {
+    let mut repl = MontyRepl::new("zones.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        "from datetime import datetime, timedelta\n\
+         parsed = [datetime.strptime('2024-01-01 ' + offset, '%Y-%m-%d %z') \
+         for offset in ['+0100', '-0530', '+0000']]\n\
+         zones = [value.tzinfo for value in parsed]\n\
+         identities = [id(zone) for zone in zones]",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    let bytes = dump("zones.py", None, &[], SessionRef::Idle(&repl)).unwrap();
+    let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else {
+        panic!("dump was idle");
+    };
+    let checked = restored
+        .feed_run(
+            r"for value, zone, identity in zip(parsed, zones, identities):
+    assert value.tzinfo is zone
+    assert id(value.tzinfo) == identity
+    assert value.replace().tzinfo is zone
+    assert value.timetz().tzinfo is zone
+    assert (value + timedelta(days=1)).tzinfo is zone
+True",
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_eq!(checked, MontyObject::bool(true));
 }
 
 /// The fixture for the current `DUMP_VERSION`; the name carries the version so

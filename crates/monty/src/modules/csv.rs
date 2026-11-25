@@ -18,7 +18,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropGuard, DropWithContext, HeapData, HeapReadOutput},
+    heap::{DropGuard, DropWithContext, HeapReadOutput},
     intern::StaticStrings,
     modules::ModuleFunctions,
     os_dispatch::PostConversionEffect,
@@ -35,19 +35,20 @@ use crate::{
 };
 
 /// Module-level `csv` functions; `DictReader` and `DictWriter` are types.
+#[monty_macros::explicit_discriminants(checksum = 0x761e_5c0a_a9b7_9c94)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum CsvFunctions {
     /// `csv.reader(csvfile, dialect='excel', **fmtparams)`.
-    Reader,
+    Reader = 0,
     /// `csv.writer(csvfile, dialect='excel', **fmtparams)`.
-    Writer,
+    Writer = 1,
     /// `csv.get_dialect(name)`.
-    GetDialect,
+    GetDialect = 2,
     /// `csv.list_dialects()`.
-    ListDialects,
+    ListDialects = 3,
     /// `csv.field_size_limit([new_limit])`.
-    FieldSizeLimit,
+    FieldSizeLimit = 4,
 }
 
 /// Creates the `csv` module.
@@ -260,7 +261,7 @@ fn call_list_dialects(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         .iter()
         .map(|name| allocate_string(*name, vm.heap))
         .collect();
-    Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(names)))))
+    Ok(Value::allocate(List::new(names), vm.heap))
 }
 
 /// `get_dialect(name)`: Argument Clinic, so `name` may be a keyword.
@@ -469,7 +470,7 @@ fn materialize_fieldnames(fieldnames: &mut Value, vm: &mut VM<'_>) -> RunResult<
     defer_drop!(iterator, vm);
     if iterator.is(fieldnames) {
         let names = collect_iterable(fieldnames, vm)?;
-        let list = Value::Ref(vm.heap.allocate(HeapData::List(List::new(names))));
+        let list = Value::allocate(List::new(names), vm.heap);
         mem::replace(fieldnames, list).drop_with(vm);
     }
     Ok(())

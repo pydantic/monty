@@ -285,12 +285,13 @@ export interface RefusalDetails {
  * credential asked for (`permission_denied`), or returning `FAILED_PRECONDITION`.
  * The server gives details in `statusCode`,
  * `statusMessage` and `remoteCause`. No session existed, so
- * nothing ran. `retryable` identifies temporary refusals; `retryAfter` is
- * the server's suggested delay, not an automatic retry. A server that
- * cannot be reached, that answers with any other status (such as
- * `UNIMPLEMENTED` from a URL that is no Monty server), or that is no gRPC
- * server at all (a web server's error page), rejects with `MontyConnectError`
- * instead.
+ * nothing ran. `retryable` identifies temporary refusals. `retryAfter` is
+ * the server's suggested delay. The pool retries a refused checkout once
+ * when the server sends a single valid `Retry-After` of at most two seconds.
+ * Waiting and redialing share a five-second budget and the checkout
+ * and dial deadlines. A retry timeout rejects with the original refusal.
+ * An unreachable server, an unexpected status such as
+ * `UNIMPLEMENTED`, or a non-gRPC response raises `MontyConnectError`.
  */
 export class MontyRefusedError extends MontyError {
   /** The status code the server refused with, by name, or `null`. */
@@ -301,7 +302,7 @@ export class MontyRefusedError extends MontyError {
   readonly remoteCause: string | null
   /** True for `RESOURCE_EXHAUSTED` or `UNAVAILABLE`; credentials must be fixed separately. */
   readonly retryable: boolean
-  /** Suggested delay in seconds, or `null` for absent or invalid `Retry-After`. */
+  /** Suggested delay in seconds from a single valid `Retry-After`, or `null`. */
   readonly retryAfter: number | null
 
   constructor(message: string, details: RefusalDetails = {}) {
@@ -404,6 +405,7 @@ export const PYTHON_EXC_NAMES: ReadonlySet<string> = new Set([
   'IndexError',
   'KeyError',
   'RuntimeError',
+  'asyncio.exceptions.InvalidStateError',
   'NotImplementedError',
   'RecursionError',
   'AttributeError',

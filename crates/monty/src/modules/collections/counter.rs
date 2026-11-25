@@ -18,7 +18,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     expressions::CmpOperator,
-    heap::{DropGuard, DropWithContext, HeapData, HeapObjectRead, HeapReadOutput},
+    heap::{DropGuard, DropWithContext, HeapData, HeapObjectRead},
     intern::StaticStrings,
     py_attrs::{self, MethodCall},
     py_value::PyValue,
@@ -490,7 +490,7 @@ pub(crate) fn counter_most_common<'h>(
 
     // CPython's `heapq.nlargest(0, ...)` returns before comparing anything.
     if limit == Some(0) {
-        return Ok(vm.heap.allocate_as(List::new(Vec::new())).into_value());
+        return Ok(Value::allocate(List::new(Vec::new()), vm.heap));
     }
     // Snapshot the entries before ordering: comparing counts can run a user
     // `__eq__` that mutates the Counter, so the ordered indices must refer to
@@ -519,7 +519,7 @@ pub(crate) fn counter_most_common<'h>(
             )
         })
         .collect();
-    Ok(vm.heap.allocate_as(List::new(items)).into_value())
+    Ok(Value::allocate(List::new(items), vm.heap))
 }
 
 /// Indices of the `n` largest of `counts` (`n > 0`), largest first, picked as CPython's
@@ -687,7 +687,7 @@ pub(crate) fn counter_elements<'h>(
             items.push(key.clone_with_heap(vm.heap));
         }
     }
-    Ok(vm.heap.allocate_as(List::new(items)).into_value())
+    Ok(Value::allocate(List::new(items), vm.heap))
 }
 
 /// The four binary `Counter` algebra operators.
@@ -1107,10 +1107,8 @@ fn counter_bump_all<'h>(
 /// CPython's `AttributeError: 'X' object has no attribute 'items'` — the failure
 /// `c += other` / `-=` / `|=` hit when `other.items()` has no `.items()`.
 fn counter_require_mapping<'h>(rhs: &Value, vm: &VM<'h>) -> RunResult<HeapObjectRead<'h, Dict>> {
-    match rhs.read_heap(vm) {
-        Some(HeapReadOutput::Dict(dict)) => Ok(dict),
-        _ => Err(ExcType::attribute_error(rhs.py_type_name(vm), "items")),
-    }
+    rhs.read_as::<Dict>(vm.heap)
+        .ok_or_else(|| ExcType::attribute_error(rhs.py_type_name(vm), "items"))
 }
 
 /// Removes every entry whose count is not strictly positive from `counter`.

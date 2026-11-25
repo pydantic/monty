@@ -379,7 +379,7 @@ impl Dict {
     /// Ownership follows [`Dict::set`]: `key` and `value` transfer to the dict,
     /// and are released here if the insertion exceeds the memory limit.
     pub fn set_json_string_key(&mut self, key: Value, value: Value, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
-        debug_assert!(json_key_string_slice(&key, vm.heap, vm.interns).is_some());
+        debug_assert!(key.as_str(vm).is_some());
 
         if matches!(key, Value::Ref(_)) || matches!(value, Value::Ref(_)) {
             self.contains_refs = true;
@@ -389,8 +389,7 @@ impl Dict {
             .py_hash(vm)?
             .expect("json object keys are always hashable strings")
             .raw();
-        let key_str =
-            json_key_string_slice(&key, vm.heap, vm.interns).expect("json object keys are always string values");
+        let key_str = key.as_str(vm).expect("json object keys are always string values");
         let found = self.table.find(hash, |entry| {
             json_key_equals_str(&entry.key, key_str, vm.heap, vm.interns)
         });
@@ -409,14 +408,6 @@ impl Dict {
             Ok(None)
         }
     }
-}
-
-/// Returns the underlying string slice for a JSON object key value.
-///
-/// JSON object parsing only inserts string keys, but the helper remains
-/// defensive and returns `None` for any non-string value.
-fn json_key_string_slice<'a>(key: &'a Value, heap: &'a Heap, interns: &'a Interns) -> Option<&'a str> {
-    key.as_str_heap(heap, interns)
 }
 
 /// Returns whether `key` is a string equal to `expected`.
@@ -823,7 +814,7 @@ impl Dict {
             if let Some(other_value) = source {
                 let mut source_guard = DropGuard::new(other_value, kwargs_guard.ctx());
                 let (source, vm) = source_guard.as_parts();
-                if let Some(HeapReadOutput::Dict(source)) = source.read_heap(vm) {
+                if let Some(source) = source.read_as::<Self>(vm.heap) {
                     // Reuse cached hashes without key callbacks; dict() discards Counter/defaultdict metadata.
                     let copy = source.copy_as(DictKind::plain(), vm)?;
                     mem::replace(dict, copy).drop_with(vm);
@@ -838,8 +829,7 @@ impl Dict {
         }
 
         let dict = dict_guard.into_inner();
-        let heap_id = vm.heap.allocate(HeapData::Dict(dict));
-        Ok(Value::Ref(heap_id))
+        Ok(Value::allocate(dict, vm.heap))
     }
 }
 
@@ -1370,17 +1360,15 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
     }
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        match other.read_heap(vm) {
-            Some(HeapReadOutput::Dict(other)) => {
-                // Two Counters compare as multisets (zero counts ignored); any
-                // other pairing is plain dict equality.
-                if self.get(vm.heap).is_counter() && other.get(vm.heap).is_counter() {
-                    Ok(Some(self.eq_counter(&other, vm)?))
-                } else {
-                    Ok(Some(self.eq_dict(&other, vm)?))
-                }
-            }
-            _ => Ok(None),
+        let Some(other) = other.read_as::<Dict>(vm.heap) else {
+            return Ok(None);
+        };
+        // Two Counters compare as multisets (zero counts ignored); any
+        // other pairing is plain dict equality.
+        if self.get(vm.heap).is_counter() && other.get(vm.heap).is_counter() {
+            Ok(Some(self.eq_counter(&other, vm)?))
+        } else {
+            Ok(Some(self.eq_dict(&other, vm)?))
         }
     }
 
@@ -1401,7 +1389,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
             // Only the four ordering operators reach `py_cmp_op`.
             _ => return Ok(None),
         };
-        let Some(HeapReadOutput::Dict(other)) = other.read_heap(vm) else {
+        let Some(other) = other.read_as::<Dict>(vm.heap) else {
             return Ok(None);
         };
         if self.get(vm.heap).is_counter() && other.get(vm.heap).is_counter() {
@@ -1534,7 +1522,7 @@ impl<'h> HeapObjectRead<'h, Dict> {
     /// `TypeError`, matching CPython: `Counter.__add__` returns `NotImplemented`
     /// for a non-Counter, and a plain dict has no `+` of its own.
     fn counter_binary(&self, other: &Value, op: CounterOp, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let Some(HeapReadOutput::Dict(other)) = other.read_heap(vm) else {
+        let Some(other) = other.read_as::<Dict>(vm.heap) else {
             return Ok(None);
         };
         if self.get(vm.heap).is_counter() && other.get(vm.heap).is_counter() {
@@ -1641,7 +1629,7 @@ fn dict_clear<'h>(dict: &HeapReadMut<'h, Dict>, vm: &mut VM<'h>) {
 /// Copies entries into the requested kind; callers choose whether to preserve the subtype.
 fn dict_copy<'h>(dict: &HeapRead<'h, Dict>, kind: DictKind, vm: &mut VM<'h>) -> RunResult<Value> {
     let copy = dict.copy_as(kind, vm)?;
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Dict(copy))))
+    Ok(Value::allocate(copy, vm.heap))
 }
 
 /// `left | right` for two dicts: a new dict of `left`'s pairs updated with
@@ -1652,7 +1640,7 @@ fn dict_copy<'h>(dict: &HeapRead<'h, Dict>, kind: DictKind, vm: &mut VM<'h>) -> 
 /// first); otherwise the result is a plain dict, as `PyDict_Copy` of a
 /// Counter is, so `Counter | dict` and `dict | Counter` are plain dicts.
 fn dict_or<'h>(left: &HeapRead<'h, Dict>, right: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-    let Some(HeapReadOutput::Dict(right_dict)) = right.read_heap(vm) else {
+    let Some(right_dict) = right.read_as::<Dict>(vm.heap) else {
         return Ok(None);
     };
     let left_len = left.get(vm.heap).len();
@@ -1673,7 +1661,7 @@ fn dict_or<'h>(left: &HeapRead<'h, Dict>, right: &Value, vm: &mut VM<'h>) -> Run
         DictKind::plain()
     };
     merged.set_kind(kind);
-    Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Dict(merged)))))
+    Ok(Some(Value::allocate(merged, vm.heap)))
 }
 
 /// Implements Python's `dict.update([other], **kwargs)` method.
@@ -1718,9 +1706,7 @@ fn dict_merge_from_value(dict: &mut Dict, other_value: Value, vm: &mut VM<'_>) -
     let mut other_value_guard = DropGuard::new(other_value, vm);
     {
         let (other_value, vm) = other_value_guard.as_parts();
-        if let Value::Ref(id) = other_value
-            && let HeapData::Dict(src_dict) = vm.heap.get(*id)
-        {
+        if let Some(src_dict) = other_value.get_as::<Dict>(vm.heap) {
             // The snapshot stays live while the pairs are applied, so charge it
             // up front. Only the snapshot: how much the target grows depends on
             // how many of these keys it already holds, and charging for all of
@@ -1955,8 +1941,7 @@ pub fn dict_fromkeys(args: ArgValues, kind: DictKind, vm: &mut VM<'_>) -> RunRes
 
     let mut dict = dict_guard.into_inner();
     dict.set_kind(kind);
-    let heap_id = vm.heap.allocate(HeapData::Dict(dict));
-    Ok(Value::Ref(heap_id))
+    Ok(Value::allocate(dict, vm.heap))
 }
 
 /// Shared dictionary iterator position and mutation sentinel.
@@ -2049,8 +2034,8 @@ macro_rules! impl_dict_iterator {
                 Ok(CallResult::Value(self.clone_value(vm.heap)))
             }
 
-            fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-                $next(self, vm)
+            fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+                $next(self, vm).map(|item| item.map(CallResult::Value))
             }
         }
     };
@@ -2169,7 +2154,7 @@ mod tests {
     use super::{Dict, DictKind};
     use crate::{
         bytecode::VM,
-        heap::{DropWithContext, Heap, HeapData, HeapReader},
+        heap::{DropWithContext, Heap, HeapReader},
         run::{Program, SessionTables},
         types::List,
         value::Value,
@@ -2179,7 +2164,7 @@ mod tests {
     #[test]
     fn copy_as_tracks_the_requested_factory_for_gc() {
         let mut heap = Heap::new(16, ResourceTracker::default());
-        let factory = Value::Ref(heap.allocate(HeapData::List(List::new(Vec::new()))));
+        let factory = Value::allocate(List::new(Vec::new()), &heap);
         let kind = DictKind::defaultdict(Some(factory));
         let source = Dict::new();
         let mut tables = SessionTables::default();

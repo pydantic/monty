@@ -14,6 +14,7 @@ use crate::{
         Dict, FrozenSet, LazyHeapSet, PyTrait, Set, Type, TypeRef, allocate_tuple,
         dict::{DictItemIterator, DictKeyIterator, DictValueIterator},
         iter::checked_preallocation_hint,
+        sequence::SequenceItems,
     },
     value::Value,
 };
@@ -131,7 +132,7 @@ impl<'h> HeapRead<'h, DictKeysView> {
         let rhs = self.to_set(vm)?;
         defer_drop!(rhs, vm);
         let result = operation(lhs, rhs, vm)?;
-        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Set(result)))))
+        Ok(Some(Value::allocate(result, vm.heap)))
     }
 }
 
@@ -321,7 +322,7 @@ impl<'h> HeapRead<'h, DictItemsView> {
         let rhs = self.to_set(vm)?;
         defer_drop!(rhs, vm);
         let result = operation(lhs, rhs, vm)?;
-        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Set(result)))))
+        Ok(Some(Value::allocate(result, vm.heap)))
     }
 }
 
@@ -731,7 +732,7 @@ fn view_intersection(view: SetLikeView, other: &Value, vm: &mut VM<'_>) -> RunRe
         }
     }
     let (result, vm) = result_guard.into_parts();
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Set(result))))
+    Ok(Value::allocate(result, vm.heap))
 }
 
 /// `view.isdisjoint(other)`, as CPython's `dictviews_isdisjoint`.
@@ -791,8 +792,7 @@ fn dict_view_binary_op_value(
     defer_drop!(rhs_set, vm);
 
     let result = operation(lhs_set, rhs_set, vm)?;
-    let result_id = vm.heap.allocate(HeapData::Set(result));
-    Ok(Some(Value::Ref(result_id)))
+    Ok(Some(Value::allocate(result, vm.heap)))
 }
 
 /// Computes dictionary-view union.
@@ -855,35 +855,14 @@ pub(crate) fn collect_iterable_to_set(value: Value, vm: &mut VM<'_>) -> Result<S
     Ok(set_guard.into_inner())
 }
 
-/// Extracts and clones the `(key, value)` probe accepted by `dict_items.__contains__`.
-///
-/// CPython treats only 2-tuples as valid probes for items-view membership. Monty
-/// also accepts namedtuples of length two so tuple-like runtime values behave
-/// sensibly even though namedtuples are not modeled as a true tuple subclass.
+/// Clones the key and value of a two-element tuple or named tuple for item membership.
 pub(crate) fn cloned_items_view_candidate(item: &Value, heap: &impl ContainsHeap) -> Option<(Value, Value)> {
-    let Value::Ref(heap_id) = item else {
+    let heap = heap.heap();
+    let items = SequenceItems::from_tuple(heap.get(item.ref_id()?))?;
+    if items.len() != 2 {
         return None;
-    };
-
-    match heap.heap().get(*heap_id) {
-        HeapData::Tuple(tuple) => {
-            let items = tuple.as_slice();
-            if items.len() == 2 {
-                Some((items[0].clone_with_heap(heap), items[1].clone_with_heap(heap)))
-            } else {
-                None
-            }
-        }
-        HeapData::NamedTuple(namedtuple) => {
-            let items = namedtuple.as_vec();
-            if items.len() == 2 {
-                Some((items[0].clone_with_heap(heap), items[1].clone_with_heap(heap)))
-            } else {
-                None
-            }
-        }
-        _ => None,
     }
+    Some((items.clone_item(0, heap), items.clone_item(1, heap)))
 }
 
 pub(crate) struct PyDictItemsViewImpl;

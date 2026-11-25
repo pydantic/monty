@@ -35,7 +35,7 @@ impl StringIterator {
 
     /// Allocates an iterator over a string stored inside its `Value`.
     pub(crate) fn from_inline(text: InlineStr, vm: &mut VM<'_>) -> Value {
-        Self::allocate(StringIteratorSource::Inline(text), text.as_bytes().is_ascii(), vm)
+        Self::allocate(StringIteratorSource::Inline(text), text.is_ascii(), vm)
     }
 
     /// Allocates an iterator retaining a heap string.
@@ -63,7 +63,7 @@ impl StringIterator {
 
     /// Returns the number of Unicode code points not yet yielded.
     pub(crate) fn size_hint(&self, vm: &VM<'_>) -> usize {
-        self.as_str(vm).chars().count()
+        bytecount::num_chars(self.as_str(vm).as_bytes())
     }
 
     /// Borrows the unconsumed string suffix.
@@ -127,12 +127,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, StringIterator> {
         Ok(CallResult::Value(self.clone_value(vm.heap)))
     }
 
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let next = self.get(vm.heap).as_str(vm).chars().next();
         if let Some(character) = next {
             let value = allocate_char(character);
             self.get_mut(vm.heap).byte_offset += character.len_utf8();
-            Ok(Some(value))
+            Ok(Some(CallResult::Value(value)))
         } else {
             Ok(None)
         }
@@ -189,7 +189,7 @@ mod tests {
                     let mut remaining = text.chars().count();
                     assert_eq!(read.get(vm.heap).size_hint(vm), remaining);
                     for expected in text.chars() {
-                        let item = read.py_next(vm).unwrap().unwrap();
+                        let item = read.py_next(vm).unwrap().unwrap().require_synchronous(vm).unwrap();
                         defer_drop!(item, vm);
                         assert_eq!(item.as_str(vm).unwrap(), expected.to_string());
                         remaining -= 1;

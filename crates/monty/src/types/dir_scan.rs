@@ -214,7 +214,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DirScan> {
         }
     }
 
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         match self.get_mut(vm.heap) {
             DirScan::Entry(_) => Err(ExcType::type_error_not_iterator(&self.py_type_name(vm))),
             DirScan::Scandir(iter) => {
@@ -224,10 +224,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DirScan> {
                 iter.position += 1;
                 let path = os_path_join(&iter.dir, &name);
                 let entry = DirScan::Entry(DirEntry { name, path, info });
-                Ok(Some(Value::Ref(vm.heap.allocate(HeapData::DirScan(Box::new(entry))))))
+                Ok(Some(Value::allocate(entry, vm.heap)))
             }
             DirScan::Walk(_) => walk_next(self, vm),
         }
+        .map(|item| item.map(CallResult::Value))
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
@@ -377,7 +378,7 @@ fn walk_step<'h>(this: &mut HeapObjectRead<'h, DirScan>, vm: &mut VM<'h>) -> Run
                     let RunError::Exc(raise) = error else {
                         return Err(error);
                     };
-                    let exc = Value::Ref(vm.heap.allocate(HeapData::Exception(raise.exc)));
+                    let exc = Value::allocate(raise.exc, vm.heap);
                     let result = vm.evaluate_function(onerror, ArgValues::One(exc))?;
                     result.drop_with(vm);
                 }
@@ -390,7 +391,7 @@ fn walk_step<'h>(this: &mut HeapObjectRead<'h, DirScan>, vm: &mut VM<'h>) -> Run
             } => {
                 let path_flavor = walk_mut(this, vm).path_flavor;
                 let dirpath = if path_flavor {
-                    Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(spelled.clone()))))
+                    Value::allocate(Path::new(spelled.clone()), vm.heap)
                 } else {
                     allocate_string(spelled.as_str(), vm.heap)
                 };
@@ -437,23 +438,21 @@ fn descend_into_dirnames<'h>(
     };
     // Each name is copied, then joined onto the directory and spelled for its
     // step; charged first, since a list can repeat one long name many times.
-    let mut total = 0_usize;
-    for item in list.as_slice() {
-        let Some(name) = value_as_path_str(item, vm.heap, vm.interns) else {
-            return Err(ExcType::type_error(format!(
-                "join() argument must be str, bytes, or os.PathLike object, not '{}'",
-                item.py_type_name_heap(vm.heap, vm.interns)
-            )));
-        };
-        let step = name.len() * 3 + relative.len() + spelled.len() + size_of::<WalkStep>();
-        total = total.saturating_add(step);
-    }
+    let items = list.items();
+    let total = items
+        .map(|item| {
+            let Some(name) = value_as_path_str(item, vm.heap, vm.interns) else {
+                return Err(ExcType::type_error(format!(
+                    "join() argument must be str, bytes, or os.PathLike object, not '{}'",
+                    item.py_type_name_heap(vm.heap, vm.interns)
+                )));
+            };
+            Ok(name.len() * 3 + relative.len() + spelled.len() + size_of::<WalkStep>())
+        })
+        .try_fold(0_usize, |total, size| size.map(|size| total.saturating_add(size)))?;
     vm.heap.tracker.check_allocation(total)?;
-    let names: Vec<String> = list
-        .as_slice()
-        .iter()
-        .filter_map(|item| value_as_path_str(item, vm.heap, vm.interns))
-        .map(str::to_owned)
+    let names: Vec<String> = items
+        .filter_map(|item| value_as_path_str(item, vm.heap, vm.interns).map(str::to_owned))
         .collect();
     let walk = walk_mut(this, vm);
     for name in names.iter().rev() {
@@ -498,7 +497,7 @@ fn walk_mut<'a, 'h>(this: &'a mut HeapObjectRead<'h, DirScan>, vm: &'a mut VM<'h
 /// Allocates a list of `str`.
 fn string_list(items: Vec<String>, vm: &VM<'_>) -> Value {
     let items = items.into_iter().map(|item| allocate_string(item, vm.heap)).collect();
-    Value::Ref(vm.heap.allocate(HeapData::List(List::new(items))))
+    Value::allocate(List::new(items), vm.heap)
 }
 
 /// What [`WalkIterator::step`] decided, carried out once its borrow ends.
@@ -751,7 +750,7 @@ impl ScanEffect {
                     entries,
                     position: 0,
                 });
-                Ok(Value::Ref(vm.heap.allocate(HeapData::DirScan(Box::new(iter)))))
+                Ok(Value::allocate(iter, vm.heap))
             }
             Self::Walk(setup) => {
                 let (tree, root_error) = match reply {
@@ -777,7 +776,7 @@ impl ScanEffect {
                     root_error,
                     running: false,
                 });
-                Ok(Value::Ref(vm.heap.allocate(HeapData::DirScan(Box::new(walk)))))
+                Ok(Value::allocate(walk, vm.heap))
             }
             Self::Glob(setup) => {
                 let matches = match reply {
@@ -789,12 +788,10 @@ impl ScanEffect {
                 vm.heap.tracker.check_allocation(total)?;
                 let paths = matches
                     .into_iter()
-                    .map(|path| Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(path)))))
+                    .map(|path| Value::allocate(Path::new(path), vm.heap))
                     .collect();
                 let list = vm.heap.allocate(HeapData::List(List::new(paths)));
-                Ok(Value::Ref(
-                    vm.heap.allocate(HeapData::ListIterator(ListIterator::new(list))),
-                ))
+                Ok(Value::allocate(ListIterator::new(list), vm.heap))
             }
         }
     }

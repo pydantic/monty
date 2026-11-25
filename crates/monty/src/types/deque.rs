@@ -222,8 +222,7 @@ impl Deque {
         let (deque, evicted) = Self::new(items, maxlen);
         // Items dropped by the maxlen truncation still hold their refcounts.
         evicted.drop_with(vm);
-        let heap_id = vm.heap.allocate(HeapData::Deque(deque));
-        Ok(Value::Ref(heap_id))
+        Ok(Value::allocate(deque, vm.heap))
     }
 }
 
@@ -264,7 +263,7 @@ impl<'h> HeapRead<'h, Deque> {
     pub(crate) fn allocate_like(&self, items: Vec<Value>, vm: &mut VM<'h>) -> Value {
         let (deque, evicted) = Deque::new(items, self.get(vm.heap).maxlen());
         evicted.drop_with(vm);
-        Value::Ref(vm.heap.allocate(HeapData::Deque(deque)))
+        Value::allocate(deque, vm.heap)
     }
 }
 
@@ -458,7 +457,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         // A deque only ever equals another deque — unlike NamedTuple/tuple, there
         // is no cross-type equality with list. `maxlen` is not part of equality.
-        let Some(HeapReadOutput::Deque(other)) = other.read_heap(vm) else {
+        let Some(other) = other.read_as::<Deque>(vm.heap) else {
             return Ok(None);
         };
         let len = self.get(vm.heap).len();
@@ -560,7 +559,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
     /// (so the result can truncate). Any non-deque right operand returns `None`,
     /// yielding CPython's "can only concatenate deque" `TypeError`.
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let Some(HeapReadOutput::Deque(other)) = other.read_heap(vm) else {
+        let Some(other) = other.read_as::<Deque>(vm.heap) else {
             return Ok(None);
         };
         let maxlen = self.get(vm.heap).maxlen();
@@ -571,8 +570,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
         let (items, vm) = items.into_parts();
         let (deque, evicted) = Deque::new(items, maxlen);
         evicted.drop_with(vm.heap);
-        let id = vm.heap.allocate(HeapData::Deque(deque));
-        Ok(Some(Value::Ref(id)))
+        Ok(Some(Value::allocate(deque, vm.heap)))
     }
 
     /// `deque += <iterable>` — CPython's `deque.__iadd__` *is* `extend`, so any
@@ -604,7 +602,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
             self.get(vm.heap).iter().map(|v| v.clone_with_heap(vm.heap)).collect()
         };
         let result = repeat_deque(source, maxlen, count, vm)?;
-        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Deque(result)))))
+        Ok(Some(Value::allocate(result, vm.heap)))
     }
 
     /// Repeats for integer or `__index__` counts, retaining identity and respecting `maxlen`.
@@ -765,7 +763,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DequeIterator> {
         Ok(CallResult::Value(self.clone_value(vm.heap)))
     }
 
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let (deque_id, index, state) = {
             let iterator = self.get(vm.heap);
             (iterator.deque, iterator.index, iterator.state)
@@ -785,7 +783,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DequeIterator> {
         if item.is_some() {
             self.get_mut(vm.heap).index += 1;
         }
-        Ok(item)
+        Ok(item.map(CallResult::Value))
     }
 }
 
@@ -1034,8 +1032,7 @@ impl<'heap> PyAttrs<'heap> for PyDequeImpl {
             let items = this.clone_all_items(vm)?;
             let (new_deque, evicted) = Deque::new(items, maxlen);
             evicted.drop_with(vm);
-            let id = vm.heap.allocate(HeapData::Deque(new_deque));
-            Ok(Value::Ref(id))
+            Ok(Value::allocate(new_deque, vm.heap))
         }
     }
 

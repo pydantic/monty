@@ -116,19 +116,25 @@ impl ModuleStub {
     /// by [`validate_module_name`] or [`CHECKER_MODULE_NAMES`].
     pub fn new(module: impl Into<String>, source: impl Into<String>) -> Result<Self, ModuleStubError> {
         let module = module.into();
-        let mut parts = module.split('.');
-        let top = parts.next().unwrap_or_default();
-        validate_module_name(top).map_err(|_| invalid_path(&module, top))?;
-        if CHECKER_MODULE_NAMES.contains(&top) {
-            return Err(ModuleStubError::ReservedName(top.to_owned()));
-        }
-        if let Some(part) = parts.find(|part| !is_identifier(part)) {
-            return Err(invalid_path(&module, part));
-        }
+        Self::validate_module(&module)?;
         Ok(Self {
             module,
             source: source.into(),
         })
+    }
+
+    /// Validates a borrowed dotted path before constructing a stub.
+    pub fn validate_module(module: &str) -> Result<(), ModuleStubError> {
+        let mut parts = module.split('.');
+        let top = parts.next().unwrap_or_default();
+        validate_module_name(top).map_err(|_| invalid_path(module, top))?;
+        if CHECKER_MODULE_NAMES.contains(&top) {
+            return Err(ModuleStubError::ReservedName(top.to_owned()));
+        }
+        if let Some(part) = parts.find(|part| !is_identifier(part)) {
+            return Err(invalid_path(module, part));
+        }
+        Ok(())
     }
 
     /// The dotted module path.
@@ -170,7 +176,7 @@ fn invalid_path(path: &str, part: &str) -> ModuleStubError {
 pub enum ModuleStubError {
     /// Not a Python identifier, or a keyword.
     InvalidName(String),
-    /// A module the sandbox provides itself, or one its type stubs rely on.
+    /// A name reserved by the sandbox or its type checker.
     ReservedName(String),
 }
 
@@ -188,35 +194,41 @@ impl Display for ModuleStubError {
 
 impl Error for ModuleStubError {}
 
-/// Sandbox module names, excluding the dotted name `os.path`.
-/// Imports of these modules never reach the host, so host modules cannot use these names.
-/// Keep in sync with the runtime's `StandardLib`.
+/// Module names reserved by the sandbox, excluding the dotted name `os.path`.
+/// Imports of these names never reach the host, even when the runtime does not provide the module.
+/// Keep in sync with the runtime's `StandardLib` and the vendored modules in `crates/monty/stdlib/vendor.toml`.
 pub const SANDBOX_MODULE_NAMES: &[&str] = &[
+    "_stat",
     "annotationlib",
     "asyncio",
     "base64",
     "binascii",
     "bisect",
     "collections",
+    "colorsys",
     "copy",
     "csv",
     "dataclasses",
     "datetime",
     "decimal",
+    "errno",
     "fnmatch",
     "functools",
     "gc",
     "hashlib",
     "itertools",
     "json",
+    "keyword",
     "math",
     "os",
     "pathlib",
     "posixpath",
     "random",
     "re",
+    "stat",
     "statistics",
     "sys",
+    "textwrap",
     "time",
     "tomllib",
     "typing",

@@ -19,12 +19,13 @@ use crate::{
 };
 
 /// `copy` module functions, one variant per Python-visible function.
+#[monty_macros::explicit_discriminants(checksum = 0x17db_11bd_e96f_cd0c)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 pub(crate) enum CopyFunctions {
     #[strum(serialize = "copy")]
-    Copy,
+    Copy = 0,
     #[strum(serialize = "deepcopy")]
-    Deepcopy,
+    Deepcopy = 1,
 }
 
 /// Static mapping of attribute names to functions for module creation.
@@ -108,7 +109,7 @@ fn shallow_copy(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
         Copyability::Rebuilt => match vm.heap.read(id) {
             HeapReadOutput::List(list) => {
                 let items = clone_items(list.get(vm.heap).len(), vm, |index, vm| list.clone_item(index, vm))?;
-                Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(items)))))
+                Ok(Value::allocate(List::new(items), vm.heap))
             }
             HeapReadOutput::Dict(dict) => {
                 let pairs = dict.clone_all_pairs(vm)?;
@@ -118,7 +119,7 @@ fn shallow_copy(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
             }
             HeapReadOutput::Set(set) => {
                 let copy = set.copy(vm)?;
-                Ok(Value::Ref(vm.heap.allocate(HeapData::Set(copy))))
+                Ok(Value::allocate(copy, vm.heap))
             }
             HeapReadOutput::Deque(deque) => {
                 let items = clone_items(deque.get(vm.heap).len(), vm, |index, vm| {
@@ -162,7 +163,7 @@ fn shallow_copy(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
             // `Context.__copy__`: the same settings and flags in a new object.
             HeapReadOutput::DecimalContext(context) => {
                 let settings = *context.get(vm.heap);
-                Ok(Value::Ref(vm.heap.allocate(HeapData::DecimalContext(settings))))
+                Ok(Value::allocate(settings, vm.heap))
             }
             _ => unreachable!("`classify` said this type is rebuilt, so `shallow_copy` must rebuild it"),
         },
@@ -239,7 +240,7 @@ pub(crate) fn deep_copy(source: &Value, memo: &mut Memo, vm: &mut VM<'_>) -> Run
             // A context holds no references, so its deep copy is its shallow one.
             HeapReadOutput::DecimalContext(context) => {
                 let settings = *context.get(vm.heap);
-                Ok(Value::Ref(vm.heap.allocate(HeapData::DecimalContext(settings))))
+                Ok(Value::allocate(settings, vm.heap))
             }
             _ => unreachable!("`classify` said this type is rebuilt, so `deep_copy` must rebuild it"),
         },
@@ -360,6 +361,7 @@ fn classify(output: &HeapReadOutput<'_>) -> Copyability {
         | HeapReadOutput::DictValueIterator(_)
         | HeapReadOutput::SetIterator(_)
         | HeapReadOutput::CallableIterator(_)
+        | HeapReadOutput::MapFilter(_)
         | HeapReadOutput::DirScan(_)
         | HeapReadOutput::Itertools(_)
         | HeapReadOutput::Csv(_)
@@ -367,6 +369,8 @@ fn classify(output: &HeapReadOutput<'_>) -> Copyability {
         | HeapReadOutput::Coroutine(_)
         | HeapReadOutput::GatherFuture(_)
         | HeapReadOutput::ExternalFuture(_)
+        | HeapReadOutput::Task(_)
+        | HeapReadOutput::WaitFuture(_)
         | HeapReadOutput::OpenFile(_)
         | HeapReadOutput::ExtFunction(_)
         | HeapReadOutput::Cell(_)
@@ -482,7 +486,7 @@ impl Memo {
     /// what the pass recorded.
     fn new(memo: Value, vm: &mut VM<'_>) -> RunResult<Self> {
         let dict = match memo {
-            Value::None => Value::Ref(vm.heap.allocate(HeapData::Dict(Dict::new()))),
+            Value::None => Value::allocate(Dict::new(), vm.heap),
             Value::Ref(id) if matches!(vm.heap.read(id), HeapReadOutput::Dict(_)) => memo,
             other => {
                 let type_name = other.py_type_name(vm);

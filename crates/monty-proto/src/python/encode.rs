@@ -1,17 +1,18 @@
 //! Host values flowing INTO the sandbox: [`GraphEncoder`] turns Python
 //! objects into one post-order node arena per message.
 
-use std::{collections::HashMap, vec::IntoIter};
+use std::{collections::HashMap, sync::Arc, vec::IntoIter};
 
 use monty_types::{
     MontyComplex, MontyDate, MontyException, MontyObject, MontyUuid,
-    unstable::{self, ClassTypeNode, MontyGraph, MontyNode, NodeId},
+    unstable::{self, ClassEq, ClassHash, ClassTypeNode, MontyGraph, MontyNode, NodeId},
 };
 use num_bigint::BigInt;
 use pyo3::{
     exceptions::{PyBaseException, PyTypeError, PyValueError},
     intern,
     prelude::*,
+    sync::PyOnceLock,
     types::{
         PyBool, PyBytes, PyComplex, PyDate, PyDateAccess, PyDateTime, PyDelta, PyDict, PyFloat, PyFrozenSet, PyInt,
         PyList, PyModule, PySet, PyString, PyTime, PyTuple, PyType,
@@ -30,6 +31,7 @@ use super::{
     },
     exceptions::{exc_py_to_monty, exc_to_monty_node},
     external_module::PyExternalModule,
+    named_tuple::monty_named_tuple_type,
     std_type_proxy::PyMontyStdTypeProxy,
 };
 
@@ -239,7 +241,7 @@ impl<'a, 'py> GraphEncoder<'a, 'py> {
             // sandbox resolves it to its original object
             let proxy = proxy.get();
             let class = ClassTypeSource {
-                class_type: proxy.class_type.clone(),
+                class_type: Arc::clone(&proxy.class_type),
                 attrs: proxy.class_attributes.bind(py).clone(),
                 identity: None,
                 register: None,
@@ -253,7 +255,7 @@ impl<'a, 'py> GraphEncoder<'a, 'py> {
         } else if let Ok(proxy) = obj.cast::<PyMontyClassTypeProxy>() {
             let proxy = proxy.get();
             self.enter_class_type(ClassTypeSource {
-                class_type: proxy.class_type.clone(),
+                class_type: Arc::clone(&proxy.class_type),
                 attrs: proxy.attributes.bind(py).clone(),
                 identity: Some(obj.clone()),
                 register: None,
@@ -475,7 +477,7 @@ enum Pending {
     /// Children alternate key, value.
     Dict,
     /// Children alternate attr name, value.
-    ClassType(ClassHeader),
+    ClassType(Arc<ClassHeader>),
     /// The first child is the class node, then attr name, value pairs.
     ClassInstance {
         instance_id: MontyUuid,
@@ -485,7 +487,7 @@ enum Pending {
 /// Where a class node comes from: a `ClassType` wrapper, a proxy, or the
 /// class recorded on an instance proxy.
 struct ClassTypeSource<'py> {
-    class_type: ClassHeader,
+    class_type: Arc<ClassHeader>,
     /// Eager class attrs, `name -> value`.
     attrs: Bound<'py, PyDict>,
     /// The host object to memoize by identity, when there is one.
@@ -506,12 +508,17 @@ impl<'py> ClassTypeSource<'py> {
             .call_method0(intern!(py, "get_eager_attrs"))?
             .cast_into::<PyDict>()?;
         Ok(Self {
-            class_type: ClassHeader {
+            class_type: Arc::new(ClassHeader {
                 name: class.getattr(intern!(py, "__name__"))?.extract()?,
                 id: wrapper_uuid(wrapper, "ClassType")?,
                 host_defined: true,
                 is_dataclass: wrapper.call_method0(intern!(py, "is_dataclass"))?.extract()?,
-            },
+                // The host's own classes compare however Python says; the
+                // sandbox never needs a rule for them.
+                eq: ClassEq::Identity,
+                hash: ClassHash::Identity,
+                unhashable_message: PyOnceLock::new(),
+            }),
             attrs,
             identity: Some(wrapper.clone()),
             register: Some((wrapper.clone(), overwrite)),
@@ -520,17 +527,25 @@ impl<'py> ClassTypeSource<'py> {
 
     /// The class node with the given attr pairs.
     fn node(&self, attrs: Vec<(NodeId, NodeId)>) -> MontyNode {
-        Self::node_from(self.class_type.clone(), attrs)
+        Self::node_from(Arc::clone(&self.class_type), attrs)
     }
 
-    /// The class node for a header and its attr pairs.
-    fn node_from(class_type: ClassHeader, attrs: Vec<(NodeId, NodeId)>) -> MontyNode {
+    /// The class node for a header and its attr pairs, moving the header's
+    /// name and rules out when nothing else shares it.
+    fn node_from(class_type: Arc<ClassHeader>, attrs: Vec<(NodeId, NodeId)>) -> MontyNode {
+        let (id, host_defined, is_dataclass) = (class_type.id, class_type.host_defined, class_type.is_dataclass);
+        let (name, eq, hash) = match Arc::try_unwrap(class_type) {
+            Ok(header) => (header.name, header.eq, header.hash),
+            Err(shared) => (shared.name.clone(), shared.eq.clone(), shared.hash.clone()),
+        };
         MontyNode::ClassType(Box::new(ClassTypeNode {
-            name: class_type.name,
-            id: class_type.id,
-            host_defined: class_type.host_defined,
-            is_dataclass: class_type.is_dataclass,
+            name,
+            id,
+            host_defined,
+            is_dataclass,
             attrs,
+            eq,
+            hash,
         }))
     }
 }
@@ -557,16 +572,22 @@ fn id_pairs(ids: &[NodeId]) -> Vec<(NodeId, NodeId)> {
 }
 
 /// The full type name of a namedtuple (e.g. `os.stat_result`), dropping the
-/// module prefix for built-ins.
+/// module prefix for built-ins. A `MontyNamedTuple` decoded from the sandbox
+/// carries the name it arrived with, since its class is shared by every type.
 fn namedtuple_type_name(obj: &Bound<'_, PyAny>) -> PyResult<String> {
-    let py_type = obj.get_type();
-    let simple_name = py_type.name()?.to_string();
-    let module: String = py_type.getattr("__module__")?.extract()?;
-    Ok(if module.starts_with('_') || module == "builtins" {
-        simple_name
+    let py = obj.py();
+    if obj.is_instance(monty_named_tuple_type(py)?)? {
+        obj.getattr(intern!(py, "_type_name"))?.extract()
     } else {
-        format!("{module}.{simple_name}")
-    })
+        let py_type = obj.get_type();
+        let simple_name = py_type.name()?.to_string();
+        let module: String = py_type.getattr("__module__")?.extract()?;
+        Ok(if module.starts_with('_') || module == "builtins" {
+            simple_name
+        } else {
+            format!("{module}.{simple_name}")
+        })
+    }
 }
 
 /// A host callable with no richer Monty mapping, carrying its `__name__` and

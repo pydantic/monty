@@ -220,6 +220,16 @@ impl<'h> PyInt<'h> {
             },
         )
     }
+
+    /// Computes `int.as_integer_ratio()`, returning `(self, 1)`.
+    pub(crate) fn as_integer_ratio(&self, vm: &VM<'h>) -> Value {
+        let num = match self {
+            Self::Small(value) => Value::Int(*value),
+            Self::Interned(id) => Value::InternLongInt(*id),
+            Self::Heap(value) => value.clone_value(vm.heap),
+        };
+        allocate_tuple(smallvec![num, Value::Int(1)], vm.heap)
+    }
 }
 
 /// Keeps storage selection here; a heap integer forwards to its concrete protocol.
@@ -484,6 +494,14 @@ impl<'h> PyTrait<'h> for PyInt<'h> {
                 args.check_zero_args("int.bit_count", vm.heap)?;
                 Ok(CallResult::Value(self.bit_count(vm)))
             }
+            Some(StaticStrings::AsIntegerRatio) => {
+                args.check_zero_args("int.as_integer_ratio", vm.heap)?;
+                Ok(CallResult::Value(self.as_integer_ratio(vm)))
+            }
+            Some(StaticStrings::IsInteger) => {
+                args.check_zero_args("int.is_integer", vm.heap)?;
+                Ok(CallResult::Value(Value::Bool(true)))
+            }
             _ => {
                 args.drop_with(vm.heap);
                 Err(ExcType::attribute_error("int", attr.as_str(vm.interns)))
@@ -541,8 +559,7 @@ fn add_bigint(lhs: &BigInt, other: &Value, vm: &VM<'_>) -> RunResult<Option<Valu
 /// Allocates an `i128` already known not to fit the immediate integer representation.
 pub(crate) fn wide_i128_into_value(value: i128, heap: &Heap) -> Value {
     debug_assert!(i64::try_from(value).is_err());
-    let id = heap.allocate(HeapData::LongInt(LongInt::new(BigInt::from(value))));
-    Value::Ref(id)
+    Value::allocate(LongInt::new(BigInt::from(value)), heap)
 }
 
 impl LongInt {
@@ -559,8 +576,7 @@ impl LongInt {
             Value::Int(value)
         } else {
             let long_int = Self::new(BigInt::from(value));
-            let heap_id = heap.allocate(HeapData::LongInt(long_int));
-            Value::Ref(heap_id)
+            Value::allocate(long_int, heap)
         }
     }
 
@@ -593,8 +609,7 @@ impl LongInt {
         if let Some(i) = self.0.to_i64() {
             Value::Int(i)
         } else {
-            let heap_id = heap.allocate(HeapData::LongInt(self));
-            Value::Ref(heap_id)
+            Value::allocate(self, heap)
         }
     }
 
@@ -619,11 +634,6 @@ impl LongInt {
     /// Checks if the value is zero.
     pub fn is_zero(&self) -> bool {
         self.0.is_zero()
-    }
-
-    /// Checks if the value is negative.
-    pub fn is_negative(&self) -> bool {
-        self.0.is_negative()
     }
 
     /// Tries to convert to i64.

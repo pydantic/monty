@@ -1,135 +1,47 @@
-//! Implementation of the map() builtin function.
-
-use std::{iter, mem};
+//! Argument binding for the lazy map iterator.
 
 use crate::{
-    args::{ArgValues, FromArgs, KwargsValues},
-    bytecode::VM,
-    defer_drop, defer_drop_mut,
+    args::{ArgValues, FromArgs},
+    bytecode::{CallResult, VM},
+    defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropGuard, DropWithContext, HeapData},
-    types::{List, iter::checked_preallocation_hint},
+    heap::{DropGuard, DropWithContext},
+    types::{PyTrait, map_filter::MapFilter},
     value::Value,
 };
 
-/// Implementation of the map() builtin function.
-///
-/// Applies a function to every item of one or more iterables and returns a list of results.
-/// With multiple iterables, stops when the shortest iterable is exhausted.
-///
-/// Note: In Python this returns an iterator, but we return a list for simplicity.
-/// Note: The `strict=` parameter is not yet supported.
-///
-/// Examples:
-/// ```python
-/// map(abs, [-1, 0, 1, 2])           # [1, 0, 1, 2]
-/// map(pow, [2, 3], [3, 2])          # [8, 9]
-/// map(str, [1, 2, 3])               # ['1', '2', '3']
-/// ```
-pub fn builtin_map(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    // CPython's map() uses a bespoke arity message
-    // (`map() must have at least two arguments.`) rather than the generic
-    // "missing N required positional arguments" wording the macro would
-    // otherwise produce. Pre-check before delegating to MapArgs so we
-    // match byte-for-byte; cleanup is handled by the early-return drop.
-    //
-    // Only fire the arity check when no kwargs are present — otherwise
-    // `map(abs, bogus=1)` would report the arity error when CPython reports
-    // the unknown-kwarg error. Delegating to the macro produces the
-    // correct `got an unexpected keyword argument` message instead.
-    let kwargs_empty = match &args {
-        ArgValues::Kwargs(kwargs) => kwargs.is_empty(),
-        ArgValues::ArgsKargs { kwargs, .. } => kwargs.is_empty(),
-        _ => true,
+/// Binds `map(function, iterable, *iterables, strict=False)` without consuming any source.
+pub fn builtin_map(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+    let keyword_count = match &args {
+        ArgValues::Kwargs(kwargs) | ArgValues::ArgsKargs { kwargs, .. } => kwargs.len(),
+        _ => 0,
     };
-    if args.count() < 2 && kwargs_empty {
-        args.drop_with(vm.heap);
+    if keyword_count > 1 {
+        args.drop_with(vm);
+        return Err(ExcType::type_error_method_at_most("map", 1, keyword_count, true));
+    }
+    let MapArgs { args, strict } = MapArgs::from_args(args, vm)?;
+    let mut sources = DropGuard::new(args, vm);
+    let strict = {
+        let vm = sources.ctx();
+        defer_drop!(strict, vm);
+        strict.py_bool(vm)?
+    };
+    // CPython validates keywords and truth-tests strict before its bespoke positional arity check.
+    if sources.as_parts().0.len() < 2 {
         return Err(ExcType::type_error_map_arity());
     }
-    let MapArgs {
-        function,
-        first_iterable,
-        extra_iterables,
-    } = MapArgs::from_args(args, vm)?;
-    defer_drop!(function, vm);
-    defer_drop_mut!(extra_iterables, vm);
-
-    let first_iter = first_iterable.into_py_iter(vm)?.require_synchronous(vm)?;
-    defer_drop!(first_iter, vm);
-    let mut first_iter = first_iter.read(vm);
-
-    let extra_iterators: Vec<Value> = Vec::with_capacity(extra_iterables.len());
-    defer_drop_mut!(extra_iterators, vm);
-
-    for iterable in extra_iterables.drain(..) {
-        extra_iterators.push(iterable.into_py_iter(vm)?.require_synchronous(vm)?);
-    }
-
-    // Validate and clamp the iterator's hint before reserving native memory.
-    let hint = first_iter.iter_size_hint(vm);
-    let capacity = checked_preallocation_hint(hint, mem::size_of::<Value>(), &vm.heap.tracker)?;
-    let out = Vec::with_capacity(capacity);
-    defer_drop_mut!(out, vm);
-
-    // map function over iterables until the shortest iter is exhausted
-    match extra_iterators.as_mut_slice() {
-        // map(f, iter)
-        [] => {
-            while let Some(item) = first_iter.py_next(vm)? {
-                let args = ArgValues::One(item);
-                out.push(vm.evaluate_function(function, args)?);
-            }
-        }
-        // map(f, iter1, iter2)
-        [single] => {
-            while let Some(arg1) = first_iter.py_next(vm)? {
-                let mut arg1_guard = DropGuard::new(arg1, vm);
-                let Some(arg2) = single.py_next(arg1_guard.ctx())? else {
-                    break;
-                };
-                let (arg1, vm) = arg1_guard.into_parts();
-                let args = ArgValues::Two(arg1, arg2);
-                out.push(vm.evaluate_function(function, args)?);
-            }
-        }
-        // map(f, iter1, iter2, *iterables)
-        multiple => 'outer: loop {
-            let items = Vec::with_capacity(1 + multiple.len());
-            defer_drop_mut!(items, vm);
-
-            for result in iter::once(first_iter.py_next(vm)).chain(multiple.iter_mut().map(|iter| iter.py_next(vm))) {
-                if let Some(item) = result? {
-                    items.push(item);
-                } else {
-                    break 'outer;
-                }
-            }
-
-            let args = ArgValues::ArgsKargs {
-                args: mem::take(items),
-                kwargs: KwargsValues::Empty,
-            };
-
-            out.push(vm.evaluate_function(function, args)?);
-        },
-    }
-
-    let heap_id = vm.heap.allocate(HeapData::List(List::new(mem::take(out))));
-    Ok(Value::Ref(heap_id))
+    let (mut iterables, vm) = sources.into_parts();
+    let function = iterables.remove(0);
+    MapFilter::new_map(function, iterables, strict, vm)
 }
 
-/// Argument shape for `map(function, iterable, *iterables)`.
-///
-/// `function` and the first `iterable` are required; any further iterables
-/// are collected by `extra_iterables`. `map` doesn't accept kwargs, so the
-/// macro's default unknown-kwarg error path is exactly what we want.
+/// Binds keywords before the custom positional-arity check and source acquisition.
 #[derive(FromArgs)]
 #[from_args(name = "map")]
 struct MapArgs {
-    #[from_args(pos_only)]
-    function: Value,
-    #[from_args(pos_only)]
-    first_iterable: Value,
     #[from_args(varargs)]
-    extra_iterables: Vec<Value>,
+    args: Vec<Value>,
+    #[from_args(kw_only, default = Value::Bool(false))]
+    strict: Value,
 }

@@ -161,7 +161,7 @@ order and error wording, but with these divergences:
     outcome, though not its exact depth), but a deep-but-finite chain that
     CPython's default 1000-frame limit would still render may raise
     `RecursionError` in Monty. The same cap applies to synchronous callback
-    evaluation such as `map()`, `filter()`, `sorted()`/`list.sort(key=...)`,
+    evaluation such as `list(map(f, xs))`, `list(filter(f, xs))`, `sorted()`/`list.sort(key=...)`,
     `min()`/`max(key=...)`, arithmetic and subscript dunders, and exotic `__init__` recursion.
     A chain of callable instances stored as class-level `__call__` members also has this cap;
     ordinary Python-function `__call__` recursion uses the normal frame limit
@@ -212,6 +212,57 @@ with Monty() as pool, pool.checkout() as session:
     )
     # result is MontyClassProxy(name='A', attributes={'x': 1})
 ```
+
+Host-side `==` and `hash()` on a proxy follow the sandbox class only as far as
+the host can replay it without running sandbox code.
+A user-defined `__eq__` would need sandbox code, so the proxy compares by
+identity instead, and its hash follows whatever `==` it ends up with:
+
+- Each result builds its own proxy, so `a is b` is `False` across feeds.
+    Proxies that compare by id still compare and hash equal when they stand
+    for the same sandbox object.
+- A proxy is a snapshot. Two proxies of the same dataclass object compare by
+    their fields, so they are unequal when a field changed between the two
+    results, or holds NaN; the sandbox's `self is other` makes them equal.
+- A `@dataclass` (with the default `eq=True`) compares as its generated
+    `__eq__` does: the same class (by uuid, so two classes sharing a name
+    differ) with every field `==`. A frozen one hashes its fields; a non-frozen
+    one without its own `__hash__` raises `TypeError: unhashable type: 'P'`
+    from `hash()`, as in the sandbox.
+- A field the instance never set (a body `__init__` that skips it) reads the
+    class-level default in the sandbox. The host has no class defaults, so
+    `==` and `hash()` raise `AttributeError` for it.
+- A user-defined `__eq__`, in a plain class or a dataclass body, does not run
+    on the host: proxies compare by identity, so two distinct objects the
+    sandbox calls equal are unequal on the host, and a proxy never equals a
+    non-proxy (`proxy == 5` is `False`). This also applies to a dataclass field
+    holding such an instance.
+- A user-defined `__hash__` does not run on the host either. Proxies hash by
+    identity, except on a dataclass whose `__eq__` is generated: there they hash
+    the fields `__eq__` compares (skipping unhashable values), so equal proxies
+    hash equal.
+- A dataclass proxy whose attributes hold a host object (a `ClassInstance`
+    or `ClassType` the session still has), directly or inside a container,
+    compares and hashes by identity: replaying its fields would run that
+    object's own `__eq__` and `__hash__` on the host. The sandbox compares
+    those fields.
+- A class with `__eq__` and no `__hash__` stays unhashable. A frozen dataclass
+    with a body `__eq__` hashes by identity, since its proxies compare by
+    identity.
+- Hashing a chain of proxies nested through their fields more than 1000 deep
+    raises `RecursionError` on the host, even where the sandbox's own
+    `__hash__` never recursed. A returned dict or set keyed by such a proxy
+    fails to convert.
+- For the sandbox's own answer, compare there:
+    `session.feed_run('a == b', inputs={'a': p, 'b': q})`. This only works while
+    both objects are still referenced in the sandbox.
+- A proxy of a host-sent instance (after a restore) compares by identity: the
+    host class's own `__eq__` is not recorded.
+- A self-reference crosses as the placeholder string `'...'`, so two distinct
+    self-referencing dataclass instances compare equal on the host, where the
+    sandbox raises `RecursionError`.
+- `attributes` returns a copy: editing it changes neither the proxy's `==` and
+    hash nor the copy a restored session rebuilds from the proxy.
 
 A sandbox-defined class **object** (`A` itself) still has no structural host
 representation and converts to its type text (e.g. `"<class 'A'>"`). A user
@@ -427,8 +478,8 @@ every construction request. Divergences:
     indexing is unaffected: `[1, 2, 3][10**30]` raises `IndexError` as CPython
     does.
 - `__contains__` cannot suspend on an external or OS call; it raises `NotImplementedError` inside the method.
-    `__iter__` and `__next__` have the same restriction in `for`, comprehensions, collection constructors,
-    and native iterator adaptors, but can suspend through direct `iter()`, `next()`, and `functools.reduce()` calls.
+    `__iter__` and `__next__` have the same restriction in collection constructors and synchronous native iterator
+    adaptors, but not in `for`, comprehensions, direct `iter()`/`next()`, or `functools.reduce()` calls.
     See [iter.md](iter.md) for other iteration restrictions.
     Two related protocols are still not dispatched:
     - the legacy `__getitem__`-only fallback: CPython iterates a class defining

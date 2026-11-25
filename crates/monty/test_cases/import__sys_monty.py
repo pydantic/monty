@@ -64,25 +64,37 @@ assert sys.abiflags == ''
 assert sys.dont_write_bytecode is True
 assert sys.pycache_prefix is None
 
-# === sys.builtin_module_names is the whole importable set ===
+# === sys.builtin_module_names lists native modules ===
 # `gc` is only registered in test builds, so compare against the production set.
 assert tuple(name for name in sys.builtin_module_names if name != 'gc') == (
+    'annotationlib',
     'asyncio',
     'base64',
     'binascii',
     'bisect',
     'collections',
+    'copy',
+    'csv',
     'dataclasses',
     'datetime',
+    'decimal',
+    'errno',
+    'fnmatch',
     'functools',
+    'hashlib',
     'itertools',
     'json',
     'math',
     'os',
+    'os.path',
     'pathlib',
+    'posixpath',
     'random',
     're',
+    'statistics',
     'sys',
+    'time',
+    'tomllib',
     'typing',
     'unicodedata',
 )

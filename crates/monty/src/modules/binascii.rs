@@ -24,17 +24,15 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{DropWithContext, HeapData},
+    heap::DropWithContext,
     intern::StaticStrings,
     modules::{
         ModuleFunctions,
-        base64::{
-            allocate_bytes, b64_decode, b64_encode_reserving, binascii_error, decode_input_described, encode_input,
-        },
+        base64::{b64_decode, b64_encode_reserving, binascii_error, decode_input_described},
     },
     py_value::PyValue,
     resource_checks::check_estimated_size,
-    types::{Module, PyTrait, Type},
+    types::{Module, PyTrait, Type, bytes::allocate_bytes},
     value::Value,
 };
 
@@ -42,32 +40,33 @@ use crate::{
 const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
 /// `binascii` module functions, one variant per Python-visible function.
+#[monty_macros::explicit_discriminants(checksum = 0x7ea4_5f35_3381_27f4)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 pub(crate) enum BinasciiFunctions {
     #[strum(serialize = "hexlify")]
-    Hexlify,
+    Hexlify = 0,
     #[strum(serialize = "unhexlify")]
-    Unhexlify,
+    Unhexlify = 1,
     #[strum(serialize = "b2a_hex")]
-    B2aHex,
+    B2aHex = 2,
     #[strum(serialize = "a2b_hex")]
-    A2bHex,
+    A2bHex = 3,
     #[strum(serialize = "b2a_base64")]
-    B2aBase64,
+    B2aBase64 = 4,
     #[strum(serialize = "a2b_base64")]
-    A2bBase64,
+    A2bBase64 = 5,
     #[strum(serialize = "crc32")]
-    Crc32,
+    Crc32 = 6,
     #[strum(serialize = "crc_hqx")]
-    CrcHqx,
+    CrcHqx = 7,
     #[strum(serialize = "b2a_uu")]
-    B2aUu,
+    B2aUu = 8,
     #[strum(serialize = "a2b_uu")]
-    A2bUu,
+    A2bUu = 9,
     #[strum(serialize = "b2a_qp")]
-    B2aQp,
+    B2aQp = 10,
     #[strum(serialize = "a2b_qp")]
-    A2bQp,
+    A2bQp = 11,
 }
 
 /// Static mapping of attribute names to functions for module creation.
@@ -149,12 +148,7 @@ fn call_hexlify(vm: &mut VM<'_>, args: ArgValues, name: &str) -> RunResult<Value
     defer_drop!(sep, vm);
 
     let separator = hex_separator(sep.as_ref(), vm)?;
-    let encoded = hex_encode(
-        encode_input(data, vm)?.as_ref(),
-        separator,
-        bytes_per_sep,
-        &vm.heap.tracker,
-    )?;
+    let encoded = hex_encode(data.try_as_bytes(vm)?, separator, bytes_per_sep, &vm.heap.tracker)?;
     Ok(allocate_bytes(encoded, vm.heap))
 }
 
@@ -170,7 +164,7 @@ fn call_unhexlify(vm: &mut VM<'_>, args: ArgValues, name: &str) -> RunResult<Val
     };
     defer_drop!(hexstr, vm);
 
-    let decoded = hex_decode(decode_input_described(hexstr, vm, "bytes, buffer or ASCII string")?.as_ref())?;
+    let decoded = hex_decode(decode_input_described(hexstr, vm, "bytes, buffer or ASCII string")?)?;
     Ok(allocate_bytes(decoded, vm.heap))
 }
 
@@ -184,7 +178,7 @@ fn call_b2a_base64(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // Resolved before encoding so the newline is reserved with the rest, which
     // is also where CPython's Argument Clinic `p` converter reads it.
     let newline = newline.py_bool(vm)?;
-    let mut encoded = b64_encode_reserving(encode_input(data, vm)?.as_ref(), usize::from(newline), &vm.heap.tracker)?;
+    let mut encoded = b64_encode_reserving(data.try_as_bytes(vm)?, usize::from(newline), &vm.heap.tracker)?;
     if newline {
         encoded.push(b'\n');
     }
@@ -200,8 +194,9 @@ fn call_a2b_base64(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     let strict = strict_mode.py_bool(vm)?;
     let decoded = b64_decode(
-        decode_input_described(data, vm, "bytes, buffer or ASCII string")?.as_ref(),
+        decode_input_described(data, vm, "bytes, buffer or ASCII string")?,
         strict,
+        None,
     )?;
     Ok(allocate_bytes(decoded, vm.heap))
 }
@@ -219,7 +214,7 @@ fn call_crc32(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         None => 0,
         Some(value) => wrapping_u32(value, vm)?,
     };
-    let checksum = crc32(encode_input(data, vm)?.as_ref(), seed);
+    let checksum = crc32(data.try_as_bytes(vm)?, seed);
     Ok(Value::Int(i64::from(checksum)))
 }
 
@@ -233,7 +228,7 @@ fn call_crc_hqx(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // The `I` format takes the seed modulo 2**32, then the body narrows it to
     // the 16 bits the register holds — so `-1` and `0xffff` seed alike.
     let seed = u16::try_from(wrapping_u32(crc, vm)? & 0xffff).expect("masked below 2**16");
-    let checksum = crc_hqx(encode_input(data, vm)?.as_ref(), seed);
+    let checksum = crc_hqx(data.try_as_bytes(vm)?, seed);
     Ok(Value::Int(i64::from(checksum)))
 }
 
@@ -245,7 +240,7 @@ fn call_b2a_uu(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(backtick, vm);
 
     let backtick = backtick.py_bool(vm)?;
-    let encoded = uu_encode(encode_input(data, vm)?.as_ref(), backtick)?;
+    let encoded = uu_encode(data.try_as_bytes(vm)?, backtick)?;
     Ok(allocate_bytes(encoded, vm.heap))
 }
 
@@ -260,7 +255,7 @@ fn call_a2b_uu(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     };
     defer_drop!(data, vm);
 
-    let decoded = uu_decode(decode_input_described(data, vm, "bytes, buffer or ASCII string")?.as_ref())?;
+    let decoded = uu_decode(decode_input_described(data, vm, "bytes, buffer or ASCII string")?)?;
     Ok(allocate_bytes(decoded, vm.heap))
 }
 
@@ -283,7 +278,7 @@ fn call_b2a_qp(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         istext: istext.py_bool(vm)?,
         header: header.py_bool(vm)?,
     };
-    let encoded = qp_encode(encode_input(data, vm)?.as_ref(), options, &vm.heap.tracker)?;
+    let encoded = qp_encode(data.try_as_bytes(vm)?, options, &vm.heap.tracker)?;
     Ok(allocate_bytes(encoded, vm.heap))
 }
 
@@ -296,7 +291,7 @@ fn call_a2b_qp(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     let header = header.py_bool(vm)?;
     let decoded = qp_decode(
-        decode_input_described(data, vm, "bytes, buffer or ASCII string")?.as_ref(),
+        decode_input_described(data, vm, "bytes, buffer or ASCII string")?,
         header,
     );
     Ok(allocate_bytes(decoded, vm.heap))
@@ -507,20 +502,10 @@ fn hex_separator(sep: Option<&Value>, vm: &VM<'_>) -> RunResult<Option<u8>> {
         u8::try_from(u32::from(text.chars().next().expect("one character")))
             .map(Some)
             .map_err(|_| value_error("sep must be ASCII."))
-    } else if is_bytes(sep, vm) {
-        Ok(Some(encode_input(sep, vm)?[0]))
+    } else if let Some(bytes) = sep.as_bytes(vm) {
+        Ok(Some(bytes[0]))
     } else {
         Err(ExcType::type_error("sep must be str or bytes."))
-    }
-}
-
-/// Whether a value is `bytes`, which is all `hexlify` accepts as a separator
-/// besides `str` — a buffer that `encode_input` would take is still rejected.
-fn is_bytes(value: &Value, vm: &VM<'_>) -> bool {
-    match value {
-        Value::InternBytes(_) => true,
-        Value::Ref(heap_id) => matches!(vm.heap.get(*heap_id), HeapData::Bytes(_)),
-        _ => false,
     }
 }
 

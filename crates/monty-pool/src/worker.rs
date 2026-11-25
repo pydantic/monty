@@ -24,23 +24,33 @@ use std::{
     time::Duration,
 };
 
+#[cfg(feature = "telemetry")]
+use monty_proto::Traceparent;
 use monty_proto::{
-    DEFAULT_MAX_DECODE_BYTES, FrameError, MAX_FRAME_LEN, OpeningRequest, decode_frame_with_budget, encode_framed_into,
-    pb,
+    DEFAULT_MAX_DECODE_BYTES, FrameError, MAX_FRAME_LEN, OpeningRequest, TracedRequest, decode_frame_with_budget,
+    encode_framed_into, encode_to_capped_vec, pb,
 };
 use monty_types::ExecutionClock;
+#[cfg(feature = "telemetry")]
+use prost::Message;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     process::{Child, ChildStdin, ChildStdout, Command},
     runtime::{Handle, RuntimeFlavor},
+    sync::oneshot,
     task::block_in_place,
-    time::timeout,
+    time::{Instant, timeout},
 };
 
 #[cfg(feature = "telemetry")]
-use crate::telemetry::{TelemetryContext, metrics::TurnMetrics, tracing::Recorder};
+use crate::telemetry::{
+    TelemetryContext,
+    metrics::TurnMetrics,
+    tracing::{Recorder, SnapshotOperation, SnapshotSpan},
+};
 use crate::{
     MontyTransport, PoolConfig, PoolError, RemoteDisconnect,
+    checkout::TurnRequest,
     cpu_clock::Clock,
     remote::{Remote, RemoteWorker},
 };
@@ -58,6 +68,9 @@ pub(crate) struct Worker {
     pub(crate) id: u64,
     /// Checkouts this worker has served, for `max_checkouts_per_worker`.
     pub(crate) checkouts_served: u32,
+    /// The metadata a pre-warmed remote session was dialed with, which a
+    /// checkout must match to take it; empty for every other worker.
+    pub(crate) dial_metadata: Vec<(String, String)>,
     /// Records an adapter checkout's protocol turns, created only while needed.
     #[cfg(feature = "telemetry")]
     recorder: Option<Box<Recorder>>,
@@ -97,13 +110,16 @@ impl Worker {
         config: &PoolConfig,
         remote: Option<&Remote>,
         metadata: &[(String, String)],
+        checkout_deadline: Option<Instant>,
     ) -> Result<Self, PoolError> {
         let worker = match &config.transport {
-            MontyTransport::Subprocess(binary_path) => Self::subprocess(binary_path, config.execution_clock),
+            MontyTransport::Subprocess(binary_path) => {
+                Self::subprocess(binary_path, config.execution_clock, config.prewarm_type_checker)
+            }
             MontyTransport::Remote(_) => {
                 let remote = remote.expect("a remote pool holds its channel");
                 remote
-                    .open(metadata, config.max_decode_bytes)
+                    .open(metadata, config.max_decode_bytes, checkout_deadline)
                     .await
                     .map(|worker| Self::from_kind(WorkerKind::Remote(Box::new(worker))))
             }
@@ -131,10 +147,17 @@ impl Worker {
     ///
     /// CPU mode records the child's CPU clock here, while the child is certainly
     /// unreaped, so later reads can detect a reused PID (see [`Clock`]).
-    fn subprocess(binary_path: &PathBuf, execution_clock: ExecutionClock) -> Result<Self, PoolError> {
+    fn subprocess(
+        binary_path: &PathBuf,
+        execution_clock: ExecutionClock,
+        prewarm_type_checker: bool,
+    ) -> Result<Self, PoolError> {
         let mut command = Command::new(binary_path);
+        command.arg("subprocess");
+        if prewarm_type_checker {
+            command.arg("--prewarm-type-checker");
+        }
         command
-            .arg("subprocess")
             // For extra safety, spawn the worker with an empty environment.
             .env_clear()
             .stdin(Stdio::piped())
@@ -181,11 +204,24 @@ impl Worker {
             last_frame_len: 0,
             id: 0,
             checkouts_served: 0,
+            dial_metadata: Vec::new(),
             #[cfg(feature = "telemetry")]
             recorder: None,
             #[cfg(feature = "telemetry")]
             metrics: None,
         }
+    }
+
+    /// Starts a span for an explicit snapshot API call.
+    #[cfg(feature = "telemetry")]
+    pub(crate) fn snapshot_span(
+        &self,
+        operation: SnapshotOperation,
+        traceparent: Option<Traceparent>,
+    ) -> Option<SnapshotSpan> {
+        self.recorder
+            .as_ref()
+            .map(|recorder| recorder.snapshot_span(operation, traceparent))
     }
 
     #[cfg(feature = "telemetry")]
@@ -212,19 +248,40 @@ impl Worker {
     /// session, which carries `request`, a `Feed` or `Load` (see [`OpeningRequest`]).
     pub(crate) async fn send(
         &mut self,
-        request: &pb::ClientRequest,
+        turn: TurnRequest<'_>,
         opening: Option<&pb::Configure>,
     ) -> Result<(), FrameError> {
+        let request = turn.message;
         let frame = opening
             .map(|configure| OpeningRequest::new(configure, request).expect("only a `Feed` or `Load` opens a session"));
+        #[cfg(feature = "telemetry")]
+        let recorded = self.record_turn_start(turn, opening, frame.as_ref());
+        // the recorder's span for the turn, which the request names instead of its caller's
+        #[cfg(feature = "telemetry")]
+        let replacement = self
+            .recorder
+            .as_ref()
+            .filter(|_| recorded)
+            .and_then(|recorder| recorder.turn_traceparent(request));
+        #[cfg(not(feature = "telemetry"))]
+        let replacement = None;
+        let frame = match (frame, replacement) {
+            (Some(frame), Some(traceparent)) => Some(frame.with_traceparent(traceparent)),
+            (frame, _) => frame,
+        };
+        let traced = match (&frame, replacement) {
+            (None, Some(traceparent)) => Some(TracedRequest::new(request, traceparent)),
+            _ => None,
+        };
         let result = match &mut self.kind {
             WorkerKind::Subprocess(w) => {
                 // prefix + body in one reused buffer: a single write syscall
                 // per request, no per-frame allocation, and a pipe write needs
                 // no flush
-                match &frame {
-                    Some(frame) => encode_framed_into(frame, &mut w.send_buf),
-                    None => encode_framed_into(request, &mut w.send_buf),
+                match (&frame, &traced) {
+                    (Some(frame), _) => encode_framed_into(frame, &mut w.send_buf),
+                    (None, Some(traced)) => encode_framed_into(traced, &mut w.send_buf),
+                    (None, None) => encode_framed_into(request, &mut w.send_buf),
                 }?;
                 w.stdin.write_all(&w.send_buf).await?;
                 // body only, matching the remote transport and both receive
@@ -236,17 +293,32 @@ impl Worker {
                 }
                 Ok(len)
             }
-            WorkerKind::Remote(w) => w.send(request, frame.as_ref()).await,
+            WorkerKind::Remote(w) => {
+                let body = match (&frame, &traced) {
+                    (Some(frame), _) => encode_to_capped_vec(frame),
+                    (None, Some(traced)) => encode_to_capped_vec(traced),
+                    (None, None) => encode_to_capped_vec(request),
+                }?;
+                w.send(body).await
+            }
         };
-        // record only requests that hit the wire: a rejected oversize frame
-        // leaves the turn (and any pending suspension) exactly where it was
+        // a request not recorded before encoding is recorded only once it hit the
+        // wire: a rejected oversize frame leaves the turn (and any pending
+        // suspension) exactly where it was
         #[cfg(feature = "telemetry")]
         if let Ok(len) = result {
-            if let Some(recorder) = &mut self.recorder {
+            if let (Some(recorder), false) = (&mut self.recorder, recorded) {
                 if let Some(opening) = opening {
                     recorder.begin_session(opening);
                 }
-                recorder.begin_turn(request);
+                if let Some(parent) = turn
+                    .snapshot
+                    .and_then(|span| span.parent_for(SnapshotOperation::Restore))
+                {
+                    recorder.begin_turn_with_parent(request, Some(parent));
+                } else {
+                    recorder.begin_turn(request);
+                }
             }
             if let Some(metrics) = &mut self.metrics {
                 metrics.frame("sent", len);
@@ -263,6 +335,42 @@ impl Worker {
             }
         }
         result.map(drop)
+    }
+
+    /// Records a `Feed` or `Load` before it is encoded, so the request can name
+    /// the span it opened, and returns whether it did. Other requests, and one
+    /// that may be rejected as oversize, are recorded once the frame is out.
+    #[cfg(feature = "telemetry")]
+    fn record_turn_start(
+        &mut self,
+        turn: TurnRequest<'_>,
+        opening: Option<&pb::Configure>,
+        frame: Option<&OpeningRequest<'_>>,
+    ) -> bool {
+        let request = turn.message;
+        let starts_turn = matches!(
+            request.kind,
+            Some(pb::client_request::Kind::Feed(_) | pb::client_request::Kind::Load(_))
+        );
+        // the frame may grow by one `traceparent` field
+        let fits = || {
+            let len =
+                frame.map_or_else(|| request.encoded_len(), Message::encoded_len) + Traceparent::REQUEST_FIELD_LEN;
+            u32::try_from(len).is_ok_and(|len| len <= MAX_FRAME_LEN)
+        };
+        match &mut self.recorder {
+            Some(recorder) if starts_turn && fits() => {
+                if let Some(opening) = opening {
+                    recorder.begin_session(opening);
+                }
+                let parent = turn
+                    .snapshot
+                    .and_then(|span| span.parent_for(SnapshotOperation::Restore));
+                recorder.begin_turn_with_parent(request, parent);
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Copies the first recorded stream failure before teardown can add a
@@ -302,10 +410,16 @@ impl Worker {
     /// Cancel-safe: partial-frame state persists in the worker (see the
     /// module docs), which is what lets `Checkout` race a turn against its
     /// deadline.
-    pub(crate) async fn recv(&mut self) -> Result<pb::WorkerEvent, FrameError> {
-        let (event, len) = match &mut self.kind {
+    pub(crate) async fn recv(&mut self, turn: TurnRequest<'_>) -> Result<pb::WorkerEvent, FrameError> {
+        #[cfg(not(feature = "telemetry"))]
+        let _ = turn;
+        #[cfg_attr(not(feature = "telemetry"), expect(unused_mut))]
+        let (mut event, len) = match &mut self.kind {
             WorkerKind::Subprocess(w) => match w.recv.recv(self.max_decode_bytes).await? {
-                Some(framed) => Ok(framed),
+                Some(mut framed) => {
+                    drop_worker_spans(&mut framed.0);
+                    Ok(framed)
+                }
                 None => Err(FrameError::Truncated), // clean EOF mid-checkout is still a vanished peer
             },
             // events come from the reader task; a channel recv is
@@ -316,7 +430,12 @@ impl Worker {
         // (deadline race) records nothing — cancel-safety intact
         #[cfg(feature = "telemetry")]
         if let Some(recorder) = &mut self.recorder {
-            recorder.event(&event);
+            if let Some(parent) = turn.snapshot.and_then(|span| span.parent_for(SnapshotOperation::Dump)) {
+                recorder.event_with_parent(&event, Some(parent));
+            } else {
+                recorder.event(&event);
+            }
+            recorder.stamp(&mut event);
         }
         #[cfg(feature = "telemetry")]
         if let Some(metrics) = &mut self.metrics {
@@ -355,13 +474,21 @@ impl Worker {
         }
     }
 
+    /// Resolves when a remote worker's stream ends; `None` for a subprocess.
+    pub(crate) fn take_ended(&mut self) -> Option<oneshot::Receiver<()>> {
+        match &mut self.kind {
+            WorkerKind::Subprocess(_) => None,
+            WorkerKind::Remote(w) => w.take_ended(),
+        }
+    }
+
     /// Whether the worker has already died (used to discard workers that died
-    /// while idle in the pool). Remote workers are never pooled idle, so
-    /// they always report alive here.
+    /// while idle in the pool): an exited child, or a pre-warmed remote session
+    /// whose stream has ended.
     pub(crate) fn is_dead(&mut self) -> bool {
         match &mut self.kind {
             WorkerKind::Subprocess(w) => w.child.try_wait().is_ok_and(|status| status.is_some()),
-            WorkerKind::Remote(_) => false,
+            WorkerKind::Remote(w) => w.disconnect().is_some(),
         }
     }
 
@@ -518,6 +645,18 @@ impl FrameRecv {
     }
 }
 
+/// Removes the spans a subprocess worker's event names. Only a server that
+/// records spans names them; a worker's frames are untrusted, and a span taken
+/// from one would let sandbox output choose the trace host callbacks join.
+fn drop_worker_spans(event: &mut pb::WorkerEvent) {
+    event.traceparent = None;
+    if let Some(pb::worker_event::Kind::StreamedCalls(started)) = &mut event.kind {
+        for call in &mut started.calls {
+            call.traceparent = None;
+        }
+    }
+}
+
 /// Decodes one complete frame body, synchronously on the current thread.
 ///
 /// A max-size frame can cost ~1s of CPU (see `benches/decode.rs`), so frames
@@ -534,3 +673,7 @@ pub(crate) fn decode_event(body: &[u8], max_decode_bytes: usize) -> Result<pb::W
         block_in_place(|| decode_frame_with_budget(body, max_decode_bytes))
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/worker.rs"]
+mod tests;

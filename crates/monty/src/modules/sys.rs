@@ -25,8 +25,8 @@ use crate::{
 };
 use crate::{
     bytecode::VM,
-    heap::HeapData,
     intern::StaticStrings,
+    modules::StandardLib,
     types::{List, Module, NamedTuple, allocate_string, allocate_tuple, long_int::INT_MAX_STR_DIGITS},
     value::{EitherStr, Marker, Value},
 };
@@ -50,45 +50,19 @@ const MAXSIZE: i64 = i64::MAX;
 /// `sys.maxunicode` — the largest code point, `U+10FFFF`.
 const MAXUNICODE: i64 = 0x0010_FFFF;
 
-/// The modules Monty can import, in the sorted order CPython uses for its own
-/// `sys.builtin_module_names`. Every Monty module is compiled into the
-/// interpreter, so this is the whole importable set rather than a C-extension
-/// subset — keep it in step with [`StandardLib`](super::StandardLib).
-const BUILTIN_MODULE_NAMES: &[StaticStrings] = &[
-    StaticStrings::Asyncio,
-    StaticStrings::Base64,
-    StaticStrings::Binascii,
-    StaticStrings::Bisect,
-    StaticStrings::Collections,
-    StaticStrings::Dataclasses,
-    StaticStrings::Datetime,
-    StaticStrings::Functools,
-    #[cfg(feature = "test-hooks")]
-    StaticStrings::Gc,
-    StaticStrings::Itertools,
-    StaticStrings::Json,
-    StaticStrings::Math,
-    StaticStrings::Os,
-    StaticStrings::Pathlib,
-    StaticStrings::Random,
-    StaticStrings::Re,
-    StaticStrings::Sys,
-    StaticStrings::Typing,
-    StaticStrings::Unicodedata,
-];
-
 /// Functions exposed by the `sys` module under the `test-hooks` feature.
 ///
 /// Production builds keep `sys` attribute-only; this enum exists so fixtures
 /// (and only fixtures) can call back into Monty internals that production
 /// sandbox code must never reach.
 #[cfg(feature = "test-hooks")]
+#[monty_macros::explicit_discriminants(checksum = 0x93cf_5b81_e7e9_9376)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "lowercase")]
 pub(crate) enum SysFunctions {
     /// `sys.setrecursionlimit(n)` — tightens the live recursion ceiling to
     /// `n`. Only allows lowering; attempting to raise raises `ValueError`.
-    Setrecursionlimit,
+    Setrecursionlimit = 0,
 }
 
 /// Creates the `sys` module.
@@ -211,7 +185,7 @@ fn version_info(vm: &VM<'_>) -> Value {
             Value::Int(0),
         ],
     );
-    Value::Ref(vm.heap.allocate(HeapData::NamedTuple(Box::new(named_tuple))))
+    Value::allocate(named_tuple, vm.heap)
 }
 
 /// Builds `sys.argv`, holding the script name and nothing else.
@@ -224,7 +198,7 @@ fn version_info(vm: &VM<'_>) -> Value {
 /// `limitations/modules.md`).
 fn argv(vm: &VM<'_>) -> Value {
     let script = allocate_string(vm.env.script_basename(), vm.heap);
-    Value::Ref(vm.heap.allocate(HeapData::List(List::new(vec![script]))))
+    Value::allocate(List::new(vec![script]), vm.heap)
 }
 
 /// Builds `sys.float_info` from Rust's `f64` constants.
@@ -263,7 +237,7 @@ fn float_info(vm: &VM<'_>) -> Value {
             Value::Int(1),
         ],
     );
-    Value::Ref(vm.heap.allocate(HeapData::NamedTuple(Box::new(named_tuple))))
+    Value::allocate(named_tuple, vm.heap)
 }
 
 /// Builds `sys.flags` — the switches the interpreter was started with.
@@ -318,7 +292,7 @@ fn flags(vm: &VM<'_>) -> Value {
             int_max_str_digits(),
         ],
     );
-    Value::Ref(vm.heap.allocate(HeapData::NamedTuple(Box::new(named_tuple))))
+    Value::allocate(named_tuple, vm.heap)
 }
 
 /// `sys.flags.int_max_str_digits`, widened from the limit the runtime enforces.
@@ -326,13 +300,13 @@ fn int_max_str_digits() -> Value {
     i64::try_from(INT_MAX_STR_DIGITS).map_or(Value::Int(i64::MAX), Value::Int)
 }
 
-/// Builds the `sys.builtin_module_names` tuple from [`BUILTIN_MODULE_NAMES`].
+/// Lists built-in imports from the same registry used by the import opcode.
 fn builtin_module_names(vm: &VM<'_>) -> Value {
-    let names: SmallVec<_> = BUILTIN_MODULE_NAMES
-        .iter()
-        .map(|name| Value::InternString(vm.interns.intern_static(*name)))
-        .collect();
-    allocate_tuple(names, vm.heap)
+    let mut names: SmallVec<[&str; 32]> = StandardLib::names().collect();
+    names.sort_unstable();
+
+    let values = names.into_iter().map(|name| allocate_string(name, vm.heap)).collect();
+    allocate_tuple(values, vm.heap)
 }
 
 /// Dispatches a `sys` module function call.

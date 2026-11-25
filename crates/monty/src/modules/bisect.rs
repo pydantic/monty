@@ -6,21 +6,21 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     expressions::CmpOperator,
-    heap::HeapReadOutput,
     intern::StaticStrings,
     modules::ModuleFunctions,
-    types::{Module, PyTrait, Type},
+    types::{Module, PyTrait, Range, Type},
     value::{EitherStr, Value},
 };
 
 /// The aliases share the same callable value as their canonical function.
+#[monty_macros::explicit_discriminants(checksum = 0xf2cb_3563_78c3_d9db)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum BisectFunctions {
-    BisectLeft,
-    BisectRight,
-    InsortLeft,
-    InsortRight,
+    BisectLeft = 0,
+    BisectRight = 1,
+    InsortLeft = 2,
+    InsortRight = 3,
 }
 
 /// Creates the module and its two aliases.
@@ -154,7 +154,7 @@ fn search(vm: &mut VM<'_>, a: &Value, x: &Value, bounds: (i64, i64), key: &Value
     if hi == -1 {
         // Ranges can exceed usize without allocating elements. Use their exact
         // length so Monty's fixed i64 index limit also applies on 32-bit wasm.
-        hi = if let Some(HeapReadOutput::Range(range)) = a.read_heap(vm) {
+        hi = if let Some(range) = a.read_as::<Range>(vm.heap) {
             i64::try_from(range.get(vm.heap).len_i128()).map_err(|_| ExcType::overflow_c_ssize_t())?
         } else {
             let len = a

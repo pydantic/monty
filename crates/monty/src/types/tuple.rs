@@ -33,12 +33,12 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
-    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
+    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead},
     modules::copy::{Memo, PyDeepCopy, deep_copy_slots},
     py_attrs::PyAttrs,
     resource_checks::{check_repeat_size, repeated_len},
     types::{
-        LazyHeapSet, Type, TypeRef,
+        LazyHeapSet, Slice, Type, TypeRef,
         key_hash::hash_or_culprit,
         list::repr_sequence_fmt,
         slice::{normalize_sequence_index, slice_collect_iterator, value_to_i64_bound},
@@ -161,7 +161,7 @@ pub fn allocate_tuple(items: SmallVec<[Value; TUPLE_INLINE_CAPACITY]>, heap: &He
     if items.is_empty() {
         heap.get_empty_tuple()
     } else {
-        Value::Ref(heap.allocate(HeapData::Tuple(Tuple::new(items))))
+        Value::allocate(Tuple::new(items), heap)
     }
 }
 
@@ -341,9 +341,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Tuple> {
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         // Check for slice first (Value::Ref pointing to HeapData::Slice)
-        if let Value::Ref(key_id) = key
-            && let HeapData::Slice(slice_obj) = vm.heap.get(*key_id)
-        {
+        if let Some(slice_obj) = key.get_as::<Slice>(vm.heap) {
             let items =
                 slice_collect_iterator(vm, slice_obj, self.get(vm.heap).items.iter(), |v| v.clone_with_heap(vm))?;
             return Ok(allocate_tuple(items, vm.heap));
@@ -366,7 +364,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Tuple> {
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         // A tuple equals another tuple; `tuple == namedtuple` is handled by the
         // reflected pass via `NamedTuple::py_eq_impl`.
-        let Some(HeapReadOutput::Tuple(other)) = other.read_heap(vm) else {
+        let Some(other) = other.read_as::<Tuple>(vm.heap) else {
             return Ok(None);
         };
         if self.get(vm.heap).items.len() != other.get(vm.heap).items.len() {
@@ -444,7 +442,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Tuple> {
     }
 
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let Some(HeapReadOutput::Tuple(other)) = other.read_heap(vm) else {
+        let Some(other) = other.read_as::<Tuple>(vm.heap) else {
             return Ok(None);
         };
         // The guard releases our clones if cloning `other` hits the memory limit.
@@ -627,7 +625,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TupleIterator> {
         Ok(CallResult::Value(self.clone_value(vm.heap)))
     }
 
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let (source_id, index) = {
             let iter = self.get(vm.heap);
             (iter.source_id(), iter.index)
@@ -641,7 +639,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TupleIterator> {
         if item.is_some() {
             self.get_mut(vm.heap).index += 1;
         }
-        Ok(item)
+        Ok(item.map(CallResult::Value))
     }
 }
 

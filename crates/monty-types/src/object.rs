@@ -21,7 +21,10 @@ use std::{
 };
 
 use ReprPiece::{Child, Text};
-use chrono::{NaiveDate, NaiveDateTime, NaiveTime, TimeDelta as ChronoTimeDelta};
+use jiff::{
+    SignedDuration,
+    civil::{self, DateTime},
+};
 use num_bigint::BigInt;
 use num_traits::{ToPrimitive, Zero};
 
@@ -30,7 +33,7 @@ use crate::{
     exceptions::ExcType,
     file_mode::FileMode,
     format::{FormatComplex, FormatFloat, StringRepr, bytes_repr_fmt, format_offset_timedelta_repr, string_repr_fmt},
-    graph::{ClassTypeNode, GraphError, MontyGraph, MontyNode, NodeId},
+    graph::{ClassEq, ClassHash, ClassTypeNode, GraphError, MontyGraph, MontyNode, NodeId},
     resource::ResourceError,
     unstable::PushValue,
     uuid::MontyUuid,
@@ -302,6 +305,8 @@ impl MontyObject {
             host_defined,
             is_dataclass,
             attrs,
+            eq: ClassEq::Identity,
+            hash: ClassHash::Identity,
         })));
         Self { graph, root }
     }
@@ -1309,6 +1314,10 @@ pub enum MontyType {
     ListIterator,
     #[strum(serialize = "callable_iterator")]
     CallableIterator,
+    /// The lazy builtin `map` iterator type.
+    Map,
+    /// The lazy builtin `filter` iterator type.
+    Filter,
     Tuple,
     NamedTuple,
     Dict,
@@ -1800,8 +1809,14 @@ impl fmt::Display for MontyFileHandle {
     }
 }
 
+/// Wall-clock microseconds for naive datetime equality and hashing.
 fn monty_datetime_local_micros(datetime: &MontyDateTime) -> Option<i64> {
-    monty_datetime_naive(datetime).map(|naive| naive.and_utc().timestamp_micros())
+    i64::try_from(
+        monty_datetime_naive(datetime)?
+            .duration_since(civil::date(1970, 1, 1).at(0, 0, 0, 0))
+            .as_micros(),
+    )
+    .ok()
 }
 
 fn monty_datetime_raw_eq(a: &MontyDateTime, b: &MontyDateTime) -> bool {
@@ -1816,22 +1831,25 @@ fn monty_datetime_raw_eq(a: &MontyDateTime, b: &MontyDateTime) -> bool {
         && a.timezone_name == b.timezone_name
 }
 
+/// UTC microseconds for aware comparisons, including instants outside civil year bounds.
 fn monty_datetime_utc_micros(datetime: &MontyDateTime) -> Option<i64> {
     let offset_seconds = datetime.offset_seconds?;
-    let offset_delta = ChronoTimeDelta::try_seconds(i64::from(offset_seconds))?;
-    let utc = monty_datetime_naive(datetime)?.checked_sub_signed(offset_delta)?;
-    Some(utc.and_utc().timestamp_micros())
+    let local = monty_datetime_naive(datetime)?.duration_since(civil::date(1970, 1, 1).at(0, 0, 0, 0));
+    i64::try_from((local - SignedDuration::from_secs(i64::from(offset_seconds))).as_micros()).ok()
 }
 
-fn monty_datetime_naive(datetime: &MontyDateTime) -> Option<NaiveDateTime> {
-    let date = NaiveDate::from_ymd_opt(datetime.year, u32::from(datetime.month), u32::from(datetime.day))?;
-    let time = NaiveTime::from_hms_micro_opt(
-        u32::from(datetime.hour),
-        u32::from(datetime.minute),
-        u32::from(datetime.second),
-        datetime.microsecond,
-    )?;
-    Some(date.and_time(time))
+/// Validates host-supplied civil components before datetime comparisons.
+fn monty_datetime_naive(datetime: &MontyDateTime) -> Option<DateTime> {
+    DateTime::new(
+        i16::try_from(datetime.year).ok()?,
+        i8::try_from(datetime.month).ok()?,
+        i8::try_from(datetime.day).ok()?,
+        i8::try_from(datetime.hour).ok()?,
+        i8::try_from(datetime.minute).ok()?,
+        i8::try_from(datetime.second).ok()?,
+        i32::try_from(datetime.microsecond.checked_mul(1_000)?).ok()?,
+    )
+    .ok()
 }
 
 /// Whether a `Decimal` string form is a (signed) zero: every mantissa digit is `0`.

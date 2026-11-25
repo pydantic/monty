@@ -98,7 +98,7 @@ pub(crate) struct BoundMethod {
 impl BoundMethod {
     /// Allocates `func` bound to `instance`, taking both references.
     pub(crate) fn allocate(instance: Value, func: Value, heap: &Heap) -> Value {
-        Value::Ref(heap.allocate(HeapData::BoundMethod(Self { instance, func })))
+        Value::allocate(Self { instance, func }, heap)
     }
 }
 
@@ -537,16 +537,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
         )
     }
 
-    /// Dispatches the class's `__next__`, turning `StopIteration` into exhaustion.
-    ///
-    /// Every other exception propagates, including an `UncatchableExc` from a
-    /// resource limit — see [`RunError::is_stop_iteration`].
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        match self.call_next(vm).and_then(|call| call.require_synchronous(vm)) {
-            Ok(value) => Ok(Some(value)),
-            Err(e) if e.is_stop_iteration() => Ok(None),
-            Err(e) => Err(e),
-        }
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        self.call_next(vm).map(Some)
     }
 
     fn py_is_context_manager(&self, vm: &VM<'h>) -> bool {
@@ -633,7 +625,7 @@ impl<'h> HeapRead<'h, BoundMethod> {
     /// never a copy of the function, which is shared as all functions are.
     pub(crate) fn allocate_like(&self, instance: Value, vm: &mut VM<'h>) -> Value {
         let func = self.get(vm.heap).func.clone_with_heap(vm.heap);
-        Value::Ref(vm.heap.allocate(HeapData::BoundMethod(BoundMethod { instance, func })))
+        Value::allocate(BoundMethod { instance, func }, vm.heap)
     }
 }
 

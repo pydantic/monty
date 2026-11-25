@@ -385,13 +385,6 @@ fn get_datetime_timezone_utc(py: Python<'_>) -> PyResult<&Py<PyAny>> {
     })
 }
 
-/// Cached import of `collections.namedtuple` function.
-pub(super) fn get_namedtuple(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
-    static NAMEDTUPLE: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
-
-    NAMEDTUPLE.import(py, "collections", "namedtuple")
-}
-
 /// Cached import of `pathlib.PurePosixPath` class.
 pub(super) fn get_pure_posix_path(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
     static PUREPOSIX: PyOnceLock<Py<PyAny>> = PyOnceLock::new();

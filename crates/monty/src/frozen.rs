@@ -11,14 +11,14 @@ use crate::{
     annotations,
     args::ArgValues,
     builtins::next,
-    bytecode::{CallResult, Compiler, VM},
+    bytecode::{CallResult, Compiler, VM, compile_iteration_catcher},
     exception_private::RunResult,
     intern::{CompileInterns, FunctionId, Interns},
     modules::{functools, typing},
     name_map::NameMap,
     parse::parse_with_interner,
     prepare::prepare_with_existing_names,
-    types::{forward_ref, generic_alias, iter, lru_cache},
+    types::{forward_ref, generic_alias, iter, lru_cache, map_filter},
 };
 
 /// Identifies an internal implementation with one authoritative source definition.
@@ -34,9 +34,24 @@ pub(crate) enum FrozenFunction {
     /// Store a cached call's result only after it returns successfully.
     #[serde(rename = "functools._lru_cache_miss")]
     LruCacheMiss,
-    /// Return a default when a suspendable user `__next__` method is exhausted.
+    /// Acquire a map's sources without consuming them.
+    #[serde(rename = "builtins.map")]
+    MapInit,
+    /// Advance a map's sources and call its callback once.
+    #[serde(rename = "builtins.map_next")]
+    MapNext,
+    /// Acquire a filter's source without testing its predicate.
+    #[serde(rename = "builtins.filter")]
+    FilterInit,
+    /// Search a filter's source for its next accepted item.
+    #[serde(rename = "builtins.filter_next")]
+    FilterNext,
+    /// Return a default when a suspendable iterator is exhausted.
     #[serde(rename = "builtins.next_default")]
     NextDefault,
+    /// Forward a deferred loop item or exit the waiting loop on exhaustion.
+    #[serde(rename = "builtins.for_iter")]
+    ForIter,
     /// Evaluate annotations for `annotationlib.get_annotations` and `typing.get_type_hints`.
     #[serde(rename = "annotationlib.get_annotations")]
     GetAnnotations,
@@ -49,12 +64,40 @@ pub(crate) enum FrozenFunction {
 }
 
 impl FrozenFunction {
+    /// Publishes the implementation on first use; callers can install its frame without further binding.
+    pub(crate) fn resolve(self, interns: &Interns) -> RunResult<FunctionId> {
+        if let Some(id) = interns.frozen_function(self) {
+            Ok(id)
+        } else {
+            let (id, overlay) = self.compile(interns)?;
+            overlay.commit();
+            interns.set_frozen_function(self, id);
+            Ok(id)
+        }
+    }
+
     /// Prepares an unpublished implementation using this session's intern IDs.
     /// The caller publishes the overlay before installing its frame.
-    pub(crate) fn compile(self, interns: &Interns) -> RunResult<(FunctionId, CompileInterns<'_>)> {
-        let source = self.source();
+    fn compile(self, interns: &Interns) -> RunResult<(FunctionId, CompileInterns<'_>)> {
         let mut overlay = CompileInterns::new(interns);
         let index = overlay.functions_len();
+        let source = match self {
+            Self::ForIter => {
+                let id = compile_iteration_catcher(&mut overlay)?;
+                return Ok((id, overlay));
+            }
+            Self::FunctoolsReduce => functools::REDUCE_SOURCE,
+            Self::Iter => iter::ITER_SOURCE,
+            Self::LruCacheMiss => lru_cache::CACHE_MISS_SOURCE,
+            Self::NextDefault => next::NEXT_DEFAULT_SOURCE,
+            Self::GetAnnotations => typing::GET_ANNOTATIONS_SOURCE,
+            Self::ForwardRefEvaluate => forward_ref::EVALUATE_SOURCE,
+            Self::ClassAnnotations => annotations::CLASS_ANNOTATIONS_SOURCE,
+            Self::MapInit => map_filter::MAP_INIT_SOURCE,
+            Self::MapNext => map_filter::MAP_NEXT_SOURCE,
+            Self::FilterInit => map_filter::FILTER_INIT_SOURCE,
+            Self::FilterNext => map_filter::FILTER_NEXT_SOURCE,
+        };
         let mut globals = NameMap::new();
         let parsed =
             parse_with_interner(source, "<monty-frozen>", &mut overlay, false).map_err(|e| e.into_run_error(source))?;
@@ -76,42 +119,38 @@ impl FrozenFunction {
         let id = FunctionId::from_index(u16::try_from(index).expect("compiled function ID fits u16"));
         Ok((id, overlay))
     }
-
-    /// Selects one self-contained function; dependencies arrive as arguments, not globals.
-    fn source(self) -> &'static str {
-        match self {
-            Self::FunctoolsReduce => functools::REDUCE_SOURCE,
-            Self::Iter => iter::ITER_SOURCE,
-            Self::LruCacheMiss => lru_cache::CACHE_MISS_SOURCE,
-            Self::NextDefault => next::NEXT_DEFAULT_SOURCE,
-            Self::GetAnnotations => typing::GET_ANNOTATIONS_SOURCE,
-            Self::ForwardRefEvaluate => forward_ref::EVALUATE_SOURCE,
-            Self::ClassAnnotations => annotations::CLASS_ANNOTATIONS_SOURCE,
-        }
-    }
 }
 
 /// Native primitives passed directly to internal Python functions.
 /// These identities and their signatures are part of the captured bytecode's ABI.
+#[monty_macros::explicit_discriminants(checksum = 0x47d0_77e5_f6a8_58b8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, strum::Display)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum FrozenFunctions {
     /// Rebuild a generic alias around resolved arguments (see `generic_alias::call_alias_with`).
-    AliasWith,
+    AliasWith = 0,
     /// Cache a class's evaluated `__annotations__` under `__annotations_cache__`.
-    CacheClassAnnotations,
+    CacheClassAnnotations = 1,
     /// Call an `__annotate__` function in an `annotationlib.Format` (see `annotations::call_annotate_helper`).
-    CallAnnotate,
+    CallAnnotate = 2,
     /// Evaluate one annotation string in explicit namespaces and name-resolution mode.
-    EvalHint,
+    EvalHint = 3,
     /// Call a user `__iter__` without validating its result yet.
-    GetIter,
+    GetIter = 4,
     /// Insert a successful result into a cache wrapper.
-    Store,
+    Store = 5,
     /// `annotationlib.type_repr`: a type by name, anything else by repr.
-    TypeRepr,
+    TypeRepr = 6,
     /// Check the result returned by a user `__iter__` method.
-    ValidateIterator,
+    ValidateIterator = 7,
+    /// Build a map from already-acquired source iterators.
+    BuildMap = 8,
+    /// Build a filter from an already-acquired source iterator.
+    BuildFilter = 9,
+    /// Raise a strict map's length-mismatch error.
+    MapLengthError = 10,
+    /// Exit the loop beneath a deferred advancement's catcher, without pushing an item.
+    EndForIter = 11,
 }
 
 /// Dispatches private helpers using the same argument ownership rules as public natives.
@@ -127,5 +166,9 @@ pub(crate) fn call_helper(function: FrozenFunctions, args: ArgValues, vm: &mut V
         FrozenFunctions::Store => lru_cache::call_store(args, vm).map(CallResult::Value),
         FrozenFunctions::TypeRepr => typing::call_type_repr(args, vm).map(CallResult::Value),
         FrozenFunctions::ValidateIterator => iter::call_validate_iterator(args, vm).map(CallResult::Value),
+        FrozenFunctions::BuildMap => map_filter::build_map(args, vm).map(CallResult::Value),
+        FrozenFunctions::BuildFilter => map_filter::build_filter(args, vm).map(CallResult::Value),
+        FrozenFunctions::EndForIter => vm.end_for_iter(args),
+        FrozenFunctions::MapLengthError => map_filter::map_length_error(args, vm).map(CallResult::Value),
     }
 }
