@@ -5,7 +5,7 @@ Generator *expressions* still evaluate to a `list`; see [comprehensions.md](comp
 
 ## Missing methods and attributes
 
-- `throw()` and `close()` raise `AttributeError: 'generator' object has no attribute 'close'`.
+- `throw()` and `close()` raise `AttributeError`, e.g. `'generator' object has no attribute 'close'`.
     `GeneratorExit` is not an exception class in Monty either (see [exceptions.md](exceptions.md)).
 - `gi_frame`, `gi_code`, `gi_running`, `gi_suspended`, `gi_yieldfrom`, `__name__` and `__qualname__` raise
     `AttributeError`.

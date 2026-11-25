@@ -252,7 +252,7 @@ impl HeapData {
     #[inline]
     pub(crate) fn is_gc_tracked(&self) -> bool {
         match self {
-            // Only a `StopIteration` value can reach a container.
+            // Tracked only when it owns a `StopIteration` value; a chained exception that owns one is tracked itself.
             Self::Exception(exception) => exception.value.is_some(),
             Self::Itertools(iter) => iter.is_gc_tracked(),
             Self::DirScan(scan) => scan.is_gc_tracked(),

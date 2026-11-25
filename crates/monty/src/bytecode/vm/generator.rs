@@ -21,7 +21,7 @@ use crate::{
         ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput,
         HeapReader,
     },
-    intern::FunctionId,
+    intern::{FunctionId, Interns},
     py_value::PyValue,
     types::{LazyHeapSet, PyTrait, Type, TypeRef, py_trait::PyObjectIdentity},
     value::{EitherStr, Value},
@@ -98,6 +98,16 @@ impl Generator {
         }
     }
 
+    /// What the host sees when one crosses the boundary: the sandbox `repr` without its address.
+    pub(crate) fn boundary_repr(&self, interns: &Interns) -> String {
+        format!("<generator object {}>", self.name(interns))
+    }
+
+    /// The generator function's name, which both reprs show.
+    fn name<'a>(&self, interns: &'a Interns) -> &'a str {
+        interns.get_str(interns.get_function(self.function_id).name.name_id)
+    }
+
     /// Visits every owned heap reference, for cycle collection.
     pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
         if let Some(globals) = self.globals {
@@ -162,8 +172,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Generator> {
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _: &mut LazyHeapSet) -> RunResult<()> {
-        let function = vm.interns.get_function(self.get(vm.heap).function_id);
-        let name = vm.interns.get_str(function.name.name_id);
+        let name = self.get(vm.heap).name(vm.interns);
         let identity = self.py_identity().encoded();
         Ok(write!(f, "<generator object {name} at 0x{identity:x}>")?)
     }

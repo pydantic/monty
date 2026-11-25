@@ -359,3 +359,14 @@ for _ in range(100):
     assert!(output.unreachable.is_empty(), "{:?}", output.unreachable);
     assert!(output.heap_count < 50, "{}", output.heap_count);
 }
+
+/// A generator returned to the host keeps its function's name, as a coroutine does.
+#[test]
+fn exported_generator_repr_names_its_function() {
+    let code = "def numbers():\n    yield 1\nnumbers()";
+    let result = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default())
+        .unwrap()
+        .run_no_limits(vec![])
+        .unwrap();
+    assert_eq!(result, MontyObject::repr("<generator object numbers>"));
+}

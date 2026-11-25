@@ -361,8 +361,8 @@ Calling a loader after a feed or a previous load is rejected before restoration,
     had already started keeps its state.
     A `checkout()` without `os_policy` restores under the default policy (system clock, UTC, OS entropy), so pass the
     dumped session's policy again to keep a fixed clock or seed.
-- **Generators keep their place.** A paused generator keeps its locals, operands and the exceptions it is handling,
-    and objects it shares with the rest of the session stay shared.
+- **Generators keep their place.** A paused generator keeps its local variables, any partly evaluated expression and
+    the exceptions it is handling, and objects it shares with the rest of the session stay shared.
     A dump taken while a host call inside a generator, or inside a `yield from` delegate, is suspended resumes that
     generator with the host's answer.
 - **Host modules restore as module objects.** Their attributes, including functions named `tools.<attr>`, survive
