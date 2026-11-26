@@ -30,10 +30,10 @@ Generator *expressions* still evaluate to a `list`; see [comprehensions.md](comp
     A class whose `__next__` is a host function, or a file that has not been read yet, raises
     `NotImplementedError: yield from: this iterator cannot suspend to the host` inside the delegating generator.
     A `__next__` written in Python may call host functions.
-- **The `RuntimeError` for a `StopIteration` escaping a generator (PEP 479) loses its `__cause__`** when a consumer
+- **The `RuntimeError` for a `StopIteration` escaping a generator (PEP 479) loses its exception chain** when a consumer
     that advances in Rust drove the generator, as for any exception rebuilt after a nested synchronous call (see
     [exceptions.md](exceptions.md)).
-    Under `next()` or `for`, `__cause__` is the original `StopIteration`.
+    Under `next()` or `for`, both `__cause__` and `__context__` are the original `StopIteration`.
 - **`StopIteration.value` is lost when the exception is rebuilt from a copy.**
     A `StopIteration` that escapes a nested synchronous call (a `sorted()` key, a `__repr__`, a generator driven by
     `list()`) reaches the outer handler with `.value` set to its message, or `None`, and `args` to match:

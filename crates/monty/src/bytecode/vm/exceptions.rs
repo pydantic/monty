@@ -668,8 +668,8 @@ impl VM<'_> {
         Value::allocate(ExceptionValue::from(exception), self.heap)
     }
 
-    /// PEP 479: the `RuntimeError` a `StopIteration` escaping the current generator
-    /// or coroutine frame becomes, with the owned `stop` exception as its `__cause__`.
+    /// Wraps an escaping `StopIteration` as a `RuntimeError` (PEP 479).
+    /// The owned `stop` is both the cause and the context.
     fn stop_iteration_runtime_error(&mut self, stop: Value, kind: &str) -> (RunError, Value) {
         let error = self.attach_frame_to_error(ExcType::runtime_error_raised_stop_iteration(kind));
         let RunError::Exc(raise) = &error else {
@@ -679,6 +679,7 @@ impl VM<'_> {
         let Value::Ref(id) = &replacement else {
             unreachable!("raised exceptions are heap objects")
         };
+        self.set_exception_context(*id, stop.clone_with_heap(self).into_ref_id());
         self.set_exception_cause(*id, stop.into_ref_id());
         (error, replacement)
     }

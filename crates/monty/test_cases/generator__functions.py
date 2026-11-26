@@ -81,6 +81,26 @@ else:
     total += 100
 assert total == 106
 
+# === Exhaustion in a resumed exception handler leaves no active exception ===
+
+
+def finishes_in_handler():
+    try:
+        raise ValueError('handled')
+    except ValueError:
+        yield 1
+        return
+
+
+g = finishes_in_handler()
+assert next(g) == 1
+for item in g:
+    assert False, 'expected exhaustion'
+try:
+    raise
+except RuntimeError as exc:
+    assert str(exc) == 'No active exception to reraise'
+
 # === Interleaved generators keep their own loop state ===
 a = count(3)
 b = count(3)
@@ -260,6 +280,8 @@ try:
 except RuntimeError as exc:
     assert str(exc) == 'generator raised StopIteration'
     assert str(exc.__cause__) == 'bad'
+    assert exc.__context__ is exc.__cause__
+    assert exc.__suppress_context__
 try:
     list(raises_stop())
     assert False, 'expected RuntimeError'

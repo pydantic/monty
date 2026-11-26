@@ -901,7 +901,7 @@ impl<'h> VM<'h> {
 
     /// Calls an `__annotate__` function with `format` (PEP 649).
     ///
-    /// A `def` runs under [`FrameNamespace::Annotate`]: names resolve through
+    /// A regular `def` runs under [`FrameNamespace::Annotate`]: names resolve through
     /// `classdict` (a borrowed class-namespace copy, for a class's annotations),
     /// then its globals, with `missing` standing in for CPython's "fake globals"
     /// in `FORWARDREF` and `STRING` format. Any other callable runs plainly.
@@ -928,9 +928,9 @@ impl<'h> VM<'h> {
             return this.call_function(annotate, args);
         };
         let func = this.interns.get_function(func_id);
-        if func.is_async {
+        if func.is_async || func.is_generator {
             defer_drop!(defaults, this);
-            return this.create_coroutine(func_id, func, &cells, defaults, globals, args);
+            return this.call_def_function(func_id, &cells, defaults, globals, args);
         }
         let (missing, this) = missing_guard.into_parts();
         defer_drop!(defaults, this);

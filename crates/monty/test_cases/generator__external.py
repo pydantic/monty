@@ -156,6 +156,7 @@ async def coroutine_stop_iteration():
             await coro
             assert False, 'expected RuntimeError'
         except RuntimeError as e:
+            assert e.__context__ is e.__cause__
             results.append((str(e), type(e.__cause__).__name__))
     results.append(await catches_stop())
     return results
