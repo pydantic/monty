@@ -33,7 +33,7 @@ use crate::{
         os::{PathAccepts, PathArgError, extract_accepted_path, extract_os_path},
     },
     os_dispatch::{PreConversionEffect, Reshaped, bool_reply, invalid_reply, stat_result_field, value_to_owned_string},
-    types::{Bytes, Module, PyTrait, Slice, Type, TypeRef, allocate_tuple, collect_iterable, str::allocate_string},
+    types::{Bytes, Module, PyTrait, Slice, Type, TypeRef, allocate_tuple, collect_iterable},
     value::Value,
     virtual_path::posix_join,
 };
@@ -472,7 +472,7 @@ fn commonprefix(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let CommonprefixArgs { m } = CommonprefixArgs::from_args(args, vm)?;
     defer_drop!(m, vm);
     if !m.py_bool(vm)? {
-        return Ok(allocate_string("", vm.heap));
+        return Ok(Value::from_str("", vm.heap));
     }
     let first = m.py_getitem(&Value::Int(0), vm)?;
     defer_drop!(first, vm);
@@ -519,7 +519,7 @@ fn common_leading_slice(s1: &Value, s2: &Value, vm: &mut VM<'_>) -> RunResult<Va
             let b = value_to_owned_string(s2, vm.heap, vm.interns).expect("checked str");
             let mismatch = a.char_indices().zip(b.chars()).find(|((_, x), y)| x != y);
             Ok(match mismatch {
-                Some(((end, _), _)) => allocate_string(&a[..end], vm.heap),
+                Some(((end, _), _)) => Value::from_str(&a[..end], vm.heap),
                 None => s1.clone_with_heap(vm),
             })
         }
@@ -1000,7 +1000,7 @@ fn realpath(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
         return Err(ExcType::type_error_os_path("lstat", "path", accepted, "bytes"));
     }
     if text.bytes.is_empty() {
-        Ok(CallResult::Value(allocate_string(&*vm.env.cwd, vm.heap)))
+        Ok(CallResult::Value(Value::from_str(&*vm.env.cwd, vm.heap)))
     } else {
         let path = String::from_utf8(text.bytes).expect("str input");
         Ok(CallResult::OsCallWithEffect {
@@ -1227,7 +1227,7 @@ fn allocate_text(bytes: Vec<u8>, is_bytes: bool, heap: &Heap) -> Value {
         Value::allocate(Bytes::new(bytes), heap)
     } else {
         let text = String::from_utf8(bytes).expect("path algorithms split at ASCII separators, preserving UTF-8");
-        allocate_string(text, heap)
+        Value::from_str(text, heap)
     }
 }
 

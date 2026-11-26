@@ -1,9 +1,6 @@
 //! Implementation of the bin() builtin function.
 
-use crate::{
-    args::ArgValues, bytecode::VM, defer_drop, exception_private::RunResult, py_value::PyValue,
-    types::str::allocate_string_no_interning, value::Value,
-};
+use crate::{args::ArgValues, bytecode::VM, defer_drop, exception_private::RunResult, py_value::PyValue, value::Value};
 
 /// Converts an integer or `__index__` result to a binary string prefixed with `0b`.
 pub fn builtin_bin(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
@@ -15,5 +12,5 @@ pub fn builtin_bin(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let PyValue::Int(integer) = index.py_value(vm) else {
         unreachable!("py_index returned an integer");
     };
-    Ok(allocate_string_no_interning(integer.radix_repr(2, vm), vm.heap))
+    Ok(Value::from_str(integer.radix_repr(2, vm), vm.heap))
 }

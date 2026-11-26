@@ -12,7 +12,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{ContainsHeap, DropGuard, DropWithContext},
     intern::StaticStrings,
-    types::{CsvObject, PyTrait, Type, str::allocate_string},
+    types::{CsvObject, PyTrait, Type},
     value::{EitherStr, Value},
 };
 
@@ -246,7 +246,7 @@ impl Dialect {
             StaticStrings::Escapechar => self.escapechar.map_or(Value::None, |c| char_value(c, vm)),
             StaticStrings::Doublequote => Value::Bool(self.doublequote),
             StaticStrings::Skipinitialspace => Value::Bool(self.skipinitialspace),
-            StaticStrings::Lineterminator => allocate_string(self.lineterminator.clone(), vm.heap),
+            StaticStrings::Lineterminator => Value::from_str(self.lineterminator.clone(), vm.heap),
             StaticStrings::Quoting => Value::Int(self.quoting.as_int()),
             StaticStrings::Strict => Value::Bool(self.strict),
             _ => return None,
@@ -256,7 +256,7 @@ impl Dialect {
 
 /// A single-character `str` value.
 fn char_value(c: char, vm: &VM<'_>) -> Value {
-    allocate_string(c.to_string(), vm.heap)
+    Value::from_str(c.to_string(), vm.heap)
 }
 
 /// Where unset parameters come from: the defaults, a resolved dialect, or an

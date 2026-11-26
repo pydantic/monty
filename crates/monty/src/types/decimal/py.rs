@@ -35,8 +35,8 @@ use crate::{
     py_attrs::PyAttrs,
     py_value::PyValue,
     types::{
-        CmpOrder, Complex, LazyHeapSet, LongInt, NamedTuple, PyTrait, Type, TypeRef, allocate_string,
-        sequence::SequenceItems, str::allocate_string_no_interning, tuple::allocate_tuple,
+        CmpOrder, Complex, LazyHeapSet, LongInt, NamedTuple, PyTrait, Type, TypeRef, sequence::SequenceItems,
+        tuple::allocate_tuple,
     },
     value::{EitherStr, Value},
 };
@@ -557,7 +557,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Decimal> {
         let ctx_id = current_context(vm);
         let capitals = settings_of(vm, ctx_id).capitals;
         let text = self.get(vm.heap).to_sci_string(false, capitals);
-        Ok(allocate_string(text, vm.heap))
+        Ok(Value::from_str(text, vm.heap))
     }
 
     fn py_abs_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -828,7 +828,7 @@ impl<'h> HeapObjectRead<'h, Decimal> {
             DecimalMethod::IsZero => Value::Bool(d.is_zero()),
             DecimalMethod::Radix => decimal_value(Decimal::from_i64(10), vm),
             DecimalMethod::DunderReduce => {
-                let text = allocate_string(d.to_sci_string(false, true), vm.heap);
+                let text = Value::from_str(d.to_sci_string(false, true), vm.heap);
                 let args = allocate_tuple(smallvec![text], vm.heap);
                 allocate_tuple(smallvec![Value::Builtin(Builtins::Type(Type::Decimal)), args], vm.heap)
             }
@@ -930,7 +930,7 @@ impl<'h> HeapObjectRead<'h, Decimal> {
         let id = self.id();
         let ctx_id = current_context(vm);
         let text = with_ctx(vm, ctx_id, |ctx, vm| decimal_at(vm, id).format_spec(spec, ctx))?;
-        Ok(allocate_string_no_interning(text, vm.heap))
+        Ok(Value::from_str(text, vm.heap))
     }
 }
 
@@ -962,9 +962,9 @@ fn as_tuple(d: &Decimal, vm: &VM<'_>) -> Value {
     let digits = allocate_tuple(digits.into_iter().collect(), vm.heap);
     let exponent = match d.special() {
         Special::Finite => Value::Int(d.exponent()),
-        Special::Infinite => allocate_string("F", vm.heap),
-        Special::QuietNan => allocate_string("n", vm.heap),
-        Special::SignalingNan => allocate_string("N", vm.heap),
+        Special::Infinite => Value::from_str("F", vm.heap),
+        Special::QuietNan => Value::from_str("n", vm.heap),
+        Special::SignalingNan => Value::from_str("N", vm.heap),
     };
     let fields = vec![
         EitherStr::Interned(vm.interns.intern_static(StaticStrings::Sign)),
@@ -1042,7 +1042,7 @@ impl OpResult {
         match self {
             Self::Decimal(d) => decimal_value(d, vm),
             Self::Bool(b) => Value::Bool(b),
-            Self::Str(s) => allocate_string(s, vm.heap),
+            Self::Str(s) => Value::from_str(s, vm.heap),
             Self::Pair(a, b) => allocate_tuple(smallvec![decimal_value(a, vm), decimal_value(b, vm)], vm.heap),
         }
     }

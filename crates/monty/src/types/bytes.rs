@@ -577,7 +577,7 @@ fn bytes_decode<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut V
 
     let codec = Codec::find(encoding).ok_or_else(|| ExcType::lookup_error_unknown_encoding(encoding))?;
     let s = codec.decode(bytes.get(vm.heap), errors)?;
-    Ok(super::str::allocate_string(s, vm.heap))
+    Ok(Value::from_str(s, vm.heap))
 }
 
 /// Argument shape for `bytes.decode(encoding='utf-8', errors='strict')`.
@@ -2185,7 +2185,7 @@ fn bytes_hex<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'
         hex_chars.iter().collect()
     };
 
-    Ok(super::str::allocate_string(result, vm.heap))
+    Ok(Value::from_str(result, vm.heap))
 }
 
 /// Parses arguments for bytes.hex method.

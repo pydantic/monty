@@ -1,6 +1,6 @@
 //! String iterators retaining their source representation.
 
-use super::{InlineStr, allocate_char};
+use super::InlineStr;
 use crate::{
     bytecode::{CallResult, VM},
     exception_private::RunResult,
@@ -133,7 +133,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, StringIterator> {
     fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let next = self.get(vm.heap).as_str(vm).chars().next();
         if let Some(character) = next {
-            let value = allocate_char(character);
+            let value = Value::from_char(character, vm.heap);
             self.get_mut(vm.heap).byte_offset += character.len_utf8();
             Ok(Some(CallResult::Value(value)))
         } else {

@@ -72,7 +72,6 @@ use crate::{
             apply_write_position,
         },
         random::SEED_BYTES,
-        str::allocate_string,
     },
     value::{EitherStr, Value},
 };
@@ -2764,7 +2763,7 @@ impl<'h> VM<'h> {
         let value = match self.interns.get_str(name_id) {
             "__name__" => Value::InternString(self.interns.intern_static(StaticStrings::DunderMain)),
             "__debug__" => Value::Bool(true),
-            "__file__" => allocate_string(self.env.file(), self.heap),
+            "__file__" => Value::from_str(self.env.file(), self.heap),
             "__annotations__" => Value::allocate(Dict::new(), self.heap),
             "__doc__" | "__spec__" | "__package__" => Value::None,
             _ => return None,

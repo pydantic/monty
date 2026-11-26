@@ -51,7 +51,6 @@ use crate::{
         py_trait::LazyHeapSet,
         sequence::SequenceItems,
         slice::{normalize_sequence_index, slice_collect_iterator, value_to_i64_bound},
-        str::allocate_string,
         tuple::TupleVec,
     },
     value::{EitherStr, VALUE_SIZE, Value},
@@ -599,7 +598,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTuple> {
         {
             let value = if static_attr == StaticStrings::DunderDoc {
                 let doc = synthesise_doc(class, vm.interns);
-                allocate_string(doc, vm.heap)
+                Value::from_str(doc, vm.heap)
             } else {
                 class.module().clone_with_heap(vm.heap)
             };
@@ -913,7 +912,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTupleClass> {
             // equals `__name__` and never picks up a dotted path from an enclosing scope.
             Some(StaticStrings::DunderName | StaticStrings::DunderQualname) => {
                 let name = self.get(vm.heap).name.as_str(vm.interns).to_owned();
-                allocate_string(name, vm.heap)
+                Value::from_str(name, vm.heap)
             }
             // `__match_args__` is `_fields` under the name class patterns read.
             Some(StaticStrings::UnderFields | StaticStrings::MatchArgsDunder) => {
@@ -923,7 +922,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTupleClass> {
             Some(StaticStrings::UnderFieldDefaults) => self.field_defaults_dict(vm)?,
             Some(StaticStrings::DunderDoc) => {
                 let doc = synthesise_doc(self.get(vm.heap), vm.interns);
-                allocate_string(doc, vm.heap)
+                Value::from_str(doc, vm.heap)
             }
             Some(StaticStrings::DunderModule) => self.get(vm.heap).module.clone_with_heap(vm.heap),
             _ if attr.as_str(vm.interns) == "__class__" => Value::Builtin(Builtins::Type(Type::Type)),

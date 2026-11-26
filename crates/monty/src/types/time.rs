@@ -35,7 +35,7 @@ use crate::{
         CmpOrder, LazyHeapSet, PyTrait, TimeZone, Type, TypeRef,
         date::{self, StrftimeArgs},
         datetime::{allocate_tzinfo_ref, tzinfo_from_value},
-        str::{StringRepr, allocate_string, allocate_string_no_interning},
+        str::StringRepr,
         timedelta, timezone,
     },
     value::{EitherStr, Value},
@@ -551,7 +551,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Time> {
     fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
         let time = self.get(vm.heap);
         let s = format_isoformat(time, attached_offset(time, vm.heap), TimeSpec::Auto);
-        Ok(allocate_string_no_interning(s, vm.heap))
+        Ok(Value::from_str(s, vm.heap))
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
@@ -664,7 +664,7 @@ impl<'heap> PyAttrs<'heap> for PyTimeImpl {
         };
         let time = value.get(vm.heap);
         let s = format_isoformat(time, attached_offset(time, vm.heap), spec);
-        Ok(allocate_string_no_interning(s, vm.heap))
+        Ok(Value::from_str(s, vm.heap))
     }
 
     #[pymethod(Strftime)]
@@ -674,7 +674,7 @@ impl<'heap> PyAttrs<'heap> for PyTimeImpl {
         let time = value.get(vm.heap).clone();
         let tz = attached_timezone(&time, vm.heap);
         let formatted = format_time_strftime(&time, tz.as_ref(), format.as_str(vm), &vm.heap.tracker)?;
-        Ok(allocate_string(formatted, vm.heap))
+        Ok(Value::from_str(formatted, vm.heap))
     }
 
     #[pymethod(Replace)]
@@ -696,7 +696,7 @@ impl<'heap> PyAttrs<'heap> for PyTimeImpl {
             return Ok(Value::None);
         };
         let name = timezone::tzname_string(tz.offset_seconds, tz.name.as_deref());
-        Ok(allocate_string(name, vm.heap))
+        Ok(Value::from_str(name, vm.heap))
     }
 
     #[pymethod(Dst)]

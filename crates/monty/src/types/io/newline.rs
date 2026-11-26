@@ -5,11 +5,7 @@
 //! `\n` becomes on write. Files translate when their content is loaded;
 //! `StringIO` translates as text is written, as CPython's does.
 
-use crate::{
-    heap::Heap,
-    types::{str::allocate_string, tuple::allocate_tuple},
-    value::Value,
-};
+use crate::{heap::Heap, types::tuple::allocate_tuple, value::Value};
 
 /// The `newline` argument: where lines end on read, whether `\r\n` / `\r` are
 /// translated to `\n`, and what `\n` becomes on write.
@@ -149,8 +145,8 @@ impl SeenNewlines {
             .collect();
         match kinds.as_slice() {
             [] => Value::None,
-            [one] => allocate_string(*one, heap),
-            many => allocate_tuple(many.iter().map(|text| allocate_string(*text, heap)).collect(), heap),
+            [one] => Value::from_str(*one, heap),
+            many => allocate_tuple(many.iter().map(|text| Value::from_str(*text, heap)).collect(), heap),
         }
     }
 }

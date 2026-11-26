@@ -24,10 +24,7 @@ use crate::{
     heap::{Heap, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StaticStrings,
     py_attrs::PyAttrs,
-    types::{
-        CmpOrder, LazyHeapSet, PyTrait, Type, TypeRef, date, datetime, long_int, str::allocate_string,
-        tuple::allocate_tuple,
-    },
+    types::{CmpOrder, LazyHeapSet, PyTrait, Type, TypeRef, date, datetime, long_int, tuple::allocate_tuple},
     value::{EitherStr, Value},
 };
 
@@ -432,7 +429,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
             let day_word = if days.abs() == 1 { "day" } else { "days" };
             format!("{days} {day_word}, {time}")
         };
-        Ok(allocate_string(s, vm.heap))
+        Ok(Value::from_str(s, vm.heap))
     }
 
     fn py_abs_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {

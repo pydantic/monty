@@ -22,11 +22,7 @@ use crate::{
     intern::StaticStrings,
     py_attrs::PyAttrs,
     py_value::PyValue,
-    types::{
-        LazyHeapSet, PyTrait, Type, TypeRef,
-        str::{StringRepr, allocate_string},
-        r#type::strip_underscores,
-    },
+    types::{LazyHeapSet, PyTrait, Type, TypeRef, str::StringRepr, r#type::strip_underscores},
     value::{EitherStr, Value, eq_f64},
 };
 
@@ -631,7 +627,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
             imag: c.imag,
         }
         .to_string();
-        Ok(allocate_string(text, vm.heap))
+        Ok(Value::from_str(text, vm.heap))
     }
 
     fn py_abs_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {

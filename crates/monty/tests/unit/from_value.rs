@@ -8,7 +8,7 @@ use crate::{
     heap::{Heap, HeapData, HeapReader},
     intern::{CompileInterns, Interns},
     run::{Program, SessionTables},
-    types::{Bytes, List, LongInt, NamedTuple, str::allocate_string},
+    types::{Bytes, List, LongInt, NamedTuple},
 };
 
 fn with_test_vm<R>(f: impl for<'h> FnOnce(&mut VM<'h>) -> R) -> R {
@@ -264,12 +264,12 @@ fn bool_conversions() {
 #[test]
 fn str_arg_conversions() {
     with_test_vm(|vm| {
-        let s = allocate_string("hello", vm.heap);
+        let s = Value::from_str("hello", vm.heap);
         let str_arg = StrArg::from_value(s, vm).unwrap();
         assert_eq!(str_arg.as_str(vm), "hello");
         str_arg.drop_extracted(vm.heap);
 
-        let s2 = allocate_string("world", vm.heap);
+        let s2 = Value::from_str("world", vm.heap);
         let str_arg2 = StrArg::from_value(s2, vm).unwrap();
         str_arg2.drop_with(vm);
 
@@ -288,7 +288,7 @@ fn option_and_lax_bool_and_value() {
         // Option<T>
         assert_eq!(Option::<i64>::from_value(Value::Int(42), vm).unwrap(), Some(42));
         Option::<StrArg>::drop_extracted(None, vm.heap);
-        let s = allocate_string("opt", vm.heap);
+        let s = Value::from_str("opt", vm.heap);
         let opt = Option::<StrArg>::from_value(s, vm).unwrap();
         opt.drop_extracted(vm.heap);
 
@@ -369,7 +369,7 @@ fn default_trait_impls_and_unconstrained() {
 fn long_int_and_index_dunder_edge_cases() {
     with_test_vm(|vm| {
         // non-LongInt heap value
-        let s = allocate_string("a heap-allocated string", vm.heap);
+        let s = Value::from_str("a heap-allocated string", vm.heap);
         assert!(s.as_long_int(vm).is_none());
         assert!(Value::None.as_long_int(vm).is_none());
 

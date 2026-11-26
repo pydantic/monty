@@ -13,7 +13,7 @@ use crate::{
     hash::{HashValue, identity_hash},
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead},
     intern::{StaticStrings, StringId},
-    types::{LazyHeapSet, PyTrait, Type, TypeRef, str::allocate_string},
+    types::{LazyHeapSet, PyTrait, Type, TypeRef},
     value::{EitherStr, Marker, Value},
 };
 
@@ -335,7 +335,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DataclassField> {
             "name" => match self.get(vm.heap).name {
                 Some(name) => {
                     let name = vm.interns.get_str(name).to_owned();
-                    allocate_string(name, vm.heap)
+                    Value::from_str(name, vm.heap)
                 }
                 None => Value::None,
             },

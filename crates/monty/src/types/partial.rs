@@ -568,7 +568,6 @@ mod tests {
     use crate::{
         heap::{Heap, HeapReader},
         run::{Program, SessionTables},
-        types::str::allocate_string,
     };
 
     #[test]
@@ -581,10 +580,10 @@ mod tests {
             let vm = &mut VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
             let bound = vec![
                 (Value::Int(1), Value::Int(10)),
-                (allocate_string("key", vm.heap), Value::Int(20)),
+                (Value::from_str("key", vm.heap), Value::Int(20)),
             ];
             defer_drop!(bound, vm);
-            let key = allocate_string("key", vm.heap);
+            let key = Value::from_str("key", vm.heap);
             defer_drop!(key, vm);
 
             assert_eq!(keyword_index(bound, key, vm), Some(1));

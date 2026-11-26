@@ -4,7 +4,7 @@ use std::{fmt, str};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
-use crate::{bytecode::VM, intern::StringId, value::Value};
+use crate::{bytecode::VM, value::Value};
 
 /// UTF-8 text of at most 15 bytes.
 /// The tag enum supplies niches so a containing `Value` remains 16 bytes.
@@ -23,39 +23,23 @@ impl InlineStr {
             return None;
         }
 
-        Self::with_ascii(text, text.is_ascii())
+        Self::with_ascii([text], text.is_ascii())
     }
 
-    /// Uses ASCII status already established by the producing operation.
-    pub(crate) fn with_ascii(text: &str, ascii: bool) -> Option<Self> {
-        let tag = InlineTag::from_len(text.len(), ascii)?;
-        debug_assert_eq!(ascii, text.is_ascii());
-        let mut bytes = [0; Self::CAPACITY];
-        bytes[..text.len()].copy_from_slice(text.as_bytes());
-        Some(Self { tag, bytes })
-    }
-
-    /// Copies fragments and their known ASCII status into a string value.
-    ///
-    /// # Panics
-    /// Panics if the fragments total more than [`Self::CAPACITY`] bytes.
-    pub(super) fn allocate_fragments<'a>(fragments: impl IntoIterator<Item = &'a str>, ascii: bool) -> Value {
+    /// Copies text with known ASCII status into inline storage.
+    /// Returns `None` if the fragments exceed the inline capacity.
+    pub(crate) fn with_ascii<'a>(fragments: impl IntoIterator<Item = &'a str>, ascii: bool) -> Option<Self> {
         let mut bytes = [0; Self::CAPACITY];
         let mut len = 0;
         for fragment in fragments {
             let end = len + fragment.len();
-            bytes[len..end].copy_from_slice(fragment.as_bytes());
+            bytes.get_mut(len..end)?.copy_from_slice(fragment.as_bytes());
             len = end;
         }
+
         debug_assert_eq!(ascii, bytes[..len].is_ascii());
-        match len {
-            0 => Value::InternString(StringId::EMPTY),
-            1 => Value::InternString(StringId::from_ascii(bytes[0])),
-            _ => Value::InlineString(Self {
-                tag: InlineTag::from_len(len, ascii).expect("fragments fit inline"),
-                bytes,
-            }),
-        }
+        let tag = InlineTag::from_len(len, ascii)?;
+        Some(Self { tag, bytes })
     }
 
     #[inline]
@@ -223,6 +207,7 @@ mod tests {
         }
         assert!(InlineStr::new("abcdefghijklmnop").is_none());
         assert!(InlineStr::new("éééééééé").is_none());
+        assert!(InlineStr::with_ascii(["ééééééé", "é"], false).is_none());
     }
 
     #[test]

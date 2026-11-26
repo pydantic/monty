@@ -13,7 +13,7 @@ use crate::{
     heap::{HEAP_ENTRY_SIZE, HeapData, HeapId, HeapObjectRead, HeapReadOutput},
     heap_traits::{DropGuard, DropWithContext},
     intern::StaticStrings,
-    types::{PyTrait, Type, str::allocate_string},
+    types::{PyTrait, Type},
     value::{EitherStr, Value},
 };
 
@@ -133,7 +133,7 @@ pub(crate) fn task_call_method<'h>(
             if let Err(error) = vm.heap.tracker.check_allocation(name.len()) {
                 return Err(error.into());
             }
-            allocate_string(name.clone(), vm.heap)
+            Value::from_str(name.clone(), vm.heap)
         }
         StaticStrings::SetName => {
             let name = args.get_one_arg("Task.set_name", vm.heap)?;

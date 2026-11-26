@@ -27,7 +27,7 @@ use crate::{
     intern::StaticStrings,
     modules::ModuleFunctions,
     types::{
-        Module, Set, Type, allocate_string,
+        Module, Set, Type,
         bytes::allocate_bytes,
         hashlib::{Blake2Params, Blake2b, Blake2s, DigestBytes, HashAlgorithm, HashObject, hash_input},
     },
@@ -106,7 +106,7 @@ pub fn create_module(vm: &mut VM<'_>) -> Module {
 fn algorithm_names(vm: &mut VM<'_>) -> Value {
     let mut names = Set::with_capacity(HashAlgorithm::ALL.len());
     for algorithm in HashAlgorithm::ALL {
-        let name = allocate_string(algorithm.name(), vm.heap);
+        let name = Value::from_str(algorithm.name(), vm.heap);
         // Adding a str to a set of strs hashes and compares without Python
         // code, so the only failure is a memory limit already past its hard ceiling.
         names

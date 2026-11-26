@@ -27,7 +27,7 @@ use crate::{
     bytecode::VM,
     intern::StaticStrings,
     modules::StandardLib,
-    types::{List, Module, NamedTuple, allocate_string, allocate_tuple, long_int::INT_MAX_STR_DIGITS},
+    types::{List, Module, NamedTuple, allocate_tuple, long_int::INT_MAX_STR_DIGITS},
     value::{EitherStr, Marker, Value},
 };
 
@@ -197,7 +197,7 @@ fn version_info(vm: &VM<'_>) -> Value {
 /// module per `import`, so edits do not survive one (see
 /// `limitations/modules.md`).
 fn argv(vm: &VM<'_>) -> Value {
-    let script = allocate_string(vm.env.script_basename(), vm.heap);
+    let script = Value::from_str(vm.env.script_basename(), vm.heap);
     Value::allocate(List::new(vec![script]), vm.heap)
 }
 
@@ -305,7 +305,7 @@ fn builtin_module_names(vm: &VM<'_>) -> Value {
     let mut names: SmallVec<[&str; 32]> = StandardLib::names().collect();
     names.sort_unstable();
 
-    let values = names.into_iter().map(|name| allocate_string(name, vm.heap)).collect();
+    let values = names.into_iter().map(|name| Value::from_str(name, vm.heap)).collect();
     allocate_tuple(values, vm.heap)
 }
 

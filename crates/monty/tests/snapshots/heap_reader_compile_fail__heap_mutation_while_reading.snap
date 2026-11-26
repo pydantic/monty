@@ -7,7 +7,7 @@ error[E0502]: cannot borrow `*heap` as mutable because it is also borrowed as im
    |
 55 |         let items = a.get(heap).items();
    |                           ---- immutable borrow occurs here
-56 |         let _ = allocate_string("boom", heap.heap_mut());
+56 |         let _ = Value::from_str("boom", heap.heap_mut());
    |                                         ^^^^^^^^^^^^^^^ mutable borrow occurs here
 57 |         let _ = items.len();
    |                 ----- immutable borrow later used here

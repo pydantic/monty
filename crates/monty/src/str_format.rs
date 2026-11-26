@@ -10,7 +10,7 @@ use crate::{
     fstring::decimal_digit_value,
     heap::{ContainsHeap, DropGuard, DropWithContext},
     string_builder::StringBuilder,
-    types::{PyTrait, str::allocate_string},
+    types::PyTrait,
     value::{EitherStr, Value},
 };
 
@@ -28,7 +28,7 @@ pub(crate) fn str_format(template: &str, args: ArgValues, vm: &mut VM<'_>) -> Ru
 
     let mut numbering = Numbering::default();
     let rendered = render(template, arguments, &mut numbering, MAX_FORMAT_RECURSION, vm)?;
-    Ok(allocate_string(rendered, vm.heap))
+    Ok(Value::from_str(rendered, vm.heap))
 }
 
 /// Arguments accepted by `str.format()`.
@@ -379,7 +379,7 @@ fn resolve_keyword(name: &str, arguments: &FormatArguments, vm: &mut VM<'_>) -> 
         }
     }
 
-    let key = allocate_string(name, vm.heap);
+    let key = Value::from_str(name, vm.heap);
     defer_drop!(key, vm);
     Err(ExcType::key_error(key, vm))
 }
@@ -411,7 +411,7 @@ fn item_key(item: &str, vm: &VM<'_>) -> RunResult<Value> {
             i64::try_from(index).expect("index is bounded by isize::MAX"),
         ))
     } else {
-        Ok(allocate_string(item, vm.heap))
+        Ok(Value::from_str(item, vm.heap))
     }
 }
 

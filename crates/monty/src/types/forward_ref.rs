@@ -32,10 +32,8 @@ use crate::{
     modules::{ModuleFunctions, StandardLib, typing},
     py_attrs::PyAttrs,
     types::{
-        Dict, LazyHeapSet, PyTrait, Type, TypeRef, Union,
-        generic_alias::repr_type_arg,
-        sequence::SequenceItems,
-        str::{StringRepr, allocate_string},
+        Dict, LazyHeapSet, PyTrait, Type, TypeRef, Union, generic_alias::repr_type_arg, sequence::SequenceItems,
+        str::StringRepr,
     },
     value::{EitherStr, VALUE_SIZE, Value},
 };
@@ -333,7 +331,7 @@ impl<'h> HeapObjectRead<'h, ForwardRef> {
             vm.heap.inc_ref(id);
         }
         let composed = ForwardRef {
-            arg: allocate_string(text, vm.heap),
+            arg: Value::from_str(text, vm.heap),
             module: Value::None,
             owner: this.owner.clone_with_heap(vm.heap),
             is_argument: false,

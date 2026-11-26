@@ -20,7 +20,6 @@ use ahash::RandomState;
 
 use crate::{
     heap::{ContainsHeap, HeapReader},
-    types::str::{allocate_string, allocate_string_no_interning},
     value::Value,
 };
 
@@ -31,8 +30,7 @@ const CAPACITY: usize = 16_384;
 
 /// Minimum string length eligible for caching.
 ///
-/// Strings up to 15 UTF-8 bytes are interned or stored inline, so caching them
-/// would be redundant.
+/// Shorter strings use reserved IDs or inline storage.
 const MIN_LEN: usize = 16;
 
 /// Maximum string length eligible for caching.
@@ -81,7 +79,7 @@ impl JsonStringCache {
     pub fn get_or_allocate(&mut self, s: String, heap: &HeapReader<'_>) -> Value {
         let len = s.len();
         if !(MIN_LEN..=MAX_LEN).contains(&len) {
-            return allocate_string(s, heap.heap());
+            return Value::from_str(s, heap.heap());
         }
 
         let inner = self.inner.get_or_insert_with(CacheInner::new);
@@ -144,16 +142,14 @@ impl CacheInner {
             }
         }
         // All 5 probe slots occupied — allocate without caching.
-        // Length is in [MIN_LEN..=MAX_LEN] here so interning would never apply.
-        allocate_string_no_interning(s, heap.heap())
+        Value::from_str(s, heap.heap())
     }
 
     /// Allocates `s` on the heap, stores a clone in `entries[index]`, and
     /// returns the original `Value`.
     fn insert_at(&mut self, index: usize, hash: u64, s: String, heap: &HeapReader<'_>) -> Value {
         let key = s.clone().into_boxed_str();
-        // Length is in [MIN_LEN..=MAX_LEN] here so interning would never apply.
-        let value = allocate_string_no_interning(s, heap.heap());
+        let value = Value::from_str(s, heap.heap());
         let cached = value.clone_with_heap(heap);
         self.entries[index] = Some((hash, key, cached));
         value

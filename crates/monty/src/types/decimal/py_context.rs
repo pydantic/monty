@@ -26,9 +26,7 @@ use crate::{
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead},
     py_attrs::PyAttrs,
-    types::{
-        Dict, LazyHeapSet, List, PyTrait, Type, TypeRef, allocate_string, iter::collect_iterable, tuple::allocate_tuple,
-    },
+    types::{Dict, LazyHeapSet, List, PyTrait, Type, TypeRef, iter::collect_iterable, tuple::allocate_tuple},
     value::{EitherStr, Value},
 };
 
@@ -365,7 +363,7 @@ impl ContextField {
     fn get(self, settings: &DecContext, vm: &VM<'_>) -> Value {
         match self {
             Self::Prec => Value::Int(settings.prec),
-            Self::Rounding => allocate_string(settings.rounding.name(), vm.heap),
+            Self::Rounding => Value::from_str(settings.rounding.name(), vm.heap),
             Self::Emin => Value::Int(settings.emin),
             Self::Emax => Value::Int(settings.emax),
             Self::Capitals => Value::Int(i64::from(settings.capitals)),

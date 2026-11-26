@@ -35,7 +35,6 @@ use crate::{
         Bytes, Module, Property, PyTrait, Type, TypeRef,
         dir_scan::{scandir_call, walk_call},
         property::ZeroArgOsProperty,
-        str::allocate_string,
     },
     value::Value,
     virtual_path::posix_join,
@@ -262,7 +261,7 @@ fn urandom(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// directory, held by the VM so no host round-trip is needed.
 fn getcwd(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     args.check_zero_args("getcwd", vm.heap)?;
-    Ok(CallResult::Value(allocate_string(&*vm.env.cwd, vm.heap)))
+    Ok(CallResult::Value(Value::from_str(&*vm.env.cwd, vm.heap)))
 }
 
 /// Implementation of `os.getcwdb()`: the working directory as bytes.
@@ -615,7 +614,7 @@ fn fspath(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
         Some(Type::Path | Type::DirEntry) => {
             let text = value_to_owned_string(&path, vm.heap, vm.interns).expect("a path-like always yields a string");
             path.drop_with(vm.heap);
-            Ok(CallResult::Value(allocate_string(text, vm.heap)))
+            Ok(CallResult::Value(Value::from_str(text, vm.heap)))
         }
         _ => {
             let type_name = path.py_type_name_heap(vm.heap, vm.interns).into_owned();

@@ -34,9 +34,7 @@ use crate::{
     os_dispatch::value_as_path_str,
     py_attrs::PyAttrs,
     types::{
-        LazyHeapSet, List, Path, PyTrait, Type, TypeRef, allocate_tuple,
-        list::ListIterator,
-        str::{allocate_string, string_repr_fmt},
+        LazyHeapSet, List, Path, PyTrait, Type, TypeRef, allocate_tuple, list::ListIterator, str::string_repr_fmt,
     },
     value::{EitherStr, Value},
 };
@@ -272,8 +270,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DirScan> {
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let value = match (self.get(vm.heap), attr.static_string(vm.interns)) {
-            (DirScan::Entry(entry), Some(StaticStrings::Name)) => allocate_string(entry.name.as_str(), vm.heap),
-            (DirScan::Entry(entry), Some(StaticStrings::Path)) => allocate_string(entry.path.as_str(), vm.heap),
+            (DirScan::Entry(entry), Some(StaticStrings::Name)) => Value::from_str(entry.name.as_str(), vm.heap),
+            (DirScan::Entry(entry), Some(StaticStrings::Path)) => Value::from_str(entry.path.as_str(), vm.heap),
             _ => return Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns))),
         };
         Ok(Some(CallResult::Value(value)))
@@ -393,7 +391,7 @@ fn walk_step<'h>(this: &mut HeapObjectRead<'h, DirScan>, vm: &mut VM<'h>) -> Run
                 let dirpath = if path_flavor {
                     Value::allocate(Path::new(spelled.clone()), vm.heap)
                 } else {
-                    allocate_string(spelled.as_str(), vm.heap)
+                    Value::from_str(spelled.as_str(), vm.heap)
                 };
                 let dirs = string_list(dirs, vm);
                 let files = string_list(files, vm);
@@ -493,7 +491,7 @@ fn walk_mut<'a, 'h>(this: &'a mut HeapObjectRead<'h, DirScan>, vm: &'a mut VM<'h
 
 /// Allocates a list of `str`.
 fn string_list(items: Vec<String>, vm: &VM<'_>) -> Value {
-    let items = items.into_iter().map(|item| allocate_string(item, vm.heap)).collect();
+    let items = items.into_iter().map(|item| Value::from_str(item, vm.heap)).collect();
     Value::allocate(List::new(items), vm.heap)
 }
 
@@ -1085,7 +1083,7 @@ impl<'heap> PyAttrs<'heap> for PyDirEntryImpl {
         let path = entry.path.clone();
         let value = {
             args.check_zero_args("__fspath__", vm.heap)?;
-            allocate_string(path, vm.heap)
+            Value::from_str(path, vm.heap)
         };
         Ok(CallResult::Value(value))
     }

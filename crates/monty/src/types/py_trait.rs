@@ -2,7 +2,7 @@ use std::{borrow::Cow, cmp::Ordering, fmt::Write, str};
 
 use ahash::AHashSet;
 
-use super::{TypeRef, allocate_string};
+use super::TypeRef;
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
@@ -235,7 +235,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     ///
     /// TODO: the intermediate `String` here is *not* tracked, so recursive
     /// `repr()` of nested containers can amplify into a multi-gigabyte
-    /// host-side buffer before `allocate_string` consults the tracker.
+    /// host-side buffer before `Value::from_str` consults the tracker.
     /// `StringBuilder` is the canonical fix: now that `py_repr` returns a
     /// `Value`, the builder can be `finish`ed here (outside the recursion),
     /// but `py_repr_fmt` still borrows `&mut vm` while writing, so plugging it
@@ -247,7 +247,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
         let mut s = String::new();
         let mut heap_ids = LazyHeapSet::default();
         self.py_repr_fmt(&mut s, vm, &mut heap_ids)?;
-        Ok(allocate_string(s, vm.heap))
+        Ok(Value::from_str(s, vm.heap))
     }
 
     /// Returns the Python `str()` string for this value.

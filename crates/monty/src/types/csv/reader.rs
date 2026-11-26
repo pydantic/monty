@@ -17,7 +17,6 @@ use crate::{
     types::{
         CsvObject, List,
         csv::dialect::{Dialect, Quoting},
-        str::allocate_string,
         r#type::parse_f64_from_str,
     },
     value::{VALUE_SIZE, Value},
@@ -373,7 +372,7 @@ impl<'d> Parser<'d> {
             Value::Float(parse_f64_from_str(&self.field)?)
         } else {
             // From the slice: one exact-size allocation, and the buffer keeps its capacity.
-            allocate_string(self.field.as_str(), heap)
+            Value::from_str(self.field.as_str(), heap)
         };
         self.field.clear();
         self.field_len = 0;

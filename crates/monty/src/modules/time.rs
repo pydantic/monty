@@ -32,7 +32,6 @@ use crate::{
     types::{
         Module, NamedTuple, PyTrait, date, datetime as datetime_type,
         datetime::{TimestampRounding, sandbox_instant, sandbox_local_wall_clock},
-        str::allocate_string,
         timezone::tzname_string,
         tuple::allocate_tuple,
     },
@@ -111,7 +110,7 @@ fn set_zone_constants(module: &mut Module, vm: &mut VM<'_>) {
     // `time.timezone` is seconds *west* of UTC, the opposite sign to `utcoffset()`.
     let west = |zone: &MontyTimeZone| Value::Int(-i64::from(zone.offset_seconds));
     let name = |zone: &MontyTimeZone, vm: &VM<'_>| {
-        allocate_string(tzname_string(zone.offset_seconds, zone.name.as_deref()), vm.heap)
+        Value::from_str(tzname_string(zone.offset_seconds, zone.name.as_deref()), vm.heap)
     };
     module.set_attr(StaticStrings::Timezone, west(&constants.standard), vm);
     module.set_attr(StaticStrings::Altzone, west(&constants.daylight_zone), vm);
@@ -243,12 +242,12 @@ impl ClockReading {
             Self::Localtime => localtime_value(utc, vm),
             Self::Ctime => {
                 let fields = local_fields(utc, vm)?;
-                Ok(allocate_string(fields.asctime(), vm.heap))
+                Ok(Value::from_str(fields.asctime(), vm.heap))
             }
             Self::Strftime(format) => {
                 let fields = local_fields(utc, vm)?;
                 let text = fields.strftime(&format, vm)?;
-                Ok(allocate_string(text, vm.heap))
+                Ok(Value::from_str(text, vm.heap))
             }
         }
     }
@@ -400,7 +399,7 @@ fn asctime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     };
     let fields = time_fields(&value, "asctime", vm);
     value.drop_with(vm.heap);
-    Ok(CallResult::Value(allocate_string(fields?.asctime(), vm.heap)))
+    Ok(CallResult::Value(Value::from_str(fields?.asctime(), vm.heap)))
 }
 
 /// `time.strftime(format, t=None)`, formatting `t` or the clock.
@@ -428,7 +427,7 @@ fn strftime_result(format: &Value, t: &Value, vm: &mut VM<'_>) -> RunResult<Call
         suspend_or_apply(vm, TimeCaller::Strftime, ClockReading::Strftime(format.into()))
     } else {
         let text = time_fields(t, "strftime", vm)?.strftime(&format, vm)?;
-        Ok(CallResult::Value(allocate_string(text, vm.heap)))
+        Ok(CallResult::Value(Value::from_str(text, vm.heap)))
     }
 }
 
@@ -723,7 +722,7 @@ fn struct_time_value(fields: &TimeFields, vm: &mut VM<'_>) -> Value {
     let (gmtoff, zone_name) = match &fields.zone {
         Some(zone) => (
             Value::Int(i64::from(zone.offset_seconds)),
-            allocate_string(tzname_string(zone.offset_seconds, zone.name.as_deref()), vm.heap),
+            Value::from_str(tzname_string(zone.offset_seconds, zone.name.as_deref()), vm.heap),
         ),
         None => (Value::None, Value::None),
     };

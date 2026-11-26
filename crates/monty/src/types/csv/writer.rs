@@ -27,7 +27,6 @@ use crate::{
         io::{is_memory_stream, is_native_stream},
         iter::collect_owned_iterable,
         sequence::SequenceItems,
-        str::allocate_string,
     },
     value::{EitherStr, VALUE_SIZE, Value},
 };
@@ -211,7 +210,7 @@ fn format_items(
     line.clear();
     format_row(dialect, terminator_chars, items, line, vm)?;
     // From the slice: one exact-size allocation, bounded by the tracker-grown buffer.
-    Ok(allocate_string(line.as_str(), vm.heap))
+    Ok(Value::from_str(line.as_str(), vm.heap))
 }
 
 /// Appends one record to `out`: `join_append` per field plus the line terminator.

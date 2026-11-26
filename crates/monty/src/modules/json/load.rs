@@ -21,7 +21,6 @@ use crate::{
         Dict, List, LongInt,
         file::apply_buffer_store,
         long_int::{check_decimal_digit_count, decimal_digit_count_ascii},
-        str::allocate_string,
     },
     value::{VALUE_SIZE, Value},
 };
@@ -274,7 +273,7 @@ fn parse_json_value_from_peek(
 fn allocate_cached_string(s: String, cache: &mut JsonStringCache, heap: &HeapReader<'_>) -> Value {
     if s.len() <= 15 {
         // Empty and single-char strings are interned; 2–15 byte strings are inline.
-        allocate_string(s, heap.heap())
+        Value::from_str(s, heap.heap())
     } else {
         cache.get_or_allocate(s, heap)
     }
@@ -299,7 +298,7 @@ fn parse_json_number(
     let hook = if is_integer { hooks.parse_int } else { hooks.parse_float };
     if let Some(hook) = hook.filter(|_| !is_constant) {
         let text = String::from_utf8_lossy(token).into_owned();
-        let text = allocate_string(text, vm.heap);
+        let text = Value::from_str(text, vm.heap);
         return Ok(vm.evaluate_function(hook, ArgValues::One(text))?);
     }
     if is_integer {

@@ -34,9 +34,7 @@ use crate::{
     py_value::PyValue,
     string_builder::StringBuilder,
     types::{
-        CmpOrder, LazyHeapSet, PyTrait, TimeDelta, Type, TypeRef, datetime,
-        str::{allocate_string, allocate_string_no_interning},
-        timedelta,
+        CmpOrder, LazyHeapSet, PyTrait, TimeDelta, Type, TypeRef, datetime, timedelta,
         timezone::{format_offset_compact, format_offset_hms, tzname_string},
     },
     value::{EitherStr, Value},
@@ -337,7 +335,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
 
     fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
         let (year, month, day) = to_ymd(*self.get(vm.heap));
-        Ok(allocate_string(format!("{year:04}-{month:02}-{day:02}"), vm.heap))
+        Ok(Value::from_str(format!("{year:04}-{month:02}-{day:02}"), vm.heap))
     }
 
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -646,10 +644,7 @@ impl<'heap> PyAttrs<'heap> for PyDateImpl {
     fn isoformat<'h>(value: &mut HeapObjectRead<'h, Date>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         args.check_zero_args("date.isoformat", vm.heap)?;
         let (year, month, day) = to_ymd(*value.get(vm.heap));
-        Ok(allocate_string_no_interning(
-            format!("{year:04}-{month:02}-{day:02}"),
-            vm.heap,
-        ))
+        Ok(Value::from_str(format!("{year:04}-{month:02}-{day:02}"), vm.heap))
     }
 
     #[pymethod(Strftime)]
@@ -658,7 +653,7 @@ impl<'heap> PyAttrs<'heap> for PyDateImpl {
         let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm)?;
         defer_drop!(format, vm);
         let formatted = format_date_strftime(date, format.as_str(vm), &vm.heap.tracker)?;
-        Ok(allocate_string(formatted, vm.heap))
+        Ok(Value::from_str(formatted, vm.heap))
     }
 
     #[pymethod(Replace)]

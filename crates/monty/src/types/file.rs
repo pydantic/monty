@@ -85,7 +85,7 @@ use super::{
     LazyHeapSet, List, PyTrait, Type, TypeRef,
     bytes::{Bytes, bytes_repr_fmt},
     io::{Newline, translate_newlines},
-    str::{allocate_string, allocate_string_on_heap},
+    str::allocate_string_on_heap,
 };
 use crate::{
     args::ArgValues,
@@ -113,7 +113,7 @@ impl FileName {
     /// Restores the caller's filename type for the file's `.name` attribute.
     fn to_value(&self, heap: &Heap) -> Value {
         match self {
-            Self::Str(name) => allocate_string(name.as_str(), heap),
+            Self::Str(name) => Value::from_str(name.as_str(), heap),
             Self::Bytes(name) => Value::allocate(Bytes::new(name.clone()), heap),
         }
     }
@@ -466,12 +466,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, OpenFile> {
         let file = self.get(vm.heap);
         let value = match method {
             StaticStrings::Name => file.name.as_ref().map_or_else(
-                || allocate_string(file.path.as_str(), vm.heap),
+                || Value::from_str(file.path.as_str(), vm.heap),
                 |name| name.to_value(vm.heap),
             ),
-            StaticStrings::Mode => allocate_string(file.mode.as_str().to_owned(), vm.heap),
+            StaticStrings::Mode => Value::from_str(file.mode.as_str().to_owned(), vm.heap),
             StaticStrings::Closed => Value::Bool(file.closed),
-            StaticStrings::Encoding if !file.mode.is_binary() => allocate_string("utf-8", vm.heap),
+            StaticStrings::Encoding if !file.mode.is_binary() => Value::from_str("utf-8", vm.heap),
             _ => {
                 return Err(ExcType::attribute_error(
                     self.py_type(vm).name(vm.heap, vm.interns),
@@ -1319,7 +1319,7 @@ fn compute_slice_text<'h>(
                     vm.heap.inc_ref(buffer_id);
                     Value::Ref(buffer_id)
                 } else {
-                    allocate_string(tail.to_owned(), vm.heap)
+                    Value::from_str(tail.to_owned(), vm.heap)
                 };
                 // Preserve `position` if it was already past `buffer_total`
                 // (set there by `seek()`) — CPython's read-at-EOF leaves the
@@ -1332,14 +1332,14 @@ fn compute_slice_text<'h>(
                 let take = buffer_total.saturating_sub(position).min(n);
                 let bytes_taken = tail.char_indices().nth(take).map_or(tail.len(), |(i, _)| i);
                 let slice = &tail[..bytes_taken];
-                let value = allocate_string(slice.to_owned(), vm.heap);
+                let value = Value::from_str(slice.to_owned(), vm.heap);
                 let new_pos = position + take;
                 let new_byte_pos = byte_position + bytes_taken;
                 (value, new_pos, new_byte_pos, new_pos >= buffer_total)
             }
             ReadSpec::Line => {
                 let slice = &tail[..newline.line_len(tail)];
-                let value = allocate_string(slice.to_owned(), vm.heap);
+                let value = Value::from_str(slice.to_owned(), vm.heap);
                 let new_pos = position + slice.chars().count();
                 let new_byte_pos = byte_position + slice.len();
                 (value, new_pos, new_byte_pos, new_pos >= buffer_total)
@@ -1351,7 +1351,7 @@ fn compute_slice_text<'h>(
                     let rest = &tail[start..];
                     let end = newline.line_len(rest);
                     let line = &rest[..end];
-                    items.push(allocate_string(line.to_owned(), vm.heap));
+                    items.push(Value::from_str(line.to_owned(), vm.heap));
                     start += end;
                 }
                 // Past-EOF preservation: matches `ReadSpec::All`.
@@ -1664,7 +1664,7 @@ fn empty_result(binary: bool, vm: &VM<'_>) -> Value {
     if binary {
         Value::allocate(Bytes::new(Vec::new()), vm.heap)
     } else {
-        allocate_string("", vm.heap)
+        Value::from_str("", vm.heap)
     }
 }
 

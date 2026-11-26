@@ -32,7 +32,7 @@ use crate::{
         time::{HostSleep, host_sleep},
     },
     os_dispatch::{PostConversionEffect, SleepDestination},
-    types::{Module, Type, str::allocate_string},
+    types::{Module, Type},
     value::Value,
 };
 
@@ -89,17 +89,17 @@ pub fn create_module(vm: &mut VM<'_>) -> Module {
     );
     module.set_attr(
         StaticStrings::FirstCompleted,
-        allocate_string("FIRST_COMPLETED", vm.heap),
+        Value::from_str("FIRST_COMPLETED", vm.heap),
         vm,
     );
     module.set_attr(
         StaticStrings::FirstException,
-        allocate_string("FIRST_EXCEPTION", vm.heap),
+        Value::from_str("FIRST_EXCEPTION", vm.heap),
         vm,
     );
     module.set_attr(
         StaticStrings::AllCompleted,
-        allocate_string("ALL_COMPLETED", vm.heap),
+        Value::from_str("ALL_COMPLETED", vm.heap),
         vm,
     );
 

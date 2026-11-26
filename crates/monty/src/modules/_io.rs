@@ -17,7 +17,7 @@ use crate::{
     heap::DropGuard,
     intern::StaticStrings,
     modules::ModuleFunctions,
-    types::{Module, Type, str::allocate_string},
+    types::{Module, Type},
     value::Value,
 };
 
@@ -80,8 +80,8 @@ struct OpenCodeArgs {
 fn open_code(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let OpenCodeArgs { path } = OpenCodeArgs::from_args(args, vm)?;
     defer_drop!(path, vm);
-    let path = allocate_string(path.as_str(vm), vm.heap);
-    builtin_open(vm, ArgValues::Two(path, allocate_string("rb", vm.heap)))
+    let path = Value::from_str(path.as_str(vm), vm.heap);
+    builtin_open(vm, ArgValues::Two(path, Value::from_str("rb", vm.heap)))
 }
 
 /// `_io.text_encoding(encoding, stacklevel=2, /)`: `encoding` unless it is
@@ -100,7 +100,7 @@ fn text_encoding(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     }
     let (encoding, vm) = encoding_guard.into_parts();
     Ok(match encoding {
-        Value::None => allocate_string("locale", vm.heap),
+        Value::None => Value::from_str("locale", vm.heap),
         encoding => encoding,
     })
 }

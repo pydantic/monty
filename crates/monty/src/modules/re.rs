@@ -48,7 +48,6 @@ use crate::{
     types::{
         BoundedCompileError, Module, RePattern, Type,
         re_pattern::{extract_count, extract_maxsplit, translate_replacement},
-        str::allocate_string,
     },
     value::Value,
 };
@@ -764,7 +763,7 @@ fn call_escape(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         result.push(c);
     }
 
-    Ok(allocate_string(result, vm.heap))
+    Ok(Value::from_str(result, vm.heap))
 }
 
 /// Returns whether a character should be escaped by `re.escape()`.

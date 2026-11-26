@@ -36,7 +36,7 @@ use crate::bytecode::VM;
 #[cfg(heap_reader_compile_fail_test_smuggle_heap_read)]
 use crate::types::List;
 #[cfg(heap_reader_compile_fail_test_heap_mutation_while_reading)]
-use crate::types::str::allocate_string;
+use crate::value::Value;
 
 /// Must not compile: allocating on the heap while holding a reference derived from `HeapRead::get`.
 ///
@@ -53,7 +53,7 @@ fn heap_mutation_while_reading(list_id: HeapId, heap: &mut Heap) {
             _ => unreachable!(),
         };
         let items = a.get(heap).items();
-        let _ = allocate_string("boom", heap.heap_mut());
+        let _ = Value::from_str("boom", heap.heap_mut());
         let _ = items.len();
     });
 }

@@ -841,7 +841,7 @@ pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>)
         if finite_parts > 0 {
             // Fractional grouping (`f"{v:.{p}_f}"`) weaves in one separator per
             // three emitted digits, so the native string reaches ~4/3 × precision
-            // before `allocate_string` accounts for it; budget the separators too.
+            // before `Value::from_str` accounts for it; budget the separators too.
             let separators = if spec.frac_grouping.is_some() {
                 precision.saturating_sub(1) / 3
             } else {
@@ -1430,7 +1430,7 @@ pub fn format_int_base(
 /// is always `Type::Int` here.
 ///
 /// `tracker` guards the radix conversion: `BigInt::to_str_radix` materializes
-/// the full digit string on the (untracked) Rust heap before `allocate_string`
+/// the full digit string on the (untracked) Rust heap before `Value::from_str`
 /// runs, so a huge `LongInt` formatted as `:b`/`:o`/`:x` could allocate gigabytes
 /// outside the resource limit (`f"{1 << n:b}"`). Each radix render is size-checked
 /// up front against `tracker`.
