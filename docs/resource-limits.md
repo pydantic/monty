@@ -379,7 +379,8 @@ Python callers can inspect [`MontyRuntimeError.failure`][pydantic_monty.MontyRun
 - `VmLimit.Memory`: `limit` and `used` in bytes.
 - `VmLimit.FeedTime` and `VmLimit.TurnTime`: `limit` and `elapsed` in nanoseconds on the worker's execution clock.
 - `VmLimit.RecursionDepth`: `limit` and `depth` as counts.
-- `SuspensionLimit`: the caller stopped the feed after exhausting `limit` suspensions. Python-only feeds can still use the checkout.
+- `SuspensionLimit`: the pool stopped the feed at the first suspension beyond the caller-configured `limit`.
+    Later feeds that do not suspend can still complete on the same checkout.
 - `OrdinaryException`: an ordinary exception, whether raised by sandbox code or supplied by the host.
 - `VmLimit.Unknown`: a reported VM limit whose kind this client does not understand.
 - `None`: no classification reported.

@@ -9,7 +9,13 @@ use monty_types::{
     UnicodeErrorObject, VmLimit, VmLimitData, VmLimitSource,
 };
 
-use crate::{convert::ProtoConvertError, pb};
+use crate::{
+    convert::ProtoConvertError,
+    pb::{
+        self,
+        vm_limit::{Kind, Memory, RecursionDepth, Time},
+    },
+};
 
 impl From<&MontyException> for pb::RaisedException {
     fn from(exc: &MontyException) -> Self {
@@ -56,8 +62,6 @@ impl TryFrom<pb::RaisedException> for MontyException {
 
 impl From<VmLimitData> for pb::VmLimit {
     fn from(failure: VmLimitData) -> Self {
-        use pb::vm_limit::{Kind, Memory, RecursionDepth, Time};
-
         let kind = match failure.kind() {
             VmLimit::Memory { limit, used } => Some(Kind::Memory(Memory {
                 limit: Some(limit),
@@ -90,8 +94,6 @@ impl From<VmLimitData> for pb::VmLimit {
 
 impl From<pb::VmLimit> for VmLimitData {
     fn from(failure: pb::VmLimit) -> Self {
-        use pb::vm_limit::{Kind, Memory, RecursionDepth, Time};
-
         let kind = match failure.kind {
             Some(Kind::Memory(Memory {
                 limit: Some(limit),

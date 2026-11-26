@@ -317,7 +317,7 @@ class OrdinaryException:
 
 @final
 class SuspensionLimit:
-    """The caller stopped the feed because the suspension budget was exhausted."""
+    """The pool stopped the feed after exhausting the caller-configured suspension budget."""
 
     @property
     def limit(self) -> int: ...

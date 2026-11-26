@@ -284,7 +284,7 @@ impl From<VmLimit> for PyVmLimit {
 #[pyclass(name = "OrdinaryException", module = "pydantic_monty", frozen)]
 pub struct PyOrdinaryException;
 
-/// A caller stopped the feed because the suspension budget was exhausted.
+/// The pool stopped the feed after exhausting the caller-configured suspension budget.
 #[pyclass(name = "SuspensionLimit", module = "pydantic_monty", frozen)]
 pub struct PySuspensionLimit {
     #[pyo3(get)]

@@ -128,7 +128,7 @@ export class MontyRuntimeError extends MontyError {
   private readonly frames: NativeFrame[]
   private readonly tracebackText: string
 
-  /** The execution classification, or `null` when the reply has no recognized execution metadata. */
+  /** The native execution classification, or `null` when none is reported or on WASM. */
   declare readonly failure: FailureClassification | null
 
   constructor(

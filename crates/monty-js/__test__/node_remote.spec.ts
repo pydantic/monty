@@ -331,7 +331,7 @@ test('only a VM recursion depth failure carries depth metadata, and the error re
   t.deepEqual(limitError.failure, { kind: 'recursion_depth', limit: 5n, depth: 6n })
 })
 
-test('the native pool reports the suspension limit and keeps the session usable', async () => {
+test('the remote pool reports the suspension limit and keeps the session usable', async () => {
   const { url } = await server(relay)
   await using pool = await MontyRemote.create(url, { requestTimeout: 30 })
   await using session = await pool.checkout({ limits: { maxSuspensions: 1 } })

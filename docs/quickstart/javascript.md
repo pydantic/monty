@@ -275,6 +275,7 @@ All numeric fields are `bigint`.
 `ordinary` marks a known ordinary exception; `unknown` marks VM limit data the SDK cannot interpret.
 Neither has numeric fields.
 A `null` failure means there is no recognized execution metadata, as in replies from older workers.
+WASM pools do not report execution failure metadata: their `failure` is always `null`.
 
 `MontyCrashedError` adds `timedOut` and `exitStatus`; `MontyShutdown` adds `dump`; `MontyRefusedError` adds
 `statusCode`, `statusMessage`, `remoteCause`, `retryable` and `retryAfter`.
