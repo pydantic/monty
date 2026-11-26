@@ -15,23 +15,31 @@ It also generates `crates/monty/src/modules/vendored/sources.rs`, the table the 
 """
 
 import argparse
-import difflib
-import os
 import re
 import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
-import time
 import tomllib
 import urllib.request
 from collections import Counter
-from collections.abc import Collection
 from pathlib import Path
-from urllib.error import HTTPError
 
-REPO = Path(__file__).parent.parent
+from vendor_common import (
+    REPO,
+    PatchDoesNotApply,
+    PatchError,
+    apply_patches,
+    check_patch,
+    fetch,
+    fetch_sources,
+    git_apply,
+    make_patch,
+    patched_files,
+    sync_tree,
+)
+
 STDLIB = REPO / 'crates' / 'monty' / 'stdlib'
 MANIFEST = STDLIB / 'vendor.toml'
 LIB = STDLIB / 'Lib'
@@ -43,8 +51,8 @@ TEST_PATCHES = TEST_VENDOR / 'patches'
 LICENSE = STDLIB / 'LICENSE'
 TABLE = REPO / 'crates' / 'monty' / 'src' / 'modules' / 'vendored' / 'sources.rs'
 TEST_CASES = REPO / 'crates' / 'monty' / 'test_cases'
-RAW_URL = 'https://raw.githubusercontent.com/python/cpython/{commit}/{path}'
-ARCHIVE_URL = 'https://codeload.github.com/python/cpython/tar.gz/{commit}'
+UPSTREAM = 'python/cpython'
+ARCHIVE_URL = f'https://codeload.github.com/{UPSTREAM}/tar.gz/{{commit}}'
 
 
 def main() -> None:
@@ -79,35 +87,27 @@ def main() -> None:
                 sys.exit('Run `make prepare-cpython-tests` before editing the generated sources.')
             with tarfile.open(test_archive(commit), 'r:gz') as archive:
                 sources = {file: read_archive_source(archive, f'cpython-{commit}/Lib/{file}') for file in test_files}
-            make_patch(args.make_patch, args.reason, sources, TEST_PATCHES, TEST_TREE / 'Lib')
+            make_patch(args.make_patch, args.reason, sources, TEST_TREE / 'Lib', TEST_PATCHES)
         return
 
     if args.make_patch:
-        make_patch(args.make_patch, args.reason, fetch_sources(commit, files), PATCHES, LIB)
+        sources = fetch_sources(UPSTREAM, commit, 'Lib', files)
+        make_patch(args.make_patch, args.reason, sources, LIB, PATCHES)
+        print('document any behaviour it changes under limitations/')
         return
 
-    upstream = fetch_sources(commit, files)
+    upstream = fetch_sources(UPSTREAM, commit, 'Lib', files)
     if args.check_patches:
         check_patches(upstream, sorted(PATCHES.glob('*.patch')))
         return
 
-    license_text = fetch(commit, 'LICENSE')
+    license_text = fetch(UPSTREAM, commit, 'LICENSE')
     expected = {LICENSE: license_text, TABLE: render_table(tag, files)}
     expected |= patched_tree(STDLIB, upstream)
-    stale = [path for path in LIB.rglob('*') if path.is_file() and path not in expected]
-
+    sync_tree(expected, (LIB,), check=args.check, hint='vendored stdlib is out of date, run `make vendor-stdlib`')
     if args.check:
-        changed = [path for path, text in expected.items() if read(path) != text] + stale
-        if changed:
-            listed = '\n'.join(f'    {path.relative_to(REPO)}' for path in changed)
-            sys.exit(f'vendored stdlib is out of date, run `make vendor-stdlib`:\n{listed}')
         print(f'vendored stdlib matches CPython {tag}')
     else:
-        for path in stale:
-            path.unlink()
-        for path, text in expected.items():
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(text, encoding='utf-8', newline='\n')
         print(f'vendored {len(files)} runtime modules from CPython {tag}')
 
 
@@ -129,8 +129,9 @@ def prepare_tests(commit: str, files: list[str]) -> None:
         for file in files:
             if not (lib / file).is_file():
                 sys.exit(f'CPython {commit} archive is missing Lib/{file}')
+        allowed = set(files)
         for patch in patches:
-            check_patch(patch, files)
+            check_patch(patch, allowed)
             git_apply(patch, lib)
         if TEST_TREE.exists():
             shutil.rmtree(TEST_TREE)
@@ -164,117 +165,12 @@ def read_archive_source(archive: tarfile.TarFile, name: str) -> str:
         return source.read().decode('utf-8')
 
 
-def fetch_sources(commit: str, files: list[str]) -> dict[str, str]:
-    """Fetch each file by its path relative to `Lib/`."""
-    return {file: fetch(commit, f'Lib/{file}') for file in files}
-
-
 def patched_tree(root: Path, sources: dict[str, str]) -> dict[Path, str]:
     """Map a source tree's patched contents to their destination paths."""
     return {
         root / 'Lib' / file: text
         for file, text in apply_patches(sources, sorted((root / 'patches').glob('*.patch'))).items()
     }
-
-
-def fetch(commit: str, path: str) -> str:
-    """Fetch a file at the pinned CPython commit, retrying transient HTTP failures."""
-    url = RAW_URL.format(commit=commit, path=path)
-    delay = 1
-    while True:
-        try:
-            with urllib.request.urlopen(url, timeout=30) as response:
-                return response.read().decode('utf-8')
-        except HTTPError as error:
-            if error.code not in (429, 500, 502, 503, 504) or delay > 4:
-                raise
-            error.close()
-            print(f'CPython download for {path} returned HTTP {error.code}; retrying in {delay}s', file=sys.stderr)
-            time.sleep(delay)
-            delay *= 2
-
-
-def read(path: Path) -> str | None:
-    """A file's exact text, or `None` if it does not exist; unlike `read_text()`, it keeps CRLF line endings."""
-    return path.read_bytes().decode('utf-8') if path.is_file() else None
-
-
-class PatchError(Exception):
-    """A patch that is malformed or does not apply; `main` reports it and exits."""
-
-
-class PatchDoesNotApply(PatchError):
-    """A well-formed patch whose context is not in the files, e.g. because an earlier patch it builds on was dropped."""
-
-
-def apply_patches(sources: dict[str, str], patches: list[Path]) -> dict[str, str]:
-    """`sources` (keyed by `Lib/`-relative path) with `patches` applied in order by `git apply`, which never fuzzes.
-
-    Fails if a patch has no reason before its first hunk, touches an unlisted file, or does not apply cleanly,
-    as happens when the pinned tag changes the lines it edits.
-    """
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        for file, text in sources.items():
-            (root / file).parent.mkdir(parents=True, exist_ok=True)
-            (root / file).write_text(text, encoding='utf-8', newline='\n')
-        for patch in patches:
-            check_patch(patch, sources)
-            git_apply(patch, root)
-        return {file: (root / file).read_text(encoding='utf-8') for file in sources}
-
-
-def check_patch(patch: Path, sources: Collection[str]) -> None:
-    """Fails unless `patch` explains itself and only edits vendored files."""
-    text = patch.read_text(encoding='utf-8')
-    if text.startswith(('--- ', 'diff ')) or not text.strip():
-        raise PatchError(f'{patch.relative_to(REPO)} must start with the reason it is needed')
-    for line in text.splitlines():
-        if line.startswith(('--- a/', '+++ b/')) and line[6:] not in sources:
-            raise PatchError(f'{patch.relative_to(REPO)} edits {line[6:]}, which vendor.toml does not list')
-
-
-def git_apply(patch: Path, root: Path) -> None:
-    """Applies `patch` to the files under `root`, which is outside any repository."""
-    # stop git from treating an enclosing checkout as the target, should the temp dir be inside one
-    env = os.environ | {'GIT_CEILING_DIRECTORIES': str(root.parent)}
-    result = subprocess.run(
-        ['git', 'apply', '--whitespace=error-all', patch],
-        cwd=root,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode:
-        raise PatchDoesNotApply(f'{patch.relative_to(REPO)} does not apply:\n{result.stderr}')
-
-
-def make_patch(name: str, reason: str, upstream: dict[str, str], patch_dir: Path, lib: Path) -> None:
-    """Saves the difference between the patched upstream files and `Lib/` as `patches/<name>.patch`.
-
-    The earlier patches are applied first, so the new one holds only the edits they do not already make.
-    Only the last patch can be replaced: later ones were made against its result.
-    """
-    target = patch_dir / f'{name}.patch'
-    patches = sorted(patch_dir.glob('*.patch'))
-    if later := [patch.name for patch in patches if patch.name > target.name]:
-        sys.exit(f'{target.name} would sort before {", ".join(later)}; pick a name that sorts last')
-    base = apply_patches(upstream, [patch for patch in patches if patch != target])
-    hunks: list[str] = []
-    for file, old in base.items():
-        new = (lib / file).read_text(encoding='utf-8')
-        if not new.endswith('\n'):
-            # difflib cannot express a missing final newline in a form `git apply` accepts
-            sys.exit(f'Lib/{file} must end with a newline')
-        hunks.extend(difflib.unified_diff(old.splitlines(True), new.splitlines(True), f'a/{file}', f'b/{file}'))
-    if not hunks:
-        sys.exit('Lib/ has no edits beyond the existing patches')
-    patch_dir.mkdir(exist_ok=True)
-    target.write_text(f'{reason.strip()}\n\n{"".join(hunks)}', encoding='utf-8', newline='\n')
-    print(f'wrote {target.relative_to(REPO)}')
-    if patch_dir == PATCHES:
-        print('document any behaviour it changes under limitations/')
 
 
 def check_patches(upstream: dict[str, str], patches: list[Path]) -> None:
@@ -345,11 +241,6 @@ def is_permanent(patch: Path) -> bool:
     """Whether the patch's reason, the text before its first hunk, has a `Permanent:` line."""
     reason = patch.read_text(encoding='utf-8').split('\n--- ', 1)[0]
     return any(line.startswith('Permanent:') for line in reason.splitlines())
-
-
-def patched_files(patch: Path) -> set[str]:
-    """The `Lib/`-relative paths a patch edits."""
-    return {line[6:] for line in patch.read_text(encoding='utf-8').splitlines() if line.startswith('+++ b/')}
 
 
 def datatest_passes(test: str) -> bool:

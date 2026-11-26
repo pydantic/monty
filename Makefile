@@ -303,14 +303,14 @@ check-type-check-warm-up: generate-type-check-warm-up ## Verify the checked-in t
 	git diff --exit-code crates/monty-type-checking/src/warm_up.py
 
 .PHONY: update-typeshed
-update-typeshed: ## Update vendored typeshed from upstream
-	uv run crates/monty-typeshed/update.py
+update-typeshed: ## Update vendored typeshed from the pinned upstream commit and patches
+	uv run scripts/vendor_typeshed.py
 	uv run scripts/gen_type_check_warm_up.py
 	$(MAKE) update-licenses
 
 .PHONY: check-typeshed
-check-typeshed: ## Check vendored typeshed stubs are in sync with upstream
-	uv run crates/monty-typeshed/check.py
+check-typeshed: ## Verify vendored typeshed matches the pinned commit and patches
+	uv run scripts/vendor_typeshed.py --check
 
 .PHONY: update-licenses
 update-licenses: ## Regenerate the crate and worker licence files from their sources

@@ -59,7 +59,7 @@ extend-exclude = [
     # CPython sources with documented patches
     "crates/monty/stdlib",
     "crates/monty-datatest/vendor/cpython/work",
-    # Generated copies; lint the source overrides in `custom/` instead.
+    # Generated from pinned typeshed and Monty's patches.
     "crates/monty-typeshed/vendor/typeshed",
     "crates/monty/test_cases/function__err_duplicate_param.py",
     "crates/monty/test_cases/function__err_repeated_keyword.py",
@@ -160,11 +160,6 @@ known-first-party = ["pydantic_monty"]
     "F722", # `e: "it's"` is a string literal under test, not a forward reference
 ]
 
-# Narrowed stubs retain upstream star imports and their implicit names.
-"crates/monty-typeshed/custom/**/*.pyi" = [
-    "F403", # unable to detect undefined names
-    "F821", # Undefined name
-]
 "crates/monty-type-checking/tests/good_types.py" = [
     "F704", # await outside function - needed for testing top-level async/await
 ]
@@ -350,6 +345,7 @@ skip = [
     # The multilingual corpus contains valid non-English words.
     "crates/monty-bench/benches/data/string_corpus.json",
 
+    "crates/monty-typeshed/patches/*",
     "crates/monty-typeshed/vendor/typeshed/stdlib/*",
     "crates/monty/stdlib/*",
     "crates/monty-datatest/vendor/cpython/work/*",

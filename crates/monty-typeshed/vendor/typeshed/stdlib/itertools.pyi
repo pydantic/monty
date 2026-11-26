@@ -2,7 +2,19 @@ import sys
 from _typeshed import MaybeNone
 from collections.abc import Callable, Iterable, Iterator
 from types import GenericAlias
-from typing import Any, Generic, Literal, SupportsComplex, SupportsFloat, SupportsIndex, SupportsInt, TypeVar, overload
+from typing import (
+    Any,
+    Generic,
+    Literal,
+    Never,
+    SupportsComplex,
+    SupportsFloat,
+    SupportsIndex,
+    SupportsInt,
+    TypeVar,
+    final,
+    overload,
+)
 from typing_extensions import Self, TypeAlias, disjoint_base
 
 _T = TypeVar("_T")
@@ -98,7 +110,12 @@ class groupby(Generic[_T_co, _S_co]):
     @overload
     def __new__(cls, iterable: Iterable[_T1], key: Callable[[_T1], _T2]) -> groupby[_T2, _T1]: ...
     def __iter__(self) -> Self: ...
-    def __next__(self) -> tuple[_T_co, Iterator[_S_co]]: ...
+    def __next__(self) -> tuple[_T_co, _grouper[_S_co]]: ...
+
+@final
+class _grouper(Iterator[_T_co]):
+    def __new__(cls, _unavailable: Never, /) -> Self: ...
+    def __next__(self) -> _T_co: ...
 
 @disjoint_base
 class islice(Generic[_T]):
@@ -121,7 +138,16 @@ class takewhile(Generic[_T]):
     def __iter__(self) -> Self: ...
     def __next__(self) -> _T: ...
 
-def tee(iterable: Iterable[_T], n: int = 2, /) -> tuple[Iterator[_T], ...]: ...
+@final
+class _tee(Iterator[_T_co]):
+    def __new__(cls, _unavailable: Never, /) -> Self: ...
+    def __next__(self) -> _T_co: ...
+
+@final
+class _tee_dataobject:
+    def __new__(cls, _unavailable: Never, /) -> Self: ...
+
+def tee(iterable: Iterable[_T], n: int = 2, /) -> tuple[_tee[_T], ...]: ...
 @disjoint_base
 class zip_longest(Generic[_T_co]):
     # one iterable (fillvalue doesn't matter)

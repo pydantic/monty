@@ -74,7 +74,7 @@ passes without it, so the PR that fixes the Monty gap drops the patch; that test
 line in a patch's reason exempts it.
 An import finds them after the native `StandardLib` modules and before the host (`module_finder.rs`), running them like
 a module from a file with no OS call. A newly vendored module also goes in `SANDBOX_MODULE_NAMES`, the typeshed
-`COPY_FILES`/`VERSIONS`, `limitations/modules.md` and a `test_cases` file.
+`crates/monty-typeshed/vendor.toml` and `VERSIONS` patch, `limitations/modules.md` and a `test_cases` file.
 Only list modules that load: `make stdlib-candidates` reports each candidate's first blocker, then every syntax
 blocker in its source and the modules with only one syntax blocker (which may still have import or runtime
 blockers).

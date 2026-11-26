@@ -156,10 +156,8 @@ ENV/**
 
 # ---- This repo (monty): recorded / generated / scratch files ----
 
-# Vendored typeshed (copied upstream, incl. abc.pyi), not authored here. Scoped
-# to vendor/ only -- the authored custom stubs (crates/monty-typeshed/custom/)
-# and the crate's tooling stay reviewed, as do stubs like the public
-# crates/monty-python/python/pydantic_monty/_monty.pyi.
+# Ignore the generated typeshed tree, not the patches or vendoring tools.
+# The public binding stubs in crates/monty-python/python/pydantic_monty/ stay reviewed.
 crates/monty-typeshed/vendor/**
 
 # Scratch divergence probes written by the review-usability skill; throwaway,
