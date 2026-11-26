@@ -246,7 +246,7 @@ impl Dialect {
             StaticStrings::Escapechar => self.escapechar.map_or(Value::None, |c| char_value(c, vm)),
             StaticStrings::Doublequote => Value::Bool(self.doublequote),
             StaticStrings::Skipinitialspace => Value::Bool(self.skipinitialspace),
-            StaticStrings::Lineterminator => Value::from_str(self.lineterminator.clone(), vm.heap),
+            StaticStrings::Lineterminator => Value::from_str(self.lineterminator.as_str(), vm.heap),
             StaticStrings::Quoting => Value::Int(self.quoting.as_int()),
             StaticStrings::Strict => Value::Bool(self.strict),
             _ => return None,

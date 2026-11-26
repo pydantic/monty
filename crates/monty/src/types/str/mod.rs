@@ -326,7 +326,7 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
         let Some(count) = other.py_value(vm).repeat_count(vm)? else {
             return Ok(None);
         };
-        Value::from_str_fragments(&[self.as_str(vm)], count, || self.is_ascii(vm), vm.heap).map(Some)
+        repeat_str(self, count, vm).map(Some)
     }
 
     fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -402,56 +402,6 @@ impl Value {
         Self::from_str_with_ascii(text, None, heap)
     }
 
-    /// Encodes one Unicode scalar on the stack and creates a Python string.
-    pub(crate) fn from_char(character: char, heap: &Heap) -> Self {
-        let mut utf8 = [0; 4];
-        let text: &str = character.encode_utf8(&mut utf8);
-        Self::from_str(text, heap)
-    }
-
-    /// Concatenates the fragments and repeats the resulting text.
-    /// Reserves the full buffer up front when the result exceeds inline capacity.
-    fn from_str_fragments(
-        fragments: &[&str],
-        count: usize,
-        is_ascii: impl FnOnce() -> bool,
-        heap: &Heap,
-    ) -> RunResult<Self> {
-        let fragment_len = fragments
-            .iter()
-            .fold(0usize, |len, fragment| len.saturating_add(fragment.len()));
-        let total = repeated_len(fragment_len, count, 1).map_err(|_| ExcType::repeated_string_too_long())?;
-        if total == 0 {
-            return Ok(Self::InternString(StringId::EMPTY));
-        }
-        if total <= InlineStr::CAPACITY {
-            let fragments = iter::repeat_n(fragments, count).flatten().copied();
-            let inline = InlineStr::with_ascii(fragments, is_ascii()).expect("fragments fit inline");
-            return Ok(if total == 1 {
-                Self::InternString(StringId::from_ascii(inline.as_bytes()[0]))
-            } else {
-                Self::InlineString(inline)
-            });
-        }
-
-        check_estimated_size(total, &heap.tracker)?;
-        let mut text = String::new();
-        text.try_reserve_exact(total)
-            .map_err(|_| ExcType::allocation_too_large())?;
-        for fragment in fragments {
-            text.push_str(fragment);
-        }
-        // Each pass copies whole repetitions, so every cut is a UTF-8 boundary.
-        while text.len() < total {
-            text.extend_from_within(..text.len().min(total - text.len()));
-        }
-
-        Ok(Self::allocate(
-            HeapStr::with_ascii(is_ascii(), text.into_boxed_str()),
-            heap,
-        ))
-    }
-
     /// Uses the caller's ASCII status when known.
     fn from_str_with_ascii(text: impl AsRef<str> + Into<Box<str>>, ascii: Option<bool>, heap: &Heap) -> Self {
         let bytes = text.as_ref().as_bytes();
@@ -470,6 +420,44 @@ impl Value {
             },
         }
     }
+
+    /// Encodes one Unicode scalar on the stack and creates a Python string.
+    pub(crate) fn from_char(character: char, heap: &Heap) -> Self {
+        let mut utf8 = [0; 4];
+        let text: &str = character.encode_utf8(&mut utf8);
+        Self::from_str(text, heap)
+    }
+
+    /// Concatenates fragments, reserving the full buffer for heap-backed results.
+    fn from_str_fragments(fragments: &[&str], is_ascii: impl FnOnce() -> bool, heap: &Heap) -> RunResult<Self> {
+        let total = fragments
+            .iter()
+            .fold(0usize, |len, fragment| len.saturating_add(fragment.len()));
+        if total == 0 {
+            return Ok(Self::InternString(StringId::EMPTY));
+        }
+        if total <= InlineStr::CAPACITY {
+            let inline = InlineStr::with_ascii(fragments.iter().copied(), is_ascii()).expect("fragments fit inline");
+            return Ok(if total == 1 {
+                Self::InternString(StringId::from_ascii(inline.as_bytes()[0]))
+            } else {
+                Self::InlineString(inline)
+            });
+        }
+
+        check_estimated_size(total, &heap.tracker)?;
+        let mut text = String::new();
+        text.try_reserve_exact(total)
+            .map_err(|_| ExcType::allocation_too_large())?;
+        for fragment in fragments {
+            text.push_str(fragment);
+        }
+
+        Ok(Self::allocate(
+            HeapStr::with_ascii(is_ascii(), text.into_boxed_str()),
+            heap,
+        ))
+    }
 }
 
 /// Forces heap storage even for short strings.
@@ -477,12 +465,44 @@ pub fn allocate_string_on_heap(s: impl Into<Box<str>>, heap: &Heap) -> Value {
     Value::allocate(HeapStr::new(s.into()), heap)
 }
 
+/// Repeats a string after checking its total length and allocation size.
+fn repeat_str<'h>(value: &PyStr<'h>, count: usize, vm: &VM<'h>) -> RunResult<Value> {
+    let text = value.as_str(vm);
+    let total = repeated_len(text.len(), count, 1).map_err(|_| ExcType::repeated_string_too_long())?;
+    match total {
+        0 => return Ok(Value::InternString(StringId::EMPTY)),
+        1 => return Ok(Value::from_str(text, vm.heap)),
+        2..=InlineStr::CAPACITY => {
+            let inline = InlineStr::with_ascii(iter::repeat_n(text, count), value.is_ascii(vm))
+                .expect("repeated text fits inline");
+            return Ok(Value::InlineString(inline));
+        }
+        _ => {}
+    }
+
+    check_estimated_size(total, &vm.heap.tracker)?;
+    let mut repeated = String::new();
+    repeated
+        .try_reserve_exact(total)
+        .map_err(|_| ExcType::allocation_too_large())?;
+    repeated.push_str(text);
+    // Each pass copies whole repetitions, so every cut is a UTF-8 boundary.
+    while repeated.len() < total {
+        repeated.extend_from_within(..repeated.len().min(total - repeated.len()));
+    }
+
+    Ok(Value::allocate(
+        HeapStr::with_ascii(value.is_ascii(vm), repeated.into_boxed_str()),
+        vm.heap,
+    ))
+}
+
 /// Concatenation shared by logical string views and concrete heap dispatch.
 fn str_add(s: &str, ascii: bool, other: &Value, vm: &VM<'_>) -> RunResult<Option<Value>> {
     match PyStr::from_value(other, vm) {
         Some(other) => {
             let text = other.as_str(vm);
-            Value::from_str_fragments(&[s, text], 1, || ascii && other.is_ascii(vm), vm.heap).map(Some)
+            Value::from_str_fragments(&[s, text], || ascii && other.is_ascii(vm), vm.heap).map(Some)
         }
         None => Ok(None),
     }
@@ -2125,13 +2145,16 @@ mod tests {
     }
 
     #[test]
-    fn string_fragments_repeat_across_storage_boundary() {
+    fn string_fragments_across_storage_boundary() {
         let mut heap = Heap::new(16, ResourceTracker::default());
         let interns = Interns::default();
-        for count in [5, 7] {
-            let value = Value::from_str_fragments(&["a", "é"], count, || false, &heap).unwrap();
-            assert_eq!(matches!(value, Value::InlineString(_)), count == 5);
-            assert_eq!(value.as_either_str(&heap).unwrap().as_str(&interns), "aé".repeat(count));
+        for suffix in ["", "x"] {
+            let value = Value::from_str_fragments(&["abcdefghijklm", "é", suffix], || false, &heap).unwrap();
+            assert_eq!(matches!(value, Value::InlineString(_)), suffix.is_empty());
+            assert_eq!(
+                value.as_either_str(&heap).unwrap().as_str(&interns),
+                format!("abcdefghijklmé{suffix}")
+            );
             value.drop_with(&mut heap);
         }
     }

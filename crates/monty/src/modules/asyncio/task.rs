@@ -133,7 +133,7 @@ pub(crate) fn task_call_method<'h>(
             if let Err(error) = vm.heap.tracker.check_allocation(name.len()) {
                 return Err(error.into());
             }
-            Value::from_str(name.clone(), vm.heap)
+            Value::from_str(name.as_str(), vm.heap)
         }
         StaticStrings::SetName => {
             let name = args.get_one_arg("Task.set_name", vm.heap)?;
