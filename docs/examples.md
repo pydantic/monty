@@ -88,18 +88,6 @@ if __name__ == '__main__':
 
 Swap `CodeModeToolset(weather_toolset)` for `weather_toolset` to see the same task done with ordinary tool calls.
 
-## Parsing Python literals
-
-Use `ast.literal_eval()` in the sandbox to read a string containing Python literals.
-For example, `ast.literal_eval('[-1 + 2j, 3 - 4j]')` returns a list of two complex numbers.
-The left operand of `+` or `-` in these forms is a real literal with an optional sign, and the right operand is a bare imaginary literal.
-`literal_eval('1 + 2')` and `literal_eval('1 + -2j')` raise `ValueError`.
-In ordinary Python expressions, `1 + 2` evaluates to `3` and `1 + -2j` evaluates to `1-2j`.
-
-Raw CR and CRLF are translated to LF before parsing, including inside quoted literals.
-Decimal integer literals are checked against the 4,300-digit limit during parsing.
-See the [`ast` compatibility notes](limitations/ast.md).
-
 ## Worked examples in the repository
 
 Each directory under [`examples/`](https://github.com/pydantic/monty/tree/main/examples) is runnable from a dev build of the package it uses; its README has the commands.
