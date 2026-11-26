@@ -860,7 +860,9 @@ impl MontyTypeExt for MontyType {
             Type::GenericAlias => Self::GenericAlias,
             Type::Union => Self::Union,
             Type::LruCacheWrapper => Self::LruCacheWrapper,
-            Type::Random
+            Type::Lock
+            | Type::RLock
+            | Type::Random
             | Type::HashlibHash
             | Type::HashlibHashXof
             | Type::Blake2b

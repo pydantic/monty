@@ -54,6 +54,7 @@ files = [
     "stat.pyi",
     "statistics.pyi",
     "textwrap.pyi",
+    "threading.pyi",
     "time.pyi",
     "tomllib.pyi",
     "types.pyi",

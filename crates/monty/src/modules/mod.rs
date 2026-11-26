@@ -42,6 +42,7 @@ pub(crate) mod random;
 pub(crate) mod re;
 pub(crate) mod statistics;
 pub(crate) mod sys;
+pub(crate) mod threading;
 pub(crate) mod time;
 pub(crate) mod tomllib;
 pub(crate) mod typing;
@@ -113,6 +114,8 @@ pub(crate) enum StandardLib {
     Fnmatch,
     /// The `annotationlib` module: `Format`, `ForwardRef` and `get_annotations()`.
     Annotationlib,
+    /// Single-threaded synchronization primitives.
+    Threading,
     /// The `statistics` module: means, medians, modes, variances and quantiles.
     Statistics,
     /// The `_io` module, the native half of `io`: `StringIO`, `BytesIO`, the file classes,
@@ -149,6 +152,7 @@ impl StandardLib {
             StaticStrings::Binascii => Some(Self::Binascii),
             StaticStrings::Random => Some(Self::Random),
             StaticStrings::Copy => Some(Self::Copy),
+            StaticStrings::Threading => Some(Self::Threading),
             StaticStrings::Time => Some(Self::Time),
             StaticStrings::Hashlib => Some(Self::Hashlib),
             StaticStrings::Bisect => Some(Self::Bisect),
@@ -197,6 +201,7 @@ impl StandardLib {
             Self::Binascii => binascii::create_module(vm),
             Self::Random => random::create_module(vm),
             Self::Copy => copy::create_module(vm),
+            Self::Threading => threading::create_module(vm),
             Self::Time => time::create_module(vm),
             Self::Hashlib => hashlib::create_module(vm),
             Self::Bisect => bisect::create_module(vm),
@@ -252,6 +257,7 @@ impl StandardLib {
             | Self::Tomllib
             | Self::Fnmatch
             | Self::Annotationlib
+            | Self::Threading
             | Self::Statistics => Some(&[]),
         }
     }
@@ -262,7 +268,7 @@ impl StandardLib {
 /// Every dump reaches these through `Value::ModuleFunction`, encoded by variant
 /// name, so renaming a variant needs `#[serde(alias)]` (see `DUMP_VERSION`).
 /// Explicit discriminants are permanent module identity codes; never change or reuse them.
-#[monty_macros::explicit_discriminants(checksum = 0xb5cd_b4d0_73ca_9edc)]
+#[monty_macros::explicit_discriminants(checksum = 0xc9cd_1e34_964e_a0bd)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, strum::EnumDiscriminants)]
 #[repr(u8)]
 pub(crate) enum ModuleFunctions {
@@ -295,6 +301,7 @@ pub(crate) enum ModuleFunctions {
     Statistics(statistics::StatisticsFunctions) = 25,
     /// `_io` module functions, which the vendored `io` re-exports.
     Io(_io::IoFunctions) = 28,
+    Threading(threading::ThreadingFunction) = 29,
     /// `gc` module functions — only present under the `test-hooks` feature.
     /// See [`gc`] for why it is gated; test-only variants are grouped last.
     #[cfg(feature = "test-hooks")]
@@ -326,6 +333,7 @@ impl fmt::Display for ModuleFunctions {
             Self::Random(func) => write!(f, "{func}"),
             Self::Copy(func) => write!(f, "{func}"),
             Self::Frozen(func) => write!(f, "{func}"),
+            Self::Threading(func) => write!(f, "{func}"),
             Self::Time(func) => write!(f, "{func}"),
             Self::Hashlib(func) => write!(f, "{func}"),
             Self::Bisect(func) => write!(f, "{func}"),
@@ -368,6 +376,7 @@ impl ModuleFunctions {
             Self::Random(functions) => random::call(vm, functions, args),
             Self::Copy(functions) => copy::call(vm, functions, args).map(CallResult::Value),
             Self::Frozen(functions) => frozen::call_helper(functions, args, vm),
+            Self::Threading(func) => threading::call(vm, func, args).map(CallResult::Value),
             Self::Time(functions) => time::call(vm, functions, args),
             Self::Hashlib(functions) => hashlib::call(vm, functions, args).map(CallResult::Value),
             Self::Bisect(functions) => bisect::call(vm, functions, args).map(CallResult::Value),

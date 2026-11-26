@@ -231,6 +231,7 @@ pub const SANDBOX_MODULE_NAMES: &[&str] = &[
     "statistics",
     "sys",
     "textwrap",
+    "threading",
     "time",
     "tomllib",
     "typing",

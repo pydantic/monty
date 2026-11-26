@@ -299,7 +299,7 @@ fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let seconds = args
         .reject_kwargs("time.sleep", vm.heap)?
         .get_one_arg("time.sleep", vm.heap)?;
-    let result = sleep_seconds(&seconds, vm).and_then(|secs| {
+    let result = seconds_from_object(&seconds, vm).and_then(|secs| {
         sleep_duration(secs).map_err(|err| match err {
             SleepError::NotANumber => ExcType::invalid_nan(),
             SleepError::Negative => ExcType::value_error("sleep length must be non-negative"),
@@ -349,14 +349,14 @@ fn index_seconds(index: &Value, vm: &VM<'_>) -> f64 {
     }
 }
 
-/// Converts a sleep length to float seconds the way CPython's
+/// Converts a duration to float seconds the way CPython's
 /// `_PyTime_FromSecondsObject` does: a float passes straight through, and
 /// anything else goes through `__index__`, so a `str` — or a class with only
 /// `__float__` — is rejected as non-integral rather than as a non-number.
 ///
 /// An integer too large for `f64` becomes infinity, which the caller's range
 /// check turns into the same `OverflowError` CPython raises for it.
-fn sleep_seconds(value: &Value, vm: &mut VM<'_>) -> RunResult<f64> {
+pub(super) fn seconds_from_object(value: &Value, vm: &mut VM<'_>) -> RunResult<f64> {
     match value {
         Value::Float(f) => Ok(*f),
         _ => match value.py_index_impl(vm)? {

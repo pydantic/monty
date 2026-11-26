@@ -53,6 +53,7 @@ in the next feed, and after a dump (see [random.md](random.md)).
 | `statistics`    | [statistics.md](statistics.md)        |
 | `sys`           | [sys.md](sys.md)                      |
 | `textwrap`      | [vendored](#vendored-cpython-modules) |
+| `threading`     | [threading.md](threading.md)          |
 | `time`          | [time.md](time.md)                    |
 | `tomllib`       | [tomllib.md](tomllib.md)              |
 | `typing`        | [typing.md](typing.md)                |
@@ -73,11 +74,11 @@ Common modules that are *not* importable in Monty (non-exhaustive):
 `ctypes`, `enum`, `fractions`,
 `heapq`, `hmac`, `http`, `inspect`,
 `logging`, `multiprocessing`, `operator`, `pickle`, `queue`,
-`socket`, `string`, `struct`, `subprocess`, `tempfile`, `threading`,
+`socket`, `string`, `struct`, `subprocess`, `tempfile`,
 `traceback`, `unittest`, `urllib`, `uuid`, `warnings`, `weakref`,
 `zipfile`, `zlib`.
 
-`socket`, `subprocess`, `multiprocessing`, `threading` and `ctypes` are
+`socket`, `subprocess`, `multiprocessing` and `ctypes` are
 excluded because they would breach the sandbox. Others (`enum`, `operator`)
 are unimplemented and may appear over time.
 

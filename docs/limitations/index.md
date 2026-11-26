@@ -110,6 +110,7 @@ The following modules are present:
 | `statistics`    | [statistics.md](statistics.md)                    |
 | `sys`           | [sys.md](sys.md)                                  |
 | `textwrap`      | [modules.md](modules.md#vendored-cpython-modules) |
+| `threading`     | [threading.md](threading.md)                      |
 | `time`          | [time.md](time.md)                                |
 | `tomllib`       | [tomllib.md](tomllib.md)                          |
 | `typing`        | [typing.md](typing.md)                            |
@@ -123,7 +124,7 @@ raising `AttributeError` at runtime.
 
 Notably absent: `enum`, `contextlib`, `string`, `struct`, `operator`,
 `inspect`, `logging`, `traceback`, `uuid`, `urllib`.
-Some of those are absent by design — `socket`, `subprocess`, `multiprocessing`, `threading` and `ctypes` would breach
+Some of those are absent by design — `socket`, `subprocess`, `multiprocessing` and `ctypes` would breach
 the sandbox — and others are simply not implemented yet.
 
 The authoritative list is [modules.md](modules.md).

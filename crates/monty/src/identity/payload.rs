@@ -53,6 +53,7 @@ pub(super) fn module_function(value: ModuleFunctions) -> u128 {
         ModuleFunctions::Random(function) => function as u32,
         ModuleFunctions::Copy(function) => function as u32,
         ModuleFunctions::Frozen(function) => function as u32,
+        ModuleFunctions::Threading(function) => function as u32,
         ModuleFunctions::Time(function) => function as u32,
         ModuleFunctions::Hashlib(function) => function as u32,
         ModuleFunctions::Bisect(function) => function as u32,

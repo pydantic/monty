@@ -42,6 +42,7 @@ stat: 3.0-
 statistics: 3.4-
 sys: 3.0-
 textwrap: 3.0-
+threading: 3.0-
 time: 3.0-
 tomllib: 3.11-
 typing: 3.5-

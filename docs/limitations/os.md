@@ -179,5 +179,5 @@ Everything else, including but not limited to: `os.fchdir`, `os.fwalk`,
 `os.dup`, `os.fsync`, `os.cpu_count`, `os.getpid`,
 `os.getuid`, `os.getgid`, `os.uname`, `os.terminal_size`, `os.get_terminal_size`.
 
-`subprocess`, `signal`, `socket`, `threading`, `multiprocessing` are not
+`subprocess`, `signal`, `socket`, `multiprocessing` are not
 importable either (see [modules.md](modules.md)).
