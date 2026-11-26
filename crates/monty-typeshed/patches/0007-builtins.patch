@@ -1,4 +1,4 @@
-Remove unsupported top-level builtins and the imports used only by them.
+Remove unsupported top-level builtins and model the sandbox exception constructors.
 
 --- a/builtins.pyi
 +++ b/builtins.pyi
@@ -25,7 +25,7 @@ Remove unsupported top-level builtins and the imports used only by them.
  from types import CellType, CodeType, GenericAlias, TracebackType
  
  # mypy crashes if any of {ByteString, Sequence, MutableSequence, Mapping, MutableMapping}
-@@ -62,14 +61,11 @@
+@@ -62,7 +61,6 @@
  
  # we can't import `Literal` from typing or mypy crashes: see #11247
  from typing_extensions import (  # noqa: Y023
@@ -33,14 +33,7 @@ Remove unsupported top-level builtins and the imports used only by them.
      Literal,
      LiteralString,
      ParamSpec,
-     Self,
-     TypeAlias,
--    TypeGuard,
--    TypeIs,
-     TypeVarTuple,
-     deprecated,
-     disjoint_base,
-@@ -142,47 +138,6 @@
+@@ -142,47 +140,6 @@
      def __subclasshook__(cls, subclass: type, /) -> bool: ...
  
  @disjoint_base
@@ -88,7 +81,7 @@ Remove unsupported top-level builtins and the imports used only by them.
  class type:
      # object.__base__ is None. Otherwise, it would be a type.
      @property
-@@ -237,15 +192,6 @@
+@@ -237,15 +194,6 @@
      __annotations__: dict[str, AnnotationForm]
      if sys.version_info >= (3, 14):
          __annotate__: AnnotateFunc | None
@@ -104,7 +97,7 @@ Remove unsupported top-level builtins and the imports used only by them.
  
  _PositiveInteger: TypeAlias = Literal[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
  _NegativeInteger: TypeAlias = Literal[-1, -2, -3, -4, -5, -6, -7, -8, -9, -10, -11, -12, -13, -14, -15, -16, -17, -18, -19, -20]
-@@ -765,206 +711,9 @@
+@@ -765,206 +713,9 @@
  
      def __buffer__(self, flags: int, /) -> memoryview: ...
  
@@ -311,7 +304,7 @@ Remove unsupported top-level builtins and the imports used only by them.
  
  @final
  class bool(int):
-@@ -1064,57 +813,6 @@
+@@ -1064,57 +815,6 @@
      def count(self, value: Any, /) -> int: ...
      def index(self, value: Any, start: SupportsIndex = 0, stop: SupportsIndex = sys.maxsize, /) -> int: ...
      def __class_getitem__(cls, item: Any, /) -> GenericAlias: ...
@@ -369,7 +362,7 @@ Remove unsupported top-level builtins and the imports used only by them.
  
  @disjoint_base
  class list(MutableSequence[_T]):
-@@ -1384,78 +1082,17 @@
+@@ -1384,78 +1084,17 @@
  def abs(x: SupportsAbs[_T], /) -> _T: ...
  def all(iterable: Iterable[object], /) -> bool: ...
  def any(iterable: Iterable[object], /) -> bool: ...
@@ -448,45 +441,15 @@ Remove unsupported top-level builtins and the imports used only by them.
  @overload
  def divmod(x: SupportsDivMod[_T_contra, _T_co], y: _T_contra, /) -> _T_co: ...
  @overload
-@@ -1510,45 +1147,12 @@
- 
- exit: _sitebuiltins.Quitter
- 
--@disjoint_base
--class filter(Generic[_T]):
--    @overload
--    def __new__(cls, function: None, iterable: Iterable[_T | None], /) -> Self: ...
--    @overload
--    def __new__(cls, function: Callable[[_S], TypeGuard[_T]], iterable: Iterable[_S], /) -> Self: ...
--    @overload
--    def __new__(cls, function: Callable[[_S], TypeIs[_T]], iterable: Iterable[_S], /) -> Self: ...
--    @overload
--    def __new__(cls, function: Callable[[_T], Any], iterable: Iterable[_T], /) -> Self: ...
--    def __iter__(self) -> Self: ...
--    def __next__(self) -> _T: ...
--
--def format(value: object, format_spec: str = "", /) -> str: ...
--@overload
--def getattr(o: object, name: str, /) -> Any: ...
--
--# While technically covered by the last overload, spelling out the types for None, bool
--# and basic containers help mypy out in some tricky situations involving type context
--# (aka bidirectional inference)
--@overload
--def getattr(o: object, name: str, default: None, /) -> Any | None: ...
--@overload
--def getattr(o: object, name: str, default: bool, /) -> Any | bool: ...
--@overload
--def getattr(o: object, name: str, default: list[Any], /) -> Any | list[Any]: ...
--@overload
--def getattr(o: object, name: str, default: dict[Any, Any], /) -> Any | dict[Any, Any]: ...
--@overload
--def getattr(o: object, name: str, default: _T, /) -> Any | _T: ...
+@@ -1540,7 +1179,6 @@
+ def getattr(o: object, name: str, default: dict[Any, Any], /) -> Any | dict[Any, Any]: ...
+ @overload
+ def getattr(o: object, name: str, default: _T, /) -> Any | _T: ...
 -def globals() -> dict[str, Any]: ...
--def hasattr(obj: object, name: str, /) -> bool: ...
+ def hasattr(obj: object, name: str, /) -> bool: ...
  def hash(obj: object, /) -> int: ...
  
- help: _sitebuiltins._Helper
+@@ -1548,7 +1186,6 @@
  
  def hex(number: SupportsIndex, /) -> str: ...
  def id(obj: object, /) -> int: ...
@@ -494,136 +457,24 @@ Remove unsupported top-level builtins and the imports used only by them.
  @type_check_only
  class _GetItemIterable(Protocol[_T_co]):
      def __getitem__(self, i: int, /) -> _T_co: ...
-@@ -1568,118 +1172,11 @@
-     _ClassInfo: TypeAlias = type | tuple[_ClassInfo, ...]
- 
- def isinstance(obj: object, class_or_tuple: _ClassInfo, /) -> bool: ...
--def issubclass(cls: type, class_or_tuple: _ClassInfo, /) -> bool: ...
- def len(obj: Sized, /) -> int: ...
- 
+@@ -1574,6 +1211,7 @@
  license: _sitebuiltins._Printer
  
  def locals() -> dict[str, Any]: ...
--@disjoint_base
--class map(Generic[_S]):
--    # 3.14 adds `strict` argument.
--    if sys.version_info >= (3, 14):
--        @overload
--        def __new__(cls, func: Callable[[_T1], _S], iterable: Iterable[_T1], /, *, strict: bool = False) -> Self: ...
--        @overload
--        def __new__(
--            cls, func: Callable[[_T1, _T2], _S], iterable: Iterable[_T1], iter2: Iterable[_T2], /, *, strict: bool = False
--        ) -> Self: ...
--        @overload
--        def __new__(
--            cls,
--            func: Callable[[_T1, _T2, _T3], _S],
--            iterable: Iterable[_T1],
--            iter2: Iterable[_T2],
--            iter3: Iterable[_T3],
--            /,
--            *,
--            strict: bool = False,
--        ) -> Self: ...
--        @overload
--        def __new__(
--            cls,
--            func: Callable[[_T1, _T2, _T3, _T4], _S],
--            iterable: Iterable[_T1],
--            iter2: Iterable[_T2],
--            iter3: Iterable[_T3],
--            iter4: Iterable[_T4],
--            /,
--            *,
--            strict: bool = False,
--        ) -> Self: ...
--        @overload
--        def __new__(
--            cls,
--            func: Callable[[_T1, _T2, _T3, _T4, _T5], _S],
--            iterable: Iterable[_T1],
--            iter2: Iterable[_T2],
--            iter3: Iterable[_T3],
--            iter4: Iterable[_T4],
--            iter5: Iterable[_T5],
--            /,
--            *,
--            strict: bool = False,
--        ) -> Self: ...
--        @overload
--        def __new__(
--            cls,
--            func: Callable[..., _S],
--            iterable: Iterable[Any],
--            iter2: Iterable[Any],
--            iter3: Iterable[Any],
--            iter4: Iterable[Any],
--            iter5: Iterable[Any],
--            iter6: Iterable[Any],
--            /,
--            *iterables: Iterable[Any],
--            strict: bool = False,
--        ) -> Self: ...
--    else:
--        @overload
--        def __new__(cls, func: Callable[[_T1], _S], iterable: Iterable[_T1], /) -> Self: ...
--        @overload
--        def __new__(cls, func: Callable[[_T1, _T2], _S], iterable: Iterable[_T1], iter2: Iterable[_T2], /) -> Self: ...
--        @overload
--        def __new__(
--            cls, func: Callable[[_T1, _T2, _T3], _S], iterable: Iterable[_T1], iter2: Iterable[_T2], iter3: Iterable[_T3], /
--        ) -> Self: ...
--        @overload
--        def __new__(
--            cls,
--            func: Callable[[_T1, _T2, _T3, _T4], _S],
--            iterable: Iterable[_T1],
--            iter2: Iterable[_T2],
--            iter3: Iterable[_T3],
--            iter4: Iterable[_T4],
--            /,
--        ) -> Self: ...
--        @overload
--        def __new__(
--            cls,
--            func: Callable[[_T1, _T2, _T3, _T4, _T5], _S],
--            iterable: Iterable[_T1],
--            iter2: Iterable[_T2],
--            iter3: Iterable[_T3],
--            iter4: Iterable[_T4],
--            iter5: Iterable[_T5],
--            /,
--        ) -> Self: ...
--        @overload
--        def __new__(
--            cls,
--            func: Callable[..., _S],
--            iterable: Iterable[Any],
--            iter2: Iterable[Any],
--            iter3: Iterable[Any],
--            iter4: Iterable[Any],
--            iter5: Iterable[Any],
--            iter6: Iterable[Any],
--            /,
--            *iterables: Iterable[Any],
--        ) -> Self: ...
--
--    def __iter__(self) -> Self: ...
--    def __next__(self) -> _S: ...
- 
- @overload
- def max(
-@@ -1910,9 +1407,6 @@
++
+ @disjoint_base
+ class map(Generic[_S]):
+     # 3.14 adds `strict` argument.
+@@ -1910,8 +1548,6 @@
  @overload
  def round(number: _SupportsRound2[_T], ndigits: SupportsIndex) -> _T: ...
  
 -# See https://github.com/python/typeshed/pull/6292#discussion_r748875189
 -# for why arg 3 of `setattr` should be annotated with `Any` and not `object`
--def setattr(obj: object, name: str, value: Any, /) -> None: ...
+ def setattr(obj: object, name: str, value: Any, /) -> None: ...
  @overload
  def sorted(
-     iterable: Iterable[SupportsRichComparisonT], /, *, key: None = None, reverse: bool = False
-@@ -1939,12 +1433,6 @@
+@@ -1939,12 +1575,6 @@
  @overload
  def sum(iterable: Iterable[_AddableT1], /, start: _AddableT2) -> _AddableT1 | _AddableT2: ...
  
@@ -636,7 +487,7 @@ Remove unsupported top-level builtins and the imports used only by them.
  @disjoint_base
  class zip(Generic[_T_co]):
      if sys.version_info >= (3, 10):
-@@ -2027,17 +1515,6 @@
+@@ -2027,17 +1657,6 @@
      def __iter__(self) -> Self: ...
      def __next__(self) -> _T_co: ...
  
@@ -654,7 +505,7 @@ Remove unsupported top-level builtins and the imports used only by them.
  if sys.version_info >= (3, 10):
      from types import EllipsisType, NotImplementedType
  
-@@ -2048,11 +1525,6 @@
+@@ -2048,11 +1667,6 @@
      Ellipsis: EllipsisType
      NotImplemented: NotImplementedType
  else:
@@ -666,7 +517,7 @@ Remove unsupported top-level builtins and the imports used only by them.
  
      Ellipsis: ellipsis
  
-@@ -2082,7 +1554,6 @@
+@@ -2082,7 +1696,6 @@
          __notes__: list[str]
          def add_note(self, note: str, /) -> None: ...
  
@@ -674,26 +525,26 @@ Remove unsupported top-level builtins and the imports used only by them.
  class KeyboardInterrupt(BaseException): ...
  
  @disjoint_base
-@@ -2123,18 +1594,6 @@
+@@ -2123,17 +1736,9 @@
  else:
      class AttributeError(Exception): ...
  
 -class BufferError(Exception): ...
 -class EOFError(Exception): ...
 -
--@disjoint_base
--class ImportError(Exception):
+ @disjoint_base
+ class ImportError(Exception):
 -    def __init__(self, *args: object, name: str | None = None, path: str | None = None) -> None: ...
 -    name: str | None
 -    path: str | None
 -    msg: str  # undocumented
 -    if sys.version_info >= (3, 12):
 -        name_from: str | None  # undocumented
--
++    def __init__(self, message: str = "", /) -> None: ...
+ 
  class LookupError(Exception): ...
  class MemoryError(Exception): ...
- 
-@@ -2147,9 +1606,7 @@
+@@ -2147,9 +1752,7 @@
  else:
      class NameError(Exception): ...
  
@@ -703,7 +554,7 @@ Remove unsupported top-level builtins and the imports used only by them.
  
  @disjoint_base
  class SyntaxError(Exception):
-@@ -2181,150 +1638,24 @@
+@@ -2181,10 +1784,8 @@
      # If you provide more than two arguments, it still creates the SyntaxError, but
      # the arguments from the info tuple are not parsed. This form is omitted.
  
@@ -713,11 +564,11 @@ Remove unsupported top-level builtins and the imports used only by them.
 -class FloatingPointError(ArithmeticError): ...
  class OverflowError(ArithmeticError): ...
  class ZeroDivisionError(ArithmeticError): ...
--class ModuleNotFoundError(ImportError): ...
- class IndexError(LookupError): ...
+ class ModuleNotFoundError(ImportError): ...
+@@ -2192,139 +1793,25 @@
  class KeyError(LookupError): ...
--class UnboundLocalError(NameError): ...
--
+ class UnboundLocalError(NameError): ...
+ 
 -class BlockingIOError(OSError):
 -    characters_written: int
 -
@@ -727,7 +578,6 @@ Remove unsupported top-level builtins and the imports used only by them.
 -class ConnectionAbortedError(ConnectionError): ...
 -class ConnectionRefusedError(ConnectionError): ...
 -class ConnectionResetError(ConnectionError): ...
-+
  class FileExistsError(OSError): ...
  class FileNotFoundError(OSError): ...
 -class InterruptedError(OSError): ...
@@ -783,6 +633,14 @@ Remove unsupported top-level builtins and the imports used only by them.
 -
 -if sys.version_info >= (3, 10):
 -    class EncodingWarning(Warning): ...
++
++@disjoint_base
++class UnicodeDecodeError(ValueError):
++    def __init__(self, message: str = "", /) -> None: ...
++
++@disjoint_base
++class UnicodeEncodeError(ValueError):
++    def __init__(self, message: str = "", /) -> None: ...
  
  if sys.version_info >= (3, 11):
      _BaseExceptionT_co = TypeVar("_BaseExceptionT_co", bound=BaseException, covariant=True, default=BaseException)
