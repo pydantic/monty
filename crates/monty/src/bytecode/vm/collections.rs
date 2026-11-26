@@ -362,22 +362,15 @@ impl VM<'_> {
         }
         let copied_items: Vec<Value> = collect_iterable(iterable, this)?;
 
-        // The target set sits at `depth` positions below TOS (which is now gone after pop)
-        let stack_len = this.stack.len();
-        let set_pos = stack_len - 1 - depth;
-        // SAFETY: the compiler always emits BuildSet before SetExtend, so the
-        // target is always a Value::Ref.  This is a VM invariant: reaching this else
-        // arm means a compiler bug.
-        let Value::Ref(set_id) = this.stack[set_pos] else {
-            unreachable!("SetExtend: target is always a Ref — compiler invariant")
-        };
-
         let copied_items = copied_items.into_iter();
         defer_drop_mut!(copied_items, this);
+
+        // BuildSet leaves the target `depth` slots below the new stack top.
+        let set_pos = this.stack.len() - 1 - depth;
+        let Some(set) = this.stack[set_pos].read_as::<Set>(this.heap) else {
+            unreachable!("SetExtend: expected a set target")
+        };
         for item in copied_items {
-            let HeapReadOutput::Set(set) = this.heap.read(set_id) else {
-                unreachable!("SetExtend: heap entry is always a Set — compiler invariant")
-            };
             set.add(item, this)?;
         }
 
