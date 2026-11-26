@@ -5,15 +5,47 @@ import sys
 import threading
 from threading import Lock, RLock
 
+
+class IndexedTimeout:
+    def __index__(self):
+        return 0
+
+    def __float__(self):
+        raise AssertionError('acquire must use __index__')
+
+
+class FloatOnlyTimeout:
+    def __float__(self):
+        return 0.25
+
+
+assert repr(RLock) == f'<function RLock at {id(RLock):#x}>'
 assert isinstance(Lock(), threading.Lock)
 for factory in (Lock, RLock):
     lock = factory()
+    other = factory()
+    name = 'lock' if factory is Lock else 'RLock'
+    assert type(lock).__name__ == name
+    assert lock != other
+    labels = {lock: 'held', other: 'other'}
+    try:
+        len(lock)
+        assert False, 'locks have no length'
+    except TypeError as exc:
+        assert str(exc) == f"object of type '_thread.{name}' has no len()"
+    try:
+        lock.clear([])
+        assert False, 'lock accepted an unknown method'
+    except AttributeError as exc:
+        assert str(exc) == f"'_thread.{name}' object has no attribute 'clear'"
+
     acquire = lock.acquire
     release = lock.release
     assert not lock.locked()
     assert acquire(blocking=False) is True
     assert lock.locked()
-    assert not factory().locked()
+    assert not other.locked()
+    assert labels[lock] == 'held' and labels[other] == 'other'
     assert release() is None
     try:
         with lock as acquired:
@@ -23,7 +55,9 @@ for factory in (Lock, RLock):
     except ValueError as exc:
         assert str(exc) == 'inside with'
     assert not lock.locked()
-    assert acquire(timeout=1) is True
+    assert acquire(timeout=IndexedTimeout()) is True
+    release()
+    assert acquire(timeout=0.25) is True
     release()
 
     try:
@@ -36,7 +70,17 @@ for factory in (Lock, RLock):
         assert False, 'negative timeout'
     except ValueError as exc:
         assert str(exc) == 'timeout value must be a non-negative number'
-    for timeout, error in [(None, TypeError), (float('nan'), ValueError), (float('inf'), OverflowError)]:
+    try:
+        acquire(timeout=FloatOnlyTimeout())
+        assert False, 'acquire accepted a __float__-only object'
+    except TypeError as exc:
+        assert str(exc) == "'FloatOnlyTimeout' object cannot be interpreted as an integer or float"
+    for timeout, error in [
+        (None, TypeError),
+        (10**100, OverflowError),
+        (float('nan'), ValueError),
+        (float('inf'), OverflowError),
+    ]:
         try:
             acquire(timeout=timeout)
             assert False, 'invalid timeout'
