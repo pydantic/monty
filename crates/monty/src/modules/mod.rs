@@ -301,9 +301,8 @@ pub(crate) enum ModuleFunctions {
     Statistics(statistics::StatisticsFunctions) = 25,
     /// `_io` module functions, which the vendored `io` re-exports.
     Io(_io::IoFunctions) = 28,
-    Ast(ast::AstFunctions) = 29,
     /// `gc` module functions — only present under the `test-hooks` feature.
-    /// See [`gc`] for why it is gated; test-only variants are grouped last.
+    /// See [`gc`] for why it is gated.
     #[cfg(feature = "test-hooks")]
     Gc(gc::GcFunctions) = 26,
     /// `sys` module functions — only present under the `test-hooks` feature.
@@ -312,6 +311,7 @@ pub(crate) enum ModuleFunctions {
     /// CPython. See [`sys`] for the rationale.
     #[cfg(feature = "test-hooks")]
     Sys(sys::SysFunctions) = 27,
+    Ast(ast::AstFunctions) = 29,
 }
 
 impl fmt::Display for ModuleFunctions {
