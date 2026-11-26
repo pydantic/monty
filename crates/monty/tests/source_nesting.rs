@@ -274,6 +274,22 @@ fn eval_and_exec_of_a_long_operator_chain_are_rejected() {
 }
 
 #[test]
+fn literal_eval_rejects_a_deep_ast_from_a_flat_chain() {
+    let mut run = MontyRun::new(
+        "from ast import literal_eval\nliteral_eval('1' + '+1' * 2500)".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let err = run
+        .run_no_limits(vec![])
+        .expect_err("expected literal_eval to reject the tree");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_eq!(err.message(), Some("Source is too deeply nested (<unknown>, line 1)"));
+}
+
+#[test]
 fn exec_of_a_long_flat_string_runs() {
     let mut run = MontyRun::new(
         "exec('x = [' + '-1, ' * 3000 + ']')\nlen(x)".to_owned(),

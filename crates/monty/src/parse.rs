@@ -3217,16 +3217,21 @@ pub(crate) fn parse_int_literal(s: &str) -> Result<BigInt, String> {
     }
 
     // Default to decimal
-    let digit_count = cleaned.bytes().filter(u8::is_ascii_digit).count();
+    check_decimal_literal_digits(cleaned.bytes().filter(u8::is_ascii_digit).count())?;
+    cleaned
+        .parse::<BigInt>()
+        .map_err(|e| format!("invalid integer literal {s:?}, error: {e}"))
+}
+
+/// Checks the decimal limit for a Python integer literal.
+pub(crate) fn check_decimal_literal_digits(digit_count: usize) -> Result<(), String> {
     if digit_count > INT_MAX_STR_DIGITS {
         Err(format!(
             "Exceeds the limit ({INT_MAX_STR_DIGITS} digits) for integer string conversion: \
              value has {digit_count} digits; consider hexadecimal for large integer literals"
         ))
     } else {
-        cleaned
-            .parse::<BigInt>()
-            .map_err(|e| format!("invalid integer literal {s:?}, error: {e}"))
+        Ok(())
     }
 }
 

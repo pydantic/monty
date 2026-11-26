@@ -5,9 +5,11 @@
 
 use std::borrow::Cow;
 
-use memchr::memchr2_iter;
-use ruff_python_ast::{DictItem, Expr, ExprNumberLiteral, Mod, Number, Operator, UnaryOp};
+use memchr::{memchr, memchr_iter};
+use monty_types::ResourceTracker;
+use ruff_python_ast::{DictItem, Expr, ExprNumberLiteral, Mod, Number, Operator, UnaryOp, token::TokenKind};
 use ruff_python_parser::Mode;
+use ruff_source_file::UniversalNewlines;
 use ruff_text_size::{Ranged, TextSize};
 use smallvec::SmallVec;
 
@@ -19,11 +21,15 @@ use crate::{
     heap::{DropGuard, DropWithContext},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    parse::{MAX_NESTING_DEPTH, parse_int_literal, trailing_indent},
+    parse::{MAX_NESTING_DEPTH, check_decimal_literal_digits, parse_int_literal, trailing_indent},
     resource_checks::try_vec_with_capacity,
     source_nesting::{expression_nesting_bound_exceeded, parse_shallow},
     types::{
-        Complex, Dict, List, LongInt, Module, Set, bytes::allocate_bytes, str::allocate_string, tuple::allocate_tuple,
+        Complex, Dict, List, LongInt, Module, Set,
+        bytes::allocate_bytes,
+        long_int::{INT_MAX_STR_DIGITS, decimal_digit_count_ascii},
+        str::allocate_string,
+        tuple::allocate_tuple,
     },
     value::{VALUE_SIZE, Value},
 };
@@ -57,7 +63,6 @@ struct LiteralEvalArgs {
     node_or_string: Value,
 }
 
-/// Checks the resource budget around parsing inside a single native call.
 fn literal_eval(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let LiteralEvalArgs { node_or_string } = LiteralEvalArgs::from_args(args, vm)?;
     defer_drop!(node_or_string, vm);
@@ -65,16 +70,23 @@ fn literal_eval(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         .as_str(vm)
         .ok_or_else(|| ExcType::value_error("malformed node or string"))?
         .trim_start_matches([' ', '\t']);
+    // Ruff runs between VM checkpoints. Check the budget before it runs,
+    // then check what it used before allocating the result.
     vm.heap.tracker.check_memory_time()?;
-    let expr = parse_literal_source(source)?;
+    let (expr, normalized) = parse_literal_source(source, &vm.heap.tracker)?;
     vm.heap.tracker.check_memory_time()?;
-    LiteralSource(node_or_string).convert(&expr, 0, vm)
+    LiteralSource {
+        input: node_or_string,
+        normalized: normalized.as_deref(),
+    }
+    .eval(&expr, 0, vm)
 }
 
-/// Scans for parser recursion before invoking Ruff. [`parse_shallow`] also
-/// dismantles deep ASTs, including those built from flat operator chains,
-/// so dropping them cannot overflow the native stack.
-fn parse_literal_source(source: &str) -> RunResult<Box<Expr>> {
+/// The lexer scan bounds Ruff's recursion on nested expressions.
+/// A flat chain like `1 + 1 + ...` can still build a deep tree in a loop.
+/// [`parse_shallow`] dismantles such trees iteratively, including trees Ruff
+/// builds while recovering from syntax errors.
+fn parse_literal_source(source: &str, tracker: &ResourceTracker) -> RunResult<(Box<Expr>, Option<String>)> {
     // CPython's _Py_SourceAsString rejects NUL before tokenizing.
     // Ruff accepts it inside quoted literals and comments.
     if source.contains('\0') {
@@ -88,6 +100,10 @@ fn parse_literal_source(source: &str) -> RunResult<Box<Expr>> {
     if source.starts_with('\u{feff}') {
         return Err(syntax_error("invalid non-printable character U+FEFF", 1));
     }
+    // CPython translates raw CR and CRLF to LF before tokenization, even
+    // inside quoted literals. An escaped CR is decoded later.
+    let normalized = normalize_newlines(source, tracker)?;
+    let source = normalized.as_deref().unwrap_or(source);
     if let Some(range) = expression_nesting_bound_exceeded(source, MAX_NESTING_DEPTH) {
         return Err(syntax_error(
             "Source is too deeply nested",
@@ -102,20 +118,51 @@ fn parse_literal_source(source: &str) -> RunResult<Box<Expr>> {
     if let Some(range) = trailing_indent(source) {
         return Err(syntax_error("unexpected indent", line_at(source, range.start())));
     }
+    // CPython checks decimal length when it builds the AST, even for a
+    // number inside a call or another expression literal_eval rejects.
+    if source.len() > INT_MAX_STR_DIGITS {
+        for (i, token) in parsed.tokens().iter().enumerate() {
+            tracker.check_time_every(i)?;
+            if token.kind() == TokenKind::Int && token.range().len().to_usize() > INT_MAX_STR_DIGITS {
+                let digits = source[token.range()].as_bytes();
+                // A valid integer token starting with zero is base-prefixed or zero.
+                if !digits.starts_with(b"0") {
+                    check_decimal_literal_digits(decimal_digit_count_ascii(digits))
+                        .map_err(|msg| syntax_error(&msg, line_at(source, token.start())))?;
+                }
+            }
+        }
+    }
     let Mod::Expression(expr) = parsed.into_syntax() else {
         unreachable!("expression mode produces an expression");
     };
-    Ok(expr.body)
+    Ok((expr.body, normalized))
 }
 
-/// Retains the source value for diagnostics. Borrowing its text from the VM
-/// across conversion would prevent heap mutation.
-struct LiteralSource<'a>(&'a Value);
+fn normalize_newlines(source: &str, tracker: &ResourceTracker) -> RunResult<Option<String>> {
+    if memchr(b'\r', source.as_bytes()).is_none() {
+        return Ok(None);
+    }
+    tracker.check_pending_allocation(source.len())?;
+    let mut text = String::with_capacity(source.len());
+    for (i, line) in source.universal_newlines().enumerate() {
+        tracker.check_time_every(i)?;
+        text.push_str(line.as_str());
+        if line.line_ending().is_some() {
+            text.push('\n');
+        }
+    }
+    Ok(Some(text))
+}
+
+struct LiteralSource<'a> {
+    input: &'a Value,
+    normalized: Option<&'a str>,
+}
 
 impl LiteralSource<'_> {
-    /// Converts one literal expression. The depth counter bounds the native
-    /// stack used to build nested containers.
-    fn convert(&self, expr: &Expr, depth: u16, vm: &mut VM<'_>) -> RunResult<Value> {
+    /// Bounds native stack use while evaluating nested containers.
+    fn eval(&self, expr: &Expr, depth: u16, vm: &mut VM<'_>) -> RunResult<Value> {
         if depth == MAX_NESTING_DEPTH {
             return Err(syntax_error(
                 "Source is too deeply nested",
@@ -141,8 +188,9 @@ impl LiteralSource<'_> {
                 self.number(number, negative, vm)
             }
             Expr::BinOp(op) if matches!(op.op, Operator::Add | Operator::Sub) => {
-                // CPython allows a real literal with an optional sign on the left
-                // and a bare imaginary literal on the right.
+                // CPython accepts complex forms such as `-1 + 2j` and `3 - 4j`.
+                // The real term may have a unary sign. The imaginary term is a
+                // bare literal, so `1 + -2j` is rejected.
                 let (left, negative) = self.signed_number(&op.left, vm)?;
                 let Expr::NumberLiteral(right) = op.right.as_ref() else {
                     return Err(self.malformed(&op.right, vm));
@@ -173,12 +221,12 @@ impl LiteralSource<'_> {
                 let (result, vm) = guard.as_parts_mut();
                 for (i, item) in set.elts.iter().enumerate() {
                     vm.heap.tracker.check_memory_time_every(i)?;
-                    result.add(self.convert(item, depth + 1, vm)?, vm)?;
+                    result.add(self.eval(item, depth + 1, vm)?, vm)?;
                 }
                 let (set, vm) = guard.into_parts();
                 Ok(Value::allocate(set, vm.heap))
             }
-            // This denotes an empty set even when a local value shadows `set`.
+            // If `set = list`, `literal_eval("set()")` still returns an empty set.
             Expr::Call(call)
                 if call.arguments.is_empty() && matches!(call.func.as_ref(), Expr::Name(name) if name.id == "set") =>
             {
@@ -198,7 +246,7 @@ impl LiteralSource<'_> {
         let (values, vm) = guard.as_parts_mut();
         for (i, item) in items.iter().enumerate() {
             vm.heap.tracker.check_memory_time_every(i)?;
-            values.push(self.convert(item, depth + 1, vm)?);
+            values.push(self.eval(item, depth + 1, vm)?);
         }
         Ok(guard.into_inner())
     }
@@ -212,10 +260,10 @@ impl LiteralSource<'_> {
                 .key
                 .as_ref()
                 .ok_or_else(|| ExcType::value_error("malformed node or string: None"))?;
-            let key = self.convert(key, depth + 1, vm)?;
+            let key = self.eval(key, depth + 1, vm)?;
             // Release the key if conversion of the value fails.
             let mut key_guard = DropGuard::new(key, &mut *vm);
-            let value = self.convert(&item.value, depth + 1, key_guard.ctx())?;
+            let value = self.eval(&item.value, depth + 1, key_guard.ctx())?;
             let (key, vm) = key_guard.into_parts();
             dict.set(key, value, vm)?.drop_with(vm);
         }
@@ -268,8 +316,14 @@ impl LiteralSource<'_> {
     }
 
     fn line_at(&self, offset: TextSize, vm: &VM<'_>) -> usize {
-        let source = self.0.as_str(vm).expect("literal source is a string");
-        line_at(source.trim_start_matches([' ', '\t']), offset)
+        // Ruff's offsets refer to the text after trimming and newline translation.
+        let source = self.normalized.unwrap_or_else(|| {
+            self.input
+                .as_str(vm)
+                .expect("literal source is a string")
+                .trim_start_matches([' ', '\t'])
+        });
+        line_at(source, offset)
     }
 }
 
@@ -278,11 +332,9 @@ fn syntax_error(message: &str, line: usize) -> RunError {
     SimpleException::new_msg(ExcType::SyntaxError, format!("{message} (<unknown>, line {line})")).into()
 }
 
-/// Counts CR, LF and CRLF as single line breaks without allocating an index.
+/// Counts LF in the source passed to Ruff.
 fn line_at(source: &str, offset: TextSize) -> usize {
     let source = source.as_bytes();
     let prefix = &source[..offset.to_usize().min(source.len())];
-    1 + memchr2_iter(b'\r', b'\n', prefix)
-        .filter(|&i| prefix[i] == b'\r' || i == 0 || prefix[i - 1] != b'\r')
-        .count()
+    1 + memchr_iter(b'\n', prefix).count()
 }
