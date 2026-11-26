@@ -1,6 +1,6 @@
 # CPython stdlib tests
 
-`make test-cpython` runs the suites enabled in [`vendor.toml`](../../../monty/stdlib/vendor.toml) on Monty and CPython.
+`make test-cpython` type-checks the suites enabled in [`vendor.toml`](../../../monty/stdlib/vendor.toml) and runs them on Monty and CPython.
 It fetches the pinned CPython archive into `work/cache/` on the first run, then extracts `Lib/test`, the license, and the listed support files into `work/generated/` and applies the test patches.
 Both directories are gitignored.
 `make test-cases` does not need these files.
@@ -25,6 +25,14 @@ Under `[suites."<file>".exclude]`, list exact `unittest` IDs with reasons.
 If the file cannot even load in Monty, use `skip = "<reason>"` under `[suites."<file>"]` instead of listing methods.
 Stale IDs and enabled suites with no runnable methods are errors.
 Use `--nocapture` to see manifest exclusions and native `unittest` runtime skips.
+
+## Type checking
+
+Each suite's type check runs separately from its runtime tests and fails on any diagnostic, including unused ignores.
+It checks the full suite source, including methods excluded from runtime, using Monty's normal stdlib stubs and a test-only [`unittest.pyi`](unittest.pyi).
+The checker does not resolve imports from the runtime mount.
+Use rule-specific `# ty: ignore[...]` comments for deliberate runtime probes outside the stubs or for missing APIs in excluded methods.
+Keep those comments in a separate patch, and remove them when the relevant stub changes make them unnecessary.
 
 ## Adding a suite
 

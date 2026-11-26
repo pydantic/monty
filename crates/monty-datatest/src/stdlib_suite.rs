@@ -4,11 +4,14 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error,
     fmt::Write,
+    fs,
     path::{Path, PathBuf},
     sync::{LazyLock, PoisonError},
 };
 
 use monty_fs::{MountMode, MountTable};
+use monty_type_checking::{SourceFile, TypeCheckContext, TypeChecker};
+use monty_types::{ModuleStub, TypeCheckingConfig};
 use pyo3::prelude::*;
 use serde::Deserialize;
 
@@ -192,6 +195,32 @@ pub(crate) fn run_test_cases_monty_stdlib(path: &Path) -> Result<(), Box<dyn Err
             &mut mounts,
         )
     })
+}
+
+/// Check the suite source, including methods excluded from runtime execution.
+pub(crate) fn run_type_check_stdlib(path: &Path) -> Result<(), Box<dyn Error>> {
+    let suite = Suite::new(path)?;
+    let source = fs::read_to_string(&suite.path)?;
+    let module_stubs = [ModuleStub::new(
+        "unittest",
+        include_str!("../vendor/cpython/unittest.pyi"),
+    )?];
+    let context = TypeCheckContext {
+        module_stubs: &module_stubs,
+        ..Default::default()
+    };
+    let mut checker = TypeChecker::default();
+    let config = TypeCheckingConfig {
+        color: false,
+        ..Default::default()
+    };
+    match checker.run_with(&SourceFile::new(&source, &suite.file), &context, config)? {
+        Some(diagnostics) => {
+            eprintln!("Type diagnostics for {}:\n{diagnostics}", suite.file);
+            Err("upstream suite did not type-check".into())
+        }
+        None => Ok(()),
+    }
 }
 
 /// Render calls for the selected tests and reject stale exclusions or an empty selection.

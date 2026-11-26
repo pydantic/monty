@@ -80,7 +80,7 @@ blocker in its source and the modules with only one syntax blocker (which may st
 blockers).
 
 `make test-cpython` extracts `Lib/test` from the pinned CPython archive into the gitignored
-`crates/monty-datatest/vendor/cpython/work/` tree and runs the suites enabled in `[tests].suites` on both interpreters.
+`crates/monty-datatest/vendor/cpython/work/` tree, type-checks the suites enabled in `[tests].suites`, and runs them on both interpreters.
 `make test-cases` runs only Monty's own cases and does not need the archive.
 Use `make prepare-cpython-tests`, edit the generated sources, then use `--test --make-patch NNNN-name --reason '...'`
 to save adaptations against the full upstream files.
@@ -615,7 +615,7 @@ make test-no-features     Run rust tests without any features enabled
 make test-memory-model-checks Run rust tests with memory-model-checks enabled - THIS IS EXTREMELY SLOW, SHOULD MOSTLY BE RUN IN CI OR IF ABSOLUTELY NECESSARY
 make test-ref-count-return Run rust tests with ref-count-return enabled
 make test-cases           Run Monty's test cases on both interpreters
-make test-cpython         Prepare and run the enabled upstream CPython suites on both interpreters
+make test-cpython         Type-check and run the enabled upstream CPython suites
 make test-type-checking   Run rust tests on monty-type-checking
 make pytest               Run Python tests with pytest
 make test-py              Build the python package (debug profile) and run tests

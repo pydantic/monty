@@ -183,7 +183,7 @@ test-cases: ## Run Monty's test cases on both interpreters
 	cargo run -p monty-datatest
 
 .PHONY: test-cpython
-test-cpython: prepare-cpython-tests ## Run the enabled upstream CPython suites on both interpreters
+test-cpython: prepare-cpython-tests ## Type-check and run the enabled upstream CPython suites
 	cargo run -p monty-datatest --features cpython-tests -- _stdlib --nocapture
 
 .PHONY: prepare-cpython-tests

@@ -13,6 +13,7 @@ default-run = "monty-datatest"
 monty = { workspace = true, features = ["test-hooks"] }
 monty-fixture = { path = "../monty-fixture" }
 monty-fs = { workspace = true }
+monty-type-checking = { workspace = true, optional = true }
 # `tzdb` so `timezone` fixtures resolve IANA names against the same OS
 # database CPython reads, with the bundled copy as the fallback (Windows).
 monty-types = { workspace = true, features = ["tzdb"] }
@@ -29,7 +30,7 @@ toml = { workspace = true, optional = true }
 pyo3-build-config = { workspace = true }
 
 [features]
-cpython-tests = ["dep:regex-syntax", "dep:serde", "dep:toml"]
+cpython-tests = ["dep:monty-type-checking", "dep:regex-syntax", "dep:serde", "dep:toml"]
 ref-count-return = ["monty/ref-count-return"]
 memory-model-checks = ["monty/memory-model-checks"]
 

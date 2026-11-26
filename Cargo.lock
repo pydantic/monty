@@ -2455,6 +2455,7 @@ dependencies = [
  "monty",
  "monty-fixture",
  "monty-fs",
+ "monty-type-checking",
  "monty-types",
  "pyo3",
  "pyo3-build-config",

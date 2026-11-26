@@ -1,8 +1,8 @@
 //! Data-driven test harness: runs every Python file in
 //! `crates/monty/test_cases/` against both Monty and CPython (via pyo3) and
 //! compares the results. Run via `make test-cases`; see `AGENTS.md` for the
-//! test-case file conventions. `make test-cpython` also runs selected upstream
-//! CPython suites on both interpreters.
+//! test-case file conventions. `make test-cpython` type-checks and runs
+//! selected upstream CPython suites.
 
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
@@ -47,7 +47,9 @@ use similar::TextDiff;
 #[cfg(feature = "cpython-tests")]
 mod stdlib_suite;
 #[cfg(feature = "cpython-tests")]
-use stdlib_suite::{STDLIB_TESTS_DIR, run_test_cases_cpython_stdlib, run_test_cases_monty_stdlib, suite_pattern};
+use stdlib_suite::{
+    STDLIB_TESTS_DIR, run_test_cases_cpython_stdlib, run_test_cases_monty_stdlib, run_type_check_stdlib, suite_pattern,
+};
 
 const SCRIPTS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts");
 const TEST_CASES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../monty/test_cases");
@@ -3084,6 +3086,7 @@ datatest_stable::harness! {
     { test = run_test_cases_cpython, root = TEST_CASES_DIR, pattern = r"^.*\.py$" },
     { test = run_test_cases_monty_stdlib, root = STDLIB_TESTS_DIR, pattern = suite_pattern() },
     { test = run_test_cases_cpython_stdlib, root = STDLIB_TESTS_DIR, pattern = suite_pattern() },
+    { test = run_type_check_stdlib, root = STDLIB_TESTS_DIR, pattern = suite_pattern() },
 }
 
 #[cfg(test)]
