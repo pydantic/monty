@@ -75,12 +75,16 @@ fn literal_eval(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// dismantles deep ASTs, including those built from flat operator chains,
 /// so dropping them cannot overflow the native stack.
 fn parse_literal_source(source: &str) -> RunResult<Box<Expr>> {
+    // CPython's _Py_SourceAsString rejects NUL before tokenizing.
+    // Ruff accepts it inside quoted literals and comments.
     if source.contains('\0') {
         return Err(
             SimpleException::new_msg(ExcType::SyntaxError, "source code string cannot contain null bytes").into(),
         );
     }
     TextSize::try_from(source.len()).map_err(|_| ExcType::allocation_too_large())?;
+    // Ruff skips a leading BOM as it would in a UTF-8 file. CPython's
+    // str tokenizer sees U+FEFF as a source character and rejects it.
     if source.starts_with('\u{feff}') {
         return Err(syntax_error("invalid non-printable character U+FEFF", 1));
     }

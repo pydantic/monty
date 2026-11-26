@@ -3,6 +3,8 @@ from ast import literal_eval
 
 assert ast.literal_eval(node_or_string=' \t[True, False, None, ...]') == [True, False, None, ...]
 assert literal_eval(r"""['one' "two", b'\x00' b'abc', '\u00e9']""") == ['onetwo', b'\x00abc', 'é']
+assert literal_eval(r"'\0'") == '\0'
+assert literal_eval("'\ufeff'") == '\ufeff'
 assert literal_eval("[(+3, -2.5), {True: 1, 1: 2}, {'a', 'b', 'a'}]") == [(3, -2.5), {True: 2}, {'a', 'b'}]
 assert literal_eval('1,') == (1,)
 assert literal_eval('()') == ()
@@ -49,7 +51,20 @@ for source in (
     except ValueError:
         pass
 
-for source in ('[1,', '1; 2', '\0', '\ufeff1', '[' * 201 + '0' + ']' * 201):
+for source in ('\0', "'a\0b'", '1 # \0'):
+    try:
+        literal_eval(source)
+        assert False, 'expected SyntaxError'
+    except SyntaxError as exc:
+        assert str(exc) == 'source code string cannot contain null bytes'
+
+try:
+    literal_eval(' \t\ufeff1')
+    assert False, 'expected SyntaxError'
+except SyntaxError as exc:
+    assert str(exc) == 'invalid non-printable character U+FEFF (<unknown>, line 1)'
+
+for source in ('[1,', '1; 2', '[' * 201 + '0' + ']' * 201):
     try:
         literal_eval(source)
         assert False, 'expected SyntaxError'
