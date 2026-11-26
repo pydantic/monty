@@ -1368,6 +1368,7 @@ fn requires_positional_writes(call: &OsFunctionCall) -> bool {
 #[must_use]
 pub fn protocol_violation(message: &str) -> pb::WorkerEvent {
     event(pb::worker_event::Kind::Error(pb::Error {
+        terminal_cause: None,
         exception: Some(pb::RaisedException {
             exc_type: ExcType::RuntimeError.to_string(),
             message: Some(format!("protocol violation: {message}")),
@@ -1404,6 +1405,7 @@ fn ok_event() -> pb::WorkerEvent {
 /// Builds a turn-ending `Error` event from an exception type and message.
 fn error_event(exc_type: ExcType, message: &str) -> pb::WorkerEvent {
     event(pb::worker_event::Kind::Error(pb::Error {
+        terminal_cause: None,
         exception: Some(pb::RaisedException {
             exc_type: exc_type.to_string(),
             message: Some(message.to_owned()),
@@ -1416,6 +1418,7 @@ fn error_event(exc_type: ExcType, message: &str) -> pb::WorkerEvent {
 /// Preserves the exception's traceback in the error event.
 fn error_event_from(exc: &MontyException) -> pb::WorkerEvent {
     event(pb::worker_event::Kind::Error(pb::Error {
+        terminal_cause: None,
         exception: Some(exc.into()),
     }))
 }

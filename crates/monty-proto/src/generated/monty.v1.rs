@@ -1606,13 +1606,17 @@ pub struct Complete {
     #[prost(message, optional, tag = "2")]
     pub values: ::core::option::Option<crate::WireArena>,
 }
-/// Turn end: the snippet (or request) failed with a Python exception. The
-/// session survives — prior globals remain available to later feeds.
+/// Turn end: the snippet (or request) failed. Unless a known terminal cause
+/// is present, treat it as a Python exception and keep the session.
 #[derive(Clone, PartialEq, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]
 pub struct Error {
     #[prost(message, optional, tag = "1")]
     pub exception: ::core::option::Option<RaisedException>,
+    /// Only a serving relay sets this when ending the session. Keep the exception
+    /// and trailer for clients that do not recognize the cause.
+    #[prost(enumeration = "TerminalErrorCause", optional, tag = "2")]
+    pub terminal_cause: ::core::option::Option<i32>,
 }
 /// Turn end: type checking rejected the fed snippet (only when the session
 /// was created with type_check). The snippet was not executed; the session
@@ -2019,6 +2023,43 @@ impl PrintStream {
             "PRINT_STREAM_UNSPECIFIED" => Some(Self::Unspecified),
             "PRINT_STREAM_STDOUT" => Some(Self::Stdout),
             "PRINT_STREAM_STDERR" => Some(Self::Stderr),
+            _ => None,
+        }
+    }
+}
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    crate::budgeted_prost::Enumeration
+)]
+#[prost(prost_path = "crate::budgeted_prost")]
+#[repr(i32)]
+pub enum TerminalErrorCause {
+    Unspecified = 0,
+    RelayTurnTimeout = 1,
+}
+impl TerminalErrorCause {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "TERMINAL_ERROR_CAUSE_UNSPECIFIED",
+            Self::RelayTurnTimeout => "TERMINAL_ERROR_CAUSE_RELAY_TURN_TIMEOUT",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "TERMINAL_ERROR_CAUSE_UNSPECIFIED" => Some(Self::Unspecified),
+            "TERMINAL_ERROR_CAUSE_RELAY_TURN_TIMEOUT" => Some(Self::RelayTurnTimeout),
             _ => None,
         }
     }

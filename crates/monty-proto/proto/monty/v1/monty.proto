@@ -1245,10 +1245,18 @@ message Complete {
   Arena values = 2;
 }
 
-// Turn end: the snippet (or request) failed with a Python exception. The
-// session survives — prior globals remain available to later feeds.
+// Turn end: the snippet (or request) failed. Unless a known terminal cause
+// is present, treat it as a Python exception and keep the session.
 message Error {
   RaisedException exception = 1;
+  // Only a serving relay sets this when ending the session. Keep the exception
+  // and trailer for clients that do not recognize the cause.
+  optional TerminalErrorCause terminal_cause = 2;
+}
+
+enum TerminalErrorCause {
+  TERMINAL_ERROR_CAUSE_UNSPECIFIED = 0;
+  TERMINAL_ERROR_CAUSE_RELAY_TURN_TIMEOUT = 1;
 }
 
 // Turn end: type checking rejected the fed snippet (only when the session

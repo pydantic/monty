@@ -322,17 +322,16 @@ pub enum PoolError {
     },
     /// The checkout was already finished or its worker already discarded.
     Finished,
-    /// The remote worker's stream ended without a turn-ending event (remote
-    /// transport only — the local analogue is [`Self::Crashed`]). The sandbox
-    /// may have died, the connection may have dropped, or the server may have
-    /// ended the session by policy — in which case `remote` carries the
-    /// status it ended with and, when the server named one, the cause.
+    /// The remote session ended, rather than returning an ordinary turn result
+    /// (remote transport only — the local analogue is [`Self::Crashed`]). The
+    /// sandbox may have died, the connection may have dropped, or the server
+    /// may have ended the session by policy as described in `remote`.
     /// Neither says whether the request ran: a disconnect is not a verdict on
     /// it, so it is not replayed.
     Disconnected {
         /// What the pool was doing when the disconnect was observed.
         context: String,
-        /// Transport evidence, absent when the reader task supplied no details.
+        /// Transport evidence or a terminal cause reported by the server.
         remote: Option<Box<RemoteDisconnect>>,
     },
     /// The remote server is shutting down and did **not** run the request —
@@ -377,9 +376,8 @@ pub enum CrashCause {
 
 /// The first recorded stream failure, without a claim about whether guest code ran.
 ///
-/// Exactly one of two shapes: a status the server ended the stream with
-/// (`status_code`, `status_message`, and `cause` when it sent one), or a
-/// transport failure (`transport_error`) for which there was no status.
+/// A final gRPC status, a transport failure, or a terminal reply that names
+/// the cause before a final status has been received.
 #[derive(Debug, Clone)]
 pub struct RemoteDisconnect {
     /// The gRPC status code the server ended the stream with, by its
@@ -388,8 +386,7 @@ pub struct RemoteDisconnect {
     pub status_code: Option<&'static str>,
     /// The message on that status.
     pub status_message: Option<String>,
-    /// The policy reason the server attached to that status, when it is one
-    /// this build knows.
+    /// The policy reason named in a status or a terminal reply, when known.
     pub cause: Option<RemoteCause>,
     /// The transport or protocol error for this failure; absent when the
     /// server sent a status.
@@ -421,6 +418,8 @@ impl fmt::Display for RemoteDisconnect {
                 write!(f, ": {message}")?;
             }
             Ok(())
+        } else if let Some(cause) = self.cause {
+            f.write_str(cause.as_str())
         } else {
             f.write_str(self.transport_error.as_deref().unwrap_or("unknown reason"))
         }

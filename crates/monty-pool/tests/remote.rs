@@ -1454,6 +1454,7 @@ fn serve_endless_suspensions(socket: &mut MockStream, expected_calls: u32) {
     send_event(
         socket,
         &event_kind(pb::worker_event::Kind::Error(pb::Error {
+            terminal_cause: None,
             exception: Some(exception),
         })),
     );
@@ -1688,6 +1689,7 @@ async fn rejected_raw_load_keeps_the_suspension_count() {
             &mut socket,
             &pb::WorkerEvent {
                 kind: Some(pb::worker_event::Kind::Error(pb::Error {
+                    terminal_cause: None,
                     exception: Some(pb::RaisedException {
                         exc_type: "RuntimeError".to_owned(),
                         message: Some("protocol violation: Load requires a session that has not started".to_owned()),
@@ -1712,6 +1714,7 @@ async fn rejected_raw_load_keeps_the_suspension_count() {
         send_event(
             &mut socket,
             &event_kind(pb::worker_event::Kind::Error(pb::Error {
+                terminal_cause: None,
                 exception: Some(exception),
             })),
         );
@@ -1895,6 +1898,7 @@ async fn aborted_restored_suspension_keeps_the_dump_limit() {
             send_event(
                 socket,
                 &event_kind(pb::worker_event::Kind::Error(pb::Error {
+                    terminal_cause: None,
                     exception: Some(exception),
                 })),
             );
@@ -2509,6 +2513,7 @@ async fn refused_restore_keeps_the_session_id() {
         send_kind(
             &mut socket,
             pb::worker_event::Kind::Error(pb::Error {
+                terminal_cause: None,
                 exception: Some(pb::RaisedException {
                     exc_type: "RuntimeError".to_owned(),
                     message: Some("unknown session".to_owned()),
@@ -2895,6 +2900,7 @@ async fn an_aborted_load_reply_still_names_the_session() {
         send_kind(
             &mut socket,
             pb::worker_event::Kind::Error(pb::Error {
+                terminal_cause: None,
                 exception: abort.exception,
             }),
         );
@@ -3246,6 +3252,7 @@ async fn resumed_session_keeps_its_suspension_count() {
         send_kind(
             &mut socket,
             pb::worker_event::Kind::Error(pb::Error {
+                terminal_cause: None,
                 exception: abort.exception,
             }),
         );
@@ -4164,6 +4171,7 @@ async fn an_abort_in_the_first_turn_keeps_the_server_clock() {
         send_kind(
             &mut socket,
             pb::worker_event::Kind::Error(pb::Error {
+                terminal_cause: None,
                 exception: Some(pb::RaisedException {
                     exc_type: "RuntimeError".to_owned(),
                     message: Some("suspension limit 0 exceeded".to_owned()),

@@ -596,11 +596,9 @@ class MontyDisconnectError(MontyError):
     The local analogue is `MontyCrashedError`. The sandbox may have died, the
     connection may have dropped, or the server may have ended the session by
     policy — an idle, session, or turn timeout, or being over capacity (a
-    worker out of memory is reported as `MemoryError` instead). A server that
-    did so says which in `status_code`,
-    `status_message` and `cause`; otherwise this error claims no more than
-    that the stream went away. The request may have run; do not replay it
-    automatically.
+    worker out of memory is reported as `MemoryError` instead). The server
+    can report a `cause` in a terminal reply before sending gRPC status.
+    The request may have run; do not replay it automatically.
 
     Cannot be constructed directly from Python.
     """
@@ -609,7 +607,7 @@ class MontyDisconnectError(MontyError):
     def status_code(self) -> str | None:
         """The gRPC status code the server ended the stream with, by its canonical
         name (`DEADLINE_EXCEEDED`, `RESOURCE_EXHAUSTED`, ...); `OK` when it simply
-        finished the stream; `None` for a transport failure."""
+        finished the stream; `None` if no gRPC status was available."""
 
     @property
     def status_message(self) -> str | None:
@@ -617,13 +615,13 @@ class MontyDisconnectError(MontyError):
 
     @property
     def cause(self) -> str | None:
-        """The policy reason the server attached to the status, in `snake_case`
-        (`idle_timeout`, `session_timeout`, `turn_timeout`, `capacity`, ...), or
-        `None` when it attached none this client knows."""
+        """The policy reason the server named in a status or terminal reply,
+        in `snake_case` (`idle_timeout`, `session_timeout`, `turn_timeout`,
+        `capacity`, ...), or `None` if unavailable."""
 
     @property
     def transport_error(self) -> str | None:
-        """The recorded transport or protocol error, or `None` when the server sent a status."""
+        """The recorded transport or protocol error, if any."""
 
 @final
 class MontyConnectError(MontyError):

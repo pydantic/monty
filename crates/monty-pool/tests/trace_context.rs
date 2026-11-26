@@ -261,6 +261,7 @@ async fn a_rejected_answer_keeps_the_suspensions_span() {
         read_request(&mut socket);
         let rejected = pb::WorkerEvent {
             kind: Some(pb::worker_event::Kind::Error(pb::Error {
+                terminal_cause: None,
                 exception: Some(pb::RaisedException {
                     exc_type: "TypeError".to_owned(),
                     message: Some("bad answer".to_owned()),

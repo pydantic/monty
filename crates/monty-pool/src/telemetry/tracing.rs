@@ -2156,6 +2156,7 @@ mod tests {
         let _guard = set_local_logfire(logfire);
         let mut recorder = Recorder::new(None);
         recorder.event(&event(pb::worker_event::Kind::Error(pb::Error {
+            terminal_cause: None,
             exception: Some(pb::RaisedException {
                 exc_type: "UnicodeDecodeError".to_owned(),
                 message: None,

@@ -61,8 +61,8 @@ If a CPU-mode server requires a finite `request_timeout`, an incompatible client
 [`MontyConfigurationError`][pydantic_monty.MontyConfigurationError].
 Malformed request metadata names or values raise the same error before any connection attempt.
 [`MontyDisconnectError`][pydantic_monty.MontyDisconnectError] means the stream ended mid-session.
-A server that ended it by policy says so in the error's status and cause (see
-[disconnect diagnostics](#disconnect-diagnostics)); a transport failure says nothing about the worker's fate.
+A server that ended it by policy can report a cause (see [disconnect diagnostics](#disconnect-diagnostics)).
+A transport failure says nothing about the worker's fate.
 Either way the session is lost; check out a new one.
 The error text includes the recorded code, cause and message, or the transport error.
 For example: `monty worker connection closed while waiting for a reply: DEADLINE_EXCEEDED (turn_timeout): turn expired`.
@@ -150,6 +150,8 @@ A `monty-server` names why in `cause`: `idle_timeout`, `session_timeout`, `turn_
 `protocol_violation`.
 An `out_of_memory` cause is raised as the same `MemoryError` a local out-of-memory kill raises, and a
 `server_shutdown` cause as [`MontyShutdown`][pydantic_monty.MontyShutdown] with no dump, so neither reaches this error.
+A relay can report `turn_timeout` in the failure reply before the client receives the gRPC status.
+In this case `status_code`, `status_message` and `transport_error` are `None`.
 A connection failure or protocol failure supplies `transport_error` text instead, with no status.
 A later failure does not replace an earlier one.
 Missing evidence remains `None`, and a status message is server-supplied text, not a verified explanation.

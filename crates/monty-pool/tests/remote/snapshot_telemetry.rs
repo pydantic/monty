@@ -238,6 +238,7 @@ async fn dump_span_scenario() {
         send_event(
             &mut socket,
             &event_kind(pb::worker_event::Kind::Error(pb::Error {
+                terminal_cause: None,
                 exception: Some(pb::RaisedException {
                     exc_type: "RuntimeError".to_owned(),
                     message: Some("snapshot store refused the dump".to_owned()),
