@@ -52,6 +52,7 @@ files = [
     "re.pyi",
     "stat.pyi",
     "statistics.pyi",
+    "textwrap.pyi",
     "time.pyi",
     "tomllib.pyi",
     "types.pyi",

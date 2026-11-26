@@ -114,6 +114,7 @@ For imported host modules, supply `.pyi` source in the `stubs` of each `external
 (`externalModules` in JavaScript).
 The worker requests it on the first type-checked import, running the entry's factory if needed.
 The checker writes `<module>.pyi` beside the snippet so imports resolve against its declarations.
+Replies must fit the [import-stub storage budget](resource-limits.md#import-stubs).
 Module stubs are not star-imported.
 A module with neither `stubs` nor a typeshed entry fails a type-checked import as unresolved:
 

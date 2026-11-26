@@ -63,7 +63,7 @@ impl ArgValues {
 
     /// Whether any keyword argument was passed.
     #[must_use]
-    fn has_kwargs(&self) -> bool {
+    pub(crate) fn has_kwargs(&self) -> bool {
         match self {
             Self::Empty | Self::One(_) | Self::Two(_, _) => false,
             Self::Kwargs(kwargs) | Self::ArgsKargs { kwargs, .. } => !kwargs.is_empty(),

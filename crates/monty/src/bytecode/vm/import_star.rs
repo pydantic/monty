@@ -50,7 +50,7 @@ impl VM<'_> {
                 .map(|(key, _)| key.clone_with_heap(self.heap))
                 .collect(),
         };
-        Ok(Value::Ref(self.heap.allocate(HeapData::List(List::new(names)))))
+        Ok(Value::allocate(List::new(names), self.heap))
     }
 
     /// The entries of a module's `__all__`, read as CPython reads them: by
@@ -87,7 +87,7 @@ impl VM<'_> {
             }
         }
         let (names, this) = names_guard.into_parts();
-        Ok(Value::Ref(this.heap.allocate(HeapData::List(List::new(names)))))
+        Ok(Value::allocate(List::new(names), this.heap))
     }
 
     /// Whether `value` is an instance whose class defines `__getitem__`, which

@@ -393,6 +393,8 @@ Calling a loader after a feed or a previous load is rejected before restoration,
     A release that breaks compatibility in either direction, including a patch release, uses a new dump version and
     notes the change in its release notes.
     Older releases reject the new dumps even if the new release can still read older dumps.
+    Version 18 adds bytecode support for relative imports: Monty 1.7.0 rejects version 18 dumps, but workers using
+    version 18 can still resume version 17 dumps.
     Where the old data still holds everything the new meaning needs, the newer build upgrades older dumps as it loads
     them: version 14 builds load version 13 dumps from 1.0 and 1.1, generating the methods their dataclasses lack, and
     version 15 builds rebase the source positions of `eval()` code in version 13 and 14 dumps.

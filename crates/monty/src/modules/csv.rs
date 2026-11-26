@@ -18,7 +18,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropGuard, DropWithContext, HeapData, HeapReadOutput},
+    heap::{DropGuard, DropWithContext, HeapReadOutput},
     intern::StaticStrings,
     modules::ModuleFunctions,
     os_dispatch::PostConversionEffect,
@@ -261,7 +261,7 @@ fn call_list_dialects(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         .iter()
         .map(|name| allocate_string(*name, vm.heap))
         .collect();
-    Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(names)))))
+    Ok(Value::allocate(List::new(names), vm.heap))
 }
 
 /// `get_dialect(name)`: Argument Clinic, so `name` may be a keyword.
@@ -470,7 +470,7 @@ fn materialize_fieldnames(fieldnames: &mut Value, vm: &mut VM<'_>) -> RunResult<
     defer_drop!(iterator, vm);
     if iterator.is(fieldnames) {
         let names = collect_iterable(fieldnames, vm)?;
-        let list = Value::Ref(vm.heap.allocate(HeapData::List(List::new(names))));
+        let list = Value::allocate(List::new(names), vm.heap);
         mem::replace(fieldnames, list).drop_with(vm);
     }
     Ok(())

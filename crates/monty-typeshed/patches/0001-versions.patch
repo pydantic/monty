@@ -2,7 +2,7 @@ Register only Monty's selected modules and their type-checking dependencies.
 
 --- a/VERSIONS
 +++ b/VERSIONS
-@@ -1,349 +1,48 @@
+@@ -1,349 +1,49 @@
 -# The structure of this file is as follows:
 -# - Blank lines and comments starting with `#` are ignored.
 -# - Lines contain the name of a module, followed by a colon,
@@ -319,7 +319,7 @@ Register only Monty's selected modules and their type-checking dependencies.
 -telnetlib: 3.0-3.12
 -tempfile: 3.0-
 -termios: 3.0-
--textwrap: 3.0-
+ textwrap: 3.0-
 -this: 3.0-
 -threading: 3.0-
  time: 3.0-

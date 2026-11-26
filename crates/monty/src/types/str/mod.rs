@@ -4,6 +4,7 @@ mod fast_offsets;
 mod heap_str;
 mod inline_str;
 mod iterator;
+mod translate;
 
 use std::{fmt::Write, str};
 
@@ -14,7 +15,10 @@ use monty_types::{ResourceError, ResourceTracker};
 pub use monty_types::{StringRepr, string_repr_fmt};
 use smallvec::smallvec;
 
-use self::fast_offsets::Anchor;
+use self::{
+    fast_offsets::Anchor,
+    translate::{str_maketrans, str_translate},
+};
 use super::{
     Bytes, CmpOrder, PyTrait,
     unicode_type::{casefold, is_space, lowercase, map_case, type_record, uppercase},
@@ -420,7 +424,7 @@ fn allocate_string_with_ascii(s: impl AsRef<str> + Into<Box<str>>, ascii: Option
             Value::InlineString(inline.expect("length checked above"))
         }
         _ => match ascii {
-            Some(ascii) => Value::Ref(heap.allocate(HeapData::Str(HeapStr::with_ascii(ascii, s.into())))),
+            Some(ascii) => Value::allocate(HeapStr::with_ascii(ascii, s.into()), heap),
             None => allocate_string_on_heap(s, heap),
         },
     }
@@ -437,7 +441,7 @@ pub fn allocate_string_no_interning(s: impl AsRef<str> + Into<Box<str>>, heap: &
 
 /// Forces heap storage even for short strings.
 pub fn allocate_string_on_heap(s: impl Into<Box<str>>, heap: &Heap) -> Value {
-    Value::Ref(heap.allocate(HeapData::Str(HeapStr::new(s.into()))))
+    Value::allocate(HeapStr::new(s.into()), heap)
 }
 
 /// Preflights the repeated string allocation.
@@ -656,6 +660,9 @@ fn call_str_method_impl<'h>(
         StaticStrings::Rjust => str_rjust(s, args, vm),
         StaticStrings::Zfill => str_zfill(s, args, vm),
         StaticStrings::Expandtabs => str_expandtabs(s, args, vm),
+        StaticStrings::Translate => str_translate(s, args, vm),
+        // A static method, also reachable on instances.
+        StaticStrings::Maketrans => str_maketrans(args, vm),
         StaticStrings::Format => {
             let template = match copy_format_template(s.as_str(vm), &vm.heap.tracker) {
                 Ok(template) => template,
@@ -728,9 +735,9 @@ fn str_join<'h>(separator: &PyStr<'h>, iterable: Value, vm: &mut VM<'h>) -> RunR
     }
 
     match char_len {
-        Some(char_len) if result.len() > 15 => Ok(Value::Ref(
-            vm.heap
-                .allocate(HeapData::Str(HeapStr::with_char_len(result.into_boxed_str(), char_len))),
+        Some(char_len) if result.len() > 15 => Ok(Value::allocate(
+            HeapStr::with_char_len(result.into_boxed_str(), char_len),
+            vm.heap,
         )),
         _ => Ok(allocate_string(result, vm.heap)),
     }
@@ -1323,8 +1330,7 @@ fn str_split<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<V
 
     let (list_items, vm) = items_guard.into_parts();
     let list = super::List::new(list_items);
-    let heap_id = vm.heap.allocate(HeapData::List(list));
-    Ok(Value::Ref(heap_id))
+    Ok(Value::allocate(list, vm.heap))
 }
 
 /// Implements Python's `str.rsplit(sep?, maxsplit?)` method.
@@ -1382,8 +1388,7 @@ fn str_rsplit<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<
 
     let (list_items, vm) = items_guard.into_parts();
     let list = super::List::new(list_items);
-    let heap_id = vm.heap.allocate(HeapData::List(list));
-    Ok(Value::Ref(heap_id))
+    Ok(Value::allocate(list, vm.heap))
 }
 
 /// Coerces extracted `sep` / `maxsplit` `Value`s into the runtime shape used
@@ -1554,8 +1559,7 @@ fn str_splitlines<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunRes
 
     let (lines, vm) = lines_guard.into_parts();
     let list = super::List::new(lines);
-    let heap_id = vm.heap.allocate(HeapData::List(list));
-    Ok(Value::Ref(heap_id))
+    Ok(Value::allocate(list, vm.heap))
 }
 
 /// Parses arguments for splitlines method.
@@ -1945,8 +1949,7 @@ fn str_encode<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<
 
     let codec = Codec::find(encoding).ok_or_else(|| ExcType::lookup_error_unknown_encoding(encoding))?;
     let bytes = codec.encode(s.as_str(vm), errors, &vm.heap.tracker)?;
-    let heap_id = vm.heap.allocate(HeapData::Bytes(Bytes::new(bytes)));
-    Ok(Value::Ref(heap_id))
+    Ok(Value::allocate(Bytes::new(bytes), vm.heap))
 }
 
 /// Argument shape for `str.encode(encoding='utf-8', errors='strict')`.
@@ -2027,6 +2030,18 @@ pub(crate) fn str_contains(container_str: &str, item: &Value, heap: &Heap, inter
             "'in <string>' requires string as left operand, not {}",
             item.py_type_name_heap(heap, interns)
         )))
+    }
+}
+
+/// Class and static methods on `str` (`maketrans`).
+pub(crate) fn str_class_method(
+    attr: &EitherStr,
+    args: ArgValues,
+    vm: &mut VM<'_>,
+) -> Result<RunResult<CallResult>, ArgValues> {
+    match attr.static_string(vm.interns) {
+        Some(StaticStrings::Maketrans) => Ok(str_maketrans(args, vm).map(CallResult::Value)),
+        _ => Err(args),
     }
 }
 
@@ -2240,7 +2255,7 @@ mod tests {
                     assert_eq!(separator.char_len(vm), 8);
                 }
                 let items = List::new(vec![value.clone_with_heap(vm.heap), value.clone_with_heap(vm.heap)]);
-                let iterable = Value::Ref(vm.heap.allocate(HeapData::List(items)));
+                let iterable = Value::allocate(items, vm.heap);
                 let result = str_join(&separator, iterable, vm).unwrap();
                 defer_drop!(result, vm);
                 let joined = PyStr::from_value(result, vm).unwrap();

@@ -27,6 +27,7 @@
 //! - `re.IGNORECASE` / `re.I` — case-insensitive matching (value: 2)
 //! - `re.MULTILINE` / `re.M` — `^`/`$` match at line boundaries (value: 8)
 //! - `re.DOTALL` / `re.S` — `.` matches newlines (value: 16)
+//! - `re.VERBOSE` / `re.X` — whitespace and `#` comments in the pattern are ignored (value: 64)
 //! - `re.ASCII` / `re.A` — ASCII-only matching for `\w`, `\d`, `\s` (value: 256)
 //! - `re.PatternError` / `re.error` — exception type for invalid patterns
 
@@ -60,6 +61,8 @@ pub(crate) const IGNORECASE: u16 = 2;
 pub(crate) const MULTILINE: u16 = 8;
 /// Python regex flag: `.` matches newlines.
 pub(crate) const DOTALL: u16 = 16;
+/// Python regex flag: whitespace and `#` comments outside classes are ignored.
+pub(crate) const VERBOSE: u16 = 64;
 /// Python regex flag: ASCII-only matching for `\w`, `\b`, `\d`, `\s`.
 pub(crate) const ASCII: u16 = 256;
 
@@ -150,6 +153,8 @@ pub fn create_module(vm: &mut VM<'_>) -> Module {
     module.set_attr(StaticStrings::AsciiM, Value::Int(i64::from(MULTILINE)), vm);
     module.set_attr(StaticStrings::DotallFlag, Value::Int(i64::from(DOTALL)), vm);
     module.set_attr(StaticStrings::AsciiS, Value::Int(i64::from(DOTALL)), vm);
+    module.set_attr(StaticStrings::VerboseFlag, Value::Int(i64::from(VERBOSE)), vm);
+    module.set_attr(StaticStrings::AsciiX, Value::Int(i64::from(VERBOSE)), vm);
     module.set_attr(StaticStrings::AsciiFlag, Value::Int(i64::from(ASCII)), vm);
     module.set_attr(StaticStrings::AsciiA, Value::Int(i64::from(ASCII)), vm);
 
@@ -205,9 +210,7 @@ fn call_compile(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     match resolve_pattern(pattern, flags, vm)? {
         // Clone out of the shared cache entry: the returned `re.Pattern` is the
         // user's own object, independent of the cache.
-        ResolvedPattern::Cached(compiled) => Ok(Value::Ref(
-            vm.heap.allocate(HeapData::RePattern(Box::new((*compiled).clone()))),
-        )),
+        ResolvedPattern::Cached(compiled) => Ok(Value::allocate((*compiled).clone(), vm.heap)),
         // Ownership of the extracted value transfers straight to the caller,
         // so the refcount taken at argument extraction is the caller's.
         ResolvedPattern::Heap(value) => Ok(value),

@@ -713,8 +713,8 @@ impl<'h> VM<'h> {
             }
         }
 
-        let done_value = Value::Ref(self.heap.allocate(HeapData::Set(done_set)));
-        let pending_value = Value::Ref(self.heap.allocate(HeapData::Set(pending_set)));
+        let done_value = Value::allocate(done_set, self.heap);
+        let pending_value = Value::allocate(pending_set, self.heap);
 
         Ok(allocate_tuple(smallvec![done_value, pending_value], self.heap))
     }
@@ -1707,7 +1707,7 @@ impl<'h> VM<'h> {
             sleep_result: None,
             is_sleep,
         };
-        Value::Ref(self.heap.allocate(HeapData::ExternalFuture(Box::new(future))))
+        Value::allocate(future, self.heap)
     }
 
     /// Raises `exc` uncatchably at the suspension point, for hosts enforcing

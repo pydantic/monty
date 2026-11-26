@@ -19,7 +19,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcTypeExt, RunResult, SimpleException},
     hash::HashValue,
-    heap::{HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    heap::{HeapId, HeapItem, HeapObjectRead},
     intern::FunctionId,
     types::{LazyHeapSet, LongInt, PyTrait, Type, TypeRef},
     value::{EitherStr, Value},
@@ -542,8 +542,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Closure> {
     /// Two closures over the same `def` are equal only if they captured the
     /// same cells; the defaults play no part, as in CPython.
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        Ok(match other.read_heap(vm) {
-            Some(HeapReadOutput::Closure(other)) => {
+        Ok(match other.read_as::<Closure>(vm.heap) {
+            Some(other) => {
                 let this = self.get(vm.heap);
                 let other = other.get(vm.heap);
                 Some(this.func_id == other.func_id && this.cells == other.cells)
@@ -599,10 +599,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, FunctionDefaults> {
     /// Equal when they decorate the same `def`: with no captured scope, the
     /// defaults are all that could differ and CPython ignores those too.
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        Ok(match other.read_heap(vm) {
-            Some(HeapReadOutput::FunctionDefaults(other)) => {
-                Some(self.get(vm.heap).func_id == other.get(vm.heap).func_id)
-            }
+        Ok(match other.read_as::<FunctionDefaults>(vm.heap) {
+            Some(other) => Some(self.get(vm.heap).func_id == other.get(vm.heap).func_id),
             _ => None,
         })
     }

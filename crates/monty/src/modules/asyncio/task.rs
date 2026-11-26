@@ -277,7 +277,7 @@ fn exception_value(error: &RunError, vm: &mut VM<'_>) -> Value {
         RunError::Exc(raise) | RunError::UncatchableExc(raise) => raise.exc.clone(),
         RunError::Internal(message) => SimpleException::new_msg(ExcType::RuntimeError, message),
     };
-    Value::Ref(vm.heap.allocate(HeapData::Exception(exception)))
+    Value::allocate(exception, vm.heap)
 }
 
 /// Renders a value with `str()` and extracts the resulting text.

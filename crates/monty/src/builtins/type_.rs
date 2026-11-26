@@ -167,7 +167,7 @@ fn create_class(
         })
         .collect();
     let class = Class::with_bases(class_name, namespace_dict, owned_bases, mro.into());
-    let class_value = Value::Ref(vm.heap.allocate(HeapData::Class(Box::new(class))));
+    let class_value = Value::allocate(class, vm.heap);
     let mut class_guard = DropGuard::new(class_value, vm);
     let (class_value, vm) = class_guard.as_parts_mut();
     let class_id = class_value.ref_id().expect("classes are heap values");
@@ -318,5 +318,5 @@ pub(crate) fn builtin_type_mro(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Va
         )));
     }
     let items: Vec<Value> = ty.mro(vm.heap).map(|ty| ty.to_value(vm.heap)).collect();
-    Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(items)))))
+    Ok(Value::allocate(List::new(items), vm.heap))
 }

@@ -26,7 +26,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     frozen::{FrozenFunction, FrozenFunctions},
     hash::{HashValue, identity_hash},
-    heap::{ContainsHeap, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    heap::{ContainsHeap, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead},
     intern::StaticStrings,
     modules::{ModuleFunctions, StandardLib, typing},
     types::{
@@ -199,9 +199,7 @@ impl ForwardRef {
             precedence,
             globals: None,
         };
-        Ok(Value::Ref(
-            vm.heap.allocate(HeapData::ForwardRef(Box::new(forward_ref))),
-        ))
+        Ok(Value::allocate(forward_ref, vm.heap))
     }
 
     /// The stringifier a `FORWARDREF` evaluation against `globals` loads for the
@@ -341,7 +339,7 @@ impl<'h> HeapObjectRead<'h, ForwardRef> {
             precedence,
             globals: this.globals,
         };
-        Value::Ref(vm.heap.allocate(HeapData::ForwardRef(Box::new(composed))))
+        Value::allocate(composed, vm.heap)
     }
 
     /// `self op other` (or `other op self` when `reflected`) as composed text,
@@ -505,7 +503,7 @@ fn bundled_module_dict(bundled: StandardLib, vm: &mut VM<'_>) -> RunResult<Value
         .map(|(name, value)| (name.clone_with_heap(vm.heap), value.clone_with_heap(vm.heap)))
         .collect();
     let dict = Dict::from_pairs(pairs, vm)?;
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Dict(dict))))
+    Ok(Value::allocate(dict, vm.heap))
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, ForwardRef> {
@@ -521,7 +519,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ForwardRef> {
     /// owner, composed against the same globals (so a reference an evaluation
     /// made never equals a constructed one); `is_argument` is not compared, as in CPython.
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        let Some(HeapReadOutput::ForwardRef(other)) = other.read_heap(vm) else {
+        let Some(other) = other.read_as::<ForwardRef>(vm.heap) else {
             return Ok(None);
         };
         // The owner may itself be a reference, so a deep chain recurses.

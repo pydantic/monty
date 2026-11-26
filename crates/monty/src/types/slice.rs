@@ -19,7 +19,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
-    heap::{HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    heap::{HeapId, HeapItem, HeapObjectRead},
     intern::StaticStrings,
     types::{PyTrait, Type, TypeRef},
     value::{EitherStr, Value},
@@ -82,7 +82,7 @@ impl Slice {
             _ => return Err(ExcType::type_error_at_most("slice", 3, pos_args.len())),
         };
 
-        Ok(Value::Ref(vm.heap.allocate(HeapData::Slice(slice))))
+        Ok(Value::allocate(slice, vm.heap))
     }
 
     /// Computes concrete indices for a sequence of the given length.
@@ -246,7 +246,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Slice> {
     }
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        let Some(HeapReadOutput::Slice(other)) = other.read_heap(vm) else {
+        let Some(other) = other.read_as::<Slice>(vm.heap) else {
             return Ok(None);
         };
         let a = self.get(vm.heap);

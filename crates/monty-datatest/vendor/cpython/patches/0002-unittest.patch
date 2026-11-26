@@ -4,6 +4,7 @@ Use a context manager that propagates subtest failures and leave unsupported cla
 The fixture has no unittest package, so it shares util.py globals with case.py and uses absolute lazy log imports.
 Guard optional imports: without difflib and pprint, assertion failures still raise without a detailed diff;
 without traceback or warnings, skip frame cleanup and reject warning assertions. Avoid the types dependency.
+Monty exceptions have no `with_traceback()`, so `assertRaises` stores the exception as raised.
 
 --- a/unittest/case.py
 +++ b/unittest/case.py
@@ -129,7 +130,7 @@ without traceback or warnings, skip frame cleanup and reject warning assertions.
          try:
              if not _is_subtype(self.expected, self._base_type):
                  raise TypeError('%s() arg 1 must be %s' %
-@@ -270,7 +235,7 @@
+@@ -270,13 +235,13 @@
                                                                  self.obj_name))
              else:
                  self._raiseFailure("{} not raised".format(exc_name))
@@ -138,6 +139,13 @@ without traceback or warnings, skip frame cleanup and reject warning assertions.
              traceback.clear_frames(tb)
          if not issubclass(exc_type, self.expected):
              # let unexpected exceptions pass through
+             return False
+         # store exception, without traceback, for later retrieval
+-        self.exception = exc_value.with_traceback(None)
++        self.exception = exc_value
+         if self.expected_regex is None:
+             return True
+ 
 @@ -286,13 +251,11 @@
                       expected_regex.pattern, str(exc_value)))
          return True
