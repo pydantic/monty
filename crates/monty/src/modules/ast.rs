@@ -1,3 +1,8 @@
+//! String-input implementation of `ast.literal_eval`.
+//!
+//! The converter constructs Monty values directly from Ruff's expression tree.
+//! A parsed expression outside the literal grammar raises `ValueError`.
+
 use std::borrow::Cow;
 
 use memchr::memchr2_iter;
@@ -52,6 +57,7 @@ struct LiteralEvalArgs {
     node_or_string: Value,
 }
 
+/// Checks the resource budget around parsing inside a single native call.
 fn literal_eval(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let LiteralEvalArgs { node_or_string } = LiteralEvalArgs::from_args(args, vm)?;
     defer_drop!(node_or_string, vm);
@@ -65,6 +71,9 @@ fn literal_eval(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     LiteralSource(node_or_string).convert(&expr, 0, vm)
 }
 
+/// Scans for parser recursion before invoking Ruff. [`parse_shallow`] also
+/// dismantles deep ASTs, including those built from flat operator chains,
+/// so dropping them cannot overflow the native stack.
 fn parse_literal_source(source: &str) -> RunResult<Box<Expr>> {
     if source.contains('\0') {
         return Err(
@@ -95,10 +104,13 @@ fn parse_literal_source(source: &str) -> RunResult<Box<Expr>> {
     Ok(expr.body)
 }
 
-// Borrow the source text from the VM only while parsing or formatting an error.
+/// Retains the source value for diagnostics. Borrowing its text from the VM
+/// across conversion would prevent heap mutation.
 struct LiteralSource<'a>(&'a Value);
 
 impl LiteralSource<'_> {
+    /// Converts one literal expression. The depth counter bounds the native
+    /// stack used to build nested containers.
     fn convert(&self, expr: &Expr, depth: u16, vm: &mut VM<'_>) -> RunResult<Value> {
         if depth == MAX_NESTING_DEPTH {
             return Err(syntax_error(
@@ -125,6 +137,8 @@ impl LiteralSource<'_> {
                 self.number(number, negative, vm)
             }
             Expr::BinOp(op) if matches!(op.op, Operator::Add | Operator::Sub) => {
+                // CPython allows a real literal with an optional sign on the left
+                // and a bare imaginary literal on the right.
                 let (left, negative) = self.signed_number(&op.left, vm)?;
                 let Expr::NumberLiteral(right) = op.right.as_ref() else {
                     return Err(self.malformed(&op.right, vm));
@@ -160,7 +174,7 @@ impl LiteralSource<'_> {
                 let (set, vm) = guard.into_parts();
                 Ok(Value::allocate(set, vm.heap))
             }
-            // CPython accepts exactly this call syntax for an empty set.
+            // This denotes an empty set even when a local value shadows `set`.
             Expr::Call(call)
                 if call.arguments.is_empty() && matches!(call.func.as_ref(), Expr::Name(name) if name.id == "set") =>
             {
@@ -170,6 +184,8 @@ impl LiteralSource<'_> {
         }
     }
 
+    /// Keeps each converted element in the guard until the entire sequence
+    /// succeeds, so an error releases the elements already built.
     fn sequence(&self, items: &[Expr], depth: u16, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
         vm.heap
             .tracker
@@ -193,6 +209,7 @@ impl LiteralSource<'_> {
                 .as_ref()
                 .ok_or_else(|| ExcType::value_error("malformed node or string: None"))?;
             let key = self.convert(key, depth + 1, vm)?;
+            // Release the key if conversion of the value fails.
             let mut key_guard = DropGuard::new(key, &mut *vm);
             let value = self.convert(&item.value, depth + 1, key_guard.ctx())?;
             let (key, vm) = key_guard.into_parts();
@@ -202,6 +219,7 @@ impl LiteralSource<'_> {
         Ok(Value::allocate(dict, vm.heap))
     }
 
+    /// Unwraps a single optional sign. The operand must be a number literal.
     fn signed_number<'a>(&self, expr: &'a Expr, vm: &VM<'_>) -> RunResult<(&'a ExprNumberLiteral, bool)> {
         let (operand, negative) = match expr {
             Expr::UnaryOp(op) if matches!(op.op, UnaryOp::UAdd | UnaryOp::USub) => {
@@ -231,6 +249,7 @@ impl LiteralSource<'_> {
             }
             Number::Float(value) => Ok(Value::Float(if negative { -*value } else { *value })),
             Number::Complex { imag, .. } => {
+                // Negation flips the real zero too. CPython renders `-0j` as `(-0-0j)`.
                 let (real, imag) = if negative { (-0.0, -*imag) } else { (0.0, *imag) };
                 Ok(Complex::new(real, imag).into_value(vm.heap))
             }
@@ -250,10 +269,12 @@ impl LiteralSource<'_> {
     }
 }
 
+/// Uses `<unknown>`, the default filename for CPython's `ast.parse()`.
 fn syntax_error(message: &str, line: usize) -> RunError {
     SimpleException::new_msg(ExcType::SyntaxError, format!("{message} (<unknown>, line {line})")).into()
 }
 
+/// Counts CR, LF and CRLF as single line breaks without allocating an index.
 fn line_at(source: &str, offset: TextSize) -> usize {
     let source = source.as_bytes();
     let prefix = &source[..offset.to_usize().min(source.len())];
