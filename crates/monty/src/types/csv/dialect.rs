@@ -241,9 +241,9 @@ impl Dialect {
     /// The value of a `_csv.Dialect` attribute, or `None` for a name that is not one.
     pub(crate) fn attr(&self, attr: StaticStrings, vm: &VM<'_>) -> Option<Value> {
         Some(match attr {
-            StaticStrings::Delimiter => char_value(self.delimiter, vm),
-            StaticStrings::Quotechar => self.quotechar.map_or(Value::None, |c| char_value(c, vm)),
-            StaticStrings::Escapechar => self.escapechar.map_or(Value::None, |c| char_value(c, vm)),
+            StaticStrings::Delimiter => Value::from_char(self.delimiter, vm.heap),
+            StaticStrings::Quotechar => self.quotechar.map_or(Value::None, |c| Value::from_char(c, vm.heap)),
+            StaticStrings::Escapechar => self.escapechar.map_or(Value::None, |c| Value::from_char(c, vm.heap)),
             StaticStrings::Doublequote => Value::Bool(self.doublequote),
             StaticStrings::Skipinitialspace => Value::Bool(self.skipinitialspace),
             StaticStrings::Lineterminator => Value::from_str(self.lineterminator.as_str(), vm.heap),
@@ -252,11 +252,6 @@ impl Dialect {
             _ => return None,
         })
     }
-}
-
-/// A single-character `str` value.
-fn char_value(c: char, vm: &VM<'_>) -> Value {
-    Value::from_str(c.to_string(), vm.heap)
 }
 
 /// Where unset parameters come from: the defaults, a resolved dialect, or an

@@ -85,6 +85,8 @@ else:
 # `_csv.Dialect(...)` resolves parameters the same way the reader does.
 Dialect = type(d)
 assert Dialect(delimiter=';').delimiter == ';'
+unicode_dialect = Dialect(delimiter='é', quotechar='中', escapechar='🐍')
+assert (unicode_dialect.delimiter, unicode_dialect.quotechar, unicode_dialect.escapechar) == ('é', '中', '🐍')
 assert Dialect('excel-tab', delimiter=';').lineterminator == '\r\n'
 assert Dialect(5).delimiter == ','
 assert Dialect.__name__ == 'Dialect'

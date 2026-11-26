@@ -161,7 +161,7 @@ mod tests {
     use monty_types::ResourceTracker;
 
     use super::*;
-    use crate::{heap::Heap, value::Value};
+    use crate::{heap::Heap, types::HeapStr, value::Value};
 
     #[test]
     fn inline_strings_bypass_the_cache() {
@@ -189,6 +189,36 @@ mod tests {
             second.drop_with(reader);
         });
         assert!(cache.inner.is_some());
+        cache.drop_all(&mut heap);
+    }
+
+    #[test]
+    fn full_probe_window_allocates_without_caching() {
+        let mut cache = JsonStringCache {
+            inner: Some(CacheInner::new()),
+        };
+        let mut heap = Heap::new(16, ResourceTracker::default());
+
+        HeapReader::with(&mut heap, &mut (), |reader, ()| {
+            let key = "cache probe overflow";
+            let inner = cache.inner.as_mut().unwrap();
+            let hash = inner.hash_builder.hash_one(key);
+            let primary = usize::try_from(hash % u64::try_from(CAPACITY).unwrap()).unwrap();
+            for offset in 0..5 {
+                let occupied = format!("occupied probe slot {offset}");
+                let hash = inner.hash_builder.hash_one(occupied.as_str());
+                let index = (primary + offset) & (CAPACITY - 1);
+                inner.insert_at(index, hash, occupied, reader).drop_with(reader);
+            }
+
+            let first = cache.get_or_allocate(key.to_owned(), reader);
+            let second = cache.get_or_allocate(key.to_owned(), reader);
+            let id = first.ref_id().unwrap();
+            assert_ne!(id, second.ref_id().unwrap());
+            assert_eq!(reader.read_as::<HeapStr>(id).unwrap().get(reader).as_str(), key);
+            first.drop_with(reader);
+            second.drop_with(reader);
+        });
         cache.drop_all(&mut heap);
     }
 }
