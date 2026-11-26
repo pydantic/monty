@@ -35,6 +35,10 @@ request never configures its worker.
 the reply. The first request's duration backstop also covers a freshly spawned worker's start-up:
 the process is spawned before the checkout, but it may still be loading when the request goes out.
 
+`Checkout::checkout_effective_limits` reads the limits reported at the initial checkout.
+Call `Checkout::open` to receive them before the first feed, or read them after the bundled first reply to save a round trip.
+A peer that omits the metadata leaves the value `None`.
+
 Use `Checkout::terminate` when cleanup must wait for subprocess exit.
 It discards the worker and returns `Some(ExitStatus)` only after the OS confirms exit.
 A remote worker or an unconfirmed subprocess exit returns `None`.

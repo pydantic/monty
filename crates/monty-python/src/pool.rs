@@ -1154,6 +1154,34 @@ impl PyAsyncMontySession {
         self.checkout.try_lock().ok()?.as_ref().and_then(Checkout::pid)
     }
 
+    /// Returns the execution limits reported at checkout. If the session has
+    /// not sent a request, opens it first; otherwise uses its checkout reply.
+    fn checkout_effective_limits<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let checkout = Arc::clone(&self.checkout);
+        future_into_py(py, async move {
+            let mut slot = checkout.lock().await;
+            let checkout = slot.as_mut().ok_or_else(|| {
+                PyRuntimeError::new_err(
+                    "checkout_effective_limits() needs an active session: use `async with pool.checkout() as session`",
+                )
+            })?;
+            checkout
+                .open()
+                .await
+                .map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
+            let Some(limits) = checkout.checkout_effective_limits() else {
+                return Ok(None);
+            };
+            Python::attach(|py| {
+                let result = PyDict::new(py);
+                result.set_item("max_feed_duration_micros", limits.max_feed_duration_micros)?;
+                result.set_item("max_memory_bytes", limits.max_memory_bytes)?;
+                result.set_item("max_turn_duration_micros", limits.max_turn_duration_micros)?;
+                Ok(Some(result.unbind()))
+            })
+        })
+    }
+
     /// Resolves to the opaque ID a storing `monty-server` minted for this
     /// session, opening the session first if no request has yet. Waits for a
     /// running turn; after exit, resolves to the last ID seen.

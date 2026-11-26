@@ -138,6 +138,28 @@ impl Default for ReplConfig {
     }
 }
 
+/// Execution limits reported by the peer when it accepted a checkout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct AppliedLimits {
+    /// Maximum execution time per feed in microseconds, if reported.
+    pub max_feed_duration_micros: Option<u64>,
+    /// Maximum memory in bytes, if reported.
+    pub max_memory_bytes: Option<u64>,
+    /// Maximum execution time per turn in microseconds, if reported.
+    pub max_turn_duration_micros: Option<u64>,
+}
+
+impl From<pb::AppliedLimits> for AppliedLimits {
+    fn from(limits: pb::AppliedLimits) -> Self {
+        Self {
+            max_feed_duration_micros: limits.max_feed_duration_micros,
+            max_memory_bytes: limits.max_memory_bytes,
+            max_turn_duration_micros: limits.max_turn_duration_micros,
+        }
+    }
+}
+
 /// Host-side context for one checkout, as opposed to the [`ReplConfig`] the
 /// worker is sent.
 // non_exhaustive: options may be added without breaking callers
@@ -516,6 +538,8 @@ pub struct Checkout {
     restored_script_name: Option<String>,
     /// The session ID a storing relay minted, from its reply to `Configure` or `Load`.
     session_id: Option<Vec<u8>>,
+    /// Metadata from the initial checkout acknowledgment, not live limits after a restore.
+    checkout_effective_limits: Option<AppliedLimits>,
     /// Names sent as `Feed.async_functions` with every later feed, or `None`
     /// to make calls to async host functions suspend; see [`Checkout::set_async_functions`].
     async_functions: Option<Vec<String>>,
@@ -948,6 +972,7 @@ impl Checkout {
             streamed_args,
             reloading: false,
             session_id: None,
+            checkout_effective_limits: None,
             redial: redial.map(Box::new),
             feed_mounts: None,
             cwd_set: false,
@@ -1636,6 +1661,14 @@ impl Checkout {
     #[must_use]
     pub fn session_id(&self) -> Option<&[u8]> {
         self.session_id.as_deref()
+    }
+
+    /// Reads the limits reported at the initial checkout, if any. Call [`Self::open`]
+    /// to get the acknowledgment before feeding, or read this after the first feed's reply.
+    /// Snapshot restores do not update this metadata.
+    #[must_use]
+    pub fn checkout_effective_limits(&self) -> Option<AppliedLimits> {
+        self.checkout_effective_limits
     }
 
     /// Sets how the feeds that follow treat calls to async host functions,
@@ -2346,6 +2379,9 @@ impl Checkout {
                 || (lone_configure && matches!(event.kind, Some(pb::worker_event::Kind::Ok(_))))
             {
                 self.adopt_execution_clock(&event)?;
+                if !self.reloading {
+                    self.checkout_effective_limits = event.applied_limits.take().map(AppliedLimits::from);
+                }
             }
             // Only a storing relay sets this, on its reply to `Configure` or
             // `Load`. Taken before the budget check: a re-announced suspension

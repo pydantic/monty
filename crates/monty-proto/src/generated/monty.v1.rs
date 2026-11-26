@@ -1137,6 +1137,11 @@ pub struct WorkerEvent {
     pub traceparent: ::core::option::Option<
         crate::budgeted_prost::alloc::string::String,
     >,
+    /// The limits the peer applied at checkout. Sent on a successful Configure
+    /// acknowledgment, or on the first Feed reply if Configure carried that Feed.
+    /// If absent, the peer did not report the applied limits.
+    #[prost(message, optional, tag = "32")]
+    pub applied_limits: ::core::option::Option<AppliedLimits>,
     #[prost(
         oneof = "worker_event::Kind",
         tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15"
@@ -1179,6 +1184,18 @@ pub mod worker_event {
         #[prost(message, tag = "15")]
         StreamedCalls(super::StreamedCalls),
     }
+}
+/// Final execution limits, after any server policy. An absent field does not
+/// report a value. Timing limits use the acknowledged execution clock.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+#[prost(prost_path = "crate::budgeted_prost")]
+pub struct AppliedLimits {
+    #[prost(uint64, optional, tag = "1")]
+    pub max_feed_duration_micros: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "2")]
+    pub max_memory_bytes: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "3")]
+    pub max_turn_duration_micros: ::core::option::Option<u64>,
 }
 /// One run of print() output on a single stream, as one `Print` event may
 /// carry several.

@@ -43,6 +43,16 @@ impl From<pb::ResourceLimits> for ResourceLimits {
     }
 }
 
+impl From<&ResourceLimits> for pb::AppliedLimits {
+    fn from(limits: &ResourceLimits) -> Self {
+        Self {
+            max_feed_duration_micros: micros_field(limits.max_feed_duration),
+            max_memory_bytes: limits.max_memory.map(|bytes| bytes as u64),
+            max_turn_duration_micros: micros_field(limits.max_turn_duration),
+        }
+    }
+}
+
 /// Widens an optional [`Duration`] to wire microseconds, saturating at `u64::MAX`.
 pub(crate) fn micros_field(value: Option<Duration>) -> Option<u64> {
     value.map(|d| u64::try_from(d.as_micros()).unwrap_or(u64::MAX))

@@ -8,6 +8,7 @@ from opentelemetry.context import Context
 from typing_extensions import Self, deprecated
 
 from . import (
+    AppliedLimits,
     AsyncSnapshot,
     ExternalResult,
     ExternalSettledResult,
@@ -1572,6 +1573,15 @@ class AsyncMontySession:
 
         `None` when no worker is attached or a turn is currently in flight
         on another thread (the getter never blocks on a running turn).
+        """
+
+    async def checkout_effective_limits(self) -> AppliedLimits | None:
+        """Returns the execution limits reported at the initial checkout, or `None` if the peer did not report them.
+
+        Before any request, this sends the configuration alone and waits for its acknowledgment.
+        Otherwise the first feed can carry the configuration, and the metadata arrives with that feed's reply.
+        This reports checkout metadata, not changes after restoring a snapshot.
+        Raises `RuntimeError` outside an active session.
         """
 
     async def get_session_id(self) -> bytes | None:

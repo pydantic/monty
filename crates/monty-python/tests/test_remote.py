@@ -1033,6 +1033,55 @@ async def test_unexpected_server_status_is_a_connect_error():
     assert repr(caught.value) == f'MontyConnectError({url}: UNIMPLEMENTED (protocol_violation): unknown service)'
 
 
+@pytest.mark.parametrize('explicit', [True, False])
+@pytest.mark.parametrize('reports_limits', [True, False])
+async def test_checkout_effective_limits(explicit: bool, reports_limits: bool):
+    # A server applies different limits from the request. An old server sends
+    # the same reply without the metadata, which must not echo our request.
+    applied = _bytes_field(32, b'\x08' + _encode_varint(50_000) + b'\x10' + _encode_varint(4_000_000))
+    none_node = _bytes_field(2, b'')
+    complete = _bytes_field(6, _bytes_field(2, _bytes_field(2, none_node)))
+    requests_seen: list[dict[int, Any]] = []
+
+    async def behaviour(
+        requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
+    ) -> AsyncIterator[bytes]:
+        await context.send_initial_metadata(())
+        request = _proto_fields(await anext(requests))
+        requests_seen.append(request)
+        nested_feed = _proto_fields(request[_REQUEST_CONFIGURE]).get(15)
+        reply = _bytes_field(_EVENT_OK, b'') if nested_feed is None else complete
+        yield reply + (applied if reports_limits else b'')
+        async for raw in requests:
+            requests_seen.append(_proto_fields(raw))
+            yield complete
+
+    async with _serve_behaviour(behaviour) as url, AsyncMontyRemote(url) as pool:
+        async with pool.checkout(limits={'max_feed_duration_secs': 1, 'max_memory': 8_000_000}) as session:
+            if explicit:
+                limits = await session.checkout_effective_limits()
+                assert len(requests_seen) == snapshot(1)
+                assert _proto_fields(requests_seen[0][_REQUEST_CONFIGURE]).get(15) == snapshot(None)
+            assert await session.feed_run('None') == snapshot(None)
+            assert len(requests_seen) == (2 if explicit else 1)
+            if not explicit:
+                assert _proto_fields(_proto_fields(requests_seen[0][_REQUEST_CONFIGURE])[15])[1] == snapshot(b'None')
+            assert await session.checkout_effective_limits() == (
+                snapshot(
+                    {
+                        'max_feed_duration_micros': 50_000,
+                        'max_memory_bytes': 4_000_000,
+                        'max_turn_duration_micros': None,
+                    }
+                )
+                if reports_limits
+                else snapshot(None)
+            )
+            if explicit:
+                assert limits == await session.checkout_effective_limits()
+            assert len(requests_seen) == (2 if explicit else 1)
+
+
 async def test_cpu_server_requires_a_finite_request_timeout():
     extra_requests: list[bytes] = []
 

@@ -75,6 +75,10 @@ Operations under `AsyncMonty` or `AsyncMontyRemote` return coroutines, not eager
 Await them directly or schedule them with `asyncio.create_task()` if you need a task to cancel.
 Blocking callbacks block the event loop; see [async host functions](https://pydantic.dev/docs/monty/concepts/host-functions/#async-host-functions).
 
+Use `await session.checkout_effective_limits()` to read the execution limits the peer reported at checkout.
+Calling it before the first feed opens the session with a separate acknowledgment; calling it after the feed reuses the bundled reply.
+An older peer that omits this metadata returns `None`.
+
 ## Host decode budget
 
 `AsyncMontyRemote(max_decode_bytes=...)` can lower the default 1 GiB allocation budget for each decoded protocol frame.
