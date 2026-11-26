@@ -69,6 +69,7 @@ assert sys.pycache_prefix is None
 assert tuple(name for name in sys.builtin_module_names if name != 'gc') == (
     '_io',
     'annotationlib',
+    'ast',
     'asyncio',
     'base64',
     'binascii',

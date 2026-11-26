@@ -226,7 +226,12 @@ impl Transformer for Dismantler {
 /// for operator-precedence climbing. String literals are scanned in turn,
 /// since the type checker parses a forward-reference annotation's contents.
 pub(crate) fn nesting_bound_exceeded(source: &str, mode: Mode, limit: u16) -> Option<TextRange> {
-    nesting_bound_exceeded_within(source, mode, u32::from(limit), 0)
+    nesting_bound_exceeded_within(source, mode, u32::from(limit), Some(0))
+}
+
+/// Bounds expression parsing when string contents are ordinary data.
+pub(crate) fn expression_nesting_bound_exceeded(source: &str, limit: u16) -> Option<TextRange> {
+    nesting_bound_exceeded_within(source, Mode::Expression, u32::from(limit), None)
 }
 
 /// How many string literals deep the scan follows before rejecting outright;
@@ -234,15 +239,15 @@ pub(crate) fn nesting_bound_exceeded(source: &str, mode: Mode, limit: u16) -> Op
 const MAX_STRING_LITERAL_DEPTH: u8 = 8;
 
 /// [`nesting_bound_exceeded`] for the contents of a string literal
-/// `string_depth` literals deep.
-fn nesting_bound_exceeded_within(source: &str, mode: Mode, limit: u32, string_depth: u8) -> Option<TextRange> {
+/// `string_depth` literals deep, or without looking inside strings when it is `None`.
+fn nesting_bound_exceeded_within(source: &str, mode: Mode, limit: u32, string_depth: Option<u8>) -> Option<TextRange> {
     // Every frame [`Scanner`] charges costs at least one byte of source, so a
     // source no longer than the limit cannot exceed it; that spares nearly
     // every string literal a second lexer.
     if source.len() <= limit as usize {
         return None;
     }
-    if string_depth > MAX_STRING_LITERAL_DEPTH {
+    if string_depth.is_some_and(|depth| depth > MAX_STRING_LITERAL_DEPTH) {
         return Some(TextRange::up_to(source.text_len()));
     }
     let mut lexer = lex(source, mode);
@@ -256,8 +261,9 @@ fn nesting_bound_exceeded_within(source: &str, mode: Mode, limit: u32, string_de
         // ruff parses an annotation from the raw source between the quotes, so
         // that slice gets the same estimate as the code around it.
         if kind == TokenKind::String
+            && let Some(depth) = string_depth
             && let Some((contents, mode)) = string_literal_contents(&source[range])
-            && nesting_bound_exceeded_within(contents, mode, limit, string_depth + 1).is_some()
+            && nesting_bound_exceeded_within(contents, mode, limit, Some(depth + 1)).is_some()
         {
             return Some(range);
         }

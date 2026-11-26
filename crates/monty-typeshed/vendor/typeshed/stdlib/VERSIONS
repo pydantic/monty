@@ -9,6 +9,7 @@ _stat: 3.0-  # not importable at runtime, only for type checking (stat re-export
 _typeshed: 3.0-  # not present at runtime, only for type checking
 abc: 3.0-  # not importable at runtime, only for type checking
 annotationlib: 3.14-  # narrowed to Monty's surface
+ast: 3.0-
 asyncio: 3.4-
 base64: 3.0-
 binascii: 3.0-

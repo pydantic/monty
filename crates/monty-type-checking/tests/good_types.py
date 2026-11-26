@@ -1,4 +1,5 @@
 import _io
+import ast
 import asyncio
 import bisect
 import datetime
@@ -838,6 +839,11 @@ assert_type(get_type_hints(annotated, format=annotationlib.Format.FORWARDREF), d
 # === typing.cast ===
 assert_type(cast(int, 'x'), int)
 assert_type(cast('list[int]', get_type_hints(annotated)), list[int])
+
+# === ast ===
+
+assert_type(ast.literal_eval(node_or_string='[1, 2]'), Any)
+
 
 # === statistics ===
 

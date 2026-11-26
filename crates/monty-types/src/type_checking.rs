@@ -201,6 +201,7 @@ pub const SANDBOX_MODULE_NAMES: &[&str] = &[
     "_io",
     "_stat",
     "annotationlib",
+    "ast",
     "asyncio",
     "base64",
     "binascii",

@@ -80,6 +80,7 @@ The following modules are present:
 | --------------- | ------------------------------------------------- |
 | `_io`           | [io.md](io.md)                                    |
 | `annotationlib` | [annotationlib.md](annotationlib.md)              |
+| `ast`           | [ast.md](ast.md)                                  |
 | `asyncio`       | [asyncio.md](asyncio.md)                          |
 | `base64`        | [base64.md](base64.md)                            |
 | `binascii`      | [base64.md](base64.md)                            |

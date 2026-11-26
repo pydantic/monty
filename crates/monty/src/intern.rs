@@ -639,6 +639,8 @@ pub enum StaticStrings {
     AssertNever,
     /// `typing.assert_type()` function.
     AssertType,
+    /// Module name for `import ast`.
+    Ast,
     /// `datetime.astimezone()` method.
     Astimezone,
     /// Module name for `import asyncio`.
@@ -2128,6 +2130,8 @@ pub enum StaticStrings {
     /// `typing.Literal` marker.
     #[strum(serialize = "Literal")]
     Literal,
+    /// `ast.literal_eval()` function.
+    LiteralEval,
     /// The value of `sys.byteorder` on every target Monty builds for.
     Little,
     /// `ljust()` method, shared by `str` and `bytes`.
@@ -2386,6 +2390,8 @@ pub enum StaticStrings {
     NodeDepth,
     /// `node_offset` parameter of `hashlib.blake2b()`.
     NodeOffset,
+    /// `node_or_string` parameter of `ast.literal_eval()`.
+    NodeOrString,
     /// `repr()`/`str()` text of `None`, interned so rendering allocates nothing.
     #[strum(serialize = "None")]
     NoneRepr,
