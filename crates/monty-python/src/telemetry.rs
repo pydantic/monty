@@ -319,7 +319,7 @@ impl TelemetryAdapter for PythonBridge {
     }
 
     fn end_span(&self, data: &SpanData) -> bool {
-        if self.tracer.is_none() {
+        if self.tracer.is_none() || self.spans_disabled.load(Ordering::Acquire) {
             return true;
         }
         self.call_spans(|py| {
@@ -353,10 +353,13 @@ impl TelemetryAdapter for PythonBridge {
     }
 
     fn emit_log(&self, parent_span_id: SpanId, record: &SdkLogRecord) -> bool {
+        if self.logs_disabled.load(Ordering::Acquire) {
+            return true;
+        }
         let Some(logger) = &self.logger else {
             return true;
         };
-        Python::attach(|py| {
+        Python::try_attach(|py| {
             if self.logs_disabled.load(Ordering::Acquire) {
                 return true;
             }
@@ -411,6 +414,7 @@ impl TelemetryAdapter for PythonBridge {
             }
             true
         })
+        .unwrap_or(true)
     }
 
     fn disable_root(&self, trace_id: TraceId, root_span_id: SpanId) {
@@ -497,6 +501,9 @@ impl PythonBridge {
         let Some(tracer) = &self.tracer else {
             return true;
         };
+        if self.spans_disabled.load(Ordering::Acquire) {
+            return false;
+        }
         self.call_spans(|py| {
             let key = SpanKey {
                 trace_id: data.span_context.trace_id(),
@@ -596,7 +603,10 @@ impl PythonBridge {
 
     /// Invokes the tracer without allowing failures to affect Monty or logging.
     fn call_spans(&self, f: impl FnOnce(Python<'_>) -> PyResult<bool>) -> Option<bool> {
-        Python::attach(|py| {
+        if self.spans_disabled.load(Ordering::Acquire) {
+            return None;
+        }
+        Python::try_attach(|py| {
             if self.spans_disabled.load(Ordering::Acquire) {
                 return None;
             }
@@ -609,6 +619,7 @@ impl PythonBridge {
                 }
             }
         })
+        .flatten()
     }
 
     fn logs_enabled(&self) -> bool {
