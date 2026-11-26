@@ -750,15 +750,25 @@ async def _serve_behaviour(behaviour: Any) -> AsyncGenerator[str]:
 
 
 @pytest.mark.parametrize(
-    'status,message,cause',
+    'status,message,trailer,cause',
     [
-        (grpc.StatusCode.RESOURCE_EXHAUSTED, 'session capacity exhausted', 'capacity'),
-        (grpc.StatusCode.DEADLINE_EXCEEDED, '再起動中 🐍', 'idle_timeout'),
-        (grpc.StatusCode.INTERNAL, 'relay fell over', None),
-        (None, None, None),
+        (grpc.StatusCode.RESOURCE_EXHAUSTED, 'session capacity exhausted', 'capacity', 'capacity'),
+        (grpc.StatusCode.DEADLINE_EXCEEDED, '再起動中 🐍', 'idle_timeout', 'idle_timeout'),
+        (grpc.StatusCode.DEADLINE_EXCEEDED, 'relay turn deadline', 'turn_timeout', 'turn_timeout'),
+        (
+            grpc.StatusCode.DEADLINE_EXCEEDED,
+            'worker watchdog deadline expired; session ended',
+            'worker_watchdog',
+            'worker_watchdog',
+        ),
+        (grpc.StatusCode.DEADLINE_EXCEEDED, 'new limit', 'future_timeout', None),
+        (grpc.StatusCode.INTERNAL, 'relay fell over', None, None),
+        (None, None, None, None),
     ],
 )
-async def test_disconnect_details(status: grpc.StatusCode | None, message: str | None, cause: str | None):
+async def test_disconnect_details(
+    status: grpc.StatusCode | None, message: str | None, trailer: str | None, cause: str | None
+):
     """A server's status, with or without a cause, and a plain stream end keep
     distinct diagnostics through the public API."""
 
@@ -769,7 +779,7 @@ async def test_disconnect_details(status: grpc.StatusCode | None, message: str |
         await anext(requests)  # Configure, carrying the first feed
         if status is not None:
             assert message is not None
-            trailers = () if cause is None else (('monty-cause', cause),)
+            trailers = () if trailer is None else (('monty-cause', trailer),)
             await context.abort(status, message, trailing_metadata=trailers)
         return
         yield b''

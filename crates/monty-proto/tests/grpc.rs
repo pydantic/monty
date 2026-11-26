@@ -5,12 +5,12 @@ use monty_proto::grpc::{CAUSE_METADATA_KEY, Cause};
 use strum::IntoEnumIterator as _;
 use tonic::{Code, Status};
 
-/// Every cause, with the trailer value and code the wire has carried since
-/// the transport was introduced.
-const CAUSES: [(Cause, &str, Code); 11] = [
+/// Every cause, with its stable trailer value and status code.
+const CAUSES: [(Cause, &str, Code); 12] = [
     (Cause::IdleTimeout, "idle_timeout", Code::DeadlineExceeded),
     (Cause::SessionTimeout, "session_timeout", Code::DeadlineExceeded),
     (Cause::TurnTimeout, "turn_timeout", Code::DeadlineExceeded),
+    (Cause::WorkerWatchdog, "worker_watchdog", Code::DeadlineExceeded),
     (Cause::OutOfMemory, "out_of_memory", Code::ResourceExhausted),
     (Cause::ServerShutdown, "server_shutdown", Code::Unavailable),
     (Cause::Capacity, "capacity", Code::ResourceExhausted),
