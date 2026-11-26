@@ -2,7 +2,7 @@ Describe Monty's synthetic sys module in a flat stub rather than using the upstr
 
 --- /dev/null
 +++ b/sys.pyi
-@@ -0,0 +1,164 @@
+@@ -0,0 +1,166 @@
 +# Modified from python/typeshed's stdlib/sys/__init__.pyi for Monty's sys module.
 +from typing import Any, Final, Literal, TextIO, final, type_check_only
 +
@@ -38,6 +38,8 @@ Describe Monty's synthetic sys module in a flat stub rather than using the upstr
 +abiflags: str
 +dont_write_bytecode: bool
 +pycache_prefix: str | None
++
++def intern(string: str, /) -> str: ...
 +
 +# Type alias used as a mixin for structseq classes that cannot be instantiated at runtime
 +# This can't be represented in the type system, so we just use `structseq[Any]`

@@ -393,6 +393,7 @@ def not_implemented() -> None:
 
 
 print(sys.version)
+assert_type(sys.intern(sys.version), str)
 print(sys.version_info)
 print(sys.argv[0])
 print(sys.maxsize + sys.maxunicode + sys.hexversion + sys.api_version)

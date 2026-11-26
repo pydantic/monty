@@ -126,3 +126,26 @@ assert repr(sys.flags).startswith('sys.flags(debug=0, ')
 assert isinstance(sys.argv, list)
 assert len(sys.argv) >= 1
 assert isinstance(sys.argv[0], str)
+
+# === sys.intern ===
+for parts in (('', ''), ('', 'a'), ('ab', 'cd'), ('long runtime ', 'string 🐍')):
+    text = ''.join(parts)
+    canonical = sys.intern(text)
+    assert canonical == text
+    assert sys.intern(''.join(parts)) is canonical
+    assert sys.intern(canonical) is canonical
+
+identifier = 'interned_identifier'
+assert sys.intern(''.join(['interned_', 'identifier'])) is identifier
+
+for call, message in (
+    (lambda: sys.intern([]), 'intern() argument must be str, not list'),
+    (lambda: sys.intern(), 'sys.intern() takes exactly one argument (0 given)'),
+    (lambda: sys.intern('a', 'b'), 'sys.intern() takes exactly one argument (2 given)'),
+    (lambda: sys.intern(string='a'), 'sys.intern() takes no keyword arguments'),
+):
+    try:
+        call()
+        assert False, 'expected TypeError'
+    except TypeError as exc:
+        assert str(exc) == message

@@ -1931,6 +1931,8 @@ pub enum StaticStrings {
     IntMaxStrDigits,
     /// `sys.flags.interactive` field.
     Interactive,
+    /// `sys.intern()` function.
+    Intern,
     /// `set.intersection()` method.
     Intersection,
     /// `decimal.InvalidContext` condition.
@@ -3718,10 +3720,7 @@ impl Interns {
         intern_static(&self.static_string_ids, &self.strings, value)
     }
 
-    /// Interns a name only known at runtime, reusing its ID if already interned.
-    ///
-    /// For `from m import *` binding a module global slot, which code compiled
-    /// later must find by this same ID. Existing string borrows stay valid.
+    /// Returns the canonical ID for runtime text, including names used by later compilations.
     pub(crate) fn intern_runtime(&self, text: &str) -> StringId {
         assert!(!self.compiling.get(), "runtime interning during compilation");
         if let Some(id) = self.get_string_id_by_name(text) {

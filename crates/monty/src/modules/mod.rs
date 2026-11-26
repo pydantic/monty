@@ -296,14 +296,9 @@ pub(crate) enum ModuleFunctions {
     /// `_io` module functions, which the vendored `io` re-exports.
     Io(_io::IoFunctions) = 28,
     /// `gc` module functions — only present under the `test-hooks` feature.
-    /// See [`gc`] for why it is gated; test-only variants are grouped last.
+    /// See [`gc`] for why it is gated.
     #[cfg(feature = "test-hooks")]
     Gc(gc::GcFunctions) = 26,
-    /// `sys` module functions — only present under the `test-hooks` feature.
-    /// Production `sys` is attribute-only; the test feature adds callables
-    /// like `setrecursionlimit` that fixtures use to align behavior with
-    /// CPython. See [`sys`] for the rationale.
-    #[cfg(feature = "test-hooks")]
     Sys(sys::SysFunctions) = 27,
 }
 
@@ -339,7 +334,6 @@ impl fmt::Display for ModuleFunctions {
             Self::Io(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
             Self::Gc(func) => write!(f, "{func}"),
-            #[cfg(feature = "test-hooks")]
             Self::Sys(func) => write!(f, "{func}"),
         }
     }
@@ -381,7 +375,6 @@ impl ModuleFunctions {
             Self::Io(functions) => _io::call(vm, functions, args),
             #[cfg(feature = "test-hooks")]
             Self::Gc(functions) => gc::call(vm, functions, args).map(CallResult::Value),
-            #[cfg(feature = "test-hooks")]
             Self::Sys(functions) => sys::call(vm, functions, args).map(CallResult::Value),
         }
     }

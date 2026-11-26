@@ -1,14 +1,7 @@
 //! Implementation of the `sys` module.
 //!
-//! `sys` is attribute-only in production builds: every name below is a
-//! constant fixed at module creation, since the sandbox has no interpreter
-//! state a program is allowed to reach. What Monty exposes is limited to
-//! values that are true *of Monty* — the Python version it targets, the
-//! properties of the `f64` it stores floats in, the Unicode range, and the
-//! fact that it has no install tree, no `__pycache__` and no command line.
-//! Structseqs describing CPython's C implementation (`hash_info`, `int_info`,
-//! `thread_info`) are deliberately absent rather than fabricated; see
-//! `limitations/sys.md`.
+//! `sys.intern` shares the interpreter's string table with compiled literals.
+//! See `limitations/sys.md` for the attributes Monty exposes.
 //!
 //! Under the `test-hooks` feature one callable is also exposed:
 //! - `setrecursionlimit(n)`: tighten the active recursion ceiling so fixtures
@@ -17,17 +10,14 @@
 
 use smallvec::SmallVec;
 
-#[cfg(feature = "test-hooks")]
 use crate::{
     args::ArgValues,
-    exception_private::{ExcType, ExcTypeExt, RunResult},
-    modules::ModuleFunctions,
-};
-use crate::{
     bytecode::VM,
+    defer_drop,
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     intern::StaticStrings,
-    modules::StandardLib,
-    types::{List, Module, NamedTuple, allocate_string, allocate_tuple, long_int::INT_MAX_STR_DIGITS},
+    modules::{ModuleFunctions, StandardLib},
+    types::{List, Module, NamedTuple, allocate_string, allocate_tuple, long_int::INT_MAX_STR_DIGITS, str::PyStr},
     value::{EitherStr, Marker, Value},
 };
 
@@ -50,19 +40,16 @@ const MAXSIZE: i64 = i64::MAX;
 /// `sys.maxunicode` — the largest code point, `U+10FFFF`.
 const MAXUNICODE: i64 = 0x0010_FFFF;
 
-/// Functions exposed by the `sys` module under the `test-hooks` feature.
-///
-/// Production builds keep `sys` attribute-only; this enum exists so fixtures
-/// (and only fixtures) can call back into Monty internals that production
-/// sandbox code must never reach.
-#[cfg(feature = "test-hooks")]
-#[monty_macros::explicit_discriminants(checksum = 0x93cf_5b81_e7e9_9376)]
+/// Functions exposed by the `sys` module.
+#[monty_macros::explicit_discriminants(checksum = 0x3739_f8f6_eb20_5b87)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "lowercase")]
 pub(crate) enum SysFunctions {
     /// `sys.setrecursionlimit(n)` — tightens the live recursion ceiling to
     /// `n`. Only allows lowering; attempting to raise raises `ValueError`.
+    #[cfg(feature = "test-hooks")]
     Setrecursionlimit = 0,
+    Intern = 1,
 }
 
 /// Creates the `sys` module.
@@ -154,8 +141,11 @@ pub fn create_module(vm: &mut VM<'_>) -> Module {
     module.set_attr(StaticStrings::Stdout, Value::Marker(Marker(StaticStrings::Stdout)), vm);
     module.set_attr(StaticStrings::Stderr, Value::Marker(Marker(StaticStrings::Stderr)), vm);
 
-    // Test-only callables — see the module-level docs and the
-    // [`test-hooks`] feature gate.
+    module.set_attr(
+        StaticStrings::Intern,
+        Value::ModuleFunction(ModuleFunctions::Sys(SysFunctions::Intern)),
+        vm,
+    );
     #[cfg(feature = "test-hooks")]
     module.set_attr(
         StaticStrings::Setrecursionlimit,
@@ -310,15 +300,27 @@ fn builtin_module_names(vm: &VM<'_>) -> Value {
 }
 
 /// Dispatches a `sys` module function call.
-///
-/// Only present under the `test-hooks` feature — production builds register
-/// no callables on the `sys` module, so this dispatcher would have nothing
-/// to do.
-#[cfg(feature = "test-hooks")]
 pub(super) fn call(vm: &mut VM<'_>, function: SysFunctions, args: ArgValues) -> RunResult<Value> {
     match function {
+        SysFunctions::Intern => intern(vm, args),
+        #[cfg(feature = "test-hooks")]
         SysFunctions::Setrecursionlimit => setrecursionlimit(vm, args),
     }
+}
+
+/// Reuses the same string ID for compiled literals and runtime strings with equal contents.
+fn intern(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    let args = args.reject_kwargs("sys.intern", vm.heap)?;
+    let value = args.get_one_arg("sys.intern", vm.heap)?;
+    defer_drop!(value, vm);
+
+    let string = PyStr::from_value(value, vm)
+        .ok_or_else(|| ExcType::type_error(format!("intern() argument must be str, not {}", value.py_type_name(vm))))?;
+    let id = match string {
+        PyStr::Interned(id) => id,
+        _ => vm.interns.intern_runtime(string.as_str(vm)),
+    };
+    Ok(Value::InternString(id))
 }
 
 /// `sys.setrecursionlimit(n)` — tightens the live recursion ceiling.

@@ -63,10 +63,17 @@ access raises `AttributeError`.
     which routes output to that stream through the host print callback (see
     [print.md](print.md)).
 
+## `sys.intern(string, /)`
+
+Monty keeps each distinct interned string for the lifetime of the interpreter's string table, even after the last
+Python reference is dropped.
+Interning a newly constructed string can return a different object on the first call.
+Use the return value for identity comparisons.
+
 ## Not implemented
 
 `path`, `modules`, `exit`, `exc_info`, `getrecursionlimit`,
-`getsizeof`, `getrefcount`, `intern`, `displayhook`, `excepthook`,
+`getsizeof`, `getrefcount`, `displayhook`, `excepthook`,
 `settrace`, `setprofile`, `stdin`, `__stdout__`, `_getframe`, `audit`.
 
 `hash_info`, `int_info` and `thread_info` describe CPython's own C
