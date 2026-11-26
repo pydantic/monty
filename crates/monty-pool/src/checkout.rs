@@ -2238,7 +2238,7 @@ impl Checkout {
                     return Ok(event);
                 }
                 if acknowledges_configure(&event) {
-                    self.adopt_execution_clock(&event)?;
+                    self.adopt_checkout_ack(&event)?;
                 }
             }
             let explicit_abort = matches!(request.kind, Some(pb::client_request::Kind::AbortFeed(_)));
@@ -2378,10 +2378,7 @@ impl Checkout {
             if (opened && acknowledges_configure(&event))
                 || (lone_configure && matches!(event.kind, Some(pb::worker_event::Kind::Ok(_))))
             {
-                self.adopt_execution_clock(&event)?;
-                if !self.reloading {
-                    self.checkout_effective_limits = event.applied_limits.take().map(AppliedLimits::from);
-                }
+                self.adopt_checkout_ack(&event)?;
             }
             // Only a storing relay sets this, on its reply to `Configure` or
             // `Load`. Taken before the budget check: a re-announced suspension
@@ -2684,6 +2681,15 @@ impl Checkout {
                 }
             }
         }
+    }
+
+    /// Records accepted checkout metadata without changing it on auto-resume.
+    fn adopt_checkout_ack(&mut self, event: &pb::WorkerEvent) -> Result<(), PoolError> {
+        self.adopt_execution_clock(event)?;
+        if !self.reloading {
+            self.checkout_effective_limits = event.applied_limits.map(AppliedLimits::from);
+        }
+        Ok(())
     }
 
     /// Adopts the execution clock a `Configure` acknowledgement reports: a remote

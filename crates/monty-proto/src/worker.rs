@@ -585,7 +585,7 @@ impl Worker {
             }
             let clock = configure.execution_clock.unwrap_or(pb::ExecutionClock::Wall as i32);
             self.legacy_binary_writes = configure.protocol_version < POSITIONAL_WRITES_PROTOCOL_VERSION;
-            let limits: ResourceLimits = configure.limits.clone().unwrap_or_default().into();
+            let limits: ResourceLimits = configure.limits.unwrap_or_default().into();
             self.state = SessionState::Configured(Some(Box::new(configure)));
             let mut event = ok_event();
             event.execution_clock = Some(clock);
