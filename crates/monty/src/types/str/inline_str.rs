@@ -19,26 +19,17 @@ impl InlineStr {
 
     /// Returns `None` when the text exceeds the 15-byte inline capacity.
     pub(crate) fn new(text: &str) -> Option<Self> {
-        if text.len() > Self::CAPACITY {
-            return None;
-        }
-
-        Self::with_ascii([text], text.is_ascii())
+        Self::with_ascii(text, None)
     }
 
-    /// Copies text with known ASCII status into inline storage.
-    /// Returns `None` if the fragments exceed the inline capacity.
-    pub(crate) fn with_ascii<'a>(fragments: impl IntoIterator<Item = &'a str>, ascii: bool) -> Option<Self> {
+    /// Copies text into inline storage, using the ASCII status if supplied.
+    pub(crate) fn with_ascii(text: &str, ascii: Option<bool>) -> Option<Self> {
         let mut bytes = [0; Self::CAPACITY];
-        let mut len = 0;
-        for fragment in fragments {
-            let end = len + fragment.len();
-            bytes.get_mut(len..end)?.copy_from_slice(fragment.as_bytes());
-            len = end;
-        }
+        bytes.get_mut(..text.len())?.copy_from_slice(text.as_bytes());
 
-        debug_assert_eq!(ascii, bytes[..len].is_ascii());
-        let tag = InlineTag::from_len(len, ascii)?;
+        let ascii = ascii.unwrap_or_else(|| text.is_ascii());
+        debug_assert_eq!(ascii, text.is_ascii());
+        let tag = InlineTag::from_len(text.len(), ascii)?;
         Some(Self { tag, bytes })
     }
 
@@ -207,7 +198,6 @@ mod tests {
         }
         assert!(InlineStr::new("abcdefghijklmnop").is_none());
         assert!(InlineStr::new("éééééééé").is_none());
-        assert!(InlineStr::with_ascii(["ééééééé", "é"], false).is_none());
     }
 
     #[test]

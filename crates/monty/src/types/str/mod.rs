@@ -410,8 +410,7 @@ impl Value {
             1 => Self::InternString(StringId::from_ascii(bytes[0])),
             2..=InlineStr::CAPACITY => {
                 let text = text.as_ref();
-                let ascii = ascii.unwrap_or_else(|| text.is_ascii());
-                let inline = InlineStr::with_ascii([text], ascii).expect("length checked above");
+                let inline = InlineStr::with_ascii(text, ascii).expect("length checked above");
                 Self::InlineString(inline)
             }
             _ => match ascii {
@@ -428,35 +427,47 @@ impl Value {
         Self::from_str(text, heap)
     }
 
-    /// Concatenates fragments, reserving the full buffer for heap-backed results.
-    fn from_str_fragments(fragments: &[&str], is_ascii: impl FnOnce() -> bool, heap: &Heap) -> RunResult<Self> {
-        let total = fragments
-            .iter()
-            .fold(0usize, |len, fragment| len.saturating_add(fragment.len()));
-        if total == 0 {
-            return Ok(Self::InternString(StringId::EMPTY));
-        }
-        if total <= InlineStr::CAPACITY {
-            let inline = InlineStr::with_ascii(fragments.iter().copied(), is_ascii()).expect("fragments fit inline");
-            return Ok(if total == 1 {
-                Self::InternString(StringId::from_ascii(inline.as_bytes()[0]))
-            } else {
-                Self::InlineString(inline)
-            });
+    /// Concatenates fragments into a stack buffer and grows on the heap if needed.
+    fn from_str_fragments<'a>(
+        fragments: impl IntoIterator<Item = &'a str>,
+        ascii: Option<bool>,
+        heap: &Heap,
+    ) -> RunResult<Self> {
+        let mut fragments = fragments.into_iter().fuse();
+        let mut bytes = [0; InlineStr::CAPACITY];
+        let mut len = 0;
+        let mut spill = None;
+        for fragment in fragments.by_ref() {
+            let end = len + fragment.len();
+            let Some(target) = bytes.get_mut(len..end) else {
+                spill = Some(fragment);
+                break;
+            };
+            target.copy_from_slice(fragment.as_bytes());
+            len = end;
         }
 
-        check_estimated_size(total, &heap.tracker)?;
+        let prefix = str::from_utf8(&bytes[..len]).expect("copied whole UTF-8 fragments");
+        let Some(fragment) = spill else {
+            return Ok(Self::from_str_with_ascii(prefix, ascii, heap));
+        };
+
+        // Reserve room for both operands in a two-string concatenation.
+        let next = fragments.next().unwrap_or_default();
+        let capacity = len.saturating_add(fragment.len()).saturating_add(next.len());
+        check_estimated_size(capacity, &heap.tracker)?;
         let mut text = String::new();
-        text.try_reserve_exact(total)
+        text.try_reserve_exact(capacity)
             .map_err(|_| ExcType::allocation_too_large())?;
-        for fragment in fragments {
-            text.push_str(fragment);
-        }
+        text.push_str(prefix);
+        text.push_str(fragment);
+        text.push_str(next);
 
-        Ok(Self::allocate(
-            HeapStr::with_ascii(is_ascii(), text.into_boxed_str()),
-            heap,
-        ))
+        let mut builder = StringBuilder::from_existing(text, &heap.tracker);
+        for fragment in fragments {
+            builder.push_str(fragment)?;
+        }
+        Ok(Self::from_str_with_ascii(builder.finish_raw()?, ascii, heap))
     }
 }
 
@@ -469,15 +480,11 @@ pub fn allocate_string_on_heap(s: impl Into<Box<str>>, heap: &Heap) -> Value {
 fn repeat_str<'h>(value: &PyStr<'h>, count: usize, vm: &VM<'h>) -> RunResult<Value> {
     let text = value.as_str(vm);
     let total = repeated_len(text.len(), count, 1).map_err(|_| ExcType::repeated_string_too_long())?;
-    match total {
-        0 => return Ok(Value::InternString(StringId::EMPTY)),
-        1 => return Ok(Value::from_str(text, vm.heap)),
-        2..=InlineStr::CAPACITY => {
-            let inline = InlineStr::with_ascii(iter::repeat_n(text, count), value.is_ascii(vm))
-                .expect("repeated text fits inline");
-            return Ok(Value::InlineString(inline));
-        }
-        _ => {}
+    if total == 0 {
+        return Ok(Value::InternString(StringId::EMPTY));
+    }
+    if total <= InlineStr::CAPACITY {
+        return Value::from_str_fragments(iter::repeat_n(text, count), None, vm.heap);
     }
 
     check_estimated_size(total, &vm.heap.tracker)?;
@@ -502,7 +509,8 @@ fn str_add(s: &str, ascii: bool, other: &Value, vm: &VM<'_>) -> RunResult<Option
     match PyStr::from_value(other, vm) {
         Some(other) => {
             let text = other.as_str(vm);
-            Value::from_str_fragments(&[s, text], || ascii && other.is_ascii(vm), vm.heap).map(Some)
+            let ascii = ascii && other.is_ascii(vm);
+            Value::from_str_fragments([s, text], Some(ascii), vm.heap).map(Some)
         }
         None => Ok(None),
     }
@@ -2148,13 +2156,18 @@ mod tests {
     fn string_fragments_across_storage_boundary() {
         let mut heap = Heap::new(16, ResourceTracker::default());
         let interns = Interns::default();
-        for suffix in ["", "x"] {
-            let value = Value::from_str_fragments(&["abcdefghijklm", "é", suffix], || false, &heap).unwrap();
-            assert_eq!(matches!(value, Value::InlineString(_)), suffix.is_empty());
+        for (fragments, expected) in [
+            (["abcdefghijklm", "é", "", ""], "abcdefghijklmé"),
+            (["abcdefghijklm", "é", "x", ""], "abcdefghijklméx"),
+            (["abcdefghijklmnop", "é", "x", "y"], "abcdefghijklmnopéxy"),
+        ] {
+            let mut fragments = fragments.into_iter();
+            let value = Value::from_str_fragments(&mut fragments, None, &heap).unwrap();
             assert_eq!(
-                value.as_either_str(&heap).unwrap().as_str(&interns),
-                format!("abcdefghijklmé{suffix}")
+                matches!(value, Value::InlineString(_)),
+                expected.len() <= InlineStr::CAPACITY
             );
+            assert_eq!(value.as_either_str(&heap).unwrap().as_str(&interns), expected);
             value.drop_with(&mut heap);
         }
     }
