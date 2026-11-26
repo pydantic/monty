@@ -1922,6 +1922,19 @@ pub(crate) trait ExcTypeExt: Sized {
         ))
     }
 
+    /// The `ImportError` for a relative import in a module with no `__package__`,
+    /// such as the main script or a top-level module.
+    #[must_use]
+    fn relative_import_no_parent() -> RunError {
+        import_error_without_caret("attempted relative import with no known parent package".to_owned())
+    }
+
+    /// The `ImportError` for a relative import with more dots than `__package__` has components.
+    #[must_use]
+    fn relative_import_beyond_top_level() -> RunError {
+        import_error_without_caret("attempted relative import beyond top-level package".to_owned())
+    }
+
     /// The `TypeError` for a non-`str` name `from module import *` would bind:
     /// an item of `__all__`, or a key of the module's namespace without one.
     /// Like every star-import error, CPython shows it without carets.

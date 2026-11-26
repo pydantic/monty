@@ -201,8 +201,7 @@ Differences from CPython:
     `__path__` directories, joined to the working directory.
     Monty reads lists, tuples, and named tuples for `__path__`. CPython also searches other iterable paths.
     Only the first 32 directories of `__path__` are searched; later entries are ignored.
-    Relative imports (`from . import x`) are rejected, so a package that uses them raises
-    `ImportError: attempted relative import with no known parent package` when imported.
+    Relative imports inside a package are supported; see [language.md](language.md#imports) for their differences.
     Directories without an `__init__.py` (namespace packages) are not found.
 - Module globals are `__name__`, `__file__`, `__package__` and, for a package, `__path__`; `__spec__`, `__loader__`,
     `__cached__`, `__builtins__` and `__doc__` are not defined.
