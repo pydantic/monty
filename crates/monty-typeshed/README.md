@@ -43,8 +43,6 @@ To change an earlier patch, edit it directly and check that the patches after it
 List new upstream files in `vendor.toml` and declare Monty-only files in its `additions` list before saving their patch.
 Update the `VERSIONS` patch for modules the type checker should resolve.
 
-The `errno` stub exposes Monty's fixed Linux constants on every platform, with `errorcode: dict[int, str]`.
-
 ## API
 
 The crate exposes a single entry point: `file_system()` returns a static
