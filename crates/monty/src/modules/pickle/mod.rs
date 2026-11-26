@@ -2,6 +2,7 @@
 
 mod decode;
 mod encode;
+mod legacy;
 mod opcode;
 
 use std::borrow::Cow;
@@ -67,9 +68,8 @@ fn dumps(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         match protocol.as_int_with_overflow(vm, ExcType::overflow_c_int)? {
             n if i32::try_from(n).is_err() => return Err(ExcType::overflow_c_int()),
             n if n < 0 => DEFAULT_PROTOCOL,
-            4 => 4,
-            5 => 5,
-            _ => return Err(ExcType::value_error("pickle supports protocols 4 and 5")),
+            n @ 2..=5 => u8::try_from(n).expect("supported protocol fits in u8"),
+            _ => return Err(ExcType::value_error("pickle supports protocols 2 through 5")),
         }
     };
     let bytes = encode::encode(obj, protocol, vm)?;

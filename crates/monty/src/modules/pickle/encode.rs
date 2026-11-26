@@ -4,7 +4,7 @@ use ahash::AHashMap;
 use monty_types::ResourceTracker;
 use num_bigint::BigInt;
 
-use super::opcode as op;
+use super::{legacy::Constructor, opcode as op};
 use crate::{
     bytecode::VM,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -21,6 +21,7 @@ pub(super) fn encode(value: &Value, protocol: u8, vm: &VM<'_>) -> RunResult<Vec<
         memo: AHashMap::default(),
         tracker: &vm.heap.tracker,
         steps: 0,
+        protocol,
     };
     encoder.write(&[op::PROTO, protocol])?;
     encoder.value(value, 0, vm)?;
@@ -33,6 +34,7 @@ struct Encoder<'a> {
     memo: AHashMap<Identity, u32>,
     tracker: &'a ResourceTracker,
     steps: usize,
+    protocol: u8,
 }
 
 impl Encoder<'_> {
@@ -61,6 +63,10 @@ impl Encoder<'_> {
 
     fn data(&mut self, value: &Value, depth: usize, vm: &VM<'_>) -> RunResult<()> {
         if let Some(text) = value.as_str(vm) {
+            if self.protocol < 4 {
+                self.binary_header(op::BINUNICODE, text.len())?;
+                return self.write(text.as_bytes());
+            }
             return self.payload(text.as_bytes(), [op::SHORT_BINUNICODE, op::BINUNICODE, op::BINUNICODE8]);
         }
         if let Some(integer) = value.as_long_int(vm) {
@@ -76,14 +82,9 @@ impl Encoder<'_> {
                 self.write(&[op::BINFLOAT])?;
                 self.write(&n.to_be_bytes())
             }
-            Value::InternBytes(id) => self.payload(
-                vm.interns.get_bytes(*id),
-                [op::SHORT_BINBYTES, op::BINBYTES, op::BINBYTES8],
-            ),
+            Value::InternBytes(id) => self.bytes(vm.interns.get_bytes(*id)),
             Value::Ref(id) => match vm.heap.get(*id) {
-                HeapData::Bytes(bytes) => {
-                    self.payload(bytes.as_slice(), [op::SHORT_BINBYTES, op::BINBYTES, op::BINBYTES8])
-                }
+                HeapData::Bytes(bytes) => self.bytes(bytes.as_slice()),
                 HeapData::List(list) => {
                     self.write(&[op::EMPTY_LIST])?;
                     self.memoize(Identity::from_heap_id(*id))?;
@@ -116,6 +117,10 @@ impl Encoder<'_> {
                     }
                     self.write(&[op::SETITEMS])
                 }
+                HeapData::Set(set) if self.protocol < 4 => self.legacy_set(Constructor::Set, set.iter(), child, vm),
+                HeapData::FrozenSet(set) if self.protocol < 4 => {
+                    self.legacy_set(Constructor::FrozenSet, set.storage().iter(), child, vm)
+                }
                 HeapData::Set(set) => {
                     self.write(&[op::EMPTY_SET])?;
                     self.memoize(Identity::from_heap_id(*id))?;
@@ -136,6 +141,53 @@ impl Encoder<'_> {
             },
             _ => Err(unsupported(value, vm)),
         }
+    }
+
+    fn bytes(&mut self, bytes: &[u8]) -> RunResult<()> {
+        if self.protocol != 2 {
+            return self.payload(bytes, [op::SHORT_BINBYTES, op::BINBYTES, op::BINBYTES8]);
+        }
+        if bytes.is_empty() {
+            self.global(Constructor::Bytes)?;
+            return self.write(&[op::EMPTY_TUPLE, op::REDUCE]);
+        }
+
+        // Protocol 2 writes bytes as a Latin-1 string followed by a fixed encoding.
+        let len = bytes
+            .len()
+            .saturating_add(bytes.iter().filter(|byte| !byte.is_ascii()).count());
+        self.global(Constructor::Latin1)?;
+        self.binary_header(op::BINUNICODE, len)?;
+        self.reserve(len)?;
+        for (index, &byte) in bytes.iter().enumerate() {
+            let mut utf8 = [0; 2];
+            self.output
+                .extend_from_slice(char::from(byte).encode_utf8(&mut utf8).as_bytes());
+            self.tracker.check_time_every(index)?;
+        }
+        self.binary_header(op::BINUNICODE, b"latin1".len())?;
+        self.write(b"latin1")?;
+        self.write(&[op::TUPLE2, op::REDUCE])
+    }
+
+    fn legacy_set<'a>(
+        &mut self,
+        constructor: Constructor,
+        items: impl Iterator<Item = &'a Value>,
+        depth: usize,
+        vm: &VM<'_>,
+    ) -> RunResult<()> {
+        self.global(constructor)?;
+        self.write(&[op::EMPTY_LIST, op::MARK])?;
+        for item in items {
+            self.value(item, depth, vm)?;
+        }
+        self.write(&[op::APPENDS, op::TUPLE1, op::REDUCE])
+    }
+
+    fn global(&mut self, constructor: Constructor) -> RunResult<()> {
+        self.write(&[op::GLOBAL])?;
+        self.write(constructor.name(self.protocol))
     }
 
     fn integer(&mut self, n: i64) -> RunResult<()> {
@@ -169,15 +221,20 @@ impl Encoder<'_> {
     fn payload(&mut self, bytes: &[u8], codes: [u8; 3]) -> RunResult<()> {
         if let Ok(len) = u8::try_from(bytes.len()) {
             self.write(&[codes[0], len])?;
-        } else if let Ok(len) = u32::try_from(bytes.len()) {
-            self.write(&[codes[1]])?;
-            self.write(&len.to_le_bytes())?;
+        } else if u32::try_from(bytes.len()).is_ok() || self.protocol < 4 {
+            self.binary_header(codes[1], bytes.len())?;
         } else {
             let len = u64::try_from(bytes.len()).map_err(|_| ExcType::allocation_too_large())?;
             self.write(&[codes[2]])?;
             self.write(&len.to_le_bytes())?;
         }
         self.write(bytes)
+    }
+
+    fn binary_header(&mut self, opcode: u8, len: usize) -> RunResult<()> {
+        let len = u32::try_from(len).map_err(|_| ExcType::allocation_too_large())?;
+        self.write(&[opcode])?;
+        self.write(&len.to_le_bytes())
     }
 
     fn memoize(&mut self, identity: Identity) -> RunResult<()> {
@@ -187,7 +244,14 @@ impl Encoder<'_> {
             .check_growth(len, self.memo.capacity(), size_of::<(Identity, u32)>())?;
         self.memo.try_reserve(1).map_err(|_| ExcType::allocation_too_large())?;
         self.memo.insert(identity, index);
-        self.write(&[op::MEMOIZE])
+        if self.protocol >= 4 {
+            self.write(&[op::MEMOIZE])
+        } else if let Ok(index) = u8::try_from(index) {
+            self.write(&[op::BINPUT, index])
+        } else {
+            self.write(&[op::LONG_BINPUT])?;
+            self.write(&index.to_le_bytes())
+        }
     }
 
     fn reference(&mut self, index: u32) -> RunResult<()> {
@@ -200,8 +264,14 @@ impl Encoder<'_> {
     }
 
     fn write(&mut self, bytes: &[u8]) -> RunResult<()> {
+        self.reserve(bytes.len())?;
+        self.output.extend_from_slice(bytes);
+        Ok(())
+    }
+
+    fn reserve(&mut self, additional: usize) -> RunResult<()> {
         let capacity = self.output.capacity();
-        let required = self.output.len().saturating_add(bytes.len());
+        let required = self.output.len().saturating_add(additional);
         if required > capacity {
             let next_capacity = required.max(capacity.saturating_mul(2)).max(8);
             self.tracker.check_allocation(next_capacity - capacity)?;
@@ -209,7 +279,6 @@ impl Encoder<'_> {
                 .try_reserve_exact(next_capacity - self.output.len())
                 .map_err(|_| ExcType::allocation_too_large())?;
         }
-        self.output.extend_from_slice(bytes);
         Ok(())
     }
 }
