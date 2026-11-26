@@ -99,7 +99,7 @@ impl Default for MemoryDb {
                 version: PythonVersion::PY314,
                 source: PythonVersionSource::default(),
             },
-            python_platform: PythonPlatform::default(),
+            python_platform: PythonPlatform::Identifier("monty".to_owned()),
             search_paths,
             python_environment: Ok(None),
         };

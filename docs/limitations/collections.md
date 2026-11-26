@@ -2,8 +2,7 @@
 
 `deque`, `namedtuple`, `defaultdict`, and `Counter` are implemented and
 feature-complete against CPython 3.14 apart from the divergences below. The
-exact supported surface is pinned by the custom typeshed stub
-(`crates/monty-typeshed/custom/collections/__init__.pyi`) and
+exact supported surface is pinned by the narrowed typeshed stub and
 `crates/monty/tests/collections.rs`. `defaultdict` and `Counter` are exposed as
 the type objects themselves (like `deque`), so `type(d) is defaultdict` and
 `isinstance(c, Counter)` hold.

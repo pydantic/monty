@@ -7,38 +7,17 @@
 # and then raising `AttributeError` at runtime.
 # Extend this in lockstep with `crates/monty/src/modules/functools.rs`.
 #
-# `partial` keeps upstream's `Generic[_T]` so `partial[...]` stays usable as an
-# annotation, which runs fine — Monty stringizes annotations rather than
-# evaluating them. It is not what types a call: ty models `partial` itself and
-# infers `partial[() -> int]` with or without the `Generic` base.
+# `partial` keeps upstream's `Generic[_T]`: `partial[int]` builds a generic
+# alias at runtime (see limitations/typing.md).
 #
-# The cost of keeping it is that `partial[int]` as a runtime *expression* type
-# checks and then raises `TypeError: 'type' object is not subscriptable`,
-# exactly as `list[int]` does — Monty has no runtime generic aliases at all
-# (see limitations/typing.md), so no stub can close that gap. Dropping
-# `Generic` would only trade it for rejecting the annotation form, which works.
-# Upstream's `__class_getitem__` is dropped as dead weight, not as a guard:
-# `Generic` leaves the class subscriptable at check time either way.
-#
-# `cache_parameters()` is a plain dict rather than upstream's TypedDict, and
-# `_CacheInfo` a tuple subclass rather than a NamedTuple, so both stay within
-# the stub surface Monty's checker reads. Both it and `_lru_cache_wrapper` keep
-# typeshed's private names: they name what `cache_info()` and the decorators
-# return, and are not attributes of the module — CPython has them, Monty does
-# not, and a public `CacheInfo` would type check and then raise
-# `AttributeError` on both.
-#
-# `_lru_cache_wrapper` is parameterized by a `ParamSpec`, where upstream takes
-# `*args: Hashable`: a cached function keeps its signature, so a wrong argument
-# type, a wrong arity or a misspelled keyword is still an error at the call
-# site. Upstream's bound only ever helps where the annotation is itself
-# unhashable, and the cost of dropping it is that one such function —
-# `@cache def f(x: list[int])`, which no argument could ever cache — type
-# checks and raises `TypeError: unhashable type: 'list'` at runtime instead.
+# The cache wrapper uses a `ParamSpec` instead of upstream's `*args: Hashable`
+# to preserve the wrapped signature. If the signature accepts an unhashable
+# argument, the call can pass type checking and still raise `TypeError`.
 
 from collections.abc import Callable, Iterable
 from typing import Any, Generic, ParamSpec, TypeVar, overload
 
+from _typeshed._monty import _lru_cache_wrapper
 from typing_extensions import Self
 
 _T = TypeVar('_T')
@@ -59,23 +38,6 @@ class partial(Generic[_T]):
     def keywords(self) -> dict[str, Any]: ...
     def __new__(cls, func: Callable[..., _T], /, *args: Any, **kwargs: Any) -> Self: ...
     def __call__(self, /, *args: Any, **kwargs: Any) -> _T: ...
-
-class _CacheInfo(tuple[int, int, int | None, int]):
-    @property
-    def hits(self) -> int: ...
-    @property
-    def misses(self) -> int: ...
-    @property
-    def maxsize(self) -> int | None: ...
-    @property
-    def currsize(self) -> int: ...
-
-class _lru_cache_wrapper(Generic[_P, _T]):
-    __wrapped__: Callable[_P, _T]
-    def __call__(self, *args: _P.args, **kwargs: _P.kwargs) -> _T: ...
-    def cache_info(self) -> _CacheInfo: ...
-    def cache_clear(self) -> None: ...
-    def cache_parameters(self) -> dict[str, Any]: ...
 
 @overload
 def lru_cache(
