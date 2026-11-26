@@ -253,6 +253,8 @@ assert_eq!(result, MontyObject::int(55));
 above which a pre-parse nesting scan runs (4 KiB by default); see [source nesting depth](../limitations/language.md#source-nesting-depth).
 
 Errors come back as [`MontyException`](../api/rust/monty-types.md#montyexception), with a traceback matching what CPython would produce.
+Use `data()` to inspect reported VM limits and structured Python exception attributes.
+See [what to do after a limit fires](../resource-limits.md#after-a-limit-fires).
 [`PrintWriter`](../api/rust/monty-types.md#printwriter) controls where `print()` output goes: `Stdout`, `Disabled`, or collected — into a `String`, or into a
 `CollectedStreams` buffer whose `entries()` label each run `stdout` or `stderr`.
 

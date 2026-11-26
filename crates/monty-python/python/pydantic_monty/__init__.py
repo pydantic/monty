@@ -42,7 +42,10 @@ from ._monty import (
     MontyTypingError,
     MountDir,
     NameLookupSnapshot,
+    OrdinaryException,
     SourceRange,
+    SuspensionLimit,
+    VmLimit,
     __version__,
     _install_telemetry,
 )
@@ -109,6 +112,9 @@ __all__ = (
     'MontyShutdown',
     'MontySyntaxError',
     'MontyRuntimeError',
+    'OrdinaryException',
+    'SuspensionLimit',
+    'VmLimit',
     'MontyTypingError',
     'MountDir',
     # feed_start snapshots

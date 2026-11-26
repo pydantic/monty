@@ -1,5 +1,7 @@
+use std::time::Duration;
+
 use hashbrown::HashTable;
-use monty_types::{ExcType, LARGE_RESULT_THRESHOLD, ResourceError, ResourceTracker};
+use monty_types::{ExcType, LARGE_RESULT_THRESHOLD, ResourceError, ResourceTracker, TimeLimitScope, VmLimit};
 
 use crate::{
     bytecode::VM,
@@ -268,12 +270,34 @@ fn estimate_bits_to_bytes(bits: u64) -> usize {
 /// memory and time errors cannot be suppressed by sandboxed code.
 impl From<ResourceError> for RunError {
     fn from(err: ResourceError) -> Self {
-        let (exc_type, catchable) = match &err {
-            ResourceError::Memory { .. } => (ExcType::MemoryError, false),
-            ResourceError::Time { .. } => (ExcType::TimeoutError, false),
-            ResourceError::Recursion { .. } => (ExcType::RecursionError, true),
+        let (exc_type, catchable, failure) = match err {
+            ResourceError::Memory { limit, used } => (
+                ExcType::MemoryError,
+                false,
+                VmLimit::Memory {
+                    limit: limit as u64,
+                    used: used as u64,
+                },
+            ),
+            ResourceError::Time { scope, limit, elapsed } => {
+                let ns = |time: Duration| u64::try_from(time.as_nanos()).unwrap_or(u64::MAX);
+                let (limit, elapsed) = (ns(limit), ns(elapsed));
+                let failure = match scope {
+                    TimeLimitScope::Feed => VmLimit::FeedTime { limit, elapsed },
+                    TimeLimitScope::Turn => VmLimit::TurnTime { limit, elapsed },
+                };
+                (ExcType::TimeoutError, false, failure)
+            }
+            ResourceError::Recursion { limit, depth } => (
+                ExcType::RecursionError,
+                true,
+                VmLimit::RecursionDepth {
+                    limit: limit as u64,
+                    depth: depth as u64,
+                },
+            ),
         };
-        let exc = SimpleException::new_msg(exc_type, err).into();
+        let exc = SimpleException::new_msg(exc_type, err).with_vm_limit(failure).into();
         if catchable {
             Self::Exc(exc)
         } else {

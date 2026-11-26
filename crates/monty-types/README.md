@@ -44,6 +44,15 @@ implementation**.
 - `CompileOptions`, `ExtFunctionResult`, `NameLookupResult`, `FileMode`, and
   the CPython-compatible formatting helpers behind their `repr()`s.
 
+Inspect `MontyException::data()` for execution failure details:
+
+- `ExcData::VmLimit` carries the limit kind, any measurements, and optional policy provenance.
+- `ExcData::SuspensionLimit` carries the exhausted host suspension budget.
+- `ExcData::ToolException` marks an ordinary exception.
+- `ExcData::None` means no structured payload was reported.
+
+Other variants carry structured Python exception attributes.
+
 ## Who should depend on it
 
 The `monty` interpreter enables the `cpu-clock` feature for native CPU accounting, which is Linux-only.

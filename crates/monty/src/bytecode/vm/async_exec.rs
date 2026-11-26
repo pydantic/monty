@@ -1725,7 +1725,7 @@ impl<'h> VM<'h> {
             self.scheduler.set_current_task(Some(main));
             self.load_or_init_task(main).map_err(LoadTaskError::into_inner)?;
         }
-        self.resume_with_exception(RunError::uncatchable(exc))
+        self.resume_with_exception(RunError::from_abort(exc))
     }
 
     /// Returns whether a host answer for `call_id` has no consumer.
@@ -1796,7 +1796,9 @@ impl<'h> VM<'h> {
                     };
                     self.resolve_future(call_id, value)?;
                 }
-                ExtFunctionResult::Error(exc) => self.fail_future(call_id, RunError::from(exc))?,
+                ExtFunctionResult::Error(exc) => {
+                    self.fail_future(call_id, SimpleException::from_callback(exc).into())?;
+                }
                 ExtFunctionResult::Future(_) => {}
                 ExtFunctionResult::NotFound(function_name) => {
                     self.fail_future(call_id, ExtFunctionResult::not_found_exc(&function_name))?;

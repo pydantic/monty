@@ -1290,7 +1290,8 @@ fn record_error(error: &pb::Error, micros: u64, max_feed_duration: Option<u64>, 
                 exc_data.colno = j.colno,
             );
         }
-        None => error_event!(base_cut),
+        // Execution classifications do not add exception attributes to telemetry.
+        _ => error_event!(base_cut),
     }
 }
 

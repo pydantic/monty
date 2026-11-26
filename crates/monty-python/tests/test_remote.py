@@ -40,6 +40,7 @@ from pydantic_monty import (
     MontyRefusedError,
     MontyRuntimeError,
     MontyShutdown,
+    VmLimit,
 )
 from pydantic_monty._binary import find_monty_binary
 
@@ -747,6 +748,47 @@ async def _serve_behaviour(behaviour: Any) -> AsyncGenerator[str]:
         yield url
     finally:
         await server.stop(None)
+
+
+async def test_feed_time_classification_through_relay(relay_url: str):
+    async with AsyncMontyRemote(relay_url) as pool, pool.checkout(limits={'max_feed_duration_secs': 0.05}) as session:
+        with pytest.raises(MontyRuntimeError) as caught:
+            await session.feed_run('while True:\n    pass')
+    assert isinstance(caught.value.exception(), TimeoutError)
+    failure = caught.value.failure
+    assert isinstance(failure, VmLimit.FeedTime)
+    assert failure.limit == snapshot(50_000_000)
+    assert failure.elapsed > failure.limit
+
+
+@pytest.mark.parametrize('classification', ['legacy', 'future', 'incomplete', 'future_payload'])
+async def test_remote_absent_and_future_failure_classifications(classification: str):
+    async def behaviour(
+        requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
+    ) -> AsyncIterator[bytes]:
+        await context.send_initial_metadata(())
+        await anext(requests)
+        # WorkerEvent.error (7) -> Error.exception (1) -> RaisedException.
+        raised = _bytes_field(1, b'TimeoutError') + _bytes_field(2, b'old exception message')
+        if classification == 'future':
+            # Known outer VmLimit arm with an unrecognized inner variant.
+            raised += _bytes_field(4, _bytes_field(3, _bytes_field(99, b'')))
+        elif classification == 'incomplete':
+            # FeedTime with a limit but no elapsed measurement.
+            raised += _bytes_field(4, _bytes_field(3, _bytes_field(2, b'\x08\x01')))
+        elif classification == 'future_payload':
+            raised += _bytes_field(4, _bytes_field(99, b''))
+        yield _bytes_field(7, _bytes_field(1, raised))
+
+    async with _serve_behaviour(behaviour) as url, AsyncMontyRemote(url) as pool, pool.checkout() as session:
+        with pytest.raises(MontyRuntimeError) as caught:
+            await session.feed_run('1')
+    assert caught.value.display(format='type-msg') == snapshot('TimeoutError: old exception message')
+    failure = caught.value.failure
+    if classification in ('legacy', 'future_payload'):
+        assert failure is None
+    else:
+        assert isinstance(failure, VmLimit.Unknown)
 
 
 @pytest.mark.parametrize(

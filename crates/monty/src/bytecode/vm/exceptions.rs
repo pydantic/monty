@@ -121,7 +121,7 @@ impl VM<'_> {
             // Exception type (e.g., `raise ValueError` instead of `raise ValueError()`)
             // Instantiate with no message
             Value::Builtin(Builtins::Type(ty)) if let Some(exc_type) = ty.exc_type() => {
-                SimpleException::new_none(exc_type)
+                SimpleException::from_raised_class(exc_type)
             }
             // Invalid exception value
             _ => SimpleException::new_msg(ExcType::TypeError, "exceptions must derive from BaseException"),
@@ -194,7 +194,7 @@ impl VM<'_> {
 
     /// Allocates `exc_type()` with no message, for `raise ExcType from ...` and its cause.
     fn allocate_exception(&mut self, exc_type: ExcType) -> Value {
-        Value::allocate(SimpleException::new_none(exc_type), self.heap)
+        Value::allocate(SimpleException::from_raised_class(exc_type), self.heap)
     }
 
     /// Stores `cause` (an owned reference) as `__cause__` of the exception `id`,

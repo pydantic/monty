@@ -1066,7 +1066,7 @@ fn import_node(
             }
         }
         MontyNode::Exception { exc_type, arg } => {
-            let exc = SimpleException::new(exc_type, arg);
+            let exc = SimpleException::from_host_value(exc_type, arg);
             Ok(Value::allocate(exc, vm.heap))
         }
         // A sandbox class the host hands back resolves to the class object

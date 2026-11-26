@@ -10,7 +10,10 @@ use std::{env, fs, path::PathBuf, thread, time::Duration};
 
 use insta::assert_snapshot;
 use monty::{DUMP_VERSION, Dump, MontyRepl, ReplProgress, Session, SessionRef, dump};
-use monty_types::{CompileOptions, ExecutionClock, MontyObject, NameLookupResult, PrintWriter, ResourceTracker};
+use monty_types::{
+    CompileOptions, ExcData, ExcType, ExecutionClock, MontyObject, NameLookupResult, PrintWriter, ResourceLimits,
+    ResourceTracker, VmLimit,
+};
 use serde::{Deserialize, Serialize};
 
 /// Environment variable that rewrites the fixture instead of checking it.
@@ -918,6 +921,79 @@ fn location_tables_round_trip_tracebacks() {
     let repl = locations_repl();
     let bytes = dump("locations.py", None, &[], SessionRef::Idle(&repl)).unwrap();
     assert_eq!(location_tracebacks(&bytes), fresh_location_tracebacks());
+}
+
+#[test]
+fn saved_recursion_error_survives_a_dump() {
+    let mut repl = MontyRepl::new(
+        "recursion.py",
+        ResourceTracker::new(ResourceLimits {
+            max_recursion_depth: 5,
+            ..ResourceLimits::default()
+        }),
+        CompileOptions::default(),
+    );
+    repl.feed_run(
+        "def recurse():\n    recurse()\ntry:\n    recurse()\nexcept RecursionError as exc:\n    saved = exc",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    let bytes = dump("recursion.py", None, &[], SessionRef::Idle(&repl)).unwrap();
+    let Session::Idle(mut repl) = Dump::load(&bytes).unwrap().state else {
+        panic!("recursion was dumped idle");
+    };
+    let error = repl.feed_run("raise saved", vec![], PrintWriter::Stdout).unwrap_err();
+    assert_eq!(error.exc_type(), ExcType::RecursionError);
+    assert_eq!(error.message(), Some("maximum recursion depth exceeded"));
+    assert_eq!(
+        error.data(),
+        &ExcData::VmLimit(Box::new(VmLimit::RecursionDepth { limit: 5, depth: 6 }.into()))
+    );
+    assert_eq!(
+        repl.feed_run("42", vec![], PrintWriter::Stdout).unwrap(),
+        MontyObject::int(42)
+    );
+}
+
+#[test]
+fn ordinary_memory_error_keeps_its_origin_across_a_dump() {
+    let mut repl = MontyRepl::new("memory.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run("saved = MemoryError('unrelated failure')", vec![], PrintWriter::Stdout)
+        .unwrap();
+    let bytes = dump("memory.py", None, &[], SessionRef::Idle(&repl)).unwrap();
+    let Session::Idle(mut repl) = Dump::load(&bytes).unwrap().state else {
+        panic!("expected an idle REPL");
+    };
+    let error = repl.feed_run("raise saved", vec![], PrintWriter::Stdout).unwrap_err();
+    assert_eq!(error.exc_type(), ExcType::MemoryError);
+    assert_eq!(error.message(), Some("unrelated failure"));
+    assert_eq!(error.data(), &ExcData::ToolException);
+}
+
+/// A later VM limit kind skips its payload without disturbing the rest of the CBOR record.
+#[test]
+fn unknown_vm_limit_kind_consumes_its_payload() {
+    #[derive(Serialize)]
+    #[serde(tag = "kind")]
+    enum FutureLimit {
+        Future { dimensions: [u64; 2] },
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct Record<T> {
+        limit: T,
+        after: u64,
+    }
+
+    let bytes = minicbor_serde::to_vec(Record {
+        limit: FutureLimit::Future { dimensions: [5, 6] },
+        after: 42,
+    })
+    .unwrap();
+    let record: Record<VmLimit> = minicbor_serde::from_slice(&bytes).unwrap();
+    assert_eq!(record.limit, VmLimit::Unknown);
+    assert_eq!(record.after, 42);
 }
 
 /// The first byte-string layout of the location table still loads.

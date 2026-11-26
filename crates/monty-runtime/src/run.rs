@@ -643,12 +643,7 @@ impl SuspensionBudget {
     fn record_suspension(&mut self) -> Option<MontyException> {
         self.seen += 1;
         let limit = self.limit;
-        (self.seen > limit).then(|| {
-            MontyException::new(
-                ExcType::RuntimeError,
-                Some(format!("suspension limit {limit} exceeded")),
-            )
-        })
+        (self.seen > limit).then(|| MontyException::suspension_limit_exceeded(limit as u64))
     }
 }
 

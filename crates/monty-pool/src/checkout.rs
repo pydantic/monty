@@ -837,14 +837,6 @@ fn is_abort_reply(event: &pb::WorkerEvent) -> bool {
     )
 }
 
-/// The exception a feed is aborted with once it suspends past `max_suspensions`.
-fn suspension_limit_exceeded(limit: u64) -> MontyException {
-    MontyException::new(
-        ExcType::RuntimeError,
-        Some(format!("suspension limit {limit} exceeded")),
-    )
-}
-
 /// Uncatchable feed error; `total` includes the refused sleep.
 /// The documented message uses `Duration` debug formatting (`1.5s > 1s`).
 fn sleep_limit_exceeded(limit: Duration, total: Duration) -> MontyException {
@@ -1851,7 +1843,7 @@ impl Checkout {
         let exceeded = self
             .budget
             .over_suspension_limit(event)
-            .map(suspension_limit_exceeded)
+            .map(MontyException::suspension_limit_exceeded)
             .or_else(|| {
                 self.budget
                     .charge_sleep(event)

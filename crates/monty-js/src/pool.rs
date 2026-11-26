@@ -42,8 +42,8 @@ use monty_pool::{
 };
 use monty_types::{
     unstable::{self, NodeId},
-    AssertMessageAnnotations, ExcType, ModuleFile, ModuleRead, MontyException, MontyObject, NameLookupResult,
-    NamedValues, PrintStream, SourceRange, StackFrame, TypeCheckingConfig, TypeCheckingFormat,
+    AssertMessageAnnotations, ExcData, ExcType, ModuleFile, ModuleRead, MontyException, MontyObject, NameLookupResult,
+    NamedValues, PrintStream, SourceRange, StackFrame, TypeCheckingConfig, TypeCheckingFormat, VmLimit,
 };
 use napi::{
     bindgen_prelude::{
@@ -1531,6 +1531,46 @@ fn exception_to_js<'env>(env: &'env Env, exc: &MontyException) -> Result<Object<
         array.set(i, frame_to_js(env, frame)?)?;
     }
     obj.set("frames", array)?;
+    if let Some(failure) = failure_to_js(env, exc.data())? {
+        obj.set("failure", failure)?;
+    }
+    Ok(obj)
+}
+
+/// Converts execution metadata when present, preserving measurements as JS bigints.
+fn failure_to_js<'env>(env: &'env Env, data: &ExcData) -> Result<Option<Object<'env>>> {
+    let obj = match data {
+        ExcData::ToolException => failure_object(env, "ordinary")?,
+        ExcData::SuspensionLimit { limit } => {
+            let mut obj = failure_object(env, "suspension_limit")?;
+            obj.set("limit", BigInt::from(*limit))?;
+            obj
+        }
+        ExcData::VmLimit(limit) => vm_limit_to_js(env, limit.kind())?,
+        _ => return Ok(None),
+    };
+    Ok(Some(obj))
+}
+
+/// Projects a VM limit with a measurement named for that limit.
+fn vm_limit_to_js(env: &Env, vm_limit: VmLimit) -> Result<Object<'_>> {
+    let (kind, limit, field, value) = match vm_limit {
+        VmLimit::Memory { limit, used } => ("memory", limit, "used", used),
+        VmLimit::FeedTime { limit, elapsed } => ("feed_time", limit, "elapsed", elapsed),
+        VmLimit::TurnTime { limit, elapsed } => ("turn_time", limit, "elapsed", elapsed),
+        VmLimit::RecursionDepth { limit, depth } => ("recursion_depth", limit, "depth", depth),
+        _ => return failure_object(env, "unknown"),
+    };
+    let mut obj = failure_object(env, kind)?;
+    obj.set("limit", BigInt::from(limit))?;
+    obj.set(field, BigInt::from(value))?;
+    Ok(obj)
+}
+
+/// Creates the discriminator shared by all execution failure objects.
+fn failure_object<'env>(env: &'env Env, kind: &str) -> Result<Object<'env>> {
+    let mut obj = Object::new(env)?;
+    obj.set("kind", kind)?;
     Ok(obj)
 }
 

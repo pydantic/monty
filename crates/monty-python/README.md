@@ -266,6 +266,19 @@ Return the generated values or `rng.getstate()` instead.
 See the [`pydantic-monty`](https://pypi.org/project/pydantic-monty/) README for
 more details.
 
+## Execution failure classification
+
+Inspect `MontyRuntimeError.failure` to distinguish an ordinary exception from a VM limit.
+For example, `isinstance(error.failure, VmLimit.Memory)` identifies a memory limit, with `limit` and `used` in bytes.
+`VmLimit.FeedTime` and `VmLimit.TurnTime` expose `limit` and `elapsed` in nanoseconds.
+`VmLimit.RecursionDepth` exposes `limit` and `depth` as counts; this exception is catchable inside the sandbox.
+`SuspensionLimit.limit` reports the caller-configured budget that the pool enforced.
+Later feeds that do not suspend can still complete on the same checkout.
+`OrdinaryException` reports an ordinary exception. `VmLimit.Unknown` means a limit was reported but its kind is not understood.
+`None` means no classification was reported.
+`MontyRuntimeError.failure_source` is `'hosted_policy'` when the effective VM limit was selected by hosted policy.
+`None` means no source was reported or recognized; it does not identify who chose the limit.
+
 ## Execution time
 
 Execution duration limits use wall time by default.

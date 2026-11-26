@@ -12,7 +12,7 @@ use monty_types::{
     MontyFileHandle, MontyObject, MontyPath, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
     NameLookupResult, NamedValues, OpenCallArgs, OsFunctionCall, OsPolicy, PathBytesDataArgs, PathStringDataArgs,
     ProcessTime, RandomSeed, RandomStart, RenameCallArgs, ResourceLimits, SandboxTimeZone, ScanArgs, SleepMode,
-    SourceRange, StackFrame, TimeCaller, TypeHintsTarget, UnicodeErrorData, UrandomArgs, sleep_duration,
+    SourceRange, StackFrame, TimeCaller, TypeHintsTarget, UnicodeErrorData, UrandomArgs, VmLimit, sleep_duration,
     sleep_duration_saturating,
     unstable::{self, MontyGraph, MontyNode, NodeId},
 };
@@ -452,6 +452,38 @@ fn exceptions_round_trip_with_traceback() {
 fn exception_without_traceback_round_trips() {
     let exc = MontyException::new(ExcType::TypeError, None);
     let back = MontyException::try_from(pb::RaisedException::from(&exc)).unwrap();
+    assert_eq!(back, exc);
+}
+
+#[test]
+fn ordinary_exception_marker_round_trips_on_value_error() {
+    let exc = MontyException::new(ExcType::ValueError, Some("bad input".into())).with_data(ExcData::ToolException);
+    let bytes = pb::RaisedException::from(&exc).encode_to_vec();
+    let back = MontyException::try_from(decode_frame::<pb::RaisedException>(&bytes).unwrap()).unwrap();
+    assert_eq!(back, exc);
+}
+
+#[test]
+fn vm_limit_variants_round_trip() {
+    for limit in [
+        VmLimit::Memory { limit: 0, used: 1 },
+        VmLimit::FeedTime { limit: 2, elapsed: 3 },
+        VmLimit::TurnTime { limit: 4, elapsed: 5 },
+        VmLimit::RecursionDepth { limit: 6, depth: 7 },
+        VmLimit::Unknown,
+    ] {
+        let exc = MontyException::new(ExcType::Exception, None).with_data(ExcData::VmLimit(Box::new(limit.into())));
+        let bytes = pb::RaisedException::from(&exc).encode_to_vec();
+        let back = MontyException::try_from(decode_frame::<pb::RaisedException>(&bytes).unwrap()).unwrap();
+        assert_eq!(back, exc);
+    }
+}
+
+#[test]
+fn suspension_limit_round_trips() {
+    let exc = MontyException::suspension_limit_exceeded(0);
+    let bytes = pb::RaisedException::from(&exc).encode_to_vec();
+    let back = MontyException::try_from(decode_frame::<pb::RaisedException>(&bytes).unwrap()).unwrap();
     assert_eq!(back, exc);
 }
 

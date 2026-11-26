@@ -13,6 +13,7 @@ import {
   drainingServer,
   droppingRelay,
   endWithStatus,
+  executionErrorServer,
   messages,
   PING_EVENT,
   protoFields,
@@ -21,9 +22,11 @@ import {
   serve,
   StoringServer,
   type TestServer,
+  vmLimitData,
 } from './remote_servers.js'
 
 import {
+  type FailureClassification,
   MontyDisconnectError,
   MontyConfigurationError,
   MontyConnectError,
@@ -242,6 +245,122 @@ test('a connection dropped on the first request rejects it with MontyDisconnectE
   await using session = await pool.checkout()
   const error = await t.throwsAsync(() => session.feedRun('1 + 1'), { instanceOf: MontyDisconnectError })
   t.regex(error.message, /^monty worker connection closed while /)
+})
+
+// ExcData field numbers.
+const toolException = 4
+const suspensionLimit = 5
+test.each([
+  ['ordinary marker', 'MemoryError', [toolException, []], { kind: 'ordinary' }],
+  // limit = 0 and used = 2**53 + 1 distinguish missing and rounded values.
+  [
+    'memory limit',
+    'MemoryError',
+    vmLimitData(1, [0x08, 0, 0x10, 0x81, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x10]),
+    { kind: 'memory', limit: 0n, used: 9_007_199_254_740_993n },
+  ],
+  ['feed time', 'TimeoutError', vmLimitData(2, [0x08, 30, 0x10, 31]), { kind: 'feed_time', limit: 30n, elapsed: 31n }],
+  ['turn time', 'TimeoutError', vmLimitData(3, [0x08, 30, 0x10, 31]), { kind: 'turn_time', limit: 30n, elapsed: 31n }],
+  [
+    'recursion depth',
+    'RecursionError',
+    vmLimitData(4, [0x08, 5, 0x10, 6]),
+    { kind: 'recursion_depth', limit: 5n, depth: 6n },
+  ],
+  ['suspension limit', 'RuntimeError', [suspensionLimit, [0x08, 0]], { kind: 'suspension_limit', limit: 0n }],
+  ['incomplete suspension limit', 'RuntimeError', [suspensionLimit, []], null],
+  ['unknown VM limit', 'RuntimeError', vmLimitData(), { kind: 'unknown' }],
+  ['future VM limit arm', 'RuntimeError', vmLimitData(99), { kind: 'unknown' }],
+  ['incomplete VM limit', 'MemoryError', vmLimitData(1, [0x08, 0]), { kind: 'unknown' }],
+  ['future ExcData arm', 'MemoryError', [99, []], null],
+  ['missing ExcData', 'MemoryError', null, null],
+] satisfies [string, string, Parameters<typeof executionErrorServer>[1], FailureClassification | null][])(
+  'a runtime error exposes %s independently of its message',
+  async (_label, excType, wire, failure) => {
+    const { url } = await server(executionErrorServer(excType, wire))
+    await using pool = await MontyRemote.create(url, { requestTimeout: 30 })
+    await using session = await pool.checkout()
+    const error = await t.throwsAsync(() => session.feedRun('1 + 1'), { instanceOf: MontyRuntimeError })
+    t.deepEqual(error.exception, { typeName: excType, message: 'synthetic failure' })
+    t.deepEqual(error.failure, failure)
+    t.notThrows(() => JSON.stringify(error))
+  },
+)
+
+test('explicit ordinary exceptions carry a marker without replacing structured exception data', async () => {
+  const { url } = await server(relay)
+  await using pool = await MontyRemote.create(url, { requestTimeout: 30 })
+  await using session = await pool.checkout()
+  await session.feedRun('kept = 41')
+  const ordinary = await t.throwsAsync(
+    () => session.feedRun("raise MemoryError('memory limit exceeded: 8388609 bytes > 8388608 bytes')"),
+    { instanceOf: MontyRuntimeError },
+  )
+  t.deepEqual(ordinary.failure, { kind: 'ordinary' })
+
+  const valueError = await t.throwsAsync(() => session.feedRun("raise ValueError('bad input')"), {
+    instanceOf: MontyRuntimeError,
+  })
+  t.deepEqual(valueError.failure, { kind: 'ordinary' })
+
+  const jsonError = await t.throwsAsync(() => session.feedRun("import json; json.loads('!')"), {
+    instanceOf: MontyRuntimeError,
+  })
+  t.is(jsonError.exception.typeName, 'json.JSONDecodeError')
+  t.is(jsonError.failure, null)
+  t.is(await session.feedRun('kept + 1'), 42)
+})
+
+test('only a VM recursion depth failure carries depth metadata, and the error remains catchable', async () => {
+  const { url } = await server(relay)
+  await using pool = await MontyRemote.create(url, { requestTimeout: 30 })
+  await using session = await pool.checkout({ limits: { maxRecursionDepth: 5 } })
+  await session.feedRun('def recurse():\n    return recurse()')
+
+  const limitError = await t.throwsAsync(() => session.feedRun('recurse()'), { instanceOf: MontyRuntimeError })
+  t.is(limitError.message, 'RecursionError: maximum recursion depth exceeded')
+
+  const userError = await t.throwsAsync(
+    () => session.feedRun("raise RecursionError('maximum recursion depth exceeded')"),
+    { instanceOf: MontyRuntimeError },
+  )
+  t.deepEqual(userError.exception, limitError.exception)
+  t.deepEqual(userError.failure, { kind: 'ordinary' })
+
+  t.is(await session.feedRun('try:\n    recurse()\nexcept RecursionError:\n    caught = 42\ncaught'), 42)
+  t.deepEqual(limitError.failure, { kind: 'recursion_depth', limit: 5n, depth: 6n })
+})
+
+test('the remote pool reports the suspension limit and keeps the session usable', async () => {
+  const { url } = await server(relay)
+  await using pool = await MontyRemote.create(url, { requestTimeout: 30 })
+  await using session = await pool.checkout({ limits: { maxSuspensions: 1 } })
+  const externalLookup = { fetch: () => 'ok' }
+  t.is(await session.feedRun("fetch('first')", { externalLookup }), 'ok')
+  const error = await t.throwsAsync(() => session.feedRun("fetch('second')", { externalLookup }), {
+    instanceOf: MontyRuntimeError,
+  })
+  t.deepEqual(error.exception, { typeName: 'RuntimeError', message: 'suspension limit 1 exceeded' })
+  t.deepEqual(error.failure, { kind: 'suspension_limit', limit: 1n })
+  t.is(await session.feedRun('1 + 1'), 2)
+})
+
+test('disconnecting while answering a host call does not report a result or replay the call', async () => {
+  const { url, headers } = await server(droppingRelay(2))
+  await using pool = await MontyRemote.create(url, { requestTimeout: 30 })
+  await using session = await pool.checkout()
+  let calls = 0
+  const feed = () =>
+    session.feedRun('record() + 1', {
+      externalLookup: { record: () => ++calls },
+    })
+  const error = await t.throwsAsync(feed, { instanceOf: MontyDisconnectError })
+  t.is(error.statusCode, 'UNAVAILABLE')
+  t.is(error.remoteCause, null)
+  t.is(calls, 1)
+  t.is(await t.throwsAsync(feed), error)
+  t.is(calls, 1)
+  t.is(headers.length, 1)
 })
 
 test('a draining server fails the first run with MontyShutdown', async () => {

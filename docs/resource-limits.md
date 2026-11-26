@@ -372,7 +372,23 @@ The checkout stays open and accepts further `feed_run` calls.
 Both duration budgets restart, so a later feed runs — against a heap that a trip still leaves untrustworthy.
 After a `max_memory` trip a later feed may likewise quietly succeed against a heap you can no longer trust.
 Ending the session is your job.
-A caught `RecursionError` is the exception; it does not invalidate anything and execution may continue.
+A recursion limit remains catchable and does not invalidate the session.
+
+Python callers can inspect [`MontyRuntimeError.failure`][pydantic_monty.MontyRuntimeError.failure] to see what was reported:
+
+- `VmLimit.Memory`: `limit` and `used` in bytes.
+- `VmLimit.FeedTime` and `VmLimit.TurnTime`: `limit` and `elapsed` in nanoseconds on the worker's execution clock.
+- `VmLimit.RecursionDepth`: `limit` and `depth` as counts.
+- `SuspensionLimit`: the pool stopped the feed at the first suspension beyond the caller-configured `limit`.
+    Later feeds that do not suspend can still complete on the same checkout.
+- `OrdinaryException`: an ordinary exception, whether raised by sandbox code or supplied by the host.
+- `VmLimit.Unknown`: a reported VM limit whose kind this client does not understand.
+- `None`: no classification reported.
+
+`MontyRuntimeError.failure_source` is `'hosted_policy'` when hosted policy selected the effective limit.
+A missing source does not say who chose the limit.
+
+A hard worker exit still raises [`MontyCrashedError`][pydantic_monty.MontyCrashedError].
 
 Full details, including the exact pre-check thresholds, live in
 [`limitations/resource_limits.md`](limitations/resource_limits.md).

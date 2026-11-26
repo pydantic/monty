@@ -6,10 +6,16 @@ use std::sync::Arc;
 
 use monty_types::{
     CodeLoc, ExcData, ExcType, JsonErrorData, MontyException, SourceRange, StackFrame, UnicodeErrorData,
-    UnicodeErrorObject,
+    UnicodeErrorObject, VmLimit, VmLimitData, VmLimitSource,
 };
 
-use crate::{convert::ProtoConvertError, pb};
+use crate::{
+    convert::ProtoConvertError,
+    pb::{
+        self,
+        vm_limit::{Kind, Memory, RecursionDepth, Time},
+    },
+};
 
 impl From<&MontyException> for pb::RaisedException {
     fn from(exc: &MontyException) -> Self {
@@ -43,9 +49,78 @@ impl TryFrom<pb::RaisedException> for MontyException {
             Some(pb::exc_data::Kind::Json(json)) => {
                 sanitize_json_data(json, message.as_deref()).map_or(ExcData::None, ExcData::Json)
             }
-            None => ExcData::None,
+            Some(pb::exc_data::Kind::VmLimit(limit)) => ExcData::VmLimit(Box::new(limit.into())),
+            Some(pb::exc_data::Kind::ToolException(_)) => ExcData::ToolException,
+            Some(pb::exc_data::Kind::SuspensionLimit(pb::SuspensionLimit { limit: Some(limit) })) => {
+                ExcData::SuspensionLimit { limit }
+            }
+            Some(pb::exc_data::Kind::SuspensionLimit(_)) | None => ExcData::None,
         };
         Ok(Self::with_traceback(exc_type, message, traceback).with_data(data))
+    }
+}
+
+impl From<VmLimitData> for pb::VmLimit {
+    fn from(failure: VmLimitData) -> Self {
+        let kind = match failure.kind() {
+            VmLimit::Memory { limit, used } => Some(Kind::Memory(Memory {
+                limit: Some(limit),
+                used: Some(used),
+            })),
+            VmLimit::FeedTime { limit, elapsed } => Some(Kind::FeedTime(Time {
+                limit: Some(limit),
+                elapsed: Some(elapsed),
+            })),
+            VmLimit::TurnTime { limit, elapsed } => Some(Kind::TurnTime(Time {
+                limit: Some(limit),
+                elapsed: Some(elapsed),
+            })),
+            VmLimit::RecursionDepth { limit, depth } => Some(Kind::RecursionDepth(RecursionDepth {
+                limit: Some(limit),
+                depth: Some(depth),
+            })),
+            _ => None,
+        };
+        Self {
+            kind,
+            source: failure.source().map(|source| match source {
+                VmLimitSource::HostedPolicy => pb::VmLimitSource::HostedPolicy as i32,
+                VmLimitSource::Unknown(code) => code,
+                _ => pb::VmLimitSource::Unspecified as i32,
+            }),
+        }
+    }
+}
+
+impl From<pb::VmLimit> for VmLimitData {
+    fn from(failure: pb::VmLimit) -> Self {
+        let kind = match failure.kind {
+            Some(Kind::Memory(Memory {
+                limit: Some(limit),
+                used: Some(used),
+            })) => VmLimit::Memory { limit, used },
+            Some(Kind::FeedTime(Time {
+                limit: Some(limit),
+                elapsed: Some(elapsed),
+            })) => VmLimit::FeedTime { limit, elapsed },
+            Some(Kind::TurnTime(Time {
+                limit: Some(limit),
+                elapsed: Some(elapsed),
+            })) => VmLimit::TurnTime { limit, elapsed },
+            Some(Kind::RecursionDepth(RecursionDepth {
+                limit: Some(limit),
+                depth: Some(depth),
+            })) => VmLimit::RecursionDepth { limit, depth },
+            _ => VmLimit::Unknown,
+        };
+        let source = failure.source.map(|code| {
+            if code == pb::VmLimitSource::HostedPolicy as i32 {
+                VmLimitSource::HostedPolicy
+            } else {
+                VmLimitSource::Unknown(code)
+            }
+        });
+        Self::from(kind).with_source(source)
     }
 }
 
@@ -87,6 +162,19 @@ fn pb_exc_data(data: &ExcData) -> Option<pb::ExcData> {
         ExcData::Json(json) => Some(pb::ExcData {
             kind: Some(pb::exc_data::Kind::Json(pb::JsonErrorData::from(json.as_ref()))),
         }),
+        ExcData::VmLimit(limit) => Some(pb::ExcData {
+            kind: Some(pb::exc_data::Kind::VmLimit((**limit).into())),
+        }),
+        ExcData::ToolException => Some(pb::ExcData {
+            kind: Some(pb::exc_data::Kind::ToolException(pb::ToolException {})),
+        }),
+        ExcData::SuspensionLimit { limit } => Some(pb::ExcData {
+            kind: Some(pb::exc_data::Kind::SuspensionLimit(pb::SuspensionLimit {
+                limit: Some(*limit),
+            })),
+        }),
+        // Preserve the exception without a payload this wire version cannot encode.
+        _ => None,
     }
 }
 

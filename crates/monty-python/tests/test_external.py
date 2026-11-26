@@ -360,6 +360,7 @@ except json.JSONDecodeError as e:
     assert str(inner) == snapshot('Expecting value: line 2 column 3 (char 6)')
     assert (inner.msg, inner.lineno, inner.colno, inner.pos) == snapshot(('Expecting value', 2, 3, 6))
     assert inner.doc == '[1,\n2,]'
+    assert exc_info.value.failure is None
 
 
 @pytest.mark.parametrize(

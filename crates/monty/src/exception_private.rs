@@ -4,7 +4,9 @@ use std::{
     mem,
 };
 
-use monty_types::{ExcData, JsonErrorData, MontyException, StackFrame, UnicodeErrorData, UnicodeErrorObject};
+use monty_types::{
+    ExcData, JsonErrorData, MontyException, StackFrame, UnicodeErrorData, UnicodeErrorObject, VmLimit, VmLimitData,
+};
 use smallvec::smallvec;
 
 use crate::{
@@ -2936,7 +2938,7 @@ impl ExcTypeExt for ExcType {
                 "exceptions can only be called with zero or one string argument",
             )),
         }?;
-        Ok(Value::allocate(exc, vm.heap))
+        Ok(Value::allocate(exc.with_data(ExcData::ToolException), vm.heap))
     }
 }
 
@@ -2948,9 +2950,7 @@ impl ExcTypeExt for ExcType {
 pub(crate) struct SimpleException {
     exc_type: ExcType,
     arg: Option<String>,
-    /// Structured payload (e.g. unicode-error constructor fields), carried
-    /// through catch/re-raise so it reaches the public `MontyException` when
-    /// the exception escapes the sandbox.
+    /// Structured exception payload carried through catch, restore, and re-raise.
     data: ExcData,
     /// The chained exceptions; only the heap-resident object owns them. Boxed
     /// because most exceptions have none and `HeapData` has a size ceiling.
@@ -3037,6 +3037,33 @@ impl SimpleException {
             data: ExcData::None,
             chain: None,
         }
+    }
+
+    /// Instantiates an exception class named in an explicit `raise` statement.
+    pub(crate) fn from_raised_class(exc_type: ExcType) -> Self {
+        Self::new_none(exc_type).with_data(ExcData::ToolException)
+    }
+
+    /// Records VM resource enforcement without changing the Python exception.
+    pub(crate) fn with_vm_limit(self, limit: VmLimit) -> Self {
+        self.with_data(ExcData::VmLimit(Box::new(limit.into())))
+    }
+
+    /// Converts an exception raised by a host callback, not by VM enforcement.
+    pub(crate) fn from_callback(exc: MontyException) -> Self {
+        let mut exc = Self::from(exc);
+        if matches!(
+            exc.data,
+            ExcData::None | ExcData::VmLimit(_) | ExcData::SuspensionLimit { .. }
+        ) {
+            exc.data = ExcData::ToolException;
+        }
+        exc
+    }
+
+    /// Imports an exception passed as a host value, not an enforcement error.
+    pub(crate) fn from_host_value(exc_type: ExcType, arg: Option<String>) -> Self {
+        Self::new(exc_type, arg).with_data(ExcData::ToolException)
     }
 
     /// Attaches a structured payload — see [`ExcData`].
@@ -3319,7 +3346,8 @@ impl ExceptionRaise {
 /// Heap bytes a clone of `data` allocates for its boxed structured payload.
 fn exc_data_clone_size(data: &ExcData) -> usize {
     match data {
-        ExcData::None => 0,
+        ExcData::None | ExcData::ToolException | ExcData::SuspensionLimit { .. } => 0,
+        ExcData::VmLimit(_) => mem::size_of::<VmLimitData>(),
         ExcData::Unicode(data) => mem::size_of::<UnicodeErrorData>()
             .saturating_add(data.encoding.len())
             .saturating_add(data.reason.len())
@@ -3330,6 +3358,8 @@ fn exc_data_clone_size(data: &ExcData) -> usize {
         ExcData::Json(data) => mem::size_of::<JsonErrorData>()
             .saturating_add(data.msg.len())
             .saturating_add(data.doc.as_ref().map_or(0, String::len)),
+        // An unaccounted payload has no safe allocation estimate.
+        _ => usize::MAX,
     }
 }
 
@@ -3465,8 +3495,13 @@ impl RunError {
         matches!(self, Self::Exc(raise) if matches!(raise.exc.exc_type(), ExcType::StopIteration))
     }
 
-    /// Wraps a host exception so it builds a traceback but bypasses `except`.
-    pub(crate) fn uncatchable(exc: MontyException) -> Self {
+    /// Ends a suspended feed at the caller's request, bypassing Python `except`.
+    pub(crate) fn from_abort(exc: MontyException) -> Self {
+        let mut exc = SimpleException::from(exc);
+        // The caller controls the suspension budget but cannot attest to a VM limit.
+        if matches!(exc.data, ExcData::VmLimit(_) | ExcData::ToolException) {
+            exc.data = ExcData::None;
+        }
         Self::UncatchableExc(exc.into())
     }
 
@@ -3537,6 +3572,54 @@ fn format_param_names(names: &[&str]) -> String {
             let last = names.last().unwrap();
             let rest: Vec<_> = names[..names.len() - 1].iter().map(|n| format!("'{n}'")).collect();
             format!("{}, and '{last}'", rest.join(", "))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn callback_preserves_exception_details() {
+        let data = UnicodeErrorData::decode("utf-8", &[0xff], 0, 1, "invalid start byte");
+        assert!(matches!(data, ExcData::Unicode(_)));
+        let exc = MontyException::new(ExcType::UnicodeDecodeError, None).with_data(data.clone());
+        assert_eq!(SimpleException::from_callback(exc).data, data);
+    }
+
+    #[test]
+    fn caller_enforces_suspension_budget_only_by_aborting() {
+        let exc = MontyException::suspension_limit_exceeded(3);
+        assert!(matches!(
+            RunError::from_abort(exc.clone()),
+            RunError::UncatchableExc(raise) if matches!(raise.exc.data, ExcData::SuspensionLimit { limit: 3 })
+        ));
+        assert_eq!(SimpleException::from_callback(exc).data, ExcData::ToolException);
+    }
+
+    #[test]
+    fn host_ingress_does_not_trust_execution_metadata() {
+        for data in [
+            ExcData::VmLimit(Box::new(VmLimit::Memory { limit: 1, used: 2 }.into())),
+            ExcData::ToolException,
+        ] {
+            let exc =
+                MontyException::new(ExcType::MemoryError, Some("memory limit exceeded".into())).with_data(data.clone());
+            assert_eq!(SimpleException::from(exc.clone()).data, data);
+            assert!(matches!(
+                RunError::from_abort(exc.clone()),
+                RunError::UncatchableExc(raise) if matches!(raise.exc.data, ExcData::None)
+            ));
+            assert!(matches!(
+                SimpleException::from_callback(exc).data,
+                ExcData::ToolException
+            ));
+            let exc = MontyException::new(ExcType::ValueError, None).with_data(data);
+            assert!(matches!(
+                SimpleException::from_callback(exc).data,
+                ExcData::ToolException
+            ));
         }
     }
 }

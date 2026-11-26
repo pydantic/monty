@@ -26,6 +26,74 @@ pub struct MontyException {
     data: ExcData,
 }
 
+/// A VM resource limit reported independently of the Python exception.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
+#[serde(tag = "kind")]
+pub enum VmLimit {
+    /// A VM memory limit, measured in bytes.
+    Memory { limit: u64, used: u64 },
+    /// The combined execution time of the turns in a feed, in nanoseconds.
+    FeedTime { limit: u64, elapsed: u64 },
+    /// A single turn's execution time, in nanoseconds.
+    TurnTime { limit: u64, elapsed: u64 },
+    /// A catchable VM recursion limit, measured as a depth count.
+    RecursionDepth { limit: u64, depth: u64 },
+    /// The VM reported a limit for which the reader has no supported kind.
+    #[serde(other)]
+    Unknown,
+}
+
+/// A reported VM limit and its optional policy provenance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct VmLimitData {
+    kind: VmLimit,
+    // Policy provenance belongs to the execution reply, not to VM snapshots.
+    #[serde(skip)]
+    source: Option<VmLimitSource>,
+}
+
+impl VmLimitData {
+    /// The VM's kind and measurements, independent of who selected the limit.
+    #[must_use]
+    pub fn kind(&self) -> VmLimit {
+        self.kind
+    }
+
+    /// The policy source, if reported for a supported limit.
+    #[must_use]
+    pub fn source(&self) -> Option<VmLimitSource> {
+        self.source
+    }
+
+    /// Attach provenance only to limits for which a service can report policy.
+    #[must_use]
+    pub fn with_source(mut self, source: Option<VmLimitSource>) -> Self {
+        self.source = match self.kind {
+            VmLimit::Memory { .. } | VmLimit::FeedTime { .. } => source,
+            _ => None,
+        };
+        self
+    }
+}
+
+impl From<VmLimit> for VmLimitData {
+    fn from(kind: VmLimit) -> Self {
+        Self { kind, source: None }
+    }
+}
+
+/// Policy provenance reported by the service that applied a VM limit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum VmLimitSource {
+    /// Hosted policy set the default or tightened the caller's limit.
+    HostedPolicy,
+    /// A source code this client does not recognize.
+    Unknown(i32),
+}
+
 /// Number of identical consecutive frames to show before collapsing.
 ///
 /// CPython shows 3 identical frames, then "[Previous line repeated N more times]".
@@ -118,6 +186,16 @@ impl MontyException {
     pub fn with_data(mut self, data: ExcData) -> Self {
         self.data = data;
         self
+    }
+
+    /// The error used when the caller stops a feed that exhausted its suspension budget.
+    #[must_use]
+    pub fn suspension_limit_exceeded(limit: u64) -> Self {
+        Self::new(
+            ExcType::RuntimeError,
+            Some(format!("suspension limit {limit} exceeded")),
+        )
+        .with_data(ExcData::SuspensionLimit { limit })
     }
 
     /// The structured payload, [`ExcData::None`] for most exceptions.
@@ -452,11 +530,10 @@ pub enum ExcType {
     #[strum(serialize = "asyncio.exceptions.InvalidStateError")]
     InvalidStateError = 56,
 }
-/// Structured payload attached to exception types whose CPython counterparts
-/// carry more than a message. Currently unicode and json decode errors have
-/// one; the enum leaves room for future variants (e.g. `OSError`'s
-/// `errno`/`filename`) without another field on every exception.
+/// Structured Python exception attributes or execution failure metadata.
+/// Use this payload rather than adding a field to every exception.
 #[derive(Debug, Clone, Default, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub enum ExcData {
     /// No structured payload — every exception type without a variant below.
     #[default]
@@ -468,6 +545,16 @@ pub enum ExcData {
     /// `json.JSONDecodeError` attribute fields. Boxed like
     /// [`ExcData::Unicode`] to keep the enum small.
     Json(Box<JsonErrorData>),
+    /// Resource enforcement reported by the VM.
+    VmLimit(Box<VmLimitData>),
+    /// An ordinary exception.
+    /// Does not say whether a host callback ran.
+    ToolException,
+    /// A caller-enforced budget for suspensions, not a limit enforced by the VM.
+    SuspensionLimit {
+        /// Maximum number of suspensions the caller allows.
+        limit: u64,
+    },
 }
 
 impl ExcData {
