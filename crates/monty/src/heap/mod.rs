@@ -6,10 +6,9 @@
 #[cfg(feature = "ref-count-return")]
 use std::collections::HashSet;
 use std::{
-    cell::{Cell, RefCell, UnsafeCell},
-    collections::{BTreeMap, BTreeSet},
+    cell::{Cell, UnsafeCell},
+    collections::BTreeMap,
     fmt,
-    hash::{BuildHasher, RandomState},
     iter::once,
     marker::PhantomData,
     ops::{Deref, DerefMut},
@@ -865,14 +864,6 @@ pub struct HeapEntry {
     /// any cycle that became unreachable just before the snapshot.
     #[serde(rename = "C")]
     color: Cell<CcColor>,
-    /// Whether the runtime interner indexes this string.
-    #[serde(rename = "I", default, skip_serializing_if = "is_uninterned")]
-    interned_string: Cell<bool>,
-}
-
-/// Omits the intern flag for ordinary heap objects.
-fn is_uninterned(interned: &Cell<bool>) -> bool {
-    !interned.get()
 }
 
 /// What one heap entry costs, payload and bookkeeping together.
@@ -995,8 +986,6 @@ pub(crate) struct Heap {
     /// `boundary_index` because host and sandbox uuids are distinct namespaces.
     /// Weak like the others: cleared on free, rebuilt on restore.
     host_type_index: BTreeMap<MontyUuid, HeapId>,
-    /// Runtime interned strings, indexed without owning a heap reference.
-    interned_strings: InternedStrings,
 }
 
 impl serde::Serialize for Heap {
@@ -1030,7 +1019,6 @@ impl<'de> serde::Deserialize<'de> for Heap {
             ext_function_cache,
             boundary_index,
             host_type_index,
-            interned_strings,
         } = restore_entries(&mut entries).map_err(D::Error::custom)?;
         Ok(Self {
             entries,
@@ -1044,7 +1032,6 @@ impl<'de> serde::Deserialize<'de> for Heap {
             ext_function_cache,
             boundary_index,
             host_type_index,
-            interned_strings,
         })
     }
 }
@@ -1064,9 +1051,7 @@ fn restore_entries(entries: &mut StableHeap<HeapEntry>) -> Result<WeakIndexes, &
         if matches!(entry.color.get(), CcColor::Gray | CcColor::White) {
             return Err("snapshot contains a transient GC color");
         }
-        let interned_string = entry.interned_string.get();
         match entry.get_mut().data.0.get_mut() {
-            HeapData::Str(value) if interned_string => indexes.interned_strings.insert(value.as_str(), id),
             HeapData::ExtFunction(function) => {
                 *indexes
                     .ext_function_cache
@@ -1094,7 +1079,6 @@ enum WeakIndexKey {
     ExtFunction { name: Arc<str>, is_async: bool },
     Boundary(MontyUuid),
     HostType(MontyUuid),
-    InternedString(u64),
 }
 
 /// The heap's weak (non-owning) indexes, rebuilt from the entries on restore.
@@ -1103,38 +1087,6 @@ struct WeakIndexes {
     ext_function_cache: BTreeMap<Arc<str>, ExtFunctionSlots>,
     boundary_index: BTreeMap<MontyUuid, HeapId>,
     host_type_index: BTreeMap<MontyUuid, HeapId>,
-    interned_strings: InternedStrings,
-}
-
-/// Weak index ordered by a private hash and then slot number so collisions keep separate entries.
-/// The tree releases nodes as strings die, including after a spike in the number of live strings.
-#[derive(Debug, Default)]
-struct InternedStrings {
-    hasher: RandomState,
-    ids: RefCell<BTreeSet<(u64, usize)>>,
-}
-
-impl InternedStrings {
-    /// Records an occupied slot without taking a heap reference.
-    fn insert(&self, text: &str, id: HeapId) {
-        self.ids.borrow_mut().insert((self.hasher.hash_one(text), id.index()));
-    }
-
-    /// Finds a candidate with matching text, including when hashes collide.
-    fn find(&self, text: &str, heap: &Heap) -> Option<HeapId> {
-        let ids = self.ids.borrow();
-        if ids.is_empty() {
-            return None;
-        }
-        let hash = self.hasher.hash_one(text);
-        ids.range((hash, 0)..=(hash, usize::MAX)).find_map(|&(_, index)| {
-            let id = HeapId::from_index(index);
-            match heap.get(id) {
-                HeapData::Str(candidate) if candidate.as_str() == text => Some(id),
-                _ => None,
-            }
-        })
-    }
 }
 
 /// The live sync and async `ExtFunction`s sharing one name, each held
@@ -1197,7 +1149,6 @@ impl Heap {
             ext_function_cache: BTreeMap::new(),
             boundary_index: BTreeMap::new(),
             host_type_index: BTreeMap::new(),
-            interned_strings: InternedStrings::default(),
         };
 
         // The empty-tuple singleton starts with refcount = 1 — that single ref *is* the
@@ -1211,7 +1162,6 @@ impl Heap {
             readers: Cell::new(0),
             data: UnsafeHeapData(UnsafeCell::new(empty_tuple)),
             color: Cell::new(CcColor::Black),
-            interned_string: Cell::new(false),
         };
 
         let empty_tuple = this.entries.allocate(new_entry);
@@ -1271,7 +1221,6 @@ impl Heap {
             readers: Cell::new(0),
             data: UnsafeHeapData(UnsafeCell::new(data)),
             color: Cell::new(CcColor::Black),
-            interned_string: Cell::new(false),
         }
     }
 
@@ -1322,29 +1271,10 @@ impl Heap {
         }
     }
 
-    /// Returns an owned reference to the live canonical runtime string with this text.
-    pub(crate) fn interned_string(&self, text: &str) -> Option<HeapId> {
-        let id = self.interned_strings.find(text, self)?;
-        self.inc_ref(id);
-        Some(id)
-    }
-
-    /// Indexes a live string after the caller has checked for an existing canonical value.
-    pub(crate) fn remember_interned_string(&self, id: HeapId) {
-        let HeapData::Str(value) = self.get(id) else {
-            unreachable!("only heap strings can be runtime interns");
-        };
-        self.interned_strings.insert(value.as_str(), id);
-        self.entries.get(id).interned_string.set(true);
-    }
-
     /// The key `data` holds in a weak index, read before its slot is freed so
     /// the index entry can be cleared (see [`Heap::remove_weak_index_entry`]).
-    fn weak_index_key(&self, data: &HeapData, interned_string: bool) -> Option<WeakIndexKey> {
+    fn weak_index_key(data: &HeapData) -> Option<WeakIndexKey> {
         match data {
-            HeapData::Str(value) if interned_string => Some(WeakIndexKey::InternedString(
-                self.interned_strings.hasher.hash_one(value.as_str()),
-            )),
             HeapData::ExtFunction(function) => Some(WeakIndexKey::ExtFunction {
                 name: function.cache_key(),
                 is_async: function.is_async(),
@@ -1369,9 +1299,6 @@ impl Heap {
             }
             Some(WeakIndexKey::HostType(uuid)) if self.host_type_index.get(&uuid) == Some(&id) => {
                 self.host_type_index.remove(&uuid);
-            }
-            Some(WeakIndexKey::InternedString(hash)) => {
-                self.interned_strings.ids.get_mut().remove(&(hash, id.index()));
             }
             Some(WeakIndexKey::Boundary(_) | WeakIndexKey::HostType(_)) | None => {}
         }
@@ -1523,7 +1450,6 @@ impl Heap {
                         current_id.index(),
                         heap_entry.readers.get(),
                     );
-                    let interned_string = heap_entry.interned_string.get();
                     // If the entry was a pending cycle candidate, decrement
                     // `purple_count` to reflect that it is leaving the heap before
                     // the collector reaches it.
@@ -1531,7 +1457,7 @@ impl Heap {
                         reader.heap.purple_count -= 1;
                     }
                     // Remove weak-index entries before the slot becomes available for reuse.
-                    let weak_key = reader.heap.weak_index_key(ptr.data(reader), interned_string);
+                    let weak_key = Self::weak_index_key(ptr.data(reader));
                     reader.heap.remove_weak_index_entry(weak_key, current_id);
 
                     // It is not possible to free from `HeapPtr` because it is created through
@@ -1700,8 +1626,8 @@ impl Heap {
                 heap_entry.readers.get(),
             );
             let mut value = entry.free();
-            // Clear weak entries before another allocation can reuse the slot.
-            let weak_key = self.weak_index_key(value.data.0.get_mut(), value.interned_string.get());
+            // Clear weak entries before freeing their slots, just as `dec_ref`.
+            let weak_key = Self::weak_index_key(value.data.0.get_mut());
             self.remove_weak_index_entry(weak_key, id);
             freed += 1;
             // Walk children, marking child `Value::Ref`s as `Dereferenced`
