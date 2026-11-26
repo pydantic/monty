@@ -440,6 +440,8 @@ A server that refuses the stream rejects `checkout()` with `MontyRefusedError`; 
 `MontyConnectError`.
 Use `MontyRefusedError.retryable` and `MontyRefusedError.retryAfter` to decide whether and when to try a new checkout.
 The pool retries a refused checkout once when the server sends a single valid `Retry-After` of at most two seconds.
+On initial checkout with no `Retry-After`, the pool retries once after 100 ms for `caller_cap`, `capacity`, or `worker_unavailable` (not credential failures).
+A supplied but invalid, duplicated, or unusably long hint does not trigger this fallback.
 The wait and retry dial share a five-second budget and respect the checkout and dial deadlines.
 A retry timeout rejects `checkout()` with the original `MontyRefusedError`.
 

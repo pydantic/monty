@@ -459,6 +459,8 @@ The display text includes that reason.
 `PoolError::Refused` identifies a server refusal before a session exists.
 Its details provide `retryable()` and `retry_after` (a `Duration` from `Retry-After`, capped at one hour).
 The pool retries a refused checkout once when the server sends a single valid `Retry-After` of at most two seconds, whether or not the refusal is `retryable()`.
+On initial checkout with no `Retry-After`, the pool retries once after 100 ms for `caller_cap`, `capacity`, or `worker_unavailable` (not credential failures).
+A supplied but invalid, duplicated, or unusably long hint does not trigger this fallback.
 The wait and retry dial share a five-second budget and respect the checkout and dial deadlines.
 A retry timeout returns the original `PoolError::Refused`.
 `PoolError::Connect` retains the status or transport error for other connection failures.

@@ -818,10 +818,14 @@ async def test_refused_stream_fails_the_checkout():
     )
 
 
-async def test_checkout_retries_once_with_only_retry_after():
+@pytest.mark.parametrize(
+    ('first_hint', 'second_hint'), [('1', '0'), ('1', None), (None, None), (None, '0')]
+)
+async def test_checkout_uses_one_admission_retry(first_hint: str | None, second_hint: str | None):
     attempts = 0
     metadata_calls = 0
     seen_headers: list[str] = []
+    refusal_times: list[float] = []
 
     def metadata():
         nonlocal metadata_calls
@@ -836,11 +840,12 @@ async def test_checkout_retries_once_with_only_retry_after():
         checkout_id = dict(context.invocation_metadata() or ())['x-checkout-id']
         assert isinstance(checkout_id, str)
         seen_headers.append(checkout_id)
-        await context.abort(
-            grpc.StatusCode.UNAVAILABLE,
-            f'worker full on attempt {attempts}',
-            trailing_metadata=(('retry-after', '0'),),
-        )
+        refusal_times.append(time.monotonic())
+        hint = first_hint if attempts == 1 else second_hint
+        trailers = (('monty-cause', 'worker_unavailable'),)
+        if hint is not None:
+            trailers += (('retry-after', hint),)
+        await context.abort(grpc.StatusCode.UNAVAILABLE, f'worker full on attempt {attempts}', trailing_metadata=trailers)
         yield b''
 
     async with _serve_behaviour(behaviour) as url, AsyncMontyRemote(url, metadata=metadata) as pool:
@@ -851,13 +856,17 @@ async def test_checkout_retries_once_with_only_retry_after():
     assert seen_headers == ['checkout-1', 'checkout-1']
     assert attempts == snapshot(2)
     assert caught.value.status_message == snapshot('worker full on attempt 2')
-    assert caught.value.retry_after == snapshot(0.0)
+    assert caught.value.retry_after == (None if second_hint is None else float(second_hint))
+    assert refusal_times[1] - refusal_times[0] >= (0.09 if first_hint is None else 0.99)
 
 
 @pytest.mark.parametrize(
-    'hints,expected_delay', [((), None), (('invalid',), None), (('3',), 3.0), (('0', '3'), None), (('0', '0'), None)]
+    ('hints', 'deadline', 'expected_delay'),
+    [(('invalid',), 10, None), (('3',), 10, 3.0), (('2',), 1, 2.0), (('0', '3'), 10, None), (('0', '0'), 10, None)],
 )
-async def test_checkout_requires_one_valid_short_hint(hints: tuple[str, ...], expected_delay: float | None):
+async def test_checkout_does_not_substitute_for_an_unusable_hint(
+    hints: tuple[str, ...], deadline: int, expected_delay: float | None
+):
     attempts = 0
 
     async def behaviour(
@@ -868,11 +877,11 @@ async def test_checkout_requires_one_valid_short_hint(hints: tuple[str, ...], ex
         await context.abort(
             grpc.StatusCode.UNAVAILABLE,
             'worker capacity',
-            trailing_metadata=tuple(('retry-after', hint) for hint in hints),
+            trailing_metadata=(('monty-cause', 'worker_unavailable'), *(('retry-after', hint) for hint in hints)),
         )
         yield b''
 
-    async with _serve_behaviour(behaviour) as url, AsyncMontyRemote(url, request_timeout=10) as pool:
+    async with _serve_behaviour(behaviour) as url, AsyncMontyRemote(url, checkout_timeout=deadline) as pool:
         with pytest.raises(MontyRefusedError) as caught:
             async with asyncio.timeout(2), pool.checkout():
                 pass

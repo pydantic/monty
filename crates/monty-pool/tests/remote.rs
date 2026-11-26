@@ -515,6 +515,7 @@ async fn url_paths_are_refused() {
 #[tokio::test]
 async fn a_refused_stream_fails_the_checkout() {
     let (mock, config) = mock_pool_config().await;
+    mock.refuse_next(Cause::CallerCap.status("caller is at capacity"));
     mock.refuse_next(Cause::CallerCap.status("caller holds 10 sessions already"));
     let pool = Pool::new(config).await.expect("pool");
     let Err(err) = pool.checkout(&ReplConfig::default()).await else {
@@ -552,25 +553,36 @@ fn refusal_with_hint(code: Code, delay: &'static str, message: &'static str) -> 
 }
 
 #[tokio::test]
-async fn checkout_retries_worker_capacity_after_the_server_delay() {
-    let (mock, mut config) = mock_pool_config().await;
-    config.checkout_timeout = Some(Duration::MAX);
-    mock.refuse_next(refusal_with_hint(Code::Unavailable, "1", "worker full"));
-    let server = thread::spawn(move || serve_mock_worker(&mock));
-    let pool = Pool::new(config).await.unwrap();
-    let started = Instant::now();
-    let mut checkout = pool
-        .checkout(&ReplConfig::default())
-        .await
-        .expect("retry opens session");
-    assert!(started.elapsed() >= Duration::from_secs(1));
-    let turn = checkout
-        .feed("6 * 7", vec![], vec![], false, &mut no_print)
-        .await
-        .unwrap();
-    assert!(matches!(turn, TurnEvent::Complete(value) if value == MontyObject::int(42)));
-    checkout.finish().await.unwrap();
-    join_server(server).await;
+async fn checkout_retries_worker_capacity_after_the_applicable_delay() {
+    for (refusal, minimum_wait) in [
+        (
+            refusal_with_hint(Code::Unavailable, "1", "worker full"),
+            Duration::from_secs(1),
+        ),
+        (
+            Cause::WorkerUnavailable.status("worker full"),
+            Duration::from_millis(100),
+        ),
+    ] {
+        let (mock, mut config) = mock_pool_config().await;
+        config.checkout_timeout = Some(Duration::MAX);
+        mock.refuse_next(refusal);
+        let server = thread::spawn(move || serve_mock_worker(&mock));
+        let pool = Pool::new(config).await.unwrap();
+        let started = Instant::now();
+        let mut checkout = pool
+            .checkout(&ReplConfig::default())
+            .await
+            .expect("retry opens session");
+        assert!(started.elapsed() >= minimum_wait);
+        let turn = checkout
+            .feed("6 * 7", vec![], vec![], false, &mut no_print)
+            .await
+            .unwrap();
+        assert!(matches!(turn, TurnEvent::Complete(value) if value == MontyObject::int(42)));
+        checkout.finish().await.unwrap();
+        join_server(server).await;
+    }
 }
 
 #[tokio::test]

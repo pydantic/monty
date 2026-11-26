@@ -6,7 +6,8 @@ use std::{
 };
 
 use h2::{Error as H2Error, Reason};
-use tonic::Status;
+use monty_proto::grpc::Cause;
+use tonic::{Code, Status};
 
 use super::{
     MAX_WINDOW_BYTES, MIN_CONNECTION_WINDOW_BYTES, MIN_STREAM_WINDOW_BYTES, RemoteDisconnect, STREAM_WINDOW_BYTES,
@@ -68,14 +69,39 @@ fn admission_retry_wait_preserves_the_server_delay_and_bounds_slot_occupancy() {
         ("3600", None),
         ("garbage", None),
     ] {
-        let mut status = Status::unavailable("retry later");
+        let mut status = Cause::WorkerUnavailable.status("retry later");
         status.metadata_mut().insert("retry-after", hint.parse().unwrap());
         let refusal = RemoteDisconnect::from_refusal(&status);
         assert_eq!(
-            admission_retry_delay(refusal.retry_after, || Duration::from_millis(250)),
+            admission_retry_delay(&status, &refusal, true, || Duration::from_millis(250)),
             expected_ms.map(Duration::from_millis),
             "{hint}",
         );
+    }
+}
+
+#[test]
+fn unhinted_retry_is_only_for_eligible_initial_admission_refusals() {
+    for (code, cause, retries) in [
+        (Code::ResourceExhausted, Cause::Capacity, true),
+        (Code::Unavailable, Cause::WorkerUnavailable, true),
+        (Code::ResourceExhausted, Cause::CallerCap, true),
+        (Code::FailedPrecondition, Cause::CallerCap, true),
+        (Code::Unavailable, Cause::ServerShutdown, false),
+        (Code::Unauthenticated, Cause::CallerCap, false),
+        (Code::PermissionDenied, Cause::CallerCap, false),
+    ] {
+        let mut status = Status::new(code, "refused");
+        status
+            .metadata_mut()
+            .insert("monty-cause", cause.as_str().parse().unwrap());
+        let refusal = RemoteDisconnect::from_refusal(&status);
+        let no_jitter = || panic!("an unhinted retry has no jitter");
+        assert_eq!(
+            admission_retry_delay(&status, &refusal, true, no_jitter),
+            retries.then_some(Duration::from_millis(100)),
+        );
+        assert_eq!(admission_retry_delay(&status, &refusal, false, no_jitter), None);
     }
 }
 
