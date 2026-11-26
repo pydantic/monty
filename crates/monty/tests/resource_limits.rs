@@ -90,6 +90,8 @@ fn resolve_name_lookups(mut progress: RunProgress) -> Result<RunProgress, MontyE
 
 #[test]
 fn host_return_hash_errors_keep_their_cause() {
+    type BuildResponse = fn(MontyObject) -> MontyObject;
+
     let nested_key = (0..16).fold(MontyObject::int(1), |value, _| MontyObject::tuple([value]));
     let call = |code: &str| {
         let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
@@ -101,7 +103,7 @@ fn host_return_hash_errors_keep_their_cause() {
         call
     };
 
-    let cases: [(fn(MontyObject) -> MontyObject, &str); 3] = [
+    let cases: [(BuildResponse, &str); 3] = [
         (
             |key| MontyObject::dict([(key, MontyObject::none())]),
             "invalid return type: unhashable dict keys",
