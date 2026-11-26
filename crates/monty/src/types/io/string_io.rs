@@ -74,6 +74,12 @@ impl StringIo {
     /// then writes the initial text through the same translation as `write()`
     /// and rewinds to the start.
     pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+        let stream = Self::from_init_args(vm, args)?;
+        Ok(Value::Ref(vm.heap.allocate(HeapData::StringIo(Box::new(stream)))))
+    }
+
+    /// A fresh, open stream from the constructor's arguments, shared with `__init__`.
+    fn from_init_args(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Self> {
         let StringIoArgs { initial_value, newline } = StringIoArgs::from_args(args, vm)?;
         defer_drop!(initial_value, vm);
         let newline = parse_newline(newline, vm)?;
@@ -98,7 +104,7 @@ impl StringIo {
                 stream.seek_to(0);
             }
         }
-        Ok(Value::Ref(vm.heap.allocate(HeapData::StringIo(Box::new(stream)))))
+        Ok(stream)
     }
 
     /// What `copy.copy` builds: the text, position and newline mode.
@@ -369,6 +375,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, StringIo> {
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let value = match attr.static_string(vm.interns) {
+            // Re-running the constructor resets the stream, reopening a closed one, as in CPython.
+            Some(StaticStrings::DunderInit) => {
+                let stream = StringIo::from_init_args(vm, args)?;
+                *self.get_mut(vm.heap) = stream;
+                Value::None
+            }
             Some(StaticStrings::Read) => self.read(args, vm)?,
             Some(StaticStrings::Readline) => self.readline(args, vm)?,
             Some(StaticStrings::Readlines) => self.readlines(args, vm)?,

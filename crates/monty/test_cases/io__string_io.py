@@ -52,6 +52,17 @@ check(
     lambda: StringIO('', initial_value=''),
 )
 
+# `__init__` resets the stream, including its newline mode, and reopens a closed one
+s = StringIO('abc')
+s.read(1)
+s.close()
+assert s.__init__('x\ny', newline='') is None
+assert (s.closed, s.tell(), s.getvalue(), s.newlines) == (False, 0, 'x\ny', '\n')
+s.seek(2)
+check(TypeError, 'initial_value must be str or None, not list', lambda: s.__init__([]))
+# a rejected value leaves the stream as it was
+assert (s.tell(), s.getvalue()) == (2, 'x\ny')
+
 # === read ===
 s = StringIO('hello world')
 assert s.read(5) == 'hello'

@@ -39,6 +39,17 @@ check(TypeError, 'BytesIO() takes at most 1 argument (2 given)', lambda: BytesIO
 check(TypeError, 'BytesIO() takes at most 1 argument (2 given)', lambda: BytesIO(b'', foo=1))
 check(TypeError, "BytesIO() got an unexpected keyword argument 'foo'", lambda: BytesIO(foo=1))
 
+# `__init__` resets the stream and reopens a closed one
+b = BytesIO(b'abc')
+b.read(1)
+b.close()
+assert b.__init__(b'xyz') is None
+assert (b.closed, b.tell(), b.getvalue()) == (False, 0, b'xyz')
+b.seek(2)
+check(TypeError, "a bytes-like object is required, not 'list'", lambda: b.__init__([]))
+# the stream is emptied before the payload is checked
+assert (b.closed, b.tell(), b.getvalue()) == (False, 0, b'')
+
 # === read and read1 ===
 b = BytesIO(b'hello world')
 assert b.read(5) == b'hello'

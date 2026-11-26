@@ -50,10 +50,7 @@ impl BytesIo {
     pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         let BytesIoArgs { initial_bytes } = BytesIoArgs::from_args(args, vm)?;
         defer_drop!(initial_bytes, vm);
-        let buf = match initial_bytes {
-            Value::None => Vec::new(),
-            value => bytes_payload(value, vm)?,
-        };
+        let buf = initial_payload(initial_bytes, vm)?;
         let stream = Self { buf, ..Self::default() };
         Ok(Value::Ref(vm.heap.allocate(HeapData::BytesIo(Box::new(stream)))))
     }
@@ -200,6 +197,15 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BytesIo> {
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let value = match attr.static_string(vm.interns) {
+            // Re-running the constructor reopens the stream and, as in CPython, empties it
+            // before checking the payload, so a rejected payload leaves it empty.
+            Some(StaticStrings::DunderInit) => {
+                let BytesIoArgs { initial_bytes } = BytesIoArgs::from_args(args, vm)?;
+                defer_drop!(initial_bytes, vm);
+                *self.get_mut(vm.heap) = BytesIo::default();
+                self.get_mut(vm.heap).buf = initial_payload(initial_bytes, vm)?;
+                Value::None
+            }
             Some(method @ (StaticStrings::Read | StaticStrings::Read1)) => {
                 let (kw_name, name) = if method == StaticStrings::Read {
                     ("BytesIO.read", "read")
@@ -416,6 +422,14 @@ impl<'h> HeapObjectRead<'h, BytesIo> {
             stream.buf.truncate(size);
         }
         Ok(position_value(size))
+    }
+}
+
+/// The constructor's `initial_bytes`: empty for `None`, else a copy of the `bytes`.
+fn initial_payload(initial_bytes: &Value, vm: &VM<'_>) -> RunResult<Vec<u8>> {
+    match initial_bytes {
+        Value::None => Ok(Vec::new()),
+        value => bytes_payload(value, vm),
     }
 }
 
