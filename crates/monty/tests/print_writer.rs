@@ -5,7 +5,7 @@ use std::{borrow::Cow, mem};
 use insta::assert_snapshot;
 use monty::MontyRun;
 use monty_types::{
-    CollectedStreams, CompileOptions, ExcType, MontyException, MontyObject, PrintStream, PrintWriter,
+    CollectedStreams, CompileOptions, ExcData, ExcType, MontyException, MontyObject, PrintStream, PrintWriter,
     PrintWriterCallback, ResourceTracker,
 };
 
@@ -63,6 +63,24 @@ def outer():
 outer()
 ";
     assert_eq!(run_with_checkpoint_failure(code), MontyObject::int(42));
+}
+
+/// A Rust-side output cap remains an unclassified memory error, even on re-raise.
+#[test]
+fn collector_limit_is_not_a_tool_exception() {
+    let code = "try:\n    print('over the cap')\nexcept MemoryError as e:\n    raise e";
+    let mut runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let mut output = String::new();
+    let error = runner
+        .run(
+            vec![],
+            ResourceTracker::default(),
+            PrintWriter::CollectString(&mut output, Some(1)),
+        )
+        .unwrap_err();
+    assert_eq!(error.exc_type(), ExcType::MemoryError);
+    assert_eq!(error.data(), &ExcData::None);
+    assert_snapshot!(error.message().unwrap(), @"memory limit exceeded: 12 bytes > 1 bytes");
 }
 
 /// Arms a single failure from Python so setup cannot consume it before synchronous re-entry.

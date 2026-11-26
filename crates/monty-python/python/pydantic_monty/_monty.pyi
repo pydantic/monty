@@ -2,7 +2,7 @@ import sys
 import uuid
 from collections.abc import Awaitable, Iterable, Mapping
 from pathlib import Path
-from typing import Any, Callable, Literal, NoReturn, final
+from typing import Any, Callable, ClassVar, Literal, NoReturn, final
 
 from opentelemetry.context import Context
 from typing_extensions import Self, deprecated
@@ -50,6 +50,9 @@ __all__ = [
     'MontyShutdown',
     'MontySyntaxError',
     'MontyRuntimeError',
+    'OrdinaryException',
+    'SuspensionLimit',
+    'VmLimit',
     'MontyTypingError',
     'MountDir',
     'MontyComplete',
@@ -255,6 +258,70 @@ class MontyTypingError(MontyError):
     def display(self) -> str:
         """Returns the rendered type-check diagnostics."""
 
+class VmLimit:
+    """A resource limit reported by the VM."""
+
+    Memory: ClassVar[type[_MemoryLimit]]
+    FeedTime: ClassVar[type[_FeedTimeLimit]]
+    TurnTime: ClassVar[type[_TurnTimeLimit]]
+    RecursionDepth: ClassVar[type[_RecursionDepthLimit]]
+    Unknown: ClassVar[type[_UnknownVmLimit]]
+
+@final
+class _MemoryLimit(VmLimit):
+    """Bytes."""
+
+    def __init__(self, limit: int, used: int) -> None: ...
+    @property
+    def limit(self) -> int: ...
+    @property
+    def used(self) -> int: ...
+
+@final
+class _FeedTimeLimit(VmLimit):
+    """Nanoseconds of execution in one feed."""
+
+    def __init__(self, limit: int, elapsed: int) -> None: ...
+    @property
+    def limit(self) -> int: ...
+    @property
+    def elapsed(self) -> int: ...
+
+@final
+class _TurnTimeLimit(VmLimit):
+    """Nanoseconds of execution in one turn."""
+
+    def __init__(self, limit: int, elapsed: int) -> None: ...
+    @property
+    def limit(self) -> int: ...
+    @property
+    def elapsed(self) -> int: ...
+
+@final
+class _RecursionDepthLimit(VmLimit):
+    """Frame depth counts."""
+
+    def __init__(self, limit: int, depth: int) -> None: ...
+    @property
+    def limit(self) -> int: ...
+    @property
+    def depth(self) -> int: ...
+
+@final
+class _UnknownVmLimit(VmLimit):
+    """The VM reported a limit without a kind this client understands."""
+
+@final
+class OrdinaryException:
+    """An exception classified as ordinary rather than a VM limit."""
+
+@final
+class SuspensionLimit:
+    """The caller stopped the feed because the suspension budget was exhausted."""
+
+    @property
+    def limit(self) -> int: ...
+
 @final
 class MontyRuntimeError(MontyError):
     """Raised when Monty code fails during execution.
@@ -262,6 +329,10 @@ class MontyRuntimeError(MontyError):
     Inherits exception(), __str__() from MontyError.
     Additionally provides traceback() and display() methods.
     """
+
+    @property
+    def failure(self) -> VmLimit | OrdinaryException | SuspensionLimit | None:
+        """Execution failure classification, or `None` if the producer did not report one."""
 
     def traceback(self) -> list[Frame]:
         """Returns the Monty traceback as a list of Frame objects."""

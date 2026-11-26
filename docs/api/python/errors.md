@@ -7,8 +7,8 @@ tableOfContents:
 
 # Errors
 
-Every exception `pydantic_monty` raises, plus the traceback `Frame` they carry and the `ExcType` names accepted when
-answering a snapshot with an exception.
+Exceptions raised by `pydantic_monty`, their traceback frames and failure classifications, and the `ExcType` names
+accepted when answering a snapshot with an exception.
 
 ::: pydantic_monty
     options:
@@ -17,6 +17,9 @@ answering a snapshot with an exception.
             - MontySyntaxError
             - MontyTypingError
             - MontyRuntimeError
+            - VmLimit
+            - SuspensionLimit
+            - OrdinaryException
             - MontyConversionError
             - MontyCrashedError
             - MontyDisconnectError

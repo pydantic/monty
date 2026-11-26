@@ -23,7 +23,7 @@ use std::sync::Arc;
 use ahash::AHashMap;
 use monty_pool::RemoteDisconnect;
 use monty_proto::python::exc_monty_to_py;
-use monty_types::{ExcType, MontyException, SourceRange};
+use monty_types::{ExcData, ExcType, MontyException, SourceRange, VmLimit};
 use pyo3::{
     PyClassInitializer,
     exceptions::{self},
@@ -253,6 +253,44 @@ impl MontySyntaxError {
     }
 }
 
+/// A resource limit reported by the worker.
+#[pyclass(name = "VmLimit", module = "pydantic_monty", frozen)]
+pub enum PyVmLimit {
+    /// Bytes.
+    Memory { limit: u64, used: u64 },
+    /// Nanoseconds of execution in one feed.
+    FeedTime { limit: u64, elapsed: u64 },
+    /// Nanoseconds of execution in one turn.
+    TurnTime { limit: u64, elapsed: u64 },
+    /// Frame depth counts.
+    RecursionDepth { limit: u64, depth: u64 },
+    /// A reported VM limit whose kind is not understood.
+    Unknown {},
+}
+
+impl From<VmLimit> for PyVmLimit {
+    fn from(failure: VmLimit) -> Self {
+        match failure {
+            VmLimit::Memory { limit, used } => Self::Memory { limit, used },
+            VmLimit::FeedTime { limit, elapsed } => Self::FeedTime { limit, elapsed },
+            VmLimit::TurnTime { limit, elapsed } => Self::TurnTime { limit, elapsed },
+            VmLimit::RecursionDepth { limit, depth } => Self::RecursionDepth { limit, depth },
+            _ => Self::Unknown {},
+        }
+    }
+}
+
+/// An exception classified as ordinary rather than a VM limit.
+#[pyclass(name = "OrdinaryException", module = "pydantic_monty", frozen)]
+pub struct PyOrdinaryException;
+
+/// A caller stopped the feed because the suspension budget was exhausted.
+#[pyclass(name = "SuspensionLimit", module = "pydantic_monty", frozen)]
+pub struct PySuspensionLimit {
+    #[pyo3(get)]
+    limit: u64,
+}
+
 /// Raised when Monty code fails during execution. Inherits from `MontyError`
 /// and provides `traceback()` for the Monty stack frames.
 ///
@@ -285,6 +323,20 @@ impl MontyRuntimeError {
 
 #[pymethods]
 impl MontyRuntimeError {
+    /// Returns the execution failure classification if the producer reported one.
+    #[getter]
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
+    fn failure<'py>(slf: PyRef<'_, Self>, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        match slf.as_super().exc.data() {
+            ExcData::VmLimit(limit) => Ok(Some(PyVmLimit::from(**limit).into_pyobject(py)?.into_any())),
+            ExcData::ToolException => Ok(Some(Bound::new(py, PyOrdinaryException)?.into_any())),
+            ExcData::SuspensionLimit { limit } => {
+                Ok(Some(Bound::new(py, PySuspensionLimit { limit: *limit })?.into_any()))
+            }
+            _ => Ok(None),
+        }
+    }
+
     /// Returns the Monty traceback as a list of Frame objects.
     ///
     /// Built on the first call and cached, so repeated calls return the same

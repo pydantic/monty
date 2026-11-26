@@ -44,6 +44,8 @@ implementation**.
 - `CompileOptions`, `ExtFunctionResult`, `NameLookupResult`, `FileMode`, and
   the CPython-compatible formatting helpers behind their `repr()`s.
 
+`MontyException::data()` can contain a `VmLimit` or mark an ordinary exception.
+
 ## Who should depend on it
 
 The `monty` interpreter enables the `cpu-clock` feature for native CPU accounting, which is Linux-only.

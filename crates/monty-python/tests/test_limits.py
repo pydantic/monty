@@ -18,7 +18,10 @@ from pydantic_monty import (
     MontyComplete,
     MontyConfigurationError,
     MontyRuntimeError,
+    OrdinaryException,
     ResourceLimits,
+    SuspensionLimit,
+    VmLimit,
 )
 
 
@@ -46,18 +49,28 @@ def test_run_with_limits(monty_run: RunMonty):
     assert monty_run('1 + 1', limits={'max_feed_duration_secs': 5.0}) == snapshot(2)
 
 
-def test_recursion_limit(monty_run: RunMonty):
+def test_recursion_limit(pool: Monty):
     code = """
 def recurse(n):
     if n <= 0:
         return 0
     return 1 + recurse(n - 1)
-
-recurse(10)
 """
-    with pytest.raises(MontyRuntimeError) as exc_info:
-        monty_run(code, limits={'max_recursion_depth': 5})
-    assert isinstance(exc_info.value.exception(), RecursionError)
+    with pool.checkout(limits={'max_recursion_depth': 5}) as session:
+        session.feed_run(code)
+        assert session.feed_run('try:\n    recurse(10)\nexcept RecursionError:\n    caught = True\ncaught') == snapshot(
+            True
+        )
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            session.feed_run('recurse(10)')
+        assert session.feed_run('recurse(1)') == snapshot(1)
+    original = exc_info.value.exception()
+    assert isinstance(original, RecursionError)
+    assert str(original) == snapshot('maximum recursion depth exceeded')
+    assert exc_info.value.traceback()[-1].source_line == snapshot('    return 1 + recurse(n - 1)')
+    failure = exc_info.value.failure
+    assert isinstance(failure, VmLimit.RecursionDepth)
+    assert (failure.limit, failure.depth) == snapshot((5, 6))
 
 
 def test_recursion_limit_ok(monty_run: RunMonty):
@@ -82,6 +95,10 @@ len(result)
     with pytest.raises(MontyRuntimeError) as exc_info:
         monty_run(code, limits={'max_memory': 100})
     assert isinstance(exc_info.value.exception(), MemoryError)
+    failure = exc_info.value.failure
+    assert isinstance(failure, VmLimit.Memory)
+    assert failure.limit == snapshot(100)
+    assert failure.used > failure.limit
 
 
 def test_timeout_limit(monty_run: RunMonty):
@@ -90,6 +107,68 @@ def test_timeout_limit(monty_run: RunMonty):
     inner = exc_info.value.exception()
     assert isinstance(inner, TimeoutError)
     assert exc_info.value.display(format='type-msg').startswith('TimeoutError: feed time limit exceeded')
+    failure = exc_info.value.failure
+    assert isinstance(failure, VmLimit.FeedTime)
+    assert failure.limit == snapshot(100_000_000)
+    assert failure.elapsed > failure.limit
+
+
+@pytest.mark.parametrize(
+    ('error', 'message'),
+    [
+        (MemoryError, 'tool said: memory limit exceeded: 201 bytes > 100 bytes'),
+        (MemoryError, 'tool said: memory limit exceeded; time limit exceeded'),
+        (MemoryError, 'unrelated memory failure'),
+        (TimeoutError, 'feed time limit exceeded: 100ms > 50ms'),
+        (RecursionError, 'maximum recursion depth exceeded'),
+        (ValueError, 'bad input'),
+        (RuntimeError, 'suspension limit 3 exceeded'),
+    ],
+)
+@pytest.mark.parametrize('source', ['snippet', 'callback', 'input', 'callback_return'])
+def test_ordinary_exception_classification(pool: Monty, error: type[Exception], message: str, source: str) -> None:
+    def fail() -> None:
+        raise error(message)
+
+    def make_error() -> Exception:
+        return error(message)
+
+    operation = {
+        'snippet': f'raise {error.__name__}({message!r})',
+        'callback': 'fail()',
+        'input': 'raise provided_error',
+        'callback_return': 'raise make_error()',
+    }[source]
+    with pool.checkout() as session:
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            session.feed_run(
+                f'kept = 42\n{operation}',
+                inputs={'provided_error': make_error()} if source == 'input' else None,
+                external_lookup={'fail': fail, 'make_error': make_error},
+            )
+        assert session.feed_run('kept') == snapshot(42)
+    exc = exc_info.value
+    assert type(exc.exception()) is error
+    assert str(exc.exception()) == message
+    assert exc.traceback()[-1].source_line == operation
+    failure = exc.failure
+    assert isinstance(failure, OrdinaryException)
+
+
+@pytest.mark.parametrize(
+    'raise_stmt', ['raise ValueError', 'raise ValueError from None', 'raise ValueError from RuntimeError']
+)
+@pytest.mark.parametrize('reraise', [False, True])
+def test_raised_exception_class_is_ordinary(pool: Monty, raise_stmt: str, reraise: bool) -> None:
+    with pool.checkout() as session:
+        if reraise:
+            session.feed_run(f'try:\n    {raise_stmt}\nexcept ValueError as exc:\n    saved = exc')
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            session.feed_run('raise saved' if reraise else raise_stmt)
+        assert session.feed_run('42') == snapshot(42)
+    assert type(exc_info.value.exception()) is ValueError
+    assert str(exc_info.value.exception()) == snapshot('')
+    assert isinstance(exc_info.value.failure, OrdinaryException)
 
 
 def test_total_sleep_limit(monty_run: RunMonty):
@@ -134,6 +213,9 @@ while True:
             session.feed_run(code, external_lookup={'fetch': fetch})
         assert isinstance(exc_info.value.exception(), RuntimeError)
         assert exc_info.value.display(format='type-msg') == snapshot('RuntimeError: suspension limit 3 exceeded')
+        failure = exc_info.value.failure
+        assert isinstance(failure, SuspensionLimit)
+        assert failure.limit == 3
         assert session.feed_run('n') == snapshot(3)
         with pytest.raises(MontyRuntimeError) as exc_info:
             session.feed_run('fetch("y")', external_lookup={'fetch': fetch})
@@ -303,6 +385,10 @@ def test_turn_duration_limit(pool: Monty):
             session.feed_run('while True:\n    pass')
         assert isinstance(exc_info.value.exception(), TimeoutError)
         assert exc_info.value.display(format='type-msg').startswith('TimeoutError: turn time limit exceeded')
+        failure = exc_info.value.failure
+        assert isinstance(failure, VmLimit.TurnTime)
+        assert failure.limit == snapshot(100_000_000)
+        assert failure.elapsed > failure.limit
         assert session.feed_run('2 + 2') == snapshot(4)
 
 

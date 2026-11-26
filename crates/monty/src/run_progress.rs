@@ -508,7 +508,7 @@ impl LookupAnswer {
                 ),
             },
             NameLookupResult::Undefined => Self::Undefined,
-            NameLookupResult::Error(exc) => Self::Error(exc.into()),
+            NameLookupResult::Error(exc) => Self::Error(SimpleException::from_callback(exc).into()),
         }
     }
 }
@@ -994,7 +994,7 @@ pub(crate) fn resume_with_result(
                 effect => {
                     // Other effects have rollback in `resume_with_exception`.
                     vm.pending_effect = effect;
-                    vm.resume_with_exception(exc.into())
+                    vm.resume_with_exception(SimpleException::from_callback(exc).into())
                 }
             }
         }

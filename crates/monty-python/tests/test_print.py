@@ -477,6 +477,7 @@ def test_collect_string_max_bytes_raises(monty_run: RunMonty) -> None:
     inner = exc_info.value.exception()
     assert isinstance(inner, MemoryError)
     assert str(inner) == snapshot('memory limit exceeded: 201 bytes > 100 bytes')
+    assert exc_info.value.failure is None
     assert collector.output == snapshot('')
 
 
@@ -489,4 +490,5 @@ def test_collect_streams_max_bytes_raises(monty_run: RunMonty) -> None:
     assert isinstance(inner, MemoryError)
     # 201 payload bytes + 64 entry overhead
     assert str(inner) == snapshot('memory limit exceeded: 265 bytes > 100 bytes')
+    assert exc_info.value.failure is None
     assert collector.output == snapshot([])

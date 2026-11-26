@@ -374,14 +374,12 @@ pub struct RaisedException {
     #[prost(message, optional, tag = "4")]
     pub data: ::core::option::Option<ExcData>,
 }
-/// Structured exception payload, mirroring monty's `ExcData` enum. Future
-/// exception types that carry more than a message (e.g. OSError's errno)
-/// get new oneof arms with fresh tags. An absent/empty kind means "no
-/// payload" (`ExcData::None`).
+/// Structured attributes or execution failure metadata. An absent/empty kind
+/// has no payload. Extend VM-limit kinds inside the stable vm_limit arm.
 #[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]
 pub struct ExcData {
-    #[prost(oneof = "exc_data::Kind", tags = "1, 2")]
+    #[prost(oneof = "exc_data::Kind", tags = "1, 2, 3, 4, 5")]
     pub kind: ::core::option::Option<exc_data::Kind>,
 }
 /// Nested message and enum types in `ExcData`.
@@ -393,7 +391,76 @@ pub mod exc_data {
         Unicode(super::UnicodeErrorData),
         #[prost(message, tag = "2")]
         Json(super::JsonErrorData),
+        #[prost(message, tag = "3")]
+        VmLimit(super::VmLimit),
+        #[prost(message, tag = "4")]
+        ToolException(super::ToolException),
+        #[prost(message, tag = "5")]
+        SuspensionLimit(super::SuspensionLimit),
     }
+}
+/// Presence reports a VM limit even if the receiver does not recognize the arm.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+#[prost(prost_path = "crate::budgeted_prost")]
+pub struct VmLimit {
+    /// Both measurements are required to interpret a recognized arm.
+    #[prost(oneof = "vm_limit::Kind", tags = "1, 2, 3, 4")]
+    pub kind: ::core::option::Option<vm_limit::Kind>,
+}
+/// Nested message and enum types in `VmLimit`.
+pub mod vm_limit {
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+    #[prost(prost_path = "crate::budgeted_prost")]
+    pub struct Memory {
+        /// Bytes.
+        #[prost(uint64, optional, tag = "1")]
+        pub limit: ::core::option::Option<u64>,
+        #[prost(uint64, optional, tag = "2")]
+        pub used: ::core::option::Option<u64>,
+    }
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+    #[prost(prost_path = "crate::budgeted_prost")]
+    pub struct Time {
+        /// Nanoseconds.
+        #[prost(uint64, optional, tag = "1")]
+        pub limit: ::core::option::Option<u64>,
+        #[prost(uint64, optional, tag = "2")]
+        pub elapsed: ::core::option::Option<u64>,
+    }
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+    #[prost(prost_path = "crate::budgeted_prost")]
+    pub struct RecursionDepth {
+        /// Counts.
+        #[prost(uint64, optional, tag = "1")]
+        pub limit: ::core::option::Option<u64>,
+        #[prost(uint64, optional, tag = "2")]
+        pub depth: ::core::option::Option<u64>,
+    }
+    /// Both measurements are required to interpret a recognized arm.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Oneof)]
+    #[prost(prost_path = "crate::budgeted_prost")]
+    pub enum Kind {
+        #[prost(message, tag = "1")]
+        Memory(Memory),
+        #[prost(message, tag = "2")]
+        FeedTime(Time),
+        #[prost(message, tag = "3")]
+        TurnTime(Time),
+        #[prost(message, tag = "4")]
+        RecursionDepth(RecursionDepth),
+    }
+}
+/// An ordinary exception.
+/// The exception may come from sandbox code; this does not report tool execution.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+#[prost(prost_path = "crate::budgeted_prost")]
+pub struct ToolException {}
+/// A feed stopped by its caller because it exceeded the suspension budget.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+#[prost(prost_path = "crate::budgeted_prost")]
+pub struct SuspensionLimit {
+    #[prost(uint64, optional, tag = "1")]
+    pub limit: ::core::option::Option<u64>,
 }
 /// CPython's UnicodeDecodeError/UnicodeEncodeError constructor fields
 /// (encoding, object, start, end, reason), letting hosts rebuild the real

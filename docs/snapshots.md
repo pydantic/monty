@@ -395,6 +395,9 @@ Calling a loader after a feed or a previous load is rejected before restoration,
     Older releases reject the new dumps even if the new release can still read older dumps.
     Version 18 adds bytecode support for relative imports: Monty 1.7.0 rejects version 18 dumps, but workers using
     version 18 can still resume version 17 dumps.
+    Version 19 preserves a saved exception's VM limit classification when it is re-raised after restore.
+    Workers using version 19 still read versions 17 and 18; older workers reject version 19 dumps.
+    Upgrade all workers that restore snapshots before sending them version 19 dumps.
     Where the old data still holds everything the new meaning needs, the newer build upgrades older dumps as it loads
     them: version 14 builds load version 13 dumps from 1.0 and 1.1, generating the methods their dataclasses lack, and
     version 15 builds rebase the source positions of `eval()` code in version 13 and 14 dumps.

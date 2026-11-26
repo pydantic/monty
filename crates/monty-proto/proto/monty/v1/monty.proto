@@ -364,15 +364,54 @@ message RaisedException {
   ExcData data = 4;
 }
 
-// Structured exception payload, mirroring monty's `ExcData` enum. Future
-// exception types that carry more than a message (e.g. OSError's errno)
-// get new oneof arms with fresh tags. An absent/empty kind means "no
-// payload" (`ExcData::None`).
+// Structured attributes or execution failure metadata. An absent/empty kind
+// has no payload. Extend VM-limit kinds inside the stable vm_limit arm.
 message ExcData {
   oneof kind {
     UnicodeErrorData unicode = 1;
     JsonErrorData json = 2;
+    VmLimit vm_limit = 3;
+    ToolException tool_exception = 4;
+    SuspensionLimit suspension_limit = 5;
   }
+}
+
+// Presence reports a VM limit even if the receiver does not recognize the arm.
+message VmLimit {
+  message Memory {
+    // Bytes.
+    optional uint64 limit = 1;
+    optional uint64 used = 2;
+  }
+
+  message Time {
+    // Nanoseconds.
+    optional uint64 limit = 1;
+    optional uint64 elapsed = 2;
+  }
+
+  message RecursionDepth {
+    // Counts.
+    optional uint64 limit = 1;
+    optional uint64 depth = 2;
+  }
+
+  // Both measurements are required to interpret a recognized arm.
+  oneof kind {
+    Memory memory = 1;
+    Time feed_time = 2;
+    Time turn_time = 3;
+    RecursionDepth recursion_depth = 4;
+  }
+}
+
+// An ordinary exception.
+// The exception may come from sandbox code; this does not report tool execution.
+message ToolException {}
+
+// A feed stopped by its caller because it exceeded the suspension budget.
+message SuspensionLimit {
+  optional uint64 limit = 1;
 }
 
 // CPython's UnicodeDecodeError/UnicodeEncodeError constructor fields

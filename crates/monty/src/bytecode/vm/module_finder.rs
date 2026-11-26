@@ -292,7 +292,7 @@ impl VM<'_> {
             (ExtFunctionResult::Return(obj), None) => self.resume(obj),
             (ExtFunctionResult::ModuleFile(file), None) => self.resume_import_file(pending.name, file),
             (ExtFunctionResult::Error(exc), None) => {
-                let mut raise = ExceptionRaise::from(exc);
+                let mut raise = ExceptionRaise::from(SimpleException::from_callback(exc));
                 raise.hide_caret = true;
                 self.resume_with_exception(RunError::Exc(raise))
             }
