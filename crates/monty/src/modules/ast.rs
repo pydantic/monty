@@ -3,8 +3,6 @@
 //! The converter constructs Monty values directly from Ruff's expression tree.
 //! A parsed expression outside the literal grammar raises `ValueError`.
 
-use std::borrow::Cow;
-
 use memchr::{memchr, memchr_iter};
 use monty_types::ResourceTracker;
 use ruff_python_ast::{
@@ -125,7 +123,7 @@ fn parse_literal_source(source: &str, tracker: &ResourceTracker) -> RunResult<(B
     if let Some(error) = parsed.errors().first() {
         return Err(syntax_error(&error.error.to_string(), line_at(source, error.start())));
     }
-    if let Some(range) = trailing_indent(source) {
+    if let Some(range) = trailing_indent(source, parsed.tokens()) {
         return Err(syntax_error("unexpected indent", line_at(source, range.start())));
     }
 
@@ -205,12 +203,21 @@ impl LiteralSource<'_> {
             Expr::BooleanLiteral(expr) => Ok(Value::Bool(expr.value)),
 
             Expr::StringLiteral(expr) => {
-                vm.heap.tracker.check_pending_allocation(expr.range.len().to_usize())?;
-                Ok(allocate_string(expr.value.to_string(), vm.heap))
+                let len = expr.value.len();
+                vm.heap.tracker.check_pending_allocation(len)?;
+                let mut text = String::with_capacity(len);
+                for part in &expr.value {
+                    text.push_str(part.as_str());
+                }
+                Ok(allocate_string(text, vm.heap))
             }
             Expr::BytesLiteral(expr) => {
-                vm.heap.tracker.check_pending_allocation(expr.range.len().to_usize())?;
-                let bytes = Cow::from(&expr.value).into_owned();
+                let len = expr.value.len();
+                vm.heap.tracker.check_pending_allocation(len)?;
+                let mut bytes = try_vec_with_capacity(len)?;
+                for part in &expr.value {
+                    bytes.extend_from_slice(part.as_slice());
+                }
                 Ok(allocate_bytes(bytes, vm.heap))
             }
 

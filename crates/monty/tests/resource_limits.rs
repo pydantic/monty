@@ -2368,6 +2368,21 @@ fn a_refused_concatenation_releases_its_left_clones() {
     }
 }
 
+#[test]
+fn literal_eval_budgets_the_decoded_length_of_adjacent_literals() {
+    let padding = " ".repeat(64_000);
+    for prefix in ["", "b"] {
+        let code =
+            format!("from ast import literal_eval\nliteral_eval(\"{prefix}'a'{padding}{prefix}'b'\") == {prefix}'ab'");
+        let mut run = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+        let limits = ResourceLimits::default().max_memory(32_000);
+        let result = run
+            .run(vec![], ResourceTracker::new(limits), PrintWriter::Disabled)
+            .unwrap();
+        assert_eq!(result, MontyObject::bool(true));
+    }
+}
+
 /// `typing.assert_never` quotes at most 100 characters of the value's `repr`, and never builds the rest.
 ///
 /// The list costs about 48 KB but its full `repr` is over 3 MB, so with a 300 KB limit the

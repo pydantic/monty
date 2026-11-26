@@ -20,6 +20,7 @@ assert literal_eval('\n# comment\n(1,\n2)\n') == (1, 2)
 assert literal_eval("'''a\r\nb\rc\n\\r'''") == 'a\nb\nc\n\r'
 assert literal_eval("b'''a\r\nb\rc'''") == b'a\nb\nc'
 assert literal_eval('1\r\n') == 1
+assert literal_eval('1\\\n ') == 1
 assert literal_eval("'" + '(' * 4100 + "'") == '(' * 4100
 
 
@@ -71,7 +72,7 @@ try:
 except SyntaxError as exc:
     assert str(exc) == 'invalid non-printable character U+FEFF (<unknown>, line 1)'
 
-for source in ('[1,', '1; 2', '1\n ', '[' * 201 + '0' + ']' * 201):
+for source in ('[1,', '1; 2', '1\n ', '1 # comment\\\n ', '1\\\n\n ', '[' * 201 + '0' + ']' * 201):
     try:
         literal_eval(source)
         assert False, 'expected SyntaxError'

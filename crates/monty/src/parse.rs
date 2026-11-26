@@ -9,7 +9,7 @@ use ruff_python_ast::{
     InterpolatedStringElement, Keyword, Number, Operator as AstOperator, ParameterWithDefault, Pattern as AstPattern,
     Singleton, Stmt, UnaryOp,
     name::Name,
-    token::TokenKind,
+    token::{TokenKind, Tokens},
     visitor::{Visitor, walk_expr},
 };
 use ruff_python_parser::{Mode, parse_expression_range};
@@ -288,7 +288,7 @@ pub(crate) fn parse_expression_with_interner(
     }
     let parsed = parse_expression_range(code, TextRange::new(start, end))
         .map_err(|e| ParseError::syntax(e.error.to_string(), code_range(filename_id, e.range())))?;
-    if let Some(range) = trailing_indent(code) {
+    if let Some(range) = trailing_indent(code, parsed.tokens()) {
         return Err(ParseError::syntax(
             "Unexpected indentation",
             code_range(filename_id, range),
@@ -322,7 +322,7 @@ pub(crate) fn reject_leading_bom(code: &str, start: TextSize, filename_id: Strin
 /// A final line with no newline after it is not blank to CPython, so its
 /// indentation counts. A form feed resets the column, as in CPython, and a line
 /// continued by a backslash is not a new line at all.
-pub(crate) fn trailing_indent(code: &str) -> Option<TextRange> {
+pub(crate) fn trailing_indent(code: &str, tokens: &Tokens) -> Option<TextRange> {
     let line_start = code.rfind(['\n', '\r'])? + 1;
     let line = &code[line_start..];
     let column = line.chars().try_fold(0usize, |column, c| match c {
@@ -331,11 +331,14 @@ pub(crate) fn trailing_indent(code: &str) -> Option<TextRange> {
         '\x0c' => Some(0),
         _ => None,
     })?;
-    let continued = code[..line_start].trim_end_matches(['\n', '\r']).ends_with('\\');
-    (column > 0 && !continued).then(|| {
-        let start = TextSize::try_from(line_start).expect("eval source exceeds u32 offsets");
-        TextRange::at(start, TextSize::of(line))
-    })
+    if column == 0 {
+        return None;
+    }
+    let start = TextSize::try_from(line_start).expect("eval source exceeds u32 offsets");
+    // Ruff emits a newline token even after a comment, but skips an escaped newline.
+    let newline = tokens.before(start).last()?;
+    (newline.end() == start && matches!(newline.kind(), TokenKind::Newline | TokenKind::NonLogicalNewline))
+        .then(|| TextRange::at(start, TextSize::of(line)))
 }
 
 /// [`check_source_nesting`] for a host vetting a snippet before compiling it,
