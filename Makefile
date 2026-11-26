@@ -188,7 +188,7 @@ test-cpython: prepare-cpython-tests ## Type-check and run the enabled upstream C
 
 .PHONY: prepare-cpython-tests
 prepare-cpython-tests: ## Fetch the pinned CPython archive if needed and prepare the upstream test tree
-	python3 scripts/vendor_stdlib.py --prepare-tests
+	uv run --no-project scripts/vendor_stdlib.py --prepare-tests
 
 .PHONY: miri
 miri: ## Run library inline tests under miri (particularly relevant for heap.rs)
