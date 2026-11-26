@@ -117,6 +117,7 @@ const KEYWORDS = new Set([
 const SANDBOX_MODULES = new Set([
   '_stat',
   'annotationlib',
+  'ast',
   'asyncio',
   'base64',
   'binascii',
