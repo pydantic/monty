@@ -15,8 +15,6 @@
 //!   can simulate Monty's lower default depth on CPython too. Only allows
 //!   *lowering* the host-configured ceiling — see [`SysFunctions`].
 
-use smallvec::SmallVec;
-
 #[cfg(feature = "test-hooks")]
 use crate::{
     args::ArgValues,
@@ -26,7 +24,6 @@ use crate::{
 use crate::{
     bytecode::VM,
     intern::StaticStrings,
-    modules::StandardLib,
     types::{List, Module, NamedTuple, allocate_string, allocate_tuple, long_int::INT_MAX_STR_DIGITS},
     value::{EitherStr, Marker, Value},
 };
@@ -49,6 +46,42 @@ const MAXSIZE: i64 = i64::MAX;
 
 /// `sys.maxunicode` — the largest code point, `U+10FFFF`.
 const MAXUNICODE: i64 = 0x0010_FFFF;
+
+/// Sorted native module names, including import aliases. The registry test checks this list.
+const BUILTIN_MODULE_NAMES: &[StaticStrings] = &[
+    StaticStrings::Annotationlib,
+    StaticStrings::Asyncio,
+    StaticStrings::Base64,
+    StaticStrings::Binascii,
+    StaticStrings::Bisect,
+    StaticStrings::Collections,
+    StaticStrings::Copy,
+    StaticStrings::Csv,
+    StaticStrings::Dataclasses,
+    StaticStrings::Datetime,
+    StaticStrings::DecimalMod,
+    StaticStrings::Errno,
+    StaticStrings::Fnmatch,
+    StaticStrings::Functools,
+    #[cfg(feature = "test-hooks")]
+    StaticStrings::Gc,
+    StaticStrings::Hashlib,
+    StaticStrings::Itertools,
+    StaticStrings::Json,
+    StaticStrings::Math,
+    StaticStrings::Os,
+    StaticStrings::OsPath,
+    StaticStrings::Pathlib,
+    StaticStrings::Posixpath,
+    StaticStrings::Random,
+    StaticStrings::Re,
+    StaticStrings::Statistics,
+    StaticStrings::Sys,
+    StaticStrings::Time,
+    StaticStrings::Tomllib,
+    StaticStrings::Typing,
+    StaticStrings::Unicodedata,
+];
 
 /// Functions exposed by the `sys` module under the `test-hooks` feature.
 ///
@@ -300,13 +333,13 @@ fn int_max_str_digits() -> Value {
     i64::try_from(INT_MAX_STR_DIGITS).map_or(Value::Int(i64::MAX), Value::Int)
 }
 
-/// Lists built-in imports from the same registry used by the import opcode.
+/// Lists native imports in the sorted order CPython uses.
 fn builtin_module_names(vm: &VM<'_>) -> Value {
-    let mut names: SmallVec<[&str; 32]> = StandardLib::names().collect();
-    names.sort_unstable();
-
-    let values = names.into_iter().map(|name| allocate_string(name, vm.heap)).collect();
-    allocate_tuple(values, vm.heap)
+    let names = BUILTIN_MODULE_NAMES
+        .iter()
+        .map(|&name| Value::InternString(vm.interns.intern_static(name)))
+        .collect();
+    allocate_tuple(names, vm.heap)
 }
 
 /// Dispatches a `sys` module function call.
@@ -347,5 +380,20 @@ fn setrecursionlimit(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         Err(current) => Err(ExcType::value_error(format!(
             "sys.setrecursionlimit: cannot raise above current limit {current} (sandbox only allows lowering)"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BUILTIN_MODULE_NAMES;
+    use crate::modules::StandardLib;
+
+    #[test]
+    fn builtin_module_names_match_registry() {
+        let mut registered: Vec<_> = StandardLib::names().collect();
+        registered.sort_unstable();
+
+        let names: Vec<_> = BUILTIN_MODULE_NAMES.iter().copied().map(<&str>::from).collect();
+        assert_eq!(names, registered);
     }
 }
