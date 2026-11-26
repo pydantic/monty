@@ -735,6 +735,11 @@ impl Set {
     pub fn add(&mut self, value: Value, vm: &mut VM<'_>) -> RunResult<bool> {
         self.0.add(value, vm)
     }
+
+    /// Inserts a value whose hash was computed during host value import.
+    pub(crate) fn add_with_hash(&mut self, value: Value, hash: u64, vm: &mut VM<'_>) -> RunResult<bool> {
+        self.0.add_with_hash(value, hash, vm)
+    }
 }
 
 impl<'h> HeapReadMut<'h, Set> {

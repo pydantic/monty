@@ -9,8 +9,8 @@
 use std::mem;
 
 use monty_types::{
-    CallArgs, ExcType, InvalidInputError, MontyException, MontyObject, MontyUuid, OsFunctionCall, PrintWriter,
-    ResourceTracker, SourceRange,
+    CallArgs, ExcType, MontyException, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, ResourceTracker,
+    SourceRange,
 };
 
 use crate::{
@@ -491,21 +491,12 @@ pub(crate) enum LookupAnswer {
 impl LookupAnswer {
     /// Converts the host's answer while the VM is alive.
     ///
-    /// A value the heap cannot take becomes an in-sandbox error with the
-    /// mapping [`VM::resume`] applies to external call results: a resource
-    /// limit raises `MemoryError`, an unconvertible object `RuntimeError`.
+    /// Like [`VM::resume`], preserves runtime failures and reports invalid host data as `RuntimeError`.
     pub(crate) fn new(result: NameLookupResult, vm: &mut VM<'_>) -> Self {
         match result {
             NameLookupResult::Value(obj) => match obj.to_value(vm) {
                 Ok(value) => Self::Value(value),
-                Err(InvalidInputError::Resource(err)) => Self::Error(err.into()),
-                Err(other @ InvalidInputError::InvalidType(_)) => Self::Error(
-                    SimpleException::new(
-                        ExcType::RuntimeError,
-                        Some(format!("invalid name lookup result: {other}")),
-                    )
-                    .into(),
-                ),
+                Err(error) => Self::Error(error.into_run_error("invalid name lookup result")),
             },
             NameLookupResult::Undefined => Self::Undefined,
             NameLookupResult::Error(exc) => Self::Error(exc.into()),

@@ -88,6 +88,45 @@ fn resolve_name_lookups(mut progress: RunProgress) -> Result<RunProgress, MontyE
     Ok(progress)
 }
 
+#[test]
+fn host_return_dict_key_hash_errors_keep_their_cause() {
+    let nested_key = (0..16).fold(MontyObject::int(1), |value, _| MontyObject::tuple([value]));
+    let returned_dict = |key| MontyObject::dict([(key, MontyObject::none())]);
+    let call = |code: &str| {
+        let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+        let tracker = ResourceTracker::new(ResourceLimits::default().max_recursion_depth(8));
+        let progress = runner.start(vec![], tracker, PrintWriter::Disabled).unwrap();
+        let RunProgress::FunctionCall(call) = resolve_name_lookups(progress).unwrap() else {
+            panic!("expected host call");
+        };
+        call
+    };
+
+    let error = call("external()")
+        .resume(returned_dict(nested_key.clone()), PrintWriter::Disabled)
+        .unwrap_err();
+    assert_eq!(error.exc_type(), ExcType::RecursionError);
+
+    for (call_expression, eager) in [("external()", false), ("await external()", true)] {
+        let code = format!("try:\n    {call_expression}\nexcept RecursionError:\n    caught = True\ncaught");
+        let call = call(&code);
+        let response = returned_dict(nested_key.clone());
+        let result = if eager {
+            call.resume_eager(Ok(response), PrintWriter::Disabled)
+        } else {
+            call.resume(response, PrintWriter::Disabled)
+        }
+        .unwrap();
+        assert_eq!(result.into_complete().unwrap(), MontyObject::bool(true));
+    }
+
+    let error = call("external()")
+        .resume(returned_dict(MontyObject::list([])), PrintWriter::Disabled)
+        .unwrap_err();
+    assert_eq!(error.exc_type(), ExcType::RuntimeError);
+    insta::assert_snapshot!(error.message().unwrap(), @"invalid return type: unhashable dict keys");
+}
+
 /// Test that GC properly collects dict cycles.
 ///
 /// Each iteration creates a fresh `d1 <-> d2` cycle and the next iteration's
