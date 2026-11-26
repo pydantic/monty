@@ -32,6 +32,7 @@ files = [
     "datetime.pyi",
     "decimal.pyi",
     "enum.pyi",
+    "errno.pyi",
     "fnmatch.pyi",
     "functools.pyi",
     "genericpath.pyi",
