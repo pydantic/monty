@@ -33,7 +33,6 @@ use std::{
 
 use ahash::AHashMap;
 pub(crate) use compile::CompileInterns;
-use monty_types::{ResourceError, ResourceTracker};
 use num_bigint::BigInt;
 use storage::Entries;
 use strum::{EnumString, FromRepr, IntoStaticStr};
@@ -3721,31 +3720,22 @@ impl Interns {
         intern_static(&self.static_string_ids, &self.strings, value)
     }
 
-    /// Returns the canonical ID for runtime text, checking owned allocations before insertion.
-    pub(crate) fn intern_runtime(&self, text: &str, tracker: &ResourceTracker) -> Result<StringId, ResourceError> {
+    /// Interns a name only known at runtime, reusing its ID if already interned.
+    ///
+    /// For `from m import *` binding a module global slot, which code compiled
+    /// later must find by this same ID. Existing string borrows stay valid.
+    pub(crate) fn intern_runtime(&self, text: &str) -> StringId {
         assert!(!self.compiling.get(), "runtime interning during compilation");
         if let Some(id) = self.get_string_id_by_name(text) {
-            Ok(id)
+            id
         } else if let Ok(value) = text.parse::<StaticStrings>() {
-            Ok(intern_static(&self.static_string_ids, &self.strings, value))
+            intern_static(&self.static_string_ids, &self.strings, value)
         } else {
-            let mut ids = self.string_id_by_name.borrow_mut();
-            // Rehashing keeps the old buckets live. Allow three new buckets per usable slot
-            // to account for doubling and empty buckets, plus a control byte per bucket.
-            let index_growth = ResourceTracker::growth_bytes(
-                ids.len(),
-                ids.capacity(),
-                3 * (mem::size_of::<(Arc<str>, StringId)>() + 1),
-            );
-            // The Arc allocation holds two counters, the text, and alignment padding.
-            let text_bytes = text.len().saturating_add(3 * mem::size_of::<usize>());
-            tracker.check_allocation(text_bytes.saturating_add(index_growth))?;
-
             let id = next_string_id(self.strings.len());
             let text: Arc<str> = Arc::from(text);
             self.strings.push(InternedString::owned(Arc::clone(&text)));
-            ids.insert(text, id);
-            Ok(id)
+            self.string_id_by_name.borrow_mut().insert(text, id);
+            id
         }
     }
 

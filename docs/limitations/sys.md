@@ -48,8 +48,8 @@ access raises `AttributeError`.
     including `utf8_mode` and `safe_path` even though the sandbox has no other
     encoding and no `sys.path`. Two fields describe Monty rather than an unset
     switch: `dont_write_bytecode` is `1`, agreeing with
-    `sys.dont_write_bytecode`, and `hash_randomization` is `0` because Monty
-    seeds no hashes — CPython reports `1` by default. `int_max_str_digits` is
+    `sys.dont_write_bytecode`, and `hash_randomization` is `0` because Python string and bytes hashes use fixed seeds.
+    CPython reports `1` by default. `int_max_str_digits` is
     `4300`, the limit Monty enforces, but there is no
     `sys.set_int_max_str_digits` to change it. CPython 3.14 carries three
     further fields *outside* the sequence — `gil`, `thread_inherit_context` and
@@ -65,10 +65,16 @@ access raises `AttributeError`.
 
 ## `sys.intern(string, /)`
 
-For text from 2 to 15 UTF-8 bytes, `sys.intern` returns Monty's inline string value.
-A compiled literal of the same text can have a different identity.
-If a later feed compiles a longer literal equal to a live runtime intern, the literal can also have a different identity.
-Use the return value for identity comparisons.
+Use the return values of `sys.intern()` for identity comparisons.
+Python allows equal literals to have distinct identities and tells callers to keep the value returned by `sys.intern()`.
+[Python literal identity](https://docs.python.org/3.14/reference/expressions.html#literals-and-object-identity) ·
+[Python `sys.intern()`](https://docs.python.org/3.14/library/sys.html#sys.intern)
+
+For text from 2 to 15 UTF-8 bytes, Monty returns an inline string that can have a different identity from a literal.
+When Monty interns a new long string, the weak index records its hash and heap slot.
+The object can be reclaimed once it is unreachable.
+A later feed stores an equal literal in the compiler's string table with its own identity.
+Calling `sys.intern()` on that literal returns the runtime object while it remains alive.
 
 ## Not implemented
 
