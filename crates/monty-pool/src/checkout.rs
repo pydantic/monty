@@ -539,7 +539,7 @@ pub struct Checkout {
     /// The session ID a storing relay minted, from its reply to `Configure` or `Load`.
     session_id: Option<Vec<u8>>,
     /// Metadata from the initial checkout acknowledgment, not live limits after a restore.
-    checkout_effective_limits: Option<AppliedLimits>,
+    initial_effective_limits: Option<AppliedLimits>,
     /// Names sent as `Feed.async_functions` with every later feed, or `None`
     /// to make calls to async host functions suspend; see [`Checkout::set_async_functions`].
     async_functions: Option<Vec<String>>,
@@ -972,7 +972,7 @@ impl Checkout {
             streamed_args,
             reloading: false,
             session_id: None,
-            checkout_effective_limits: None,
+            initial_effective_limits: None,
             redial: redial.map(Box::new),
             feed_mounts: None,
             cwd_set: false,
@@ -1668,7 +1668,7 @@ impl Checkout {
     /// Snapshot restores do not update this metadata.
     #[must_use]
     pub fn checkout_effective_limits(&self) -> Option<AppliedLimits> {
-        self.checkout_effective_limits
+        self.initial_effective_limits
     }
 
     /// Sets how the feeds that follow treat calls to async host functions,
@@ -2687,7 +2687,7 @@ impl Checkout {
     fn adopt_checkout_ack(&mut self, event: &pb::WorkerEvent) -> Result<(), PoolError> {
         self.adopt_execution_clock(event)?;
         if !self.reloading {
-            self.checkout_effective_limits = event.applied_limits.map(AppliedLimits::from);
+            self.initial_effective_limits = event.applied_limits.map(AppliedLimits::from);
         }
         Ok(())
     }
