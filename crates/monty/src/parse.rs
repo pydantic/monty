@@ -316,8 +316,8 @@ pub(crate) fn reject_leading_bom(code: &str, start: TextSize, filename_id: Strin
     }
 }
 
-/// The last line of an `eval()` source when it holds only indentation, which
-/// CPython's tokenizer rejects as an unexpected indent but ruff accepts.
+/// Finds a final indentation-only line in an `eval()` or `literal_eval()` input.
+/// CPython raises an unexpected-indentation error for that line. Ruff accepts it.
 ///
 /// A final line with no newline after it is not blank to CPython, so its
 /// indentation counts. A form feed resets the column, as in CPython, and a line

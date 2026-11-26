@@ -202,7 +202,15 @@ assert eval('\t\n1') == 1
 assert eval('  #c\n1') == 1
 assert eval(' \t \r\n2') == 2
 # a last line of only indentation, with no newline after it, is an unexpected indent
-for source, line in [('1\n  ', 2), ('1\n\t', 2), ('(1\n  )\n  ', 3), ('1\r\n  ', 2), ('1\n\x0c ', 2)]:
+for source, line in [
+    ('1\n  ', 2),
+    ('1\n\t', 2),
+    ('(1\n  )\n  ', 3),
+    ('1\r\n  ', 2),
+    ('1\n\x0c ', 2),
+    ('1 # comment\\\n ', 2),
+    ('1\\\n\n ', 3),
+]:
     try:
         eval(source)
         assert False, 'expected SyntaxError'
@@ -212,6 +220,19 @@ assert eval('1\n  \n') == 1
 assert eval('1\n  #c') == 1
 assert eval('1\n \x0c') == 1
 assert eval('1\\\n  ') == 1
+
+# Decimal digits are counted without separators. Hex literals can be longer.
+assert eval('9_' * 4299 + '9') == 10**4300 - 1
+assert eval('0x' + 'f' * 4301) == 16**4301 - 1
+try:
+    eval('9_' * 4300 + '9')
+    assert False, 'expected SyntaxError'
+except SyntaxError as e:
+    assert str(e).split(';', 1)[0] == (
+        'Exceeds the limit (4300 digits) for integer string conversion: value has 4301 digits'
+    )
+    assert str(e).endswith('(<string>, line 1)')
+
 # a byte-order mark is an invalid character in a snippet string
 for source in ['\ufeff1', '\ufeff\n1', ' \ufeff1']:
     try:

@@ -2,6 +2,15 @@
 //!
 //! The converter constructs Monty values directly from Ruff's expression tree.
 //! A parsed expression outside the literal grammar raises `ValueError`.
+//!
+//! `ast.literal_eval('[-1 + 2j, 3 - 4j]')` returns a list of two complex
+//! numbers. These forms take a real literal with an optional sign on the
+//! left and a bare imaginary literal on the right.
+//! `ast.literal_eval('1 + 2')` and `ast.literal_eval('1 + -2j')` raise
+//! `ValueError`. Ordinary Python expressions evaluate these to `3` and `1-2j`.
+//!
+//! Raw CR and CRLF become LF before parsing, including inside quoted
+//! literals. Decimal integer literals have a 4,300-digit limit.
 
 use memchr::{memchr, memchr_iter};
 use monty_types::ResourceTracker;
