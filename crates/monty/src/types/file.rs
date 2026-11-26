@@ -1017,8 +1017,7 @@ pub(crate) fn apply_open_name(
 ) -> RunResult<Value> {
     let parsed = newline.as_deref().map_or(Some(Newline::default()), Newline::parse);
     if let Some(parsed) = parsed
-        && let Value::Ref(id) = &value
-        && let HeapReadOutput::OpenFile(file) = vm.heap.read(*id)
+        && let Some(file) = value.read_as::<OpenFile>(vm.heap)
     {
         let file = file.get_mut(vm.heap);
         if !file.path.is_empty() && !file.path.starts_with('/') {
@@ -1442,9 +1441,13 @@ fn compute_slice_text<'h>(
                     items.push(allocate_string(line.to_owned(), vm.heap));
                     start += end;
                 }
-                let list_id = vm.heap.allocate(HeapData::List(List::new(items)));
                 // Past-EOF preservation: matches `ReadSpec::All`.
-                (Value::Ref(list_id), position.max(buffer_total), buffer.len(), true)
+                (
+                    Value::allocate(List::new(items), vm.heap),
+                    position.max(buffer_total),
+                    buffer.len(),
+                    true,
+                )
             }
             ReadSpec::Seek { offset, whence } => {
                 let target = resolve_seek_target_usize(offset, whence, position, buffer_total)?;
@@ -1512,20 +1515,26 @@ fn compute_slice_binary<'h>(
             }
             ReadSpec::Size(n) => {
                 let take = tail.len().min(n);
-                let id = vm.heap.allocate(HeapData::Bytes(Bytes::new(tail[..take].to_vec())));
                 // Advance from the un-clamped user position so a past-EOF
                 // `read(N)` (which yields no bytes) leaves `position` alone
                 // instead of snapping it back to `buffer_total`.
                 let new_pos = position + take;
-                (Value::Ref(id), new_pos, new_pos >= buffer_total)
+                (
+                    Value::allocate(Bytes::new(tail[..take].to_vec()), vm.heap),
+                    new_pos,
+                    new_pos >= buffer_total,
+                )
             }
             ReadSpec::Line => {
                 let end = tail.iter().position(|b| *b == b'\n').map_or(tail.len(), |i| i + 1);
-                let id = vm.heap.allocate(HeapData::Bytes(Bytes::new(tail[..end].to_vec())));
                 // See `Size` above — past-EOF `readline()` returns `b''`
                 // without rewinding `position`.
                 let new_pos = position + end;
-                (Value::Ref(id), new_pos, new_pos >= buffer_total)
+                (
+                    Value::allocate(Bytes::new(tail[..end].to_vec()), vm.heap),
+                    new_pos,
+                    new_pos >= buffer_total,
+                )
             }
             ReadSpec::Lines => {
                 let mut items: Vec<Value> = Vec::new();
@@ -1533,13 +1542,15 @@ fn compute_slice_binary<'h>(
                 while start < tail.len() {
                     let rest = &tail[start..];
                     let end = rest.iter().position(|b| *b == b'\n').map_or(rest.len(), |i| i + 1);
-                    let id = vm.heap.allocate(HeapData::Bytes(Bytes::new(rest[..end].to_vec())));
-                    items.push(Value::Ref(id));
+                    items.push(Value::allocate(Bytes::new(rest[..end].to_vec()), vm.heap));
                     start += end;
                 }
-                let list_id = vm.heap.allocate(HeapData::List(List::new(items)));
                 // Past-EOF preservation: matches `ReadSpec::All`.
-                (Value::Ref(list_id), position.max(buffer_total), true)
+                (
+                    Value::allocate(List::new(items), vm.heap),
+                    position.max(buffer_total),
+                    true,
+                )
             }
             ReadSpec::Seek { offset, whence } => {
                 // Seek resolves against the un-clamped position so

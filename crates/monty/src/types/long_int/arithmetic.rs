@@ -14,7 +14,6 @@ use super::{
 use crate::{
     bytecode::VM,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::HeapData,
     resource_checks::{check_div_size, check_lshift_size, check_pow_size},
     value::{
         Value, float_divmod_tuple, float_pow_value, floor_divmod, int_divmod_tuple, py_float_divmod, py_float_mod,
@@ -297,8 +296,7 @@ pub(crate) fn float_binary(
         Value::Int(value) => *value as f64,
         Value::Bool(value) => f64::from(*value),
         Value::Float(value) => *value,
-        Value::InternLongInt(id) => bigint_to_f64_checked(vm.interns.get_long_int(*id))?,
-        Value::Ref(id) if let HeapData::LongInt(value) = vm.heap.get(*id) => value.to_f64_checked()?,
+        _ if let Some(big) = other.as_long_int(vm) => bigint_to_f64_checked(big)?,
         _ => return Ok(None),
     };
     let (lhs, rhs) = ordered(lhs, rhs, reflected);

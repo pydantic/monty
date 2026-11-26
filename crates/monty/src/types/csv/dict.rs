@@ -10,10 +10,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{
-        ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapObjectRead, HeapRead, HeapReadMut,
-        HeapReadOutput,
-    },
+    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapObjectRead, HeapRead, HeapReadMut},
     string_builder::StringBuilder,
     types::{
         CsvObject, Dict, List, PyTrait, Set,
@@ -511,13 +508,7 @@ fn dict_to_list<'h>(
 
 /// The row as a dict, or `None` when it is anything else (see [`dict_method_missing`]).
 fn row_dict<'h>(rowdict: &Value, vm: &VM<'h>) -> Option<HeapObjectRead<'h, Dict>> {
-    match rowdict {
-        Value::Ref(id) => match vm.heap.read(*id) {
-            HeapReadOutput::Dict(dict) => Some(dict),
-            _ => None,
-        },
-        _ => None,
-    }
+    rowdict.read_as::<Dict>(vm.heap)
 }
 
 /// The `AttributeError` CPython raises for a row that is not a mapping: `.keys()` is
@@ -530,10 +521,7 @@ fn dict_method_missing(rowdict: &Value, raise_on_extra: bool, vm: &VM<'_>) -> Ru
 /// `rowdict.keys() - self.fieldnames`: the `ValueError` for keys outside `known`, the set
 /// [`known_names`] built.
 fn check_extra_keys<'h>(dict: &HeapRead<'h, Dict>, known: &Value, vm: &mut VM<'h>) -> RunResult<()> {
-    let Value::Ref(known_id) = known else {
-        unreachable!("known_names allocates a set")
-    };
-    let HeapReadOutput::Set(known) = vm.heap.read(*known_id) else {
+    let Some(known) = known.read_as::<Set>(vm.heap) else {
         unreachable!("known_names allocates a set")
     };
     let keys = dict_keys(dict, vm)?;
@@ -591,10 +579,7 @@ fn with_writer<'h, T>(
     vm: &mut VM<'h>,
     call: impl FnOnce(&HeapRead<'h, CsvObject>, &mut VM<'h>) -> RunResult<T>,
 ) -> RunResult<T> {
-    let Value::Ref(writer_id) = writer else {
-        return Err(RunError::internal("DictWriter: writer is not a _csv.writer"));
-    };
-    let HeapReadOutput::Csv(mut writer_obj) = vm.heap.read(*writer_id) else {
+    let Some(mut writer_obj) = writer.read_as::<CsvObject>(vm.heap) else {
         return Err(RunError::internal("DictWriter: writer is not a _csv.writer"));
     };
     call(&mut writer_obj, vm)
@@ -624,10 +609,7 @@ fn dict_writer_part<'h, T>(obj: &HeapRead<'h, CsvObject>, vm: &VM<'h>, part: imp
 /// The next record's fields from the wrapped `_csv.reader`, taken as a vector rather than
 /// through `next()` so no list is built and discarded per row.
 fn next_row(reader: &Value, vm: &mut VM<'_>) -> RunResult<Option<Vec<Value>>> {
-    let Value::Ref(reader_id) = reader else {
-        return Err(RunError::internal("DictReader: reader is not a _csv.reader"));
-    };
-    let HeapReadOutput::Csv(reader_obj) = vm.heap.read(*reader_id) else {
+    let Some(reader_obj) = reader.read_as::<CsvObject>(vm.heap) else {
         return Err(RunError::internal("DictReader: reader is not a _csv.reader"));
     };
     super::reader::next_fields(&reader_obj, vm)

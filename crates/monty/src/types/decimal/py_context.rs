@@ -449,14 +449,8 @@ fn signal_of(value: &Value) -> Option<Signal> {
 /// A `flags=` / `traps=` constructor argument: a list of signals, or a dict
 /// mapping all nine signals to truth values.
 fn signal_set_arg(value: &Value, vm: &mut VM<'_>) -> RunResult<Conditions> {
-    let Value::Ref(id) = value else {
-        return Err(ExcType::type_error("argument must be a signal dict"));
-    };
-    let items: Option<Vec<Value>> = match vm.heap.get(*id) {
-        HeapData::List(list) => Some(list.items().cloned(vm.heap).collect()),
-        _ => None,
-    };
-    if let Some(items) = items {
+    if let Some(list) = value.get_as::<List>(vm.heap) {
+        let items: Vec<Value> = list.items().cloned(vm.heap).collect();
         defer_drop!(items, vm);
         let mut set = Conditions::EMPTY;
         for item in items {

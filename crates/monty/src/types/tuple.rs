@@ -592,9 +592,9 @@ impl TupleIterator {
         let source_id = match source {
             TupleIteratorSource::Tuple(id) | TupleIteratorSource::NamedTuple(id) => id,
         };
-        let id = vm.heap.allocate(HeapData::TupleIterator(Self { source, index: 0 }));
+        let iterator = Value::allocate(Self { source, index: 0 }, vm.heap);
         vm.heap.inc_ref(source_id);
-        Value::Ref(id)
+        iterator
     }
 }
 

@@ -18,12 +18,12 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropGuard, DropWithContext, HeapReadOutput},
+    heap::{DropGuard, DropWithContext},
     intern::StaticStrings,
     modules::ModuleFunctions,
     os_dispatch::PostConversionEffect,
     types::{
-        CsvObject, List, Module, PyTrait, Type,
+        CsvObject, List, Module, OpenFile, PyTrait, Type,
         csv::{
             DIALECT_NAMES, Dialect, DictReader, DictWriter, FIELD_SIZE_LIMIT, FmtParams, Quoting, Reader, Writer,
             write_method,
@@ -137,23 +137,16 @@ fn load_then_call(
     file_keyword: Option<&str>,
     vm: &mut VM<'_>,
 ) -> Result<CallResult, ArgValues> {
-    let file = args
+    let Some(file) = args
         .first_positional()
-        .or_else(|| file_keyword.and_then(|name| args.keyword(name, vm.heap, vm.interns)));
-    let file_id = match file {
-        Some(Value::Ref(id))
-            if let HeapReadOutput::OpenFile(file) = vm.heap.read(*id)
-                && file.needs_buffer_load(vm) =>
-        {
-            *id
-        }
-        _ => return Err(args),
-    };
-    let HeapReadOutput::OpenFile(file) = vm.heap.read(file_id) else {
-        unreachable!("checked above")
+        .or_else(|| file_keyword.and_then(|name| args.keyword(name, vm.heap, vm.interns)))
+        .and_then(|value| value.read_as::<OpenFile>(vm.heap))
+        .filter(|file| file.needs_buffer_load(vm))
+    else {
+        return Err(args);
     };
     let effect = PostConversionEffect::LoadThenCall {
-        file_id,
+        file_id: file.id(),
         callable,
         args,
     };

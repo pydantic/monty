@@ -31,7 +31,7 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropWithContext, HeapReadOutput},
+    heap::{DropGuard, DropWithContext},
     intern::StaticStrings,
     types::{
         Dict, Module, NamedTupleClass, PyTrait, Type,
@@ -110,21 +110,10 @@ pub(crate) fn counter_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>
 
     let mut dict = Dict::new();
     dict.make_counter();
-    let value = Value::allocate(dict, vm.heap);
-    let Value::Ref(dict_id) = value else {
-        unreachable!("just allocated a ref");
-    };
-    let result = {
-        let HeapReadOutput::Dict(mut counter) = vm.heap.read(dict_id) else {
-            unreachable!("just allocated a Counter dict");
-        };
-        counter_update(&mut counter, source, kwargs, false, vm)
-    };
-    if let Err(e) = result {
-        value.drop_with(vm);
-        return Err(e);
-    }
-    Ok(value)
+    let mut counter = DropGuard::new(vm.heap.allocate_as(dict), vm);
+    let (allocation, vm) = counter.as_parts_mut();
+    counter_update(allocation.read(vm.heap), source, kwargs, false, vm)?;
+    Ok(counter.into_inner().into_value())
 }
 
 /// The `collections.defaultdict(default_factory=None, /, *args, **kwargs)`
@@ -167,10 +156,7 @@ pub(crate) fn defaultdict_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Va
         }
     };
 
-    let Value::Ref(dict_id) = dict_value else {
-        unreachable!("Dict::init returns a dict ref");
-    };
-    let HeapReadOutput::Dict(dict) = vm.heap.read(dict_id) else {
+    let Some(dict) = dict_value.read_as::<Dict>(vm.heap) else {
         unreachable!("Dict::init returns a dict");
     };
     dict.get_mut(vm.heap).make_defaultdict(factory);
