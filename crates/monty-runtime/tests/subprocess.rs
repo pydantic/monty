@@ -506,6 +506,7 @@ fn abort_feed_round_trip() {
     child.send(pb::client_request::Kind::AbortFeed(pb::AbortFeed {
         exception: Some(pb::RaisedException {
             exc_type: "RuntimeError".to_owned(),
+            callback_reason: None,
             message: Some("suspension limit 3 exceeded".to_owned()),
             traceback: BudgetVec::new(),
             data: None,
@@ -622,6 +623,7 @@ fn name_lookup_error_raises_in_sandbox() {
     assert_eq!(lookup.name, "secret");
     let exc = pb::RaisedException {
         exc_type: "PermissionError".to_owned(),
+        callback_reason: None,
         message: Some("secret is off limits".to_owned()),
         traceback: BudgetVec::new(),
         data: None,
@@ -983,6 +985,7 @@ fn os_call_error_resume_carries_exception() {
     };
     let exc = pb::RaisedException {
         exc_type: "FileNotFoundError".to_owned(),
+        callback_reason: None,
         message: Some("No such file or directory: '/nope.txt'".to_owned()),
         traceback: BudgetVec::new(),
         data: None,
@@ -1119,6 +1122,7 @@ fn rejected_wait_timer_completes_as_timeout() {
     assert_eq!(sleep.delay.to_bits(), 1.0f64.to_bits());
     let exc = pb::RaisedException {
         exc_type: "RuntimeError".to_owned(),
+        callback_reason: None,
         message: Some("timer rejected".to_owned()),
         traceback: BudgetVec::new(),
         data: None,

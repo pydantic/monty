@@ -4,7 +4,9 @@
 use std::{
     error,
     fmt::{self, Write},
-    mem, str,
+    mem,
+    num::NonZeroU8,
+    str,
     sync::Arc,
 };
 
@@ -24,6 +26,8 @@ pub struct MontyException {
     traceback: Vec<StackFrame>,
     /// Structured payload for exception types that carry more than a message.
     data: ExcData,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    callback_reason: Option<NonZeroU8>,
 }
 
 /// A VM resource limit reported independently of the Python exception.
@@ -158,6 +162,7 @@ impl MontyException {
             message,
             traceback: vec![],
             data: ExcData::None,
+            callback_reason: None,
         }
     }
 
@@ -175,6 +180,7 @@ impl MontyException {
             message,
             traceback,
             data: ExcData::None,
+            callback_reason: None,
         }
     }
 
@@ -196,6 +202,19 @@ impl MontyException {
             Some(format!("suspension limit {limit} exceeded")),
         )
         .with_data(ExcData::SuspensionLimit { limit })
+    }
+
+    /// Attaches a host-supplied callback reason without changing the Python exception value.
+    #[must_use]
+    pub fn with_callback_reason(mut self, reason: Option<NonZeroU8>) -> Self {
+        self.callback_reason = reason;
+        self
+    }
+
+    /// The application-owned reason of the escaping callback exception, if supplied.
+    #[must_use]
+    pub fn callback_reason(&self) -> Option<NonZeroU8> {
+        self.callback_reason
     }
 
     /// The structured payload, [`ExcData::None`] for most exceptions.
@@ -242,6 +261,7 @@ impl MontyException {
             message: Some(err.to_string()),
             traceback: vec![],
             data: ExcData::None,
+            callback_reason: None,
         }
     }
 

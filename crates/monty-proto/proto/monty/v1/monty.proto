@@ -362,6 +362,8 @@ message RaisedException {
   // Structured payload for exception types that carry more than a message;
   // absent for most exceptions. Mirrors monty's `ExcData`.
   ExcData data = 4;
+  // Host-owned callback reason in 1..=255. Absent or invalid means unknown.
+  optional uint32 callback_reason = 5;
 }
 
 // Structured attributes or execution failure metadata. An absent/empty kind

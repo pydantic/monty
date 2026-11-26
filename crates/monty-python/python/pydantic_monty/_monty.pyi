@@ -219,6 +219,10 @@ class MontyError(Exception):
     This exception is raised internally by Monty and cannot be constructed directly.
     """
 
+    @property
+    def callback_reason(self) -> int | None:
+        """The original callback's host-supplied reason, if present."""
+
     def exception(self) -> BaseException:
         """Returns the inner exception as a Python exception object."""
 
@@ -321,6 +325,12 @@ class SuspensionLimit:
 
     @property
     def limit(self) -> int: ...
+
+@final
+class CallbackError(Exception):
+    """Opt in to returning an application-owned reason with this callback error."""
+
+    def __new__(cls, error: BaseException, reason: int, /) -> Self: ...
 
 @final
 class MontyRuntimeError(MontyError):

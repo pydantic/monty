@@ -15,6 +15,7 @@ from ._monty import (
     AsyncMontySession,
     AsyncMontyWebsocket,  # pyright: ignore[reportDeprecated]
     AsyncNameLookupSnapshot,
+    CallbackError,
     CollectStreams,
     CollectString,
     ExternalModule,
@@ -90,6 +91,7 @@ __all__ = (
     'AsyncMontySession',
     'AsyncMontyRemote',
     'AsyncMontyWebsocket',
+    'CallbackError',
     'CollectStreams',
     'CollectString',
     'ExternalModule',

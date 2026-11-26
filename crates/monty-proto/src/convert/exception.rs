@@ -2,7 +2,7 @@
 //! frames so an exception raised on one side of the process boundary renders
 //! identically on the other.
 
-use std::sync::Arc;
+use std::{num::NonZeroU8, sync::Arc};
 
 use monty_types::{
     CodeLoc, ExcData, ExcType, JsonErrorData, MontyException, SourceRange, StackFrame, UnicodeErrorData,
@@ -18,6 +18,7 @@ impl From<&MontyException> for pb::RaisedException {
             message: exc.message().map(ToOwned::to_owned),
             traceback: exc.traceback().iter().map(pb::StackFrame::from).collect(),
             data: pb_exc_data(exc.data()),
+            callback_reason: exc.callback_reason().map(|reason| u32::from(reason.get())),
         }
     }
 }
@@ -50,7 +51,13 @@ impl TryFrom<pb::RaisedException> for MontyException {
             }
             Some(pb::exc_data::Kind::SuspensionLimit(_)) | None => ExcData::None,
         };
-        Ok(Self::with_traceback(exc_type, message, traceback).with_data(data))
+        let callback_reason = err
+            .callback_reason
+            .and_then(|reason| u8::try_from(reason).ok())
+            .and_then(NonZeroU8::new);
+        Ok(Self::with_traceback(exc_type, message, traceback)
+            .with_data(data)
+            .with_callback_reason(callback_reason))
     }
 }
 

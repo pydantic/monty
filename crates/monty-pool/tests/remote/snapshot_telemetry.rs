@@ -240,6 +240,7 @@ async fn dump_span_scenario() {
             &event_kind(pb::worker_event::Kind::Error(pb::Error {
                 exception: Some(pb::RaisedException {
                     exc_type: "RuntimeError".to_owned(),
+                    callback_reason: None,
                     message: Some("snapshot store refused the dump".to_owned()),
                     traceback: vec![].into(),
                     data: None,

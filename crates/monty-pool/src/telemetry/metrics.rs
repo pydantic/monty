@@ -1248,6 +1248,7 @@ mod tests {
             pb::ext_function_result::Kind::NotFound("attacker_chosen".to_owned()),
             pb::ext_function_result::Kind::Error(pb::RaisedException {
                 exc_type: "AttributeError".to_owned(),
+                callback_reason: None,
                 message: None,
                 traceback: vec![].into(),
                 data: None,
@@ -1396,6 +1397,7 @@ mod tests {
         metrics.event(&event(pb::worker_event::Kind::Error(pb::Error {
             exception: Some(pb::RaisedException {
                 exc_type: "MyCustomError".to_owned(),
+                callback_reason: None,
                 message: None,
                 traceback: vec![].into(),
                 data: None,
@@ -1578,6 +1580,7 @@ mod tests {
         metrics.event(&event(pb::worker_event::Kind::Error(pb::Error {
             exception: Some(pb::RaisedException {
                 exc_type: "ValueError".to_owned(),
+                callback_reason: None,
                 message: None,
                 traceback: vec![].into(),
                 data: None,

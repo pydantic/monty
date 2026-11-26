@@ -393,6 +393,9 @@ pub struct RaisedException {
     /// absent for most exceptions. Mirrors monty's `ExcData`.
     #[prost(message, optional, tag = "4")]
     pub data: ::core::option::Option<ExcData>,
+    /// Host-owned callback reason in 1..=255. Absent or invalid means unknown.
+    #[prost(uint32, optional, tag = "5")]
+    pub callback_reason: ::core::option::Option<u32>,
 }
 /// Structured attributes or execution failure metadata. An absent/empty kind
 /// has no payload. Extend VM-limit kinds inside the stable vm_limit arm.

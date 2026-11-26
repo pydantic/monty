@@ -235,6 +235,14 @@ sandbox, so sandboxed code can catch it:
 If the sandbox does not catch it, `feed_run` raises [`MontyRuntimeError`][pydantic_monty.MontyRuntimeError] with the sandbox traceback.
 Only [the exception types Monty implements](limitations/index.md) can cross; the type name is what carries over, not your
 exception class.
+
+In Python, a host callback can raise `CallbackError(error, code)` to send a reason code with that exception.
+The application owns the interpretation of the code, which must be an integer from 1 through 255.
+The sandbox receives the original exception type and arguments. It cannot read or set the reason code.
+If that exception escapes the sandbox, the host can read the code through `MontyError.callback_reason`.
+Catching and re-raising the same exception preserves the code. A different exception does not inherit the code, even
+when it chains from the original exception. `None` means no known reason, including when an older worker omits it.
+Treat codes your application does not recognize like an absent reason. Do not use a reason as an authorization decision.
 JavaScript uses `error.name`; an unrecognised name becomes `RuntimeError`.
 Host tracebacks are not preserved.
 

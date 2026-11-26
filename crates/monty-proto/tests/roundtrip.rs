@@ -503,6 +503,7 @@ fn unknown_raised_exception_falls_back_to_exception() {
 fn raised(exc_type: &str, message: Option<&str>) -> pb::RaisedException {
     pb::RaisedException {
         exc_type: exc_type.to_owned(),
+        callback_reason: None,
         message: message.map(ToOwned::to_owned),
         traceback: vec![].into(),
         data: None,
@@ -514,6 +515,7 @@ fn raised(exc_type: &str, message: Option<&str>) -> pb::RaisedException {
 fn unicode_exception(encoding: String, object: Vec<u8>, start: u64, end: u64, reason: String) -> pb::RaisedException {
     pb::RaisedException {
         exc_type: "UnicodeDecodeError".to_owned(),
+        callback_reason: None,
         message: Some("boom".to_owned()),
         traceback: vec![].into(),
         data: Some(pb::ExcData {
@@ -597,6 +599,7 @@ fn json_error_payload_round_trips() {
 fn json_exception(msg: String, doc: Option<String>, pos: u64, lineno: u64, colno: u64) -> pb::RaisedException {
     pb::RaisedException {
         exc_type: "json.JSONDecodeError".to_owned(),
+        callback_reason: None,
         message: Some(format!("{msg}: line {lineno} column {colno} (char {pos})")),
         traceback: vec![].into(),
         data: Some(pb::ExcData {
@@ -1400,4 +1403,16 @@ fn source_range_filename_is_capped_on_a_char_boundary() {
         SourceRange::MAX_FILENAME_LEN - 1
     );
     assert_eq!(SourceRange::new("<python-input-3>", 0, 0).filename, "<python-input-3>");
+}
+
+#[test]
+fn callback_reasons_round_trip_only_when_valid() {
+    for (input, expected) in [(None, None), (Some(0), None), (Some(11), Some(11)), (Some(256), None)] {
+        let mut wire = raised("ValueError", Some("same text"));
+        wire.callback_reason = input;
+        let error = MontyException::try_from(wire).unwrap();
+        assert_eq!(error.callback_reason().map(|reason| u32::from(reason.get())), expected);
+        assert_eq!(error.message(), Some("same text"));
+        assert_eq!(pb::RaisedException::from(&error).callback_reason, expected);
+    }
 }

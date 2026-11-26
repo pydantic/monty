@@ -1690,6 +1690,7 @@ async fn rejected_raw_load_keeps_the_suspension_count() {
                 kind: Some(pb::worker_event::Kind::Error(pb::Error {
                     exception: Some(pb::RaisedException {
                         exc_type: "RuntimeError".to_owned(),
+                        callback_reason: None,
                         message: Some("protocol violation: Load requires a session that has not started".to_owned()),
                         traceback: vec![].into(),
                         data: None,
@@ -2511,6 +2512,7 @@ async fn refused_restore_keeps_the_session_id() {
             pb::worker_event::Kind::Error(pb::Error {
                 exception: Some(pb::RaisedException {
                     exc_type: "RuntimeError".to_owned(),
+                    callback_reason: None,
                     message: Some("unknown session".to_owned()),
                     traceback: vec![].into(),
                     data: None,
@@ -4166,6 +4168,7 @@ async fn an_abort_in_the_first_turn_keeps_the_server_clock() {
             pb::worker_event::Kind::Error(pb::Error {
                 exception: Some(pb::RaisedException {
                     exc_type: "RuntimeError".to_owned(),
+                    callback_reason: None,
                     message: Some("suspension limit 0 exceeded".to_owned()),
                     traceback: vec![].into(),
                     data: None,

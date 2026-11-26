@@ -2,6 +2,7 @@ use std::{
     borrow::Cow,
     fmt::{self, Display, Write},
     mem,
+    num::NonZeroU8,
 };
 
 use monty_types::{
@@ -2946,6 +2947,9 @@ pub(crate) struct SimpleException {
     arg: Option<String>,
     /// Structured exception payload carried through catch, restore, and re-raise.
     data: ExcData,
+    /// Host metadata. Do not expose it on Python exception values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    callback_reason: Option<NonZeroU8>,
     /// The chained exceptions; only the heap-resident object owns them. Boxed
     /// because most exceptions have none and `HeapData` has a size ceiling.
     #[serde(default)]
@@ -2962,6 +2966,7 @@ impl Clone for SimpleException {
             exc_type: self.exc_type,
             arg: self.arg.clone(),
             data: self.data.clone(),
+            callback_reason: self.callback_reason,
             chain: None,
         }
     }
@@ -2993,6 +2998,7 @@ impl From<MontyException> for SimpleException {
         Self {
             exc_type: exc.exc_type(),
             data: exc.take_data(),
+            callback_reason: exc.callback_reason(),
             arg: exc.into_message(),
             chain: None,
         }
@@ -3007,6 +3013,7 @@ impl SimpleException {
             exc_type,
             arg,
             data: ExcData::None,
+            callback_reason: None,
             chain: None,
         }
     }
@@ -3018,6 +3025,7 @@ impl SimpleException {
             exc_type,
             arg: Some(arg.to_string()),
             data: ExcData::None,
+            callback_reason: None,
             chain: None,
         }
     }
@@ -3029,6 +3037,7 @@ impl SimpleException {
             exc_type,
             arg: None,
             data: ExcData::None,
+            callback_reason: None,
             chain: None,
         }
     }
@@ -3333,7 +3342,9 @@ impl ExceptionRaise {
             traceback.push(*frame);
         }
 
-        MontyException::with_traceback(self.exc.exc_type, self.exc.arg, traceback).with_data(self.exc.data)
+        MontyException::with_traceback(self.exc.exc_type, self.exc.arg, traceback)
+            .with_data(self.exc.data)
+            .with_callback_reason(self.exc.callback_reason)
     }
 }
 

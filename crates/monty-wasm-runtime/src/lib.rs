@@ -492,6 +492,7 @@ fn call_result_from_component(result: CallResult) -> pb::ExtFunctionResult {
 fn raised_exception_from_component(error: RaisedError) -> pb::RaisedException {
     pb::RaisedException {
         exc_type: error.exc_type,
+        callback_reason: None,
         message: Some(error.message),
         traceback: BudgetVec::new(),
         data: None,

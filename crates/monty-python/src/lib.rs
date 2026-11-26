@@ -179,6 +179,8 @@ mod _monty {
     #[pymodule_export]
     use super::telemetry::install_telemetry;
     use super::{get_not_handled, get_version, pool::binary_finder};
+    #[pymodule_export]
+    use crate::exceptions::CallbackError;
 
     #[pymodule_init]
     fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {

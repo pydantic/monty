@@ -605,6 +605,7 @@ fn abort_feed_ends_a_suspended_feed_uncatchably() {
     let request = frame_request(pb::client_request::Kind::AbortFeed(pb::AbortFeed {
         exception: Some(pb::RaisedException {
             exc_type: "RuntimeError".to_owned(),
+            callback_reason: None,
             message: Some("suspension limit 3 exceeded".to_owned()),
             traceback: vec![].into(),
             data: None,
@@ -635,6 +636,7 @@ fn abort_feed_without_a_suspension_is_a_protocol_violation() {
     let request = frame_request(pb::client_request::Kind::AbortFeed(pb::AbortFeed {
         exception: Some(pb::RaisedException {
             exc_type: "RuntimeError".to_owned(),
+            callback_reason: None,
             message: None,
             traceback: vec![].into(),
             data: None,

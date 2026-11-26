@@ -473,7 +473,9 @@ fn parse_external_result(
     } else if let Some(exc) = result.get_item(intern!(py, "exception"))? {
         if exc.is_instance_of::<PyBaseException>() {
             let py_err = PyErr::from_value(exc);
-            Ok(ResumeValue::Error(exc_py_to_monty(py, &py_err)))
+            Ok(ResumeValue::Error(crate::exceptions::callback_error_to_monty(
+                py, &py_err,
+            )))
         } else {
             Err(PyTypeError::new_err("'exception' must be a BaseException instance"))
         }

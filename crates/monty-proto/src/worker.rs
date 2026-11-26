@@ -1370,6 +1370,7 @@ pub fn protocol_violation(message: &str) -> pb::WorkerEvent {
     event(pb::worker_event::Kind::Error(pb::Error {
         exception: Some(pb::RaisedException {
             exc_type: ExcType::RuntimeError.to_string(),
+            callback_reason: None,
             message: Some(format!("protocol violation: {message}")),
             traceback: BudgetVec::new(),
             data: None,
@@ -1406,6 +1407,7 @@ fn error_event(exc_type: ExcType, message: &str) -> pb::WorkerEvent {
     event(pb::worker_event::Kind::Error(pb::Error {
         exception: Some(pb::RaisedException {
             exc_type: exc_type.to_string(),
+            callback_reason: None,
             message: Some(message.to_owned()),
             traceback: BudgetVec::new(),
             data: None,

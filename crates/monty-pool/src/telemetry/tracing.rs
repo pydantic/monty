@@ -2115,6 +2115,7 @@ mod tests {
         let result = pb::ExtFunctionResult {
             kind: Some(pb::ext_function_result::Kind::Error(pb::RaisedException {
                 exc_type: "ValueError".to_owned(),
+                callback_reason: None,
                 message: Some(long.clone()),
                 traceback: vec![].into(),
                 data: None,
@@ -2159,6 +2160,7 @@ mod tests {
         recorder.event(&event(pb::worker_event::Kind::Error(pb::Error {
             exception: Some(pb::RaisedException {
                 exc_type: "UnicodeDecodeError".to_owned(),
+                callback_reason: None,
                 message: None,
                 traceback: vec![].into(),
                 data: Some(pb::ExcData {

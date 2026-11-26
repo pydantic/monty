@@ -18,11 +18,11 @@
 //! └── MontyConversionError     # A host value that can't be converted into the sandbox
 //! ```
 
-use std::sync::Arc;
+use std::{num::NonZeroU8, sync::Arc};
 
 use ahash::AHashMap;
 use monty_pool::RemoteDisconnect;
-use monty_proto::python::exc_monty_to_py;
+use monty_proto::python::{exc_monty_to_py, exc_py_to_monty};
 use monty_types::{ExcData, ExcType, MontyException, SourceRange, VmLimit, VmLimitSource};
 use pyo3::{
     PyClassInitializer,
@@ -32,6 +32,36 @@ use pyo3::{
     sync::PyOnceLock,
     types::{PyDict, PyList, PyString},
 };
+
+/// Deliberately attaches an application-owned reason to one host callback exception.
+#[pyclass(extends=exceptions::PyException, module="pydantic_monty")]
+pub struct CallbackError {
+    error: Py<exceptions::PyBaseException>,
+    reason: NonZeroU8,
+}
+
+#[pymethods]
+impl CallbackError {
+    #[new]
+    #[pyo3(signature = (error, reason, /))]
+    fn new(error: Py<exceptions::PyBaseException>, reason: u8) -> PyResult<Self> {
+        let reason = NonZeroU8::new(reason)
+            .ok_or_else(|| exceptions::PyValueError::new_err("callback reason must be in 1..=255"))?;
+        Ok(Self { error, reason })
+    }
+
+    fn __str__(&self, py: Python<'_>) -> PyResult<String> {
+        self.error.bind(py).str()?.extract()
+    }
+}
+
+pub(crate) fn callback_error_to_monty(py: Python<'_>, err: &PyErr) -> MontyException {
+    if let Ok(wrapped) = err.value(py).extract::<PyRef<'_, CallbackError>>() {
+        let original = PyErr::from_value(wrapped.error.bind(py).clone().into_any());
+        return exc_py_to_monty(py, &original).with_callback_reason(Some(wrapped.reason));
+    }
+    exc_py_to_monty(py, err)
+}
 
 /// Base exception for all Monty interpreter errors; catching it catches any
 /// exception raised by Monty.
@@ -75,6 +105,12 @@ impl MontyError {
 
 #[pymethods]
 impl MontyError {
+    /// Host-supplied reason on the exact escaping callback exception, if any.
+    #[getter]
+    fn callback_reason(&self) -> Option<u8> {
+        self.exc.callback_reason().map(NonZeroU8::get)
+    }
+
     /// Recreates the inner exception as a native Python exception object (e.g.
     /// `ValueError`, `TypeError`) from the stored type and message.
     fn exception(&self, py: Python<'_>) -> Py<PyAny> {

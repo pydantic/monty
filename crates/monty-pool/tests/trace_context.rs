@@ -263,6 +263,7 @@ async fn a_rejected_answer_keeps_the_suspensions_span() {
             kind: Some(pb::worker_event::Kind::Error(pb::Error {
                 exception: Some(pb::RaisedException {
                     exc_type: "TypeError".to_owned(),
+                    callback_reason: None,
                     message: Some("bad answer".to_owned()),
                     traceback: vec![].into(),
                     data: None,

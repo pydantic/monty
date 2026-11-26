@@ -22,7 +22,7 @@ use pyo3::{
 
 use crate::{
     callback_context,
-    exceptions::MontyConversionError,
+    exceptions::{MontyConversionError, callback_error_to_monty},
     type_hints::{callable_type_hints, class_type_hints},
 };
 
@@ -91,7 +91,7 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         match self.call_inner(function_name, args) {
             Ok(Some(result)) => ExtFunctionResult::Return(result),
             Ok(None) => ExtFunctionResult::NotFound(function_name.to_owned()),
-            Err(err) => ExtFunctionResult::Error(exc_py_to_monty(self.py, &err)),
+            Err(err) => ExtFunctionResult::Error(callback_error_to_monty(self.py, &err)),
         }
     }
 
@@ -122,13 +122,13 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
                     },
                 };
             }
-            Err(err) => return CallResult::Sync(ExtFunctionResult::Error(exc_py_to_monty(self.py, &err))),
+            Err(err) => return CallResult::Sync(ExtFunctionResult::Error(callback_error_to_monty(self.py, &err))),
             Ok(_) => {}
         }
         match self.call_inner_raw(function_name, args) {
             Ok(Some(result)) => result_to_call_result(self.py, &result, self.instances),
             Ok(None) => CallResult::Sync(ExtFunctionResult::NotFound(function_name.to_owned())),
-            Err(err) => CallResult::Sync(ExtFunctionResult::Error(exc_py_to_monty(self.py, &err))),
+            Err(err) => CallResult::Sync(ExtFunctionResult::Error(callback_error_to_monty(self.py, &err))),
         }
     }
 
@@ -201,7 +201,7 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         };
         match hints {
             Ok(hints) => ExtFunctionResult::Return(hints),
-            Err(err) => ExtFunctionResult::Error(exc_py_to_monty(self.py, &err)),
+            Err(err) => ExtFunctionResult::Error(callback_error_to_monty(self.py, &err)),
         }
     }
 
@@ -279,7 +279,7 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
             Ok(())
         });
         if let Err(err) = installed {
-            return Staged::Done(ExtFunctionResult::Error(exc_py_to_monty(self.py, &err)));
+            return Staged::Done(ExtFunctionResult::Error(callback_error_to_monty(self.py, &err)));
         }
         match then {
             AfterModule::Import => Staged::Done(self.import_module(&single_arg(MontyObject::string(&names[0])))),
@@ -290,13 +290,15 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
                 CallResult::Sync(result) => Staged::Done(result),
                 CallResult::Coroutine(coro) => Staged::Coroutine(coro),
                 // the module is installed, so its factory cannot be pending again
-                CallResult::ModuleCoroutine { names, .. } => Staged::Done(ExtFunctionResult::Error(exc_py_to_monty(
-                    self.py,
-                    &PyRuntimeError::new_err(format!(
-                        "module factory for {:?} pending after it was installed",
-                        names.join(", ")
-                    )),
-                ))),
+                CallResult::ModuleCoroutine { names, .. } => {
+                    Staged::Done(ExtFunctionResult::Error(callback_error_to_monty(
+                        self.py,
+                        &PyRuntimeError::new_err(format!(
+                            "module factory for {:?} pending after it was installed",
+                            names.join(", ")
+                        )),
+                    )))
+                }
             },
         }
     }
@@ -315,10 +317,10 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
             },
             Ok(Some(Resolved::Module(module))) => CallResult::Sync(match self.module_value(name, module.get()) {
                 Ok(value) => ExtFunctionResult::Return(value),
-                Err(err) => ExtFunctionResult::Error(exc_py_to_monty(self.py, &err)),
+                Err(err) => ExtFunctionResult::Error(callback_error_to_monty(self.py, &err)),
             }),
             Ok(None) => CallResult::Sync(ExtFunctionResult::NotFound(IMPORT_CALL.to_owned())),
-            Err(err) => CallResult::Sync(ExtFunctionResult::Error(exc_py_to_monty(self.py, &err))),
+            Err(err) => CallResult::Sync(ExtFunctionResult::Error(callback_error_to_monty(self.py, &err))),
         }
     }
 
@@ -331,13 +333,14 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         match self.resolve_module(name) {
             Ok(Some(Resolved::Module(module))) => match self.module_value(name, module.get()) {
                 Ok(value) => ExtFunctionResult::Return(value),
-                Err(err) => ExtFunctionResult::Error(exc_py_to_monty(self.py, &err)),
+                Err(err) => ExtFunctionResult::Error(callback_error_to_monty(self.py, &err)),
             },
-            Ok(Some(Resolved::Awaitable(awaitable))) => {
-                ExtFunctionResult::Error(exc_py_to_monty(self.py, &sync_module_coroutine_error(name, &awaitable)))
-            }
+            Ok(Some(Resolved::Awaitable(awaitable))) => ExtFunctionResult::Error(callback_error_to_monty(
+                self.py,
+                &sync_module_coroutine_error(name, &awaitable),
+            )),
             Ok(None) => ExtFunctionResult::NotFound(IMPORT_CALL.to_owned()),
-            Err(err) => ExtFunctionResult::Error(exc_py_to_monty(self.py, &err)),
+            Err(err) => ExtFunctionResult::Error(callback_error_to_monty(self.py, &err)),
         }
     }
 
@@ -358,7 +361,7 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
                     for (_, awaitable) in &pending {
                         close_coroutine(awaitable);
                     }
-                    return CallResult::Sync(ExtFunctionResult::Error(exc_py_to_monty(self.py, &err)));
+                    return CallResult::Sync(ExtFunctionResult::Error(callback_error_to_monty(self.py, &err)));
                 }
             }
         }
@@ -388,13 +391,13 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
             match self.resolve_module(name) {
                 Ok(Some(Resolved::Module(module))) => collect_stubs(self.py, name, module.get(), &mut stubs),
                 Ok(Some(Resolved::Awaitable(awaitable))) => {
-                    return ExtFunctionResult::Error(exc_py_to_monty(
+                    return ExtFunctionResult::Error(callback_error_to_monty(
                         self.py,
                         &sync_module_coroutine_error(name, &awaitable),
                     ));
                 }
                 Ok(None) => {}
-                Err(err) => return ExtFunctionResult::Error(exc_py_to_monty(self.py, &err)),
+                Err(err) => return ExtFunctionResult::Error(callback_error_to_monty(self.py, &err)),
             }
         }
         ExtFunctionResult::Return(MontyObject::dict(stubs))
@@ -569,7 +572,7 @@ pub fn dispatch_object_call(
 ) -> ExtFunctionResult {
     match dispatch_object_call_inner(py, function_name, object_id, args, instances) {
         Ok(result) => ExtFunctionResult::Return(result),
-        Err(err) => ExtFunctionResult::Error(exc_py_to_monty(py, &err)),
+        Err(err) => ExtFunctionResult::Error(callback_error_to_monty(py, &err)),
     }
 }
 
@@ -584,7 +587,7 @@ pub fn dispatch_object_call_or_coroutine(
 ) -> CallResult {
     match call_object_method_raw(py, function_name, object_id, args, instances) {
         Ok(result) => result_to_call_result(py, &result, instances),
-        Err(err) => CallResult::Sync(ExtFunctionResult::Error(exc_py_to_monty(py, &err))),
+        Err(err) => CallResult::Sync(ExtFunctionResult::Error(callback_error_to_monty(py, &err))),
     }
 }
 
@@ -836,7 +839,7 @@ fn inspect_predicate(py: Python<'_>, name: &str, obj: &Bound<'_, PyAny>) -> bool
 /// Converts an exception from a spawned async external function into an
 /// `ExtFunctionResult` for the async dispatch loop.
 pub fn py_err_to_ext_result(py: Python<'_>, err: &PyErr) -> ExtFunctionResult {
-    ExtFunctionResult::Error(exc_py_to_monty(py, err))
+    ExtFunctionResult::Error(callback_error_to_monty(py, err))
 }
 
 /// Converts a successful async external function result into an
