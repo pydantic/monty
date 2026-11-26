@@ -54,6 +54,8 @@ its own `metadata` call returned the same value, and otherwise closes the ready 
 Leave `pre_warm` off when one pool's checkouts send different metadata, such as per-user credentials.
 
 `MontyDisconnectError` exposes `status_code`, `status_message`, `cause` and `transport_error` when available.
+`status_code` and `status_message` hold the gRPC status the server ended the stream with.
+`transport_error` describes a transport or protocol failure.
 A terminal reply can report `cause='turn_timeout'` without a gRPC status.
 Disconnect details do not establish whether the request ran.
 The client does not automatically replay a disconnected request.
