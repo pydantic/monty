@@ -1373,6 +1373,21 @@ fn copy_of_a_near_limit_dict_raises_rather_than_dying() {
     child.shutdown();
 }
 
+#[test]
+fn interning_large_heap_strings_reuses_the_allocation() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+    assert_eq!(
+        child.feed_complete("from sys import intern\ns = 'x' * (16 * 1024 * 1024)\nintern(s) is s"),
+        MontyObject::bool(true)
+    );
+    assert_eq!(
+        child.feed_complete("s = None\ns = 'y' * (16 * 1024 * 1024)\nintern(s) is s"),
+        MontyObject::bool(true)
+    );
+    child.shutdown();
+}
+
 /// Known large results are rejected against allocator usage before they can
 /// jump from below the soft limit past the hard ceiling. The reported figure is
 /// what each result really costs, so it pins down that the refusal accounted for
@@ -1705,10 +1720,6 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         // Case methods and `re.escape` check their result before building it; a non-ASCII mapping that
         // outgrows its input (`'ΐ'.upper()` is 6 bytes from 2) is checked as it grows.
         ("s = 'x' * (16 * 1024 * 1024)\ns.lower()", 24 * 1024 * 1024),
-        (
-            "from sys import intern\ns = 'x' * (16 * 1024 * 1024)\nintern(s)",
-            24 * 1024 * 1024,
-        ),
         ("s = 'x' * (16 * 1024 * 1024)\ns.title()", 24 * 1024 * 1024),
         ("s = 'é' * (8 * 1024 * 1024)\ns.upper()", 24 * 1024 * 1024),
         ("s = 'ΐ' * (4 * 1024 * 1024)\ns.upper()", 24 * 1024 * 1024),

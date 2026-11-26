@@ -1,6 +1,6 @@
 //! Implementation of the `sys` module.
 //!
-//! `sys.intern` shares the interpreter's string table with compiled literals.
+//! `sys.intern` returns a canonical string for as long as it is referenced.
 //! See `limitations/sys.md` for the attributes Monty exposes.
 //!
 //! Under the `test-hooks` feature one callable is also exposed:
@@ -17,7 +17,11 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     intern::StaticStrings,
     modules::{ModuleFunctions, StandardLib},
-    types::{List, Module, NamedTuple, allocate_string, allocate_tuple, long_int::INT_MAX_STR_DIGITS, str::PyStr},
+    types::{
+        List, Module, NamedTuple, allocate_string, allocate_tuple,
+        long_int::INT_MAX_STR_DIGITS,
+        str::{InlineStr, PyStr},
+    },
     value::{EitherStr, Marker, Value},
 };
 
@@ -308,7 +312,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: SysFunctions, args: ArgValues) -> 
     }
 }
 
-/// Reuses the same string ID for compiled literals and runtime strings with equal contents.
+/// Reuses a live runtime intern or an existing compiler string before indexing a new one.
 fn intern(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let args = args.reject_kwargs("sys.intern", vm.heap)?;
     let value = args.get_one_arg("sys.intern", vm.heap)?;
@@ -316,11 +320,31 @@ fn intern(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     let string = PyStr::from_value(value, vm)
         .ok_or_else(|| ExcType::type_error(format!("intern() argument must be str, not {}", value.py_type_name(vm))))?;
-    let id = match string {
-        PyStr::Interned(id) => id,
-        _ => vm.interns.intern_runtime(string.as_str(vm), &vm.heap.tracker)?,
-    };
-    Ok(Value::InternString(id))
+    let text = string.as_str(vm);
+    if text.len() <= InlineStr::CAPACITY {
+        return Ok(allocate_string(text, vm.heap));
+    }
+    if let PyStr::Heap(string) = &string
+        && vm.heap.is_interned_string(string.id())
+    {
+        return Ok(value.clone_with_heap(vm.heap));
+    }
+    if let Some(id) = vm.heap.interned_string(text) {
+        return Ok(Value::Ref(id));
+    }
+
+    match &string {
+        PyStr::Interned(id) => Ok(Value::InternString(*id)),
+        PyStr::Heap(string) => {
+            if let Some(id) = vm.interns.get_string_id_by_name(text) {
+                Ok(Value::InternString(id))
+            } else {
+                vm.heap.remember_interned_string(string.id());
+                Ok(value.clone_with_heap(vm.heap))
+            }
+        }
+        PyStr::Inline(_) => unreachable!("inline strings are handled above"),
+    }
 }
 
 /// `sys.setrecursionlimit(n)` — tightens the live recursion ceiling.

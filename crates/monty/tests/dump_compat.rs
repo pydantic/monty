@@ -306,6 +306,80 @@ fn older_version_fixtures_load_and_resume() {
     }
 }
 
+#[test]
+fn runtime_interns_survive_dump_only_while_referenced() {
+    let mut repl = MontyRepl::new("intern.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        r"
+from sys import intern
+kept = intern(''.join(['canonical-', 'string-from-pieces']))
+short = intern('é' * 7 + 'x')
+boundary_heap = intern('🐍' * 4)
+discarded = intern(''.join(['discarded-', 'string-from-pieces']))
+discarded = None
+",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+
+    let bytes = dump("intern.py", None, &[], SessionRef::Idle(&repl)).unwrap();
+    let kept = b"canonical-string-from-pieces";
+    let discarded = b"discarded-string-from-pieces";
+    assert!(bytes.windows(kept.len()).any(|window| window == kept));
+    assert!(!bytes.windows(discarded.len()).any(|window| window == discarded));
+
+    let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else {
+        panic!("dumped idle");
+    };
+    restored
+        .feed_run(
+            r"
+literal = 'canonical-string-from-pieces'
+assert intern(literal) is kept
+kept = None
+assert intern(literal) is literal
+assert intern('éééééééx') is short
+assert intern(boundary_heap) is boundary_heap
+assert intern('🐍' * 4) is boundary_heap
+",
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+}
+
+/// Interns reachable only through a collected cycle leave the weak index too.
+#[cfg(feature = "test-hooks")]
+#[test]
+fn collecting_cycles_releases_runtime_interns() {
+    let mut repl = MontyRepl::new("intern.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        r"
+import gc
+from sys import intern
+
+def make_cycle():
+    cycle = []
+    cycle.append(cycle)
+    cycle.append(intern(''.join(['cycled-', 'string-from-pieces'])))
+
+gc.disable()
+make_cycle()
+assert gc.collect() > 0
+",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    repl.feed_run(
+        "literal = 'cycled-string-from-pieces'\nassert intern(literal) is literal",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+}
+
 /// The class definitions in `dataclasses_v13.bin`, kept for reference: the
 /// fixture was written by the 1.1.0 release, before `@dataclass` generated
 /// methods. It must never be regenerated, since this build writes generated

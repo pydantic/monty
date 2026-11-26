@@ -65,9 +65,9 @@ access raises `AttributeError`.
 
 ## `sys.intern(string, /)`
 
-Monty keeps each distinct interned string for the lifetime of the interpreter's string table, even after the last
-Python reference is dropped.
-Interning a newly constructed string can return a different object on the first call.
+For text from 2 to 15 UTF-8 bytes, `sys.intern` returns Monty's inline string value.
+A compiled literal of the same text can have a different identity.
+If a later feed compiles a longer literal equal to a live runtime intern, the literal can also have a different identity.
 Use the return value for identity comparisons.
 
 ## Not implemented
