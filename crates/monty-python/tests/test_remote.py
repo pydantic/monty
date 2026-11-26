@@ -818,9 +818,7 @@ async def test_refused_stream_fails_the_checkout():
     )
 
 
-@pytest.mark.parametrize(
-    ('first_hint', 'second_hint'), [('1', '0'), ('1', None), (None, None), (None, '0')]
-)
+@pytest.mark.parametrize(('first_hint', 'second_hint'), [('1', '0'), ('1', None), (None, None), (None, '0')])
 async def test_checkout_uses_one_admission_retry(first_hint: str | None, second_hint: str | None):
     attempts = 0
     metadata_calls = 0
@@ -845,7 +843,9 @@ async def test_checkout_uses_one_admission_retry(first_hint: str | None, second_
         trailers = (('monty-cause', 'worker_unavailable'),)
         if hint is not None:
             trailers += (('retry-after', hint),)
-        await context.abort(grpc.StatusCode.UNAVAILABLE, f'worker full on attempt {attempts}', trailing_metadata=trailers)
+        await context.abort(
+            grpc.StatusCode.UNAVAILABLE, f'worker full on attempt {attempts}', trailing_metadata=trailers
+        )
         yield b''
 
     async with _serve_behaviour(behaviour) as url, AsyncMontyRemote(url, metadata=metadata) as pool:

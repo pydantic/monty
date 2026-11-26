@@ -48,9 +48,9 @@ why, and no session existed.
 It is `None` if the hint is absent, invalid or repeated.
 The client accepts delay-seconds and HTTP dates.
 The client retries a refused checkout once when the server sends a single valid `Retry-After` of at most two seconds, whatever the refusal's status, including when `retryable` is false.
+For that hinted retry, the client waits the server's delay or 100 ms, whichever is longer, plus up to 250 ms of jitter.
 On initial checkout with no `Retry-After`, the pool retries once after 100 ms for `caller_cap`, `capacity`, or `worker_unavailable` (not credential failures).
 A supplied but invalid, duplicated, or unusably long hint does not trigger this fallback.
-It waits at least 100 ms or the server's delay, whichever is longer, plus up to 250 ms of jitter.
 The wait and retry share a five-second budget and respect the original checkout and dial deadlines.
 If the retry times out, the client returns the original refusal.
 If the server refuses the retry, the client returns that second refusal.
