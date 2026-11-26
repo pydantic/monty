@@ -44,6 +44,56 @@ pub enum VmLimit {
     Unknown,
 }
 
+/// A reported VM limit and its optional policy provenance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct VmLimitData {
+    kind: VmLimit,
+    // Policy provenance belongs to the execution reply, not to VM snapshots.
+    #[serde(skip)]
+    source: Option<VmLimitSource>,
+}
+
+impl VmLimitData {
+    /// The VM's kind and measurements, independent of who selected the limit.
+    #[must_use]
+    pub fn kind(&self) -> VmLimit {
+        self.kind
+    }
+
+    /// The policy source, if reported for a supported limit.
+    #[must_use]
+    pub fn source(&self) -> Option<VmLimitSource> {
+        self.source
+    }
+
+    /// Attach provenance only to limits for which a service can report policy.
+    #[must_use]
+    pub fn with_source(mut self, source: Option<VmLimitSource>) -> Self {
+        self.source = match self.kind {
+            VmLimit::Memory { .. } | VmLimit::FeedTime { .. } => source,
+            _ => None,
+        };
+        self
+    }
+}
+
+impl From<VmLimit> for VmLimitData {
+    fn from(kind: VmLimit) -> Self {
+        Self { kind, source: None }
+    }
+}
+
+/// Policy provenance reported by the service that applied a VM limit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum VmLimitSource {
+    /// Hosted policy set the default or tightened the caller's limit.
+    HostedPolicy,
+    /// A source code this client does not recognize.
+    Unknown(i32),
+}
+
 /// Number of identical consecutive frames to show before collapsing.
 ///
 /// CPython shows 3 identical frames, then "[Previous line repeated N more times]".
@@ -496,7 +546,7 @@ pub enum ExcData {
     /// [`ExcData::Unicode`] to keep the enum small.
     Json(Box<JsonErrorData>),
     /// Resource enforcement reported by the VM.
-    VmLimit(Box<VmLimit>),
+    VmLimit(Box<VmLimitData>),
     /// An ordinary exception.
     /// Does not say whether a host callback ran.
     ToolException,

@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use monty_types::{
     CodeLoc, ExcData, ExcType, JsonErrorData, MontyException, SourceRange, StackFrame, UnicodeErrorData,
-    UnicodeErrorObject, VmLimit,
+    UnicodeErrorObject, VmLimit, VmLimitData, VmLimitSource,
 };
 
 use crate::{convert::ProtoConvertError, pb};
@@ -54,11 +54,11 @@ impl TryFrom<pb::RaisedException> for MontyException {
     }
 }
 
-impl From<VmLimit> for pb::VmLimit {
-    fn from(failure: VmLimit) -> Self {
+impl From<VmLimitData> for pb::VmLimit {
+    fn from(failure: VmLimitData) -> Self {
         use pb::vm_limit::{Kind, Memory, RecursionDepth, Time};
 
-        let kind = match failure {
+        let kind = match failure.kind() {
             VmLimit::Memory { limit, used } => Some(Kind::Memory(Memory {
                 limit: Some(limit),
                 used: Some(used),
@@ -77,33 +77,48 @@ impl From<VmLimit> for pb::VmLimit {
             })),
             _ => None,
         };
-        Self { kind }
+        Self {
+            kind,
+            source: failure.source().map(|source| match source {
+                VmLimitSource::HostedPolicy => pb::VmLimitSource::HostedPolicy as i32,
+                VmLimitSource::Unknown(code) => code,
+                _ => pb::VmLimitSource::Unspecified as i32,
+            }),
+        }
     }
 }
 
-impl From<pb::VmLimit> for VmLimit {
+impl From<pb::VmLimit> for VmLimitData {
     fn from(failure: pb::VmLimit) -> Self {
         use pb::vm_limit::{Kind, Memory, RecursionDepth, Time};
 
-        match failure.kind {
+        let kind = match failure.kind {
             Some(Kind::Memory(Memory {
                 limit: Some(limit),
                 used: Some(used),
-            })) => Self::Memory { limit, used },
+            })) => VmLimit::Memory { limit, used },
             Some(Kind::FeedTime(Time {
                 limit: Some(limit),
                 elapsed: Some(elapsed),
-            })) => Self::FeedTime { limit, elapsed },
+            })) => VmLimit::FeedTime { limit, elapsed },
             Some(Kind::TurnTime(Time {
                 limit: Some(limit),
                 elapsed: Some(elapsed),
-            })) => Self::TurnTime { limit, elapsed },
+            })) => VmLimit::TurnTime { limit, elapsed },
             Some(Kind::RecursionDepth(RecursionDepth {
                 limit: Some(limit),
                 depth: Some(depth),
-            })) => Self::RecursionDepth { limit, depth },
-            _ => Self::Unknown,
-        }
+            })) => VmLimit::RecursionDepth { limit, depth },
+            _ => VmLimit::Unknown,
+        };
+        let source = failure.source.map(|code| {
+            if code == pb::VmLimitSource::HostedPolicy as i32 {
+                VmLimitSource::HostedPolicy
+            } else {
+                VmLimitSource::Unknown(code)
+            }
+        });
+        Self::from(kind).with_source(source)
     }
 }
 

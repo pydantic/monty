@@ -420,6 +420,9 @@ pub mod exc_data {
 /// Presence reports a VM limit even if the receiver does not recognize the arm.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct VmLimit {
+    /// Set by a service that selected the effective limit.
+    #[prost(enumeration = "VmLimitSource", optional, tag = "5")]
+    pub source: ::core::option::Option<i32>,
     /// Both measurements are required to interpret a recognized arm.
     #[prost(oneof = "vm_limit::Kind", tags = "1, 2, 3, 4")]
     pub kind: ::core::option::Option<vm_limit::Kind>,
@@ -1817,6 +1820,32 @@ impl ClassHash {
             "CLASS_HASH_FIELDS" => Some(Self::Fields),
             "CLASS_HASH_UNHASHABLE" => Some(Self::Unhashable),
             "CLASS_HASH_CUSTOM" => Some(Self::Custom),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum VmLimitSource {
+    Unspecified = 0,
+    HostedPolicy = 1,
+}
+impl VmLimitSource {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "VM_LIMIT_SOURCE_UNSPECIFIED",
+            Self::HostedPolicy => "VM_LIMIT_SOURCE_HOSTED_POLICY",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "VM_LIMIT_SOURCE_UNSPECIFIED" => Some(Self::Unspecified),
+            "VM_LIMIT_SOURCE_HOSTED_POLICY" => Some(Self::HostedPolicy),
             _ => None,
         }
     }

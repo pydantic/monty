@@ -23,7 +23,7 @@ use std::sync::Arc;
 use ahash::AHashMap;
 use monty_pool::RemoteDisconnect;
 use monty_proto::python::exc_monty_to_py;
-use monty_types::{ExcData, ExcType, MontyException, SourceRange, VmLimit};
+use monty_types::{ExcData, ExcType, MontyException, SourceRange, VmLimit, VmLimitSource};
 use pyo3::{
     PyClassInitializer,
     exceptions::{self},
@@ -328,12 +328,22 @@ impl MontyRuntimeError {
     #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
     fn failure<'py>(slf: PyRef<'_, Self>, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
         match slf.as_super().exc.data() {
-            ExcData::VmLimit(limit) => Ok(Some(PyVmLimit::from(**limit).into_pyobject(py)?.into_any())),
+            ExcData::VmLimit(limit) => Ok(Some(PyVmLimit::from(limit.kind()).into_pyobject(py)?.into_any())),
             ExcData::ToolException => Ok(Some(Bound::new(py, PyOrdinaryException)?.into_any())),
             ExcData::SuspensionLimit { limit } => {
                 Ok(Some(Bound::new(py, PySuspensionLimit { limit: *limit })?.into_any()))
             }
             _ => Ok(None),
+        }
+    }
+
+    /// Reports the policy that selected the effective VM limit, if known.
+    #[getter]
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
+    fn failure_source(slf: PyRef<'_, Self>) -> Option<&'static str> {
+        match slf.as_super().exc.data() {
+            ExcData::VmLimit(limit) if limit.source() == Some(VmLimitSource::HostedPolicy) => Some("hosted_policy"),
+            _ => None,
         }
     }
 

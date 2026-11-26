@@ -376,6 +376,11 @@ message ExcData {
   }
 }
 
+enum VmLimitSource {
+  VM_LIMIT_SOURCE_UNSPECIFIED = 0;
+  VM_LIMIT_SOURCE_HOSTED_POLICY = 1;
+}
+
 // Presence reports a VM limit even if the receiver does not recognize the arm.
 message VmLimit {
   message Memory {
@@ -403,6 +408,9 @@ message VmLimit {
     Time turn_time = 3;
     RecursionDepth recursion_depth = 4;
   }
+
+  // Set by a service that selected the effective limit.
+  optional VmLimitSource source = 5;
 }
 
 // An ordinary exception.

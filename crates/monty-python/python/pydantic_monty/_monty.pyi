@@ -334,6 +334,10 @@ class MontyRuntimeError(MontyError):
     def failure(self) -> VmLimit | OrdinaryException | SuspensionLimit | None:
         """Execution failure classification, or `None` if the producer did not report one."""
 
+    @property
+    def failure_source(self) -> Literal['hosted_policy'] | None:
+        """The policy that selected the effective VM limit, if known."""
+
     def traceback(self) -> list[Frame]:
         """Returns the Monty traceback as a list of Frame objects."""
 

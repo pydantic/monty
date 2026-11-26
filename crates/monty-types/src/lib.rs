@@ -26,7 +26,7 @@ pub use crate::{
     builtins::BuiltinsFunctions,
     exceptions::{
         CodeLoc, ExcData, ExcType, JsonErrorData, MontyException, SourceRange, StackFrame, UnicodeErrorData,
-        UnicodeErrorObject, VmLimit, unicode_decode_error_msg,
+        UnicodeErrorObject, VmLimit, VmLimitData, VmLimitSource, unicode_decode_error_msg,
     },
     file_mode::FileMode,
     format::{FormatComplex, FormatFloat, StringRepr, bytes_repr, bytes_repr_fmt, string_repr_fmt, utf8_error_reason},

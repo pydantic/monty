@@ -472,7 +472,7 @@ fn vm_limit_variants_round_trip() {
         VmLimit::RecursionDepth { limit: 6, depth: 7 },
         VmLimit::Unknown,
     ] {
-        let exc = MontyException::new(ExcType::Exception, None).with_data(ExcData::VmLimit(Box::new(limit)));
+        let exc = MontyException::new(ExcType::Exception, None).with_data(ExcData::VmLimit(Box::new(limit.into())));
         let bytes = pb::RaisedException::from(&exc).encode_to_vec();
         let back = MontyException::try_from(decode_frame::<pb::RaisedException>(&bytes).unwrap()).unwrap();
         assert_eq!(back, exc);

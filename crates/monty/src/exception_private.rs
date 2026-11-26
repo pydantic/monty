@@ -4,7 +4,9 @@ use std::{
     mem,
 };
 
-use monty_types::{ExcData, JsonErrorData, MontyException, StackFrame, UnicodeErrorData, UnicodeErrorObject, VmLimit};
+use monty_types::{
+    ExcData, JsonErrorData, MontyException, StackFrame, UnicodeErrorData, UnicodeErrorObject, VmLimit, VmLimitData,
+};
 use smallvec::smallvec;
 
 use crate::{
@@ -3038,7 +3040,7 @@ impl SimpleException {
 
     /// Records VM resource enforcement without changing the Python exception.
     pub(crate) fn with_vm_limit(self, limit: VmLimit) -> Self {
-        self.with_data(ExcData::VmLimit(Box::new(limit)))
+        self.with_data(ExcData::VmLimit(Box::new(limit.into())))
     }
 
     /// Converts an exception raised by a host callback, not by VM enforcement.
@@ -3339,7 +3341,7 @@ impl ExceptionRaise {
 fn exc_data_clone_size(data: &ExcData) -> usize {
     match data {
         ExcData::None | ExcData::ToolException | ExcData::SuspensionLimit { .. } => 0,
-        ExcData::VmLimit(_) => mem::size_of::<VmLimit>(),
+        ExcData::VmLimit(_) => mem::size_of::<VmLimitData>(),
         ExcData::Unicode(data) => mem::size_of::<UnicodeErrorData>()
             .saturating_add(data.encoding.len())
             .saturating_add(data.reason.len())
@@ -3593,7 +3595,7 @@ mod tests {
     #[test]
     fn host_ingress_does_not_trust_execution_metadata() {
         for data in [
-            ExcData::VmLimit(Box::new(VmLimit::Memory { limit: 1, used: 2 })),
+            ExcData::VmLimit(Box::new(VmLimit::Memory { limit: 1, used: 2 }.into())),
             ExcData::ToolException,
         ] {
             let exc =

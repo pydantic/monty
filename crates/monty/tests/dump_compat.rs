@@ -948,7 +948,7 @@ fn saved_recursion_error_survives_a_dump() {
     assert_eq!(error.message(), Some("maximum recursion depth exceeded"));
     assert_eq!(
         error.data(),
-        &ExcData::VmLimit(Box::new(VmLimit::RecursionDepth { limit: 5, depth: 6 }))
+        &ExcData::VmLimit(Box::new(VmLimit::RecursionDepth { limit: 5, depth: 6 }.into()))
     );
     assert_eq!(
         repl.feed_run("42", vec![], PrintWriter::Stdout).unwrap(),

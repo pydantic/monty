@@ -384,6 +384,9 @@ Python callers can inspect [`MontyRuntimeError.failure`][pydantic_monty.MontyRun
 - `VmLimit.Unknown`: a reported VM limit whose kind this client does not understand.
 - `None`: no classification reported.
 
+`MontyRuntimeError.failure_source` is `'hosted_policy'` when hosted policy selected the effective limit.
+A missing source does not say who chose the limit.
+
 A hard worker exit still raises [`MontyCrashedError`][pydantic_monty.MontyCrashedError].
 
 Full details, including the exact pre-check thresholds, live in
