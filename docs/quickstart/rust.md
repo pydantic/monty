@@ -406,6 +406,7 @@ A future answer raises `RuntimeError` at the `import`.
 Before type checking, `OsFunctionCall::ImportStubs` requests imported host modules the session has not asked about.
 Answer with a dict of [`ModuleStub`](../api/rust/monty-types.md#modulestub) names to `.pyi` sources,
 using `None` for missing stubs, or `NotHandled` for no stubs.
+The pool and worker enforce the [import-stub storage budget](../resource-limits.md#import-stubs).
 The session retains these stubs in its dumps.
 
 [`FunctionCall`](../api/rust/monty.md#functioncall), [`OsCall`](../api/rust/monty.md#oscall), [`NameLookup`](../api/rust/monty.md#namelookup) and [`ResolveFutures`](../api/rust/monty.md#resolvefutures) expose `abort`, which raises a host-supplied

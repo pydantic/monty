@@ -2,7 +2,6 @@ Load unittest assertion helpers from a mount without running discovery or collec
 Monty lacks generators, contextlib, ChainMap, exception subclassing, object(), classmethod, and super().
 Use a context manager that propagates subtest failures and leave unsupported class fixtures out.
 Use optional method docstrings and store exceptions without calling with_traceback(), which Monty lacks.
-Use absolute imports for unittest submodules because Monty does not support relative imports.
 Guard optional imports: without difflib and pprint, assertion failures still raise without a detailed diff;
 without traceback or warnings, skip frame cleanup and reject warning assertions. Avoid the types dependency.
 

@@ -18,10 +18,11 @@ files = [
     "colorsys.py",
     "keyword.py",
     "stat.py",
+    "textwrap.py",
 ]
 
 # `make test-cpython` prepares all of Lib/test but runs only these suites.
 # `support` lists additional Lib/ paths to extract; list test helper files here if a patch edits them.
 [tests]
-suites = ["test_colorsys.py", "test_fnmatch.py", "test_keyword.py"]
+suites = ["test_colorsys.py", "test_fnmatch.py", "test_keyword.py", "test_textwrap.py"]
 support = ["unittest/__init__.py", "unittest/case.py", "unittest/util.py"]

@@ -38,6 +38,9 @@ for the schema and the protocol rules documented alongside it.
   Dotted imports read further components as attributes of that value.
   Before type checking, `import_stubs` requests host stubs once per module per session.
   Answer with a dict of dotted module paths to `.pyi` source or `None`.
+  `validate_import_stubs_answer` checks the reply without copying sources.
+  `import_stubs_from_answer` applies the same checks before constructing owned `ModuleStub`s.
+  Both enforce the [import-stub storage budget](https://pydantic.dev/docs/monty/resource-limits/#import-stubs).
 - Type hints: `OsCall.get_type_hints` asks for the hints of a host function (by name) or host class
   (by `ClassType` id) when sandbox code calls `typing.get_type_hints()` on it.
   Answer with a dict of hints; `not_handled` means `{}`.

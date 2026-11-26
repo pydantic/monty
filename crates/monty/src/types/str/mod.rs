@@ -4,6 +4,7 @@ mod fast_offsets;
 mod heap_str;
 mod inline_str;
 mod iterator;
+mod translate;
 
 use std::{fmt::Write, str};
 
@@ -14,7 +15,10 @@ use monty_types::{ResourceError, ResourceTracker};
 pub use monty_types::{StringRepr, string_repr_fmt};
 use smallvec::smallvec;
 
-use self::fast_offsets::Anchor;
+use self::{
+    fast_offsets::Anchor,
+    translate::{str_maketrans, str_translate},
+};
 use super::{
     Bytes, CmpOrder, PyTrait,
     unicode_type::{casefold, is_space, lowercase, map_case, type_record, uppercase},
@@ -656,6 +660,9 @@ fn call_str_method_impl<'h>(
         StaticStrings::Rjust => str_rjust(s, args, vm),
         StaticStrings::Zfill => str_zfill(s, args, vm),
         StaticStrings::Expandtabs => str_expandtabs(s, args, vm),
+        StaticStrings::Translate => str_translate(s, args, vm),
+        // A static method, also reachable on instances.
+        StaticStrings::Maketrans => str_maketrans(args, vm),
         StaticStrings::Format => {
             let template = match copy_format_template(s.as_str(vm), &vm.heap.tracker) {
                 Ok(template) => template,
@@ -2023,6 +2030,18 @@ pub(crate) fn str_contains(container_str: &str, item: &Value, heap: &Heap, inter
             "'in <string>' requires string as left operand, not {}",
             item.py_type_name_heap(heap, interns)
         )))
+    }
+}
+
+/// Class and static methods on `str` (`maketrans`).
+pub(crate) fn str_class_method(
+    attr: &EitherStr,
+    args: ArgValues,
+    vm: &mut VM<'_>,
+) -> Result<RunResult<CallResult>, ArgValues> {
+    match attr.static_string(vm.interns) {
+        Some(StaticStrings::Maketrans) => Ok(str_maketrans(args, vm).map(CallResult::Value)),
+        _ => Err(args),
     }
 }
 
