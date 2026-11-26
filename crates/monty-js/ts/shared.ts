@@ -52,6 +52,7 @@ export {
   MontyTypingError,
   ProtocolError,
   type ExceptionInfo,
+  type FailureClassification,
   type Frame,
   type SourceRange,
 } from './errors.js'

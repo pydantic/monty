@@ -80,6 +80,23 @@ export class MontyError extends Error {
   }
 }
 
+/** Classification supplied with a sandbox execution failure. */
+export type FailureClassification =
+  /** Known ordinary exception. */
+  | { readonly kind: 'ordinary' }
+  /** VM limit not understood by this SDK. */
+  | { readonly kind: 'unknown' }
+  /** Limit and usage in bytes. */
+  | { readonly kind: 'memory'; readonly limit: bigint; readonly used: bigint }
+  /** Limit and elapsed execution time in nanoseconds. */
+  | { readonly kind: 'feed_time'; readonly limit: bigint; readonly elapsed: bigint }
+  /** Limit and elapsed execution time in nanoseconds. */
+  | { readonly kind: 'turn_time'; readonly limit: bigint; readonly elapsed: bigint }
+  /** Limit and recursion depth in frames. */
+  | { readonly kind: 'recursion_depth'; readonly limit: bigint; readonly depth: bigint }
+  /** Maximum number of suspensions. */
+  | { readonly kind: 'suspension_limit'; readonly limit: bigint }
+
 /**
  * Raised when the fed code cannot be parsed. The inner exception is always a
  * `SyntaxError`.
@@ -106,19 +123,27 @@ export class MontySyntaxError extends MontyError {
   }
 }
 
-/**
- * Raised when sandbox code fails during execution. The session survives — the
- * worker keeps its globals and later feeds still work.
- */
+/** Raised when sandbox code fails during execution. */
 export class MontyRuntimeError extends MontyError {
   private readonly frames: NativeFrame[]
   private readonly tracebackText: string
 
-  constructor(typeName: string, message: string, frames: NativeFrame[] = [], tracebackText = '') {
+  /** The execution classification, or `null` when the reply has no recognized execution metadata. */
+  declare readonly failure: FailureClassification | null
+
+  constructor(
+    typeName: string,
+    message: string,
+    frames: NativeFrame[] = [],
+    tracebackText = '',
+    failure: FailureClassification | null = null,
+  ) {
     super(typeName, message)
     this.name = 'MontyRuntimeError'
     this.frames = frames
     this.tracebackText = tracebackText
+    // Keep BigInt measurements out of existing JSON serializations of the error.
+    Object.defineProperty(this, 'failure', { value: failure })
   }
 
   /** The Monty traceback, outermost frame first. */
@@ -454,14 +479,13 @@ export const PYTHON_EXC_NAMES: ReadonlySet<string> = new Set([
 ])
 
 /**
- * Maps a native exception to the matching error class: `SyntaxError` is a
- * parse failure, everything else a runtime exception.
+ * Preserves the SDK's existing mapping of Python exceptions to JS error classes.
  */
 export function montyErrorFromNative(exc: NativeException): MontySyntaxError | MontyRuntimeError {
   if (exc.excType === 'SyntaxError') {
     return new MontySyntaxError(exc.message, exc.traceback)
   }
-  return new MontyRuntimeError(exc.excType, exc.message, exc.frames, exc.traceback)
+  return new MontyRuntimeError(exc.excType, exc.message, exc.frames, exc.traceback, exc.failure)
 }
 
 /**

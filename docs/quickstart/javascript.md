@@ -240,18 +240,18 @@ spans are siblings of Monty's.
 import { MontyError, MontyRuntimeError, MontySyntaxError, MontyCrashedError } from '@pydantic/monty'
 ```
 
-| Class                     | Raised when                                                                           | Session survives |
-| ------------------------- | ------------------------------------------------------------------------------------- | ---------------- |
-| `MontySyntaxError`        | The snippet does not parse                                                            | yes              |
-| `MontyTypingError`        | Type checking rejected the snippet                                                    | yes              |
-| `MontyRuntimeError`       | The code raised at runtime                                                            | yes              |
-| `MontyCrashedError`       | The worker died, or the watchdog killed it                                            | no               |
-| `MontyDisconnectError`    | A [remote worker's](#remote-workers) connection closed                                | no               |
-| `MontyRefusedError`       | A [remote worker's](#remote-workers) server refused to open the session's stream      | no               |
-| `MontyConnectError`       | A remote connection failed before a session opened                                    | no               |
-| `MontyConfigurationError` | The client settings are incompatible with the worker or server                        | no               |
-| `MontyShutdown`           | A [remote worker's](#remote-workers) server is shutting down; the request did not run | no               |
-| `ProtocolError`           | The worker, or a caller misusing the session, violated the wire protocol              | no               |
+| Class                     | Raised when                                                                           | Session survives   |
+| ------------------------- | ------------------------------------------------------------------------------------- | ------------------ |
+| `MontySyntaxError`        | The snippet does not parse                                                            | yes                |
+| `MontyTypingError`        | Type checking rejected the snippet                                                    | yes                |
+| `MontyRuntimeError`       | Execution raised an exception                                                         | depends on failure |
+| `MontyCrashedError`       | The worker died, or the watchdog killed it                                            | no                 |
+| `MontyDisconnectError`    | A [remote worker's](#remote-workers) connection closed                                | no                 |
+| `MontyRefusedError`       | A [remote worker's](#remote-workers) server refused to open the session's stream      | no                 |
+| `MontyConnectError`       | A remote connection failed before a session opened                                    | no                 |
+| `MontyConfigurationError` | The client settings are incompatible with the worker or server                        | no                 |
+| `MontyShutdown`           | A [remote worker's](#remote-workers) server is shutting down; the request did not run | no                 |
+| `ProtocolError`           | The worker, or a caller misusing the session, violated the wire protocol              | no                 |
 
 `MontyError` is the base class of everything above except `ProtocolError`, which extends `Error`.
 `err.exception` carries `{ typeName, message }`, and `err.display(format)` renders the error.
@@ -265,6 +265,16 @@ which ignores any argument:
 | `MontyRuntimeError`                                                                             | `'traceback'` (default), `'type-msg'`, `'msg'` |
 | `MontyTypingError`                                                                              | takes no argument; returns the diagnostics     |
 | `MontyConnectError`, `MontyConfigurationError`                                                  | `'msg'` (default), `'type-msg'`                |
+
+For native pools (`Monty` and `MontyRemote`), `MontyRuntimeError.failure` reports execution metadata supplied by the worker.
+Switch on `failure.kind` to access the fields for that failure.
+`memory` has `limit` and `used` in bytes; `feed_time` and `turn_time` have `limit` and `elapsed` in nanoseconds.
+`recursion_depth` has `limit` and `depth` in frames and remains catchable in sandbox Python.
+`suspension_limit` has a `limit` in suspensions.
+All numeric fields are `bigint`.
+`ordinary` marks a known ordinary exception; `unknown` marks VM limit data the SDK cannot interpret.
+Neither has numeric fields.
+A `null` failure means there is no recognized execution metadata, as in replies from older workers.
 
 `MontyCrashedError` adds `timedOut` and `exitStatus`; `MontyShutdown` adds `dump`; `MontyRefusedError` adds
 `statusCode`, `statusMessage`, `remoteCause`, `retryable` and `retryAfter`.

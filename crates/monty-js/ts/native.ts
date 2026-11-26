@@ -4,6 +4,8 @@
 // Rust side upholds — every turn-producing method resolves to exactly one of
 // the `NativeTurn` variants below.
 
+import type { FailureClassification } from './errors.js'
+
 /** One frame of a Python traceback, as shipped by the native binding. */
 export interface NativeFrame {
   filename: string
@@ -34,6 +36,7 @@ export interface NativeException {
    *  Display). Used verbatim; never re-rendered in TypeScript. */
   traceback: string
   frames: NativeFrame[]
+  failure?: FailureClassification
 }
 
 /** The fed snippet completed with this (already converted) value. */

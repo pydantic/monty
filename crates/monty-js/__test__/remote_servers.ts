@@ -193,6 +193,7 @@ const REQUEST_LOAD = 8
 const CONFIGURE_LOAD = 16
 // `WorkerEvent.kind` arms, which own the field numbers below `FIRST_EVENT_FIELD`:
 const EVENT_PRINT = 1
+const EVENT_ERROR = 7
 const EVENT_DUMP_RESULT = 9
 const EVENT_OK = 10
 const EVENT_SHUTDOWN = 12
@@ -231,6 +232,24 @@ const VARINT_CONTINUES = 0x80
 export const OK_EVENT = bytesField(EVENT_OK, Buffer.alloc(0))
 
 export const CPU_CLOCK_OK_EVENT = Buffer.concat([OK_EVENT, Buffer.from([0xf0, 0x01, 0x01])])
+
+/** Encodes the VmLimit arm of ExcData, with a nested limit message when present. */
+export function vmLimitData(field?: number, payload: number[] = []): [number, number[]] {
+  return [3, field === undefined ? [] : [...bytesField(field, Buffer.from(payload))]]
+}
+
+/** Answers the first request with a Python exception and an optional ExcData arm. */
+export function executionErrorServer(
+  excType: string,
+  data: [field: number, payload: number[]] | null,
+): (stream: Stream) => Promise<void> {
+  const exception = [bytesField(1, Buffer.from(excType)), bytesField(2, Buffer.from('synthetic failure'))]
+  if (data !== null) {
+    const [field, payload] = data
+    exception.push(bytesField(4, bytesField(field, Buffer.from(payload))))
+  }
+  return answerConfigure(bytesField(EVENT_ERROR, bytesField(1, Buffer.concat(exception))))
+}
 
 /** The liveness probe a serving relay sends between turns. */
 export const PING_EVENT = bytesField(EVENT_PING, Buffer.alloc(0))
