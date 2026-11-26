@@ -7,9 +7,10 @@ use num_bigint::BigInt;
 use super::{legacy::Constructor, opcode as op};
 use crate::{
     bytecode::VM,
-    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::HeapData,
+    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     identity::Identity,
+    py_value::PyValue,
+    types::{PyTrait, long_int::PyInt, py_trait::PyObjectIdentity},
     value::Value,
 };
 
@@ -50,96 +51,98 @@ impl Encoder<'_> {
                 if let Some(&index) = self.memo.get(&identity) {
                     return self.reference(index);
                 }
-                self.data(value, depth, vm)?;
+                self.data(value.py_value(vm), depth, vm)?;
                 if self.memo.contains_key(&identity) {
                     Ok(())
                 } else {
                     self.memoize(identity)
                 }
             }
-            _ => self.data(value, depth, vm),
+            _ => self.data(value.py_value(vm), depth, vm),
         }
     }
 
-    fn data(&mut self, value: &Value, depth: usize, vm: &VM<'_>) -> RunResult<()> {
-        if let Some(text) = value.as_str(vm) {
-            if self.protocol < 4 {
-                self.binary_header(op::BINUNICODE, text.len())?;
-                return self.write(text.as_bytes());
-            }
-            return self.payload(text.as_bytes(), [op::SHORT_BINUNICODE, op::BINUNICODE, op::BINUNICODE8]);
-        }
-        if let Some(integer) = value.as_long_int(vm) {
-            return self.long(integer);
-        }
+    fn data<'h>(&mut self, value: PyValue<'h>, depth: usize, vm: &VM<'h>) -> RunResult<()> {
         let child = depth + 1;
         match value {
-            Value::None => self.write(&[op::NONE]),
-            Value::Bool(true) => self.write(&[op::NEWTRUE]),
-            Value::Bool(false) => self.write(&[op::NEWFALSE]),
-            Value::Int(n) => self.integer(*n),
-            Value::Float(n) => {
+            PyValue::None => self.write(&[op::NONE]),
+            PyValue::Bool(true) => self.write(&[op::NEWTRUE]),
+            PyValue::Bool(false) => self.write(&[op::NEWFALSE]),
+            PyValue::Int(PyInt::Small(n)) => self.integer(n),
+            PyValue::Int(PyInt::Interned(id)) => self.long(vm.interns.get_long_int(id)),
+            PyValue::Int(PyInt::Heap(n)) => self.long(n.get(vm.heap).inner()),
+            PyValue::Float(n) => {
                 self.write(&[op::BINFLOAT])?;
                 self.write(&n.to_be_bytes())
             }
-            Value::InternBytes(id) => self.bytes(vm.interns.get_bytes(*id)),
-            Value::Ref(id) => match vm.heap.get(*id) {
-                HeapData::Bytes(bytes) => self.bytes(bytes.as_slice()),
-                HeapData::List(list) => {
-                    self.write(&[op::EMPTY_LIST])?;
-                    self.memoize(Identity::from_heap_id(*id))?;
-                    self.write(&[op::MARK])?;
-                    for item in list.items().map(|item| self.value(item, child, vm)) {
-                        item?;
-                    }
-                    self.write(&[op::APPENDS])
+            PyValue::Str(text) => {
+                let bytes = text.as_str(vm).as_bytes();
+                if self.protocol < 4 {
+                    self.binary_header(op::BINUNICODE, bytes.len())?;
+                    self.write(bytes)
+                } else {
+                    self.payload(bytes, [op::SHORT_BINUNICODE, op::BINUNICODE, op::BINUNICODE8])
                 }
-                HeapData::Tuple(tuple) => {
-                    self.write(&[op::MARK])?;
-                    for item in tuple.as_slice() {
-                        self.value(item, child, vm)?;
-                    }
-                    // A child may have encoded this tuple through a mutable container.
-                    if let Some(&index) = self.memo.get(&Identity::from_heap_id(*id)) {
-                        self.write(&[op::POP_MARK])?;
-                        self.reference(index)
-                    } else {
-                        self.write(&[op::TUPLE])
-                    }
+            }
+            PyValue::Bytes(bytes) => self.bytes(bytes.as_slice(vm)),
+            PyValue::List(list) => {
+                self.write(&[op::EMPTY_LIST])?;
+                self.memoize(list.py_identity())?;
+                self.write(&[op::MARK])?;
+                for item in list.get(vm.heap).items().map(|item| self.value(item, child, vm)) {
+                    item?;
                 }
-                HeapData::Dict(dict) => {
-                    self.write(&[op::EMPTY_DICT])?;
-                    self.memoize(Identity::from_heap_id(*id))?;
-                    self.write(&[op::MARK])?;
-                    for (key, value) in dict {
-                        self.value(key, child, vm)?;
-                        self.value(value, child, vm)?;
-                    }
-                    self.write(&[op::SETITEMS])
+                self.write(&[op::APPENDS])
+            }
+            PyValue::Tuple(tuple) => {
+                self.write(&[op::MARK])?;
+                for item in tuple.get(vm.heap).as_slice() {
+                    self.value(item, child, vm)?;
                 }
-                HeapData::Set(set) if self.protocol < 4 => self.legacy_set(Constructor::Set, set.iter(), child, vm),
-                HeapData::FrozenSet(set) if self.protocol < 4 => {
-                    self.legacy_set(Constructor::FrozenSet, set.storage().iter(), child, vm)
+                // A child may have encoded this tuple through a mutable container.
+                if let Some(&index) = self.memo.get(&tuple.py_identity()) {
+                    self.write(&[op::POP_MARK])?;
+                    self.reference(index)
+                } else {
+                    self.write(&[op::TUPLE])
                 }
-                HeapData::Set(set) => {
-                    self.write(&[op::EMPTY_SET])?;
-                    self.memoize(Identity::from_heap_id(*id))?;
-                    self.write(&[op::MARK])?;
-                    for item in set.iter() {
-                        self.value(item, child, vm)?;
-                    }
-                    self.write(&[op::ADDITEMS])
+            }
+            PyValue::Dict(dict) => {
+                self.write(&[op::EMPTY_DICT])?;
+                self.memoize(dict.py_identity())?;
+                self.write(&[op::MARK])?;
+                for (key, value) in dict.get(vm.heap) {
+                    self.value(key, child, vm)?;
+                    self.value(value, child, vm)?;
                 }
-                HeapData::FrozenSet(set) => {
-                    self.write(&[op::MARK])?;
-                    for item in set.storage().iter() {
-                        self.value(item, child, vm)?;
-                    }
-                    self.write(&[op::FROZENSET])
+                self.write(&[op::SETITEMS])
+            }
+            PyValue::Set(set) if self.protocol < 4 => {
+                self.legacy_set(Constructor::Set, set.get(vm.heap).iter(), child, vm)
+            }
+            PyValue::FrozenSet(set) if self.protocol < 4 => {
+                self.legacy_set(Constructor::FrozenSet, set.get(vm.heap).storage().iter(), child, vm)
+            }
+            PyValue::Set(set) => {
+                self.write(&[op::EMPTY_SET])?;
+                self.memoize(set.py_identity())?;
+                self.write(&[op::MARK])?;
+                for item in set.get(vm.heap).iter() {
+                    self.value(item, child, vm)?;
                 }
-                _ => Err(unsupported(value, vm)),
-            },
-            _ => Err(unsupported(value, vm)),
+                self.write(&[op::ADDITEMS])
+            }
+            PyValue::FrozenSet(set) => {
+                self.write(&[op::MARK])?;
+                for item in set.get(vm.heap).storage().iter() {
+                    self.value(item, child, vm)?;
+                }
+                self.write(&[op::FROZENSET])
+            }
+            _ => Err(ExcType::type_error(format_args!(
+                "cannot pickle '{}' object",
+                value.py_type_name(vm)
+            ))),
         }
     }
 
@@ -281,8 +284,4 @@ impl Encoder<'_> {
         }
         Ok(())
     }
-}
-
-fn unsupported(value: &Value, vm: &VM<'_>) -> RunError {
-    ExcType::type_error(format_args!("cannot pickle '{}' object", value.py_type_name(vm)))
 }
