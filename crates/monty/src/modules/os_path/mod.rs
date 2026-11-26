@@ -515,8 +515,8 @@ fn extreme<'a>(items: &'a [Value], is_min: bool, vm: &mut VM<'_>) -> RunResult<&
 fn common_leading_slice(s1: &Value, s2: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
     match (s1.py_type_heap(vm.heap).native(), s2.py_type_heap(vm.heap).native()) {
         (Some(Type::Str), Some(Type::Str)) => {
-            let a = value_to_owned_string(s1, vm.heap, vm.interns).expect("checked str");
-            let b = value_to_owned_string(s2, vm.heap, vm.interns).expect("checked str");
+            let a = s1.as_str(vm).expect("checked str");
+            let b = s2.as_str(vm).expect("checked str");
             let mismatch = a.char_indices().zip(b.chars()).find(|((_, x), y)| x != y);
             Ok(match mismatch {
                 Some(((end, _), _)) => Value::from_str(&a[..end], vm.heap),

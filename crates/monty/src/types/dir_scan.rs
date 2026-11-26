@@ -388,21 +388,26 @@ fn walk_step<'h>(this: &mut HeapObjectRead<'h, DirScan>, vm: &mut VM<'h>) -> Run
                 files,
             } => {
                 let path_flavor = walk_mut(this, vm).path_flavor;
-                let dirpath = if path_flavor {
-                    Value::allocate(Path::new(spelled.clone()), vm.heap)
-                } else {
-                    Value::from_str(spelled.as_str(), vm.heap)
-                };
                 let dirs = string_list(dirs, vm);
                 let files = string_list(files, vm);
-                if let (Some(relative), Value::Ref(dirnames)) = (relative, &dirs) {
-                    vm.heap.inc_ref(*dirnames);
-                    walk_mut(this, vm).pending = Some(PendingDirnames {
-                        relative,
-                        spelled,
-                        dirnames: *dirnames,
-                    });
-                }
+                let dirpath = match (relative, &dirs) {
+                    (Some(relative), Value::Ref(dirnames)) => {
+                        let dirpath = if path_flavor {
+                            Value::allocate(Path::new(spelled.clone()), vm.heap)
+                        } else {
+                            Value::from_str(spelled.as_str(), vm.heap)
+                        };
+                        vm.heap.inc_ref(*dirnames);
+                        walk_mut(this, vm).pending = Some(PendingDirnames {
+                            relative,
+                            spelled,
+                            dirnames: *dirnames,
+                        });
+                        dirpath
+                    }
+                    _ if path_flavor => Value::allocate(Path::new(spelled), vm.heap),
+                    _ => Value::from_str(spelled, vm.heap),
+                };
                 return Ok(Some(allocate_tuple(smallvec![dirpath, dirs, files], vm.heap)));
             }
         }
