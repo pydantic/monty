@@ -4,21 +4,25 @@ Vendor the CPython stdlib modules listed in `crates/monty/stdlib/vendor.toml`.
 Downloads each listed file from `Lib/` at the pinned CPython commit, applies `crates/monty/stdlib/patches/*.patch` in
 file-name order, and writes the result to `crates/monty/stdlib/Lib/`, along with CPython's `LICENSE`.
 It also generates `crates/monty/src/modules/vendored/sources.rs`, the table the interpreter imports them from.
-Test-only sources use the same pin, but are written under `crates/monty-datatest/vendor/cpython/Lib/`.
 
-- `make vendor-stdlib`: write everything.
-- `make check-stdlib` (`--check`): fail instead of writing if anything differs.
+- `make vendor-stdlib`: write the runtime sources.
+- `make check-stdlib` (`--check`): fail instead of writing if the runtime sources differ.
+- `--prepare-tests`: extract the pinned `Lib/test` tree and apply the test-only patches to a local working copy.
 - `--make-patch NAME --reason TEXT`: save the edits made to `Lib/` since the last vendoring as `patches/NAME.patch`,
-    replacing a patch of that name. Add `--test` to work on the test-only tree instead.
+    replacing a patch of that name. Add `--test` to work on the generated test tree instead.
 - `make check-stdlib-patches` (`--check-patches`): fail if a patched module passes its test case unpatched, so its
     patches can be dropped. A patch whose reason has a `Permanent: <why>` line is kept without checking.
 """
 
 import argparse
 import re
+import shutil
 import subprocess
 import sys
+import tarfile
+import tempfile
 import tomllib
+import urllib.request
 from collections import Counter
 from pathlib import Path
 
@@ -27,8 +31,10 @@ from vendor_common import (
     PatchDoesNotApply,
     PatchError,
     apply_patches,
+    check_patch,
     fetch,
     fetch_sources,
+    git_apply,
     make_patch,
     patched_files,
     sync_tree,
@@ -39,10 +45,14 @@ MANIFEST = STDLIB / 'vendor.toml'
 LIB = STDLIB / 'Lib'
 PATCHES = STDLIB / 'patches'
 TEST_VENDOR = REPO / 'crates' / 'monty-datatest' / 'vendor' / 'cpython'
+TEST_WORK = TEST_VENDOR / 'work'
+TEST_TREE = TEST_WORK / 'generated'
+TEST_PATCHES = TEST_VENDOR / 'patches'
 LICENSE = STDLIB / 'LICENSE'
 TABLE = REPO / 'crates' / 'monty' / 'src' / 'modules' / 'vendored' / 'sources.rs'
 TEST_CASES = REPO / 'crates' / 'monty' / 'test_cases'
 UPSTREAM = 'python/cpython'
+ARCHIVE_URL = f'https://codeload.github.com/{UPSTREAM}/tar.gz/{{commit}}'
 
 
 def main() -> None:
@@ -51,25 +61,39 @@ def main() -> None:
     mode.add_argument('--check', action='store_true', help='fail if the vendored files are out of date')
     mode.add_argument('--make-patch', metavar='NAME', help='save edits to Lib/ as patches/NAME.patch')
     mode.add_argument('--check-patches', action='store_true', help='fail if a patched module works unpatched')
+    mode.add_argument(
+        '--prepare-tests', action='store_true', help='regenerate the test-only tree from the pinned archive'
+    )
     parser.add_argument('--reason', help='why the patch is needed; required with --make-patch')
     parser.add_argument('--test', action='store_true', help='save a patch to the test-only tree with --make-patch')
     args = parser.parse_args()
     if args.test and not args.make_patch:
         parser.error('--test requires --make-patch')
+    if args.make_patch and not (args.reason or '').strip():
+        parser.error('--make-patch needs a --reason explaining why the CPython source must change')
 
     manifest = tomllib.loads(MANIFEST.read_text(encoding='utf-8'))
     tag: str = manifest['tag']
     commit: str = manifest['commit']
     files: list[str] = sorted(manifest['files'])
-    test_files: list[str] = manifest['tests']['files']
+    if args.prepare_tests or args.test:
+        suites: list[str] = manifest['tests']['suites']
+        support: list[str] = manifest['tests']['support']
+        test_files = [f'test/{suite}' for suite in suites] + support
+        if args.prepare_tests:
+            prepare_tests(commit, test_files)
+        else:
+            if not (TEST_TREE / 'Lib').is_dir():
+                sys.exit('Run `make prepare-cpython-tests` before editing the generated sources.')
+            with tarfile.open(test_archive(commit), 'r:gz') as archive:
+                sources = {file: read_archive_source(archive, f'cpython-{commit}/Lib/{file}') for file in test_files}
+            make_patch(args.make_patch, args.reason, sources, TEST_TREE / 'Lib', TEST_PATCHES)
+        return
+
     if args.make_patch:
-        if not (args.reason or '').strip():
-            sys.exit('--make-patch needs a --reason explaining why the CPython source must change')
-        root = TEST_VENDOR if args.test else STDLIB
-        sources = fetch_sources(UPSTREAM, commit, 'Lib', test_files if args.test else files)
-        make_patch(args.make_patch, args.reason, sources, root / 'Lib', root / 'patches')
-        if not args.test:
-            print('document any behaviour it changes under limitations/')
+        sources = fetch_sources(UPSTREAM, commit, 'Lib', files)
+        make_patch(args.make_patch, args.reason, sources, LIB, PATCHES)
+        print('document any behaviour it changes under limitations/')
         return
 
     upstream = fetch_sources(UPSTREAM, commit, 'Lib', files)
@@ -78,19 +102,67 @@ def main() -> None:
         return
 
     license_text = fetch(UPSTREAM, commit, 'LICENSE')
-    expected = {LICENSE: license_text, TEST_VENDOR / 'LICENSE': license_text, TABLE: render_table(tag, files)}
+    expected = {LICENSE: license_text, TABLE: render_table(tag, files)}
     expected |= patched_tree(STDLIB, upstream)
-    expected |= patched_tree(TEST_VENDOR, fetch_sources(UPSTREAM, commit, 'Lib', test_files))
-    sync_tree(
-        expected,
-        (LIB, TEST_VENDOR / 'Lib'),
-        check=args.check,
-        hint='vendored stdlib is out of date, run `make vendor-stdlib`',
-    )
+    sync_tree(expected, (LIB,), check=args.check, hint='vendored stdlib is out of date, run `make vendor-stdlib`')
     if args.check:
         print(f'vendored stdlib matches CPython {tag}')
     else:
-        print(f'vendored {len(files)} runtime modules and {len(test_files)} test files from CPython {tag}')
+        print(f'vendored {len(files)} runtime modules from CPython {tag}')
+
+
+def prepare_tests(commit: str, files: list[str]) -> None:
+    """Stage all of Lib/test, but only let patches edit suites and support files listed in the manifest."""
+    root = f'cpython-{commit}'
+    selected = {f'{root}/Lib/{file}' for file in files} | {f'{root}/LICENSE'}
+    archive_path = test_archive(commit)
+    with tempfile.TemporaryDirectory(dir=TEST_WORK) as tmp, tarfile.open(archive_path, 'r:gz') as archive:
+        members = [
+            member
+            for member in archive.getmembers()
+            if member.name.startswith(f'{root}/Lib/test/') or member.name in selected
+        ]
+        archive.extractall(tmp, members=members, filter='data')
+        source = Path(tmp) / root
+        lib = source / 'Lib'
+        patches = sorted(TEST_PATCHES.glob('*.patch'))
+        for file in files:
+            if not (lib / file).is_file():
+                sys.exit(f'CPython {commit} archive is missing Lib/{file}')
+        allowed = set(files)
+        for patch in patches:
+            check_patch(patch, allowed)
+            git_apply(patch, lib)
+        if TEST_TREE.exists():
+            shutil.rmtree(TEST_TREE)
+        source.rename(TEST_TREE)
+    print(f'prepared CPython tests from {commit} in {TEST_TREE.relative_to(REPO)}')
+
+
+def test_archive(commit: str) -> Path:
+    """Cache the full upstream archive by commit, never a partially downloaded file."""
+    cache = TEST_WORK / 'cache'
+    cache.mkdir(parents=True, exist_ok=True)
+    path = cache / f'{commit}.tar.gz'
+    if not path.is_file():
+        print(f'downloading CPython archive for {commit}', flush=True)
+        with tempfile.TemporaryDirectory(dir=cache) as tmp:
+            download = Path(tmp) / path.name
+            with (
+                urllib.request.urlopen(ARCHIVE_URL.format(commit=commit), timeout=60) as response,
+                download.open('wb') as f,
+            ):
+                shutil.copyfileobj(response, f)
+            download.replace(path)
+    return path
+
+
+def read_archive_source(archive: tarfile.TarFile, name: str) -> str:
+    source = archive.extractfile(name)
+    if source is None:
+        sys.exit(f'CPython archive does not contain a regular file at {name}')
+    with source:
+        return source.read().decode('utf-8')
 
 
 def patched_tree(root: Path, sources: dict[str, str]) -> dict[Path, str]:

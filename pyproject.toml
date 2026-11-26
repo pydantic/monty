@@ -56,9 +56,9 @@ include = [
 # Exclude files with intentional syntax errors or special formatting requirements
 extend-exclude = [
     "crates/monty-bench/benches/python",
-    # CPython source, vendored by `make vendor-stdlib` with documented patches
+    # CPython sources with documented patches
     "crates/monty/stdlib",
-    "crates/monty-datatest/vendor/cpython",
+    "crates/monty-datatest/vendor/cpython/work",
     # Generated from pinned typeshed and Monty's patches.
     "crates/monty-typeshed/vendor/typeshed",
     "crates/monty/test_cases/function__err_duplicate_param.py",
@@ -337,7 +337,7 @@ exclude = [
 
 [tool.codespell]
 # Ref: https://github.com/codespell-project/codespell#using-a-config-file
-ignore-words-list = 'crate,NotIn,ser,IST,Nd,afterAll,beforeAll,deques,wit,acount'
+ignore-words-list = 'crate,NotIn,assertIn,ser,IST,Nd,afterAll,beforeAll,deques,wit,acount'
 skip = [
     "Cargo.lock",
     "crates/monty-js/package-lock.json",
@@ -348,7 +348,7 @@ skip = [
     "crates/monty-typeshed/patches/*",
     "crates/monty-typeshed/vendor/typeshed/stdlib/*",
     "crates/monty/stdlib/*",
-    "crates/monty-datatest/vendor/cpython/Lib/*",
+    "crates/monty-datatest/vendor/cpython/work/*",
     "crates/monty-datatest/vendor/cpython/patches/*",
     "crates/monty/src/types/str.rs",
 ]
