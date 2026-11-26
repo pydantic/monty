@@ -106,12 +106,13 @@ The following modules are present:
 | `stat`          | [modules.md](modules.md#vendored-cpython-modules) |
 | `statistics`    | [statistics.md](statistics.md)                    |
 | `sys`           | [sys.md](sys.md)                                  |
+| `textwrap`      | [modules.md](modules.md#vendored-cpython-modules) |
 | `time`          | [time.md](time.md)                                |
 | `tomllib`       | [tomllib.md](tomllib.md)                          |
 | `typing`        | [typing.md](typing.md)                            |
 | `unicodedata`   | [unicodedata.md](unicodedata.md)                  |
 
-Each covers only part of its CPython surface — often a small part. `colorsys`, `keyword` and `stat` run CPython's own source.
+Each covers only part of its CPython surface — often a small part. `colorsys`, `keyword`, `stat` and `textwrap` run CPython's own source.
 `itertools`, `hashlib`, `tomllib` and `fnmatch` are the other exceptions: `itertools` implements every name it exports, `hashlib` every
 guaranteed algorithm, and `tomllib` and `fnmatch` their whole three- and four-name surfaces.
 The absent names are missing from the module namespace rather than stubbed, so they fail type checking as well as
@@ -137,8 +138,8 @@ Each links to the page that owns it, which is where the full account lives:
     So `enumerate(itertools.count())` runs until a resource limit trips ([builtins.md](builtins.md)).
     `map` and `filter` are lazy, but synchronous consumers such as `list()` cannot suspend in their callbacks
     ([iter.md](iter.md)).
-- **`re` is backed by Rust's `fancy-regex`**, not CPython's engine: no `bytes` patterns, no `re.VERBOSE` constant, and some
-    error messages differ ([re.md](re.md)).
+- **`re` is backed by Rust's `fancy-regex`**, not CPython's engine: no `bytes` patterns, and some error messages
+    differ ([re.md](re.md)).
 - **Only the class dunders listed above are dispatched.** `__lt__` and `__len__` raise
     `TypeError` as if undefined, while in-place arithmetic dunders are skipped in favor of binary arithmetic
     (`@=` is rejected at compile time).

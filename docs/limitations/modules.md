@@ -49,6 +49,7 @@ in the next feed, and after a dump (see [random.md](random.md)).
 | `stat`          | [vendored](#vendored-cpython-modules) |
 | `statistics`    | [statistics.md](statistics.md)        |
 | `sys`           | [sys.md](sys.md)                      |
+| `textwrap`      | [vendored](#vendored-cpython-modules) |
 | `time`          | [time.md](time.md)                    |
 | `tomllib`       | [tomllib.md](tomllib.md)              |
 | `typing`        | [typing.md](typing.md)                |
@@ -96,7 +97,7 @@ typeshed's `abc` declarations.
 
 ## Vendored CPython modules
 
-`colorsys`, `keyword` and `stat` run CPython 3.14's own `Lib/*.py`, copied from the release pinned in
+`colorsys`, `keyword`, `stat` and `textwrap` run CPython 3.14's own `Lib/*.py`, copied from the release pinned in
 `crates/monty/stdlib/vendor.toml`, so they match CPython wherever the language features they use do.
 They differ from CPython's modules in how they are loaded:
 
@@ -127,6 +128,14 @@ pure-Python functions accept.
     raises `OverflowError: can't convert negative value to unsigned int`.
 - Platform-specific constants take `stat.py`'s portable values: `S_IFWHT` is `0` and `SF_SETTABLE` is `0xffff0000`,
     where CPython on macOS reports `0o160000` and `0x3fff0000`.
+
+`textwrap` is patched because Monty does not parse `del` yet: the class-body `del` that CPython uses to remove the
+regex building blocks is dropped, so `TextWrapper.word_punct`, `TextWrapper.letter`, `TextWrapper.nowhitespace`
+and `TextWrapper.whitespace` exist as class attributes (CPython deletes them), and the statements `del chunks[-1]` and
+`del cur_line[-1]` are `.pop()` calls with the same effect.
+`dedent()` is also patched to name a non-`str` argument's type by `__name__` in its `TypeError`, because Monty types
+have no `__qualname__` (see [classes.md](classes.md)): a class defined inside a function shows as `'Adder'` where
+CPython shows `'make.<locals>.Adder'`.
 
 ## Star imports
 

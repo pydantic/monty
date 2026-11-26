@@ -1,0 +1,134 @@
+Run the 68 upstream textwrap tests without unittest discovery.
+Monty has no `dir()`, so each class lists its test methods; every method gets a fresh TestCase after `setUp()`.
+The upstream inputs and assertions are unchanged.
+
+--- a/test/test_textwrap.py
++++ b/test/test_textwrap.py
+@@ -8,12 +8,11 @@
+ # $Id$
+ #
+ 
+-import unittest
+ 
+ from textwrap import TextWrapper, wrap, fill, dedent, indent, shorten
+ 
+ 
+-class BaseTestCase(unittest.TestCase):
++class BaseTestCase(TestCase):
+     '''Parent class with utility methods for textwrap tests.'''
+ 
+     def show(self, textin):
+@@ -763,7 +762,7 @@
+ 
+ # Despite the similar names, DedentTestCase is *not* the inverse
+ # of IndentTestCase!
+-class DedentTestCase(unittest.TestCase):
++class DedentTestCase(TestCase):
+ 
+     def test_type_error(self):
+         with self.assertRaisesRegex(TypeError, "expected str object, not"):
+@@ -942,7 +941,7 @@
+ 
+ 
+ # Test textwrap.indent
+-class IndentTestCase(unittest.TestCase):
++class IndentTestCase(TestCase):
+     # The examples used for tests. If any of these change, the expected
+     # results in the various test cases must also be updated.
+     # The roundtrip cases are separate, because textwrap.dedent doesn't
+@@ -1133,5 +1132,93 @@
+         self.check_shorten("Helloo", 5, "[...]")
+ 
+ 
+-if __name__ == '__main__':
+-    unittest.main()
++for case, names in (
++    (WrapTestCase, (
++        'test_simple',
++        'test_empty_string',
++        'test_empty_string_with_initial_indent',
++        'test_whitespace',
++        'test_fix_sentence_endings',
++        'test_wrap_short',
++        'test_wrap_short_1line',
++        'test_hyphenated',
++        'test_hyphenated_numbers',
++        'test_em_dash',
++        'test_unix_options',
++        'test_funky_hyphens',
++        'test_punct_hyphens',
++        'test_funky_parens',
++        'test_drop_whitespace_false',
++        'test_drop_whitespace_false_whitespace_only',
++        'test_drop_whitespace_false_whitespace_only_with_indent',
++        'test_drop_whitespace_whitespace_only',
++        'test_drop_whitespace_leading_whitespace',
++        'test_drop_whitespace_whitespace_line',
++        'test_drop_whitespace_whitespace_only_with_indent',
++        'test_drop_whitespace_whitespace_indent',
++        'test_split',
++        'test_break_on_hyphens',
++        'test_bad_width',
++        'test_no_split_at_umlaut',
++        'test_umlaut_followed_by_dash',
++        'test_non_breaking_space',
++        'test_narrow_non_breaking_space',
++    )),
++    (MaxLinesTestCase, (
++        'test_simple',
++        'test_spaces',
++        'test_placeholder',
++        'test_placeholder_backtrack',
++    )),
++    (LongWordTestCase, (
++        'test_break_long',
++        'test_nobreak_long',
++        'test_max_lines_long',
++    )),
++    (LongWordWithHyphensTestCase, (
++        'test_break_long_words_on_hyphen',
++        'test_break_long_words_not_on_hyphen',
++        'test_break_on_hyphen_but_not_long_words',
++        'test_do_not_break_long_words_or_on_hyphens',
++    )),
++    (IndentTestCases, (
++        'test_fill',
++        'test_initial_indent',
++        'test_subsequent_indent',
++    )),
++    (DedentTestCase, (
++        'test_type_error',
++        'test_dedent_whitespace',
++        'test_dedent_nomargin',
++        'test_dedent_even',
++        'test_dedent_uneven',
++        'test_dedent_declining',
++        'test_dedent_preserve_internal_tabs',
++        'test_dedent_preserve_margin_tabs',
++    )),
++    (IndentTestCase, (
++        'test_indent_nomargin_default',
++        'test_indent_nomargin_explicit_default',
++        'test_indent_nomargin_all_lines',
++        'test_indent_no_lines',
++        'test_roundtrip_spaces',
++        'test_roundtrip_tabs',
++        'test_roundtrip_mixed',
++        'test_indent_default',
++        'test_indent_explicit_default',
++        'test_indent_all_lines',
++        'test_indent_empty_lines',
++    )),
++    (ShortenTestCase, (
++        'test_simple',
++        'test_placeholder',
++        'test_empty_string',
++        'test_whitespace',
++        'test_width_too_small_for_placeholder',
++        'test_first_word_too_long_but_placeholder_fits',
++    )),
++):
++    for name in names:
++        test = case()
++        test.setUp()
++        getattr(test, name)()

@@ -1760,7 +1760,7 @@ pub enum StaticStrings {
     Major,
     /// `os.makedirs()` function.
     Makedirs,
-    /// `bytes.maketrans()` staticmethod.
+    /// `bytes.maketrans()` and `str.maketrans()` static methods.
     Maketrans,
     /// `sys.float_info.mant_dig` field.
     MantDig,
@@ -2624,7 +2624,7 @@ pub enum StaticStrings {
     Total,
     /// `timedelta.total_seconds()` method.
     TotalSeconds,
-    /// `fnmatch.translate()` function.
+    /// `fnmatch.translate()` function and `str.translate()` method.
     Translate,
     /// Kwarg name `traps` — `decimal.Context()`.
     Traps,
@@ -2747,6 +2747,9 @@ pub enum StaticStrings {
     Variance,
     /// `sys.flags.verbose` field.
     Verbose,
+    /// `re.VERBOSE` flag constant.
+    #[strum(serialize = "VERBOSE")]
+    VerboseFlag,
     /// `sys.version` attribute.
     Version,
     /// `sys.version_info` attribute.

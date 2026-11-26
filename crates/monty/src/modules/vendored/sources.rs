@@ -19,4 +19,9 @@ pub(super) const SOURCES: &[VendoredSource] = &[
         file: "stat.py",
         source: include_str!("../../../stdlib/Lib/stat.py"),
     },
+    VendoredSource {
+        name: "textwrap",
+        file: "textwrap.py",
+        source: include_str!("../../../stdlib/Lib/textwrap.py"),
+    },
 ];
