@@ -1080,8 +1080,8 @@ fn import_node(
             if tz.offset_seconds == 0 && tz.name.is_none() {
                 Ok(vm.heap.get_timezone_utc())
             } else {
-                let tz = TimeZone::new(tz.offset_seconds, tz.name)
-                    .map_err(|_| ImportError::invalid_type("timezone"))?;
+                let tz =
+                    TimeZone::new(tz.offset_seconds, tz.name).map_err(|_| ImportError::invalid_type("timezone"))?;
                 Ok(Value::allocate(tz, vm.heap))
             }
         }

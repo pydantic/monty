@@ -89,9 +89,8 @@ fn resolve_name_lookups(mut progress: RunProgress) -> Result<RunProgress, MontyE
 }
 
 #[test]
-fn host_return_dict_key_hash_errors_keep_their_cause() {
+fn host_return_hash_errors_keep_their_cause() {
     let nested_key = (0..16).fold(MontyObject::int(1), |value, _| MontyObject::tuple([value]));
-    let returned_dict = |key| MontyObject::dict([(key, MontyObject::none())]);
     let call = |code: &str| {
         let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
         let tracker = ResourceTracker::new(ResourceLimits::default().max_recursion_depth(8));
@@ -102,29 +101,45 @@ fn host_return_dict_key_hash_errors_keep_their_cause() {
         call
     };
 
-    let error = call("external()")
-        .resume(returned_dict(nested_key.clone()), PrintWriter::Disabled)
-        .unwrap_err();
-    assert_eq!(error.exc_type(), ExcType::RecursionError);
+    let cases: [(fn(MontyObject) -> MontyObject, &str); 3] = [
+        (
+            |key| MontyObject::dict([(key, MontyObject::none())]),
+            "invalid return type: unhashable dict keys",
+        ),
+        (
+            |key| MontyObject::set([key]),
+            "invalid return type: unhashable set element",
+        ),
+        (
+            |key| MontyObject::frozenset([key]),
+            "invalid return type: unhashable frozenset element",
+        ),
+    ];
+    for (make_response, invalid_key_message) in cases {
+        let error = call("external()")
+            .resume(make_response(nested_key.clone()), PrintWriter::Disabled)
+            .unwrap_err();
+        assert_eq!(error.exc_type(), ExcType::RecursionError);
 
-    for (call_expression, eager) in [("external()", false), ("await external()", true)] {
-        let code = format!("try:\n    {call_expression}\nexcept RecursionError:\n    caught = True\ncaught");
-        let call = call(&code);
-        let response = returned_dict(nested_key.clone());
-        let result = if eager {
-            call.resume_eager(Ok(response), PrintWriter::Disabled)
-        } else {
-            call.resume(response, PrintWriter::Disabled)
+        for (call_expression, eager) in [("external()", false), ("await external()", true)] {
+            let code = format!("try:\n    {call_expression}\nexcept RecursionError:\n    caught = True\ncaught");
+            let call = call(&code);
+            let response = make_response(nested_key.clone());
+            let result = if eager {
+                call.resume_eager(Ok(response), PrintWriter::Disabled)
+            } else {
+                call.resume(response, PrintWriter::Disabled)
+            }
+            .unwrap();
+            assert_eq!(result.into_complete().unwrap(), MontyObject::bool(true));
         }
-        .unwrap();
-        assert_eq!(result.into_complete().unwrap(), MontyObject::bool(true));
-    }
 
-    let error = call("external()")
-        .resume(returned_dict(MontyObject::list([])), PrintWriter::Disabled)
-        .unwrap_err();
-    assert_eq!(error.exc_type(), ExcType::RuntimeError);
-    insta::assert_snapshot!(error.message().unwrap(), @"invalid return type: unhashable dict keys");
+        let error = call("external()")
+            .resume(make_response(MontyObject::list([])), PrintWriter::Disabled)
+            .unwrap_err();
+        assert_eq!(error.exc_type(), ExcType::RuntimeError);
+        assert_eq!(error.message(), Some(invalid_key_message));
+    }
 }
 
 /// Test that GC properly collects dict cycles.
