@@ -246,19 +246,14 @@ impl StringIo {
             return 0..0;
         }
         let start = self.byte_pos;
-        let tail = &self.buf[start..];
-        let mut end = start + self.newline.line_len(tail);
-        let mut chars = if self.is_ascii() {
+        // Only the first `limit` chars are searched, as in CPython, so repeated short reads stay linear.
+        let window = limit.map_or(self.buf.len(), |limit| self.advance(start, limit));
+        let end = start + self.newline.line_len(&self.buf[start..window]);
+        let chars = if self.is_ascii() {
             end - start
         } else {
             self.buf[start..end].chars().count()
         };
-        if let Some(limit) = limit
-            && limit < chars
-        {
-            end = self.advance(start, limit);
-            chars = limit;
-        }
         self.pos += chars;
         self.byte_pos = end;
         start..end

@@ -8,7 +8,7 @@ use std::{fmt::Write, ops::Range};
 
 use serde::{Deserialize, Serialize};
 
-use super::{buffer_growth, non_negative, optional_size, position_value, seek_args, stream_position};
+use super::{buffer_growth, non_negative, optional_size, position_value, seek_args};
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
@@ -115,11 +115,9 @@ impl BytesIo {
     fn readline(&mut self, limit: Option<usize>) -> Range<usize> {
         let start = self.pos.min(self.buf.len());
         let tail = &self.buf[start..];
-        let mut len = tail.iter().position(|&b| b == b'\n').map_or(tail.len(), |i| i + 1);
-        if let Some(limit) = limit {
-            len = len.min(limit);
-        }
-        let end = start + len;
+        // Only the first `limit` bytes are searched, so repeated short reads stay linear.
+        let window = &tail[..limit.map_or(tail.len(), |limit| limit.min(tail.len()))];
+        let end = start + window.iter().position(|&b| b == b'\n').map_or(window.len(), |i| i + 1);
         self.pos = self.pos.max(end);
         start..end
     }
@@ -385,13 +383,15 @@ impl<'h> HeapObjectRead<'h, BytesIo> {
             2 => stream.buf.len(),
             _ => return Err(ExcType::value_error_invalid_whence(whence, false)),
         };
-        let anchor = i64::try_from(anchor).unwrap_or(i64::MAX);
-        let target = anchor
-            .checked_add(pos)
+        // `pos` fits `isize` (see `seek_args`), so the sum overflows where CPython's `Py_ssize_t` does.
+        let target = isize::try_from(anchor)
+            .ok()
+            .and_then(|anchor| anchor.checked_add(isize::try_from(pos).ok()?))
             .ok_or_else(ExcType::overflow_new_position_too_large)?
-            .max(0);
-        stream.pos = stream_position(target)?;
-        Ok(Value::Int(target))
+            .max(0)
+            .unsigned_abs();
+        stream.pos = target;
+        Ok(position_value(target))
     }
 
     /// `truncate(size=None, /)`: `None` truncates at the position, which is unchanged.
@@ -404,7 +404,11 @@ impl<'h> HeapObjectRead<'h, BytesIo> {
             None | Some(Value::None) => self.get(vm.heap).pos,
             Some(size) => match size.as_int_with_overflow(vm, ExcType::overflow_c_long)? {
                 size if size < 0 => return Err(ExcType::value_error(format!("negative size value {size}"))),
-                size => stream_position(size)?,
+                // A C `long` is `ssize_t`-sized on the targets that bound it below `i64`.
+                size => isize::try_from(size)
+                    .ok()
+                    .and_then(|size| usize::try_from(size).ok())
+                    .ok_or_else(ExcType::overflow_c_long)?,
             },
         };
         let stream = self.get_mut(vm.heap);

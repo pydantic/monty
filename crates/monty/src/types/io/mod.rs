@@ -40,23 +40,25 @@ pub(crate) fn is_memory_stream(value: &Value, heap: &Heap) -> bool {
 
 /// An optional `size`/`hint` argument, as CPython's
 /// `_Py_convert_optional_to_ssize_t` reads it: `None` or absent, else an
-/// `__index__` value that must fit `ssize_t`.
+/// `__index__` value that must fit `ssize_t`, which is narrower than `i64` on 32-bit targets.
 pub(crate) fn optional_size(arg: Option<Value>, vm: &mut VM<'_>) -> RunResult<Option<i64>> {
     let Some(arg) = arg else {
         return Ok(None);
     };
     defer_drop!(arg, vm);
-    match arg {
-        Value::None => Ok(None),
-        Value::Int(n) => Ok(Some(*n)),
+    let size = match arg {
+        Value::None => return Ok(None),
+        Value::Int(n) => *n,
         _ => match arg.py_index_impl(vm)? {
             Some(index) => {
                 defer_drop!(index, vm);
-                index.as_int_with_overflow(vm, overflow_index_sized).map(Some)
+                index.as_int_with_overflow(vm, overflow_index_sized)?
             }
-            None => Err(ExcType::type_error_integer_or_none(&arg.py_type_name(vm))),
+            None => return Err(ExcType::type_error_integer_or_none(&arg.py_type_name(vm))),
         },
-    }
+    };
+    isize::try_from(size).map_err(|_| overflow_index_sized())?;
+    Ok(Some(size))
 }
 
 /// The `OverflowError` CPython's `PyNumber_AsSsize_t(obj, OverflowError)` raises.
@@ -64,7 +66,7 @@ fn overflow_index_sized() -> RunError {
     ExcType::overflow_index_sized_int().into()
 }
 
-/// `seek(pos, whence=0, /)`'s arguments: `pos` as a C `ssize_t`, `whence` as a C `int`.
+/// `seek(pos, whence=0, /)`'s arguments: `pos` as a C `ssize_t` (so within `isize`), `whence` as a C `int`.
 ///
 /// Keywords are refused with `{kw_name}() takes no keyword arguments`.
 pub(crate) fn seek_args(args: ArgValues, kw_name: &str, vm: &mut VM<'_>) -> RunResult<(i64, i64)> {
@@ -74,6 +76,7 @@ pub(crate) fn seek_args(args: ArgValues, kw_name: &str, vm: &mut VM<'_>) -> RunR
     defer_drop!(pos, vm);
     defer_drop!(whence, vm);
     let pos = pos.as_int(vm)?;
+    isize::try_from(pos).map_err(|_| ExcType::overflow_c_ssize_t())?;
     let whence = match whence {
         Some(whence) => {
             let whence = whence.as_int_with_overflow(vm, ExcType::overflow_c_int)?;

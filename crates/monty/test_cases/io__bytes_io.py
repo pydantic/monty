@@ -69,6 +69,15 @@ assert b.readline() == b'three\rfour'
 assert b.readline() == b''
 assert BytesIO(b'abcd\nef').readline(2) == b'ab'
 assert BytesIO(b'a\nb').readline(None) == b'a\n'
+assert BytesIO(b'ab\ncd').readline(3) == b'ab\n'
+assert BytesIO(b'ab\ncd').readline(0) == b''
+assert BytesIO(b'ab').readline(9) == b'ab'
+# repeated short reads of a buffer with no newline stay linear
+b = BytesIO(b'x' * 100_000)
+lines = 0
+while b.readline(1):
+    lines += 1
+assert lines == 100_000
 assert BytesIO(b'ab\ncd\nef\n').readlines() == [b'ab\n', b'cd\n', b'ef\n']
 # `BytesIO.readlines` stops at the line that brings the total to the hint
 assert BytesIO(b'ab\ncd\nef\n').readlines(3) == [b'ab\n']

@@ -99,6 +99,23 @@ assert s.readline() == ''
 assert StringIO('abcd\nef').readline(2) == 'ab'
 assert StringIO('abcd\nef').readline(-1) == 'abcd\n'
 assert StringIO('abcd\nef').readline(None) == 'abcd\n'
+# a size bounds the newline search, so a `\r\n` it splits ends the line at the `\r`
+assert StringIO('ab\r\ncd', newline='').readline(3) == 'ab\r'
+assert StringIO('ab\r\ncd', newline='').readline(4) == 'ab\r\n'
+s = StringIO(newline='\r\n')
+s.write('ab\ncd')
+s.seek(0)
+assert s.readline(3) == 'ab\r'
+assert s.readline() == '\ncd'
+assert StringIO('é€x\ny').readline(2) == 'é€'
+assert StringIO('é\nx').readline(5) == 'é\n'
+assert StringIO('ab\ncd').readline(0) == ''
+# repeated short reads of a buffer with no newline stay linear
+s = StringIO('é' * 100_000)
+lines = 0
+while s.readline(1):
+    lines += 1
+assert lines == 100_000
 assert StringIO('ab\ncd\nef\n').readlines() == ['ab\n', 'cd\n', 'ef\n']
 # `IOBase.readlines` stops after the line that takes the total past the hint
 assert StringIO('ab\ncd\nef\n').readlines(3) == ['ab\n', 'cd\n']
