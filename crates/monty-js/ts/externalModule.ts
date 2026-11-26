@@ -140,6 +140,7 @@ const SANDBOX_MODULES = new Set([
   'math',
   'os',
   'pathlib',
+  'pickle',
   'posixpath',
   'random',
   're',

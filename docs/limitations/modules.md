@@ -46,6 +46,7 @@ in the next feed, and after a dump (see [random.md](random.md)).
 | `os`            | [os.md](os.md)                        |
 | `os.path`       | [os.md](os.md)                        |
 | `pathlib`       | [pathlib.md](pathlib.md)              |
+| `pickle`        | [pickle.md](pickle.md)                |
 | `posixpath`     | [os.md](os.md)                        |
 | `random`        | [random.md](random.md)                |
 | `re`            | [re.md](re.md)                        |
@@ -72,7 +73,7 @@ Common modules that are *not* importable in Monty (non-exhaustive):
 `abc`, `argparse`, `array`, `contextlib`,
 `ctypes`, `enum`, `fractions`,
 `heapq`, `hmac`, `http`, `inspect`,
-`logging`, `multiprocessing`, `operator`, `pickle`, `queue`,
+`logging`, `multiprocessing`, `operator`, `queue`,
 `socket`, `string`, `struct`, `subprocess`, `tempfile`, `threading`,
 `traceback`, `unittest`, `urllib`, `uuid`, `warnings`, `weakref`,
 `zipfile`, `zlib`.

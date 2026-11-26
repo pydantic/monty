@@ -1,0 +1,9 @@
+from typing import Any, Final, SupportsIndex
+
+__all__ = ('dumps', 'loads', 'DEFAULT_PROTOCOL', 'HIGHEST_PROTOCOL')
+
+DEFAULT_PROTOCOL: Final[int]
+HIGHEST_PROTOCOL: Final[int]
+
+def dumps(obj: object, protocol: SupportsIndex | None = None) -> bytes: ...
+def loads(data: bytes, /) -> Any: ...

@@ -80,6 +80,7 @@ nav:
       - math: 'limitations/math.md'
       - os: 'limitations/os.md'
       - pathlib: 'limitations/pathlib.md'
+      - pickle: 'limitations/pickle.md'
       - random: 'limitations/random.md'
       - re: 'limitations/re.md'
       - statistics: 'limitations/statistics.md'

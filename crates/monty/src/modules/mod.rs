@@ -38,6 +38,7 @@ pub(crate) mod math;
 pub(crate) mod os;
 pub(crate) mod os_path;
 pub(crate) mod pathlib;
+pub(crate) mod pickle;
 pub(crate) mod random;
 pub(crate) mod re;
 pub(crate) mod statistics;
@@ -61,6 +62,8 @@ pub(crate) enum StandardLib {
     Asyncio,
     /// The `pathlib` module providing object-oriented filesystem paths.
     Pathlib,
+    /// The `pickle` module for binary serialization of built-in values.
+    Pickle,
     /// The `os` module: environment access, host-mediated filesystem calls and `os.path`.
     Os,
     /// The `os.path` module (CPython's `posixpath`), also reached as `import posixpath`.
@@ -134,6 +137,7 @@ impl StandardLib {
             StaticStrings::Typing => Some(Self::Typing),
             StaticStrings::Asyncio => Some(Self::Asyncio),
             StaticStrings::Pathlib => Some(Self::Pathlib),
+            StaticStrings::Pickle => Some(Self::Pickle),
             StaticStrings::Os => Some(Self::Os),
             StaticStrings::OsPath | StaticStrings::Posixpath => Some(Self::OsPath),
             StaticStrings::Math => Some(Self::Math),
@@ -182,6 +186,7 @@ impl StandardLib {
             Self::Typing => typing::create_module(vm),
             Self::Asyncio => asyncio::create_module(vm),
             Self::Pathlib => pathlib::create_module(vm),
+            Self::Pickle => pickle::create_module(vm),
             Self::Os => os::create_module(vm),
             Self::OsPath => os_path::create_module(vm),
             Self::Math => math::create_module(vm),
@@ -237,6 +242,7 @@ impl StandardLib {
             Self::Typing
             | Self::Asyncio
             | Self::Pathlib
+            | Self::Pickle
             | Self::Os
             | Self::OsPath
             | Self::Json
@@ -262,7 +268,7 @@ impl StandardLib {
 /// Every dump reaches these through `Value::ModuleFunction`, encoded by variant
 /// name, so renaming a variant needs `#[serde(alias)]` (see `DUMP_VERSION`).
 /// Explicit discriminants are permanent module identity codes; never change or reuse them.
-#[monty_macros::explicit_discriminants(checksum = 0xb5cd_b4d0_73ca_9edc)]
+#[monty_macros::explicit_discriminants(checksum = 0xd193_2e20_3b27_f3dd)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, strum::EnumDiscriminants)]
 #[repr(u8)]
 pub(crate) enum ModuleFunctions {
@@ -295,6 +301,7 @@ pub(crate) enum ModuleFunctions {
     Statistics(statistics::StatisticsFunctions) = 25,
     /// `_io` module functions, which the vendored `io` re-exports.
     Io(_io::IoFunctions) = 28,
+    Pickle(pickle::PickleFunctions) = 29,
     /// `gc` module functions — only present under the `test-hooks` feature.
     /// See [`gc`] for why it is gated; test-only variants are grouped last.
     #[cfg(feature = "test-hooks")]
@@ -337,6 +344,7 @@ impl fmt::Display for ModuleFunctions {
             Self::Annotationlib(func) => write!(f, "{func}"),
             Self::Statistics(func) => write!(f, "{func}"),
             Self::Io(func) => write!(f, "{func}"),
+            Self::Pickle(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
             Self::Gc(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
@@ -379,6 +387,7 @@ impl ModuleFunctions {
             Self::Annotationlib(functions) => annotationlib::call(vm, functions, args),
             Self::Statistics(functions) => statistics::call(vm, functions, args).map(CallResult::Value),
             Self::Io(functions) => _io::call(vm, functions, args),
+            Self::Pickle(functions) => pickle::call(vm, functions, args).map(CallResult::Value),
             #[cfg(feature = "test-hooks")]
             Self::Gc(functions) => gc::call(vm, functions, args).map(CallResult::Value),
             #[cfg(feature = "test-hooks")]
