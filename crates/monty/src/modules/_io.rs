@@ -1,10 +1,12 @@
-//! The `io` module: the in-memory streams, the file classes `open()` returns,
-//! the seek constants and the io exceptions.
+//! The `_io` module, CPython's C half of `io`: the stream classes, `open`,
+//! `open_code`, `text_encoding`, the io exceptions and `DEFAULT_BUFFER_SIZE`.
 //!
 //! `StringIO` and `BytesIO` live in `types::io`. `TextIOWrapper` and the
 //! `Buffered*` classes are the types of `open()` files; they are exported so
 //! `isinstance` checks work, but cannot be constructed directly. Monty keeps no
 //! host file descriptors, so nothing here deals in them (see `limitations/io.md`).
+//! CPython's `FileIO`, `BufferedRWPair`, `IncrementalNewlineDecoder` and the
+//! `_IOBase` classes are absent.
 
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
@@ -19,7 +21,7 @@ use crate::{
     value::Value,
 };
 
-/// CPython's `io.DEFAULT_BUFFER_SIZE`; nothing in Monty buffers by it.
+/// CPython's `DEFAULT_BUFFER_SIZE`; nothing in Monty buffers by it.
 const DEFAULT_BUFFER_SIZE: i64 = 128 * 1024;
 
 /// The module's functions.
@@ -31,43 +33,29 @@ pub(crate) enum IoFunctions {
     TextEncoding = 1,
 }
 
-/// Creates the `io` module.
+/// Creates the `_io` module. The vendored `io.py` imports every name it defines.
 pub fn create_module(vm: &mut VM<'_>) -> Module {
-    let mut module = Module::new(StaticStrings::Io, vm.interns);
-    for (name, ty) in [
-        (StaticStrings::StringIo, Type::StringIo),
-        (StaticStrings::BytesIo, Type::BytesIo),
-        (StaticStrings::TextIoWrapper, Type::TextIOWrapper),
-        (StaticStrings::BufferedReader, Type::BufferedReader),
-        (StaticStrings::BufferedWriter, Type::BufferedWriter),
-        (StaticStrings::BufferedRandom, Type::BufferedRandom),
-    ] {
-        module.set_attr(name, Value::Builtin(Builtins::Type(ty)), vm);
-    }
-    for (name, ty) in [
-        (StaticStrings::UnsupportedOperation, Type::UnsupportedOperation),
-        (StaticStrings::BlockingIoError, Type::BlockingIOError),
-    ] {
-        module.set_attr(name, Value::Builtin(Builtins::Type(ty)), vm);
-    }
-    for (name, function) in [
-        (StaticStrings::OpenCode, IoFunctions::OpenCode),
-        (StaticStrings::TextEncoding, IoFunctions::TextEncoding),
-    ] {
-        module.set_attr(name, Value::ModuleFunction(ModuleFunctions::Io(function)), vm);
-    }
-    module.set_attr(
-        StaticStrings::Open,
-        Value::Builtin(Builtins::Function(BuiltinsFunctions::Open)),
-        vm,
-    );
+    let mut module = Module::new(StaticStrings::UnderIo, vm.interns);
+    let ty = |ty| Value::Builtin(Builtins::Type(ty));
+    let function = |function| Value::ModuleFunction(ModuleFunctions::Io(function));
     for (name, value) in [
-        (StaticStrings::SeekSet, 0),
-        (StaticStrings::SeekCur, 1),
-        (StaticStrings::SeekEnd, 2),
-        (StaticStrings::DefaultBufferSize, DEFAULT_BUFFER_SIZE),
+        (StaticStrings::DefaultBufferSize, Value::Int(DEFAULT_BUFFER_SIZE)),
+        (StaticStrings::BlockingIoError, ty(Type::BlockingIOError)),
+        (StaticStrings::UnsupportedOperation, ty(Type::UnsupportedOperation)),
+        (
+            StaticStrings::Open,
+            Value::Builtin(Builtins::Function(BuiltinsFunctions::Open)),
+        ),
+        (StaticStrings::OpenCode, function(IoFunctions::OpenCode)),
+        (StaticStrings::TextEncoding, function(IoFunctions::TextEncoding)),
+        (StaticStrings::StringIo, ty(Type::StringIo)),
+        (StaticStrings::BytesIo, ty(Type::BytesIo)),
+        (StaticStrings::TextIoWrapper, ty(Type::TextIOWrapper)),
+        (StaticStrings::BufferedReader, ty(Type::BufferedReader)),
+        (StaticStrings::BufferedWriter, ty(Type::BufferedWriter)),
+        (StaticStrings::BufferedRandom, ty(Type::BufferedRandom)),
     ] {
-        module.set_attr(name, Value::Int(value), vm);
+        module.set_attr(name, value, vm);
     }
     module
 }
@@ -87,7 +75,7 @@ struct OpenCodeArgs {
     path: StrArg,
 }
 
-/// `io.open_code(path)`: `open(path, 'rb')` for a `str` path, as CPython's
+/// `_io.open_code(path)`: `open(path, 'rb')` for a `str` path, as CPython's
 /// default hook does.
 fn open_code(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let OpenCodeArgs { path } = OpenCodeArgs::from_args(args, vm)?;
@@ -96,7 +84,7 @@ fn open_code(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     builtin_open(vm, ArgValues::Two(path, allocate_string("rb", vm.heap)))
 }
 
-/// `io.text_encoding(encoding, stacklevel=2, /)`: `encoding` unless it is
+/// `_io.text_encoding(encoding, stacklevel=2, /)`: `encoding` unless it is
 /// `None`, then `'locale'`, which `open()` accepts as Monty's UTF-8.
 fn text_encoding(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let (encoding, stacklevel) = args

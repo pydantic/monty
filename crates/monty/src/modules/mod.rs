@@ -14,6 +14,7 @@ use crate::{
     intern::StaticStrings,
 };
 
+pub(crate) mod _io;
 pub(crate) mod annotationlib;
 pub(crate) mod asyncio;
 pub(crate) mod base64;
@@ -31,7 +32,6 @@ pub(crate) mod functools;
 #[cfg(feature = "test-hooks")]
 pub(crate) mod gc;
 pub(crate) mod hashlib;
-pub(crate) mod io;
 pub(crate) mod itertools;
 pub(crate) mod json;
 pub(crate) mod math;
@@ -115,8 +115,9 @@ pub(crate) enum StandardLib {
     Annotationlib,
     /// The `statistics` module: means, medians, modes, variances and quantiles.
     Statistics,
-    /// The `io` module: `StringIO`, `BytesIO`, the file classes and constants.
-    Io,
+    /// The `_io` module, the native half of `io`: `StringIO`, `BytesIO`, the file classes,
+    /// `open` and the io exceptions. `io` itself is CPython's vendored `io.py`.
+    UnderIo,
     /// The `gc` module exposing a single `collect()` for tests. Only present
     /// under the `test-hooks` feature so production sandboxes never see it.
     ///
@@ -157,7 +158,7 @@ impl StandardLib {
             StaticStrings::Fnmatch => Some(Self::Fnmatch),
             StaticStrings::Annotationlib => Some(Self::Annotationlib),
             StaticStrings::Statistics => Some(Self::Statistics),
-            StaticStrings::Io => Some(Self::Io),
+            StaticStrings::UnderIo => Some(Self::UnderIo),
             #[cfg(feature = "test-hooks")]
             StaticStrings::Gc => Some(Self::Gc),
             _ => None,
@@ -205,7 +206,7 @@ impl StandardLib {
             Self::Fnmatch => fnmatch::create_module(vm),
             Self::Annotationlib => annotationlib::create_module(vm),
             Self::Statistics => statistics::create_module(vm),
-            Self::Io => io::create_module(vm),
+            Self::UnderIo => _io::create_module(vm),
             #[cfg(feature = "test-hooks")]
             Self::Gc => gc::create_module(vm),
         };
@@ -228,7 +229,8 @@ impl StandardLib {
             | Self::Time
             | Self::Bisect
             | Self::Decimal
-            | Self::Errno => None,
+            | Self::Errno
+            | Self::UnderIo => None,
             #[cfg(feature = "test-hooks")]
             Self::Gc => None,
             Self::Base64 => Some(&[StaticStrings::MaxBinSize, StaticStrings::MaxLineSize]),
@@ -250,8 +252,7 @@ impl StandardLib {
             | Self::Tomllib
             | Self::Fnmatch
             | Self::Annotationlib
-            | Self::Statistics
-            | Self::Io => Some(&[]),
+            | Self::Statistics => Some(&[]),
         }
     }
 }
@@ -292,7 +293,8 @@ pub(crate) enum ModuleFunctions {
     Typing(typing::TypingFunctions) = 23,
     Annotationlib(annotationlib::AnnotationlibFunctions) = 24,
     Statistics(statistics::StatisticsFunctions) = 25,
-    Io(io::IoFunctions) = 28,
+    /// `_io` module functions, which the vendored `io` re-exports.
+    Io(_io::IoFunctions) = 28,
     /// `gc` module functions — only present under the `test-hooks` feature.
     /// See [`gc`] for why it is gated; test-only variants are grouped last.
     #[cfg(feature = "test-hooks")]
@@ -376,7 +378,7 @@ impl ModuleFunctions {
             Self::Typing(functions) => typing::call(vm, functions, args),
             Self::Annotationlib(functions) => annotationlib::call(vm, functions, args),
             Self::Statistics(functions) => statistics::call(vm, functions, args).map(CallResult::Value),
-            Self::Io(functions) => io::call(vm, functions, args),
+            Self::Io(functions) => _io::call(vm, functions, args),
             #[cfg(feature = "test-hooks")]
             Self::Gc(functions) => gc::call(vm, functions, args).map(CallResult::Value),
             #[cfg(feature = "test-hooks")]

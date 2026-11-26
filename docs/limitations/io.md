@@ -1,18 +1,20 @@
 # `io`
 
-Monty's `io` module provides `StringIO`, `BytesIO`, the file classes `open()` returns, `open`, `open_code`,
-`text_encoding`, `SEEK_SET` / `SEEK_CUR` / `SEEK_END`, `DEFAULT_BUFFER_SIZE`, `UnsupportedOperation` and
-`BlockingIOError`.
+As in CPython, `io` is split in two: the native `_io` provides `StringIO`, `BytesIO`, the file classes `open()`
+returns, `open`, `open_code`, `text_encoding`, `DEFAULT_BUFFER_SIZE`, `UnsupportedOperation` and `BlockingIOError`,
+and `io` is CPython's `Lib/io.py`, which re-exports them and adds `SEEK_SET` / `SEEK_CUR` / `SEEK_END`
+(see [modules.md](modules.md#vendored-cpython-modules)).
 `open()` files have their own page, [open.md](open.md).
 
 ## Missing names
 
-- `IOBase`, `RawIOBase`, `BufferedIOBase`, `TextIOBase`, `FileIO`, `BufferedRWPair`,
-    `IncrementalNewlineDecoder`, `Reader` and `Writer` raise `AttributeError`, so
-    `isinstance(f, io.TextIOBase)`-style checks fail.
-- The type checker's `io` stubs describe CPython's whole module, so those names pass type checking and then
-    fail at runtime.
-- `import _io` raises `ModuleNotFoundError`.
+- `io.py` is patched to drop the `IOBase`, `RawIOBase`, `BufferedIOBase` and `TextIOBase` ABCs and the `Reader`
+    and `Writer` protocols, since Monty has no metaclasses or `abc`.
+    They raise `AttributeError`, so `isinstance(f, io.TextIOBase)`-style checks fail, and `io.__all__` omits them.
+- `FileIO`, `BufferedRWPair` and `IncrementalNewlineDecoder` are missing from both modules, as are `_io`'s
+    `_IOBase`, `_RawIOBase`, `_BufferedIOBase`, `_TextIOBase` and `_BytesIOBuffer`.
+- The type checker's stubs omit the same names, except `_io`'s private base classes, which type the stream methods.
+- Every import of `_io` builds a fresh module, so `io._io is _io` is `False` (see [modules.md](modules.md)).
 
 ## File classes
 

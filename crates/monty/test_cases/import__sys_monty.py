@@ -67,6 +67,7 @@ assert sys.pycache_prefix is None
 # === sys.builtin_module_names lists native modules ===
 # `gc` is only registered in test builds, so compare against the production set.
 assert tuple(name for name in sys.builtin_module_names if name != 'gc') == (
+    '_io',
     'annotationlib',
     'asyncio',
     'base64',
@@ -82,7 +83,6 @@ assert tuple(name for name in sys.builtin_module_names if name != 'gc') == (
     'fnmatch',
     'functools',
     'hashlib',
-    'io',
     'itertools',
     'json',
     'math',

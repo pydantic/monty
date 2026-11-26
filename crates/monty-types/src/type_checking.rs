@@ -198,6 +198,7 @@ impl Error for ModuleStubError {}
 /// Imports of these names never reach the host, even when the runtime does not provide the module.
 /// Keep in sync with the runtime's `StandardLib` and the vendored modules in `crates/monty/stdlib/vendor.toml`.
 pub const SANDBOX_MODULE_NAMES: &[&str] = &[
+    "_io",
     "_stat",
     "annotationlib",
     "asyncio",
@@ -243,7 +244,6 @@ pub const CHECKER_MODULE_NAMES: &[&str] = &[
     "__future__",
     "__main__",
     "_collections_abc",
-    "_io",
     "_typeshed",
     "abc",
     "builtins",

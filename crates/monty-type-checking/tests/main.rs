@@ -107,6 +107,7 @@ import csv
 import datetime
 import functools
 import hashlib
+import io
 import itertools
 import tomllib
 from typing import Generator
@@ -134,6 +135,11 @@ itertools._tee()
 datetime.date(2026, 1, 1).timetuple()
 datetime.datetime(2026, 1, 1).utctimetuple()
 tomllib.load(CustomReader())
+io.IOBase
+io.TextIOBase
+io.FileIO
+io.IncrementalNewlineDecoder
+io.Reader
 
 async def main() -> None:
     await asyncio.gather(CustomAwaitable())
@@ -142,23 +148,28 @@ async def main() -> None:
 asyncio.run(main(), debug=True)
 ";
     assert_snapshot!(check_concise(code, "unsupported.py").expect("expected type errors"), @"
-    unsupported.py:10:31: error[import-not-found] Module `typing_extensions` has no member `type_repr`
-    unsupported.py:20:21: error[subclass-of-final-class] Class `CustomDialect` cannot inherit from final class `Dialect`
-    unsupported.py:21:24: error[subclass-of-final-class] Class `CustomDictReader` cannot inherit from final class `DictReader`
-    unsupported.py:22:24: error[subclass-of-final-class] Class `CustomDictWriter` cannot inherit from final class `DictWriter`
-    unsupported.py:24:1: error[unresolved-attribute] Module `csv` has no member `Reader`
-    unsupported.py:25:1: error[unresolved-attribute] Module `csv` has no member `Writer`
-    unsupported.py:26:1: error[unresolved-attribute] Module `functools` has no member `_lru_cache_wrapper`
-    unsupported.py:27:1: error[unresolved-attribute] Module `functools` has no member `_CacheInfo`
-    unsupported.py:28:1: error[unresolved-attribute] Module `hashlib` has no member `HASH`
-    unsupported.py:29:1: error[unresolved-attribute] Module `hashlib` has no member `HASHXOF`
-    unsupported.py:30:1: error[missing-argument] No argument provided for required parameter `_unavailable` of constructor `_tee.__new__`
-    unsupported.py:31:1: error[unresolved-attribute] Object of type `date` has no attribute `timetuple`
-    unsupported.py:32:1: error[unresolved-attribute] Object of type `datetime` has no attribute `utctimetuple`
-    unsupported.py:33:14: error[invalid-argument-type] Argument to function `load` is incorrect: Expected `BinaryIO`, found `CustomReader`
-    unsupported.py:36:26: error[invalid-argument-type] Argument to function `gather` is incorrect: Expected `_Future[Unknown] | Coroutine[Any, Any, Unknown]`, found `CustomAwaitable`
-    unsupported.py:37:26: error[unknown-argument] Argument `return_exceptions` does not match any known parameter of function `gather`
-    unsupported.py:39:21: error[unknown-argument] Argument `debug` does not match any known parameter of function `run`
+    unsupported.py:11:31: error[import-not-found] Module `typing_extensions` has no member `type_repr`
+    unsupported.py:21:21: error[subclass-of-final-class] Class `CustomDialect` cannot inherit from final class `Dialect`
+    unsupported.py:22:24: error[subclass-of-final-class] Class `CustomDictReader` cannot inherit from final class `DictReader`
+    unsupported.py:23:24: error[subclass-of-final-class] Class `CustomDictWriter` cannot inherit from final class `DictWriter`
+    unsupported.py:25:1: error[unresolved-attribute] Module `csv` has no member `Reader`
+    unsupported.py:26:1: error[unresolved-attribute] Module `csv` has no member `Writer`
+    unsupported.py:27:1: error[unresolved-attribute] Module `functools` has no member `_lru_cache_wrapper`
+    unsupported.py:28:1: error[unresolved-attribute] Module `functools` has no member `_CacheInfo`
+    unsupported.py:29:1: error[unresolved-attribute] Module `hashlib` has no member `HASH`
+    unsupported.py:30:1: error[unresolved-attribute] Module `hashlib` has no member `HASHXOF`
+    unsupported.py:31:1: error[missing-argument] No argument provided for required parameter `_unavailable` of constructor `_tee.__new__`
+    unsupported.py:32:1: error[unresolved-attribute] Object of type `date` has no attribute `timetuple`
+    unsupported.py:33:1: error[unresolved-attribute] Object of type `datetime` has no attribute `utctimetuple`
+    unsupported.py:34:14: error[invalid-argument-type] Argument to function `load` is incorrect: Expected `BinaryIO`, found `CustomReader`
+    unsupported.py:35:1: error[unresolved-attribute] Module `io` has no member `IOBase`
+    unsupported.py:36:1: error[unresolved-attribute] Module `io` has no member `TextIOBase`
+    unsupported.py:37:1: error[unresolved-attribute] Module `io` has no member `FileIO`
+    unsupported.py:38:1: error[unresolved-attribute] Module `io` has no member `IncrementalNewlineDecoder`
+    unsupported.py:39:1: error[unresolved-attribute] Module `io` has no member `Reader`
+    unsupported.py:42:26: error[invalid-argument-type] Argument to function `gather` is incorrect: Expected `_Future[Unknown] | Coroutine[Any, Any, Unknown]`, found `CustomAwaitable`
+    unsupported.py:43:26: error[unknown-argument] Argument `return_exceptions` does not match any known parameter of function `gather`
+    unsupported.py:45:21: error[unknown-argument] Argument `debug` does not match any known parameter of function `run`
     ");
 }
 

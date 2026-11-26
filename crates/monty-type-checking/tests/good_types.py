@@ -1,3 +1,4 @@
+import _io
 import asyncio
 import bisect
 import datetime
@@ -860,3 +861,5 @@ assert_type(BytesIO(b'x').read(1), bytes)
 assert_type(BytesIO().seek(0, io.SEEK_END), int)
 assert_type(io.text_encoding(None), Literal['locale', 'utf-8'])
 assert_type(BlockingIOError('x'), BlockingIOError)
+assert_type(_io.StringIO('x'), StringIO)
+assert_type(_io.DEFAULT_BUFFER_SIZE, Literal[131072])

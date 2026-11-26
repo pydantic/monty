@@ -1942,8 +1942,6 @@ pub enum StaticStrings {
     /// `asyncio.InvalidStateError` class.
     #[strum(serialize = "InvalidStateError")]
     InvalidStateError,
-    /// Module name for `import io`.
-    Io,
     /// `Path.is_absolute()` method, answered without host I/O.
     IsAbsolute,
     /// `is_argument` parameter of `annotationlib.ForwardRef()`.
@@ -3168,6 +3166,9 @@ pub enum StaticStrings {
     /// `NamedTuple._fields` — tuple of field names.
     #[strum(serialize = "_fields")]
     UnderFields,
+    /// Module name for `import _io`, the native half of `io`.
+    #[strum(serialize = "_io")]
+    UnderIo,
     /// `NamedTuple._make(iterable)` classmethod.
     #[strum(serialize = "_make")]
     UnderMake,

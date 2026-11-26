@@ -21,6 +21,7 @@ in the next feed, and after a dump (see [random.md](random.md)).
 
 | Module          | See                                   |
 | --------------- | ------------------------------------- |
+| `_io`           | [io.md](io.md)                        |
 | `annotationlib` | [annotationlib.md](annotationlib.md)  |
 | `asyncio`       | [asyncio.md](asyncio.md)              |
 | `base64`        | [base64.md](base64.md)                |
@@ -88,20 +89,18 @@ and `collections` only the four types above; `tomllib` all three of its names, w
 The absent names are missing from
 the module namespace rather than stubbed, so they fail type checking as well as
 raising `AttributeError` at runtime; see each module's page for the specifics.
-`io` is the exception: its stubs are typeshed's, so its absent names pass type checking (see [io.md](io.md)).
 
 ## Modules the type checker resolves but the runtime does not
 
-`abc`, `enum`, `_io`, `types`, `typing_extensions`, `_collections_abc` and `_typeshed` support the vendored
+`abc`, `enum`, `types`, `typing_extensions`, `_collections_abc` and `_typeshed` support the vendored
 stubs, so their imports pass type checking.
-`_io` declares the classes `io` re-exports, including the file objects `open()` returns.
 At runtime, the host must provide them or the import raises `ModuleNotFoundError`.
 The worker never requests host stubs for vendored typeshed modules: a host-provided `abc` is checked against
 typeshed's `abc` declarations.
 
 ## Vendored CPython modules
 
-`colorsys`, `keyword`, `stat` and `textwrap` run CPython 3.14's own `Lib/*.py`, copied from the release pinned in
+`colorsys`, `io`, `keyword`, `stat` and `textwrap` run CPython 3.14's own `Lib/*.py`, copied from the release pinned in
 `crates/monty/stdlib/vendor.toml`, so they match CPython wherever the language features they use do.
 They differ from CPython's modules in how they are loaded:
 
@@ -132,6 +131,11 @@ pure-Python functions accept.
     raises `OverflowError: can't convert negative value to unsigned int`.
 - Platform-specific constants take `stat.py`'s portable values: `S_IFWHT` is `0` and `SF_SETTABLE` is `0xffff0000`,
     where CPython on macOS reports `0o160000` and `0x3fff0000`.
+
+`io` runs over a native `_io`, split on CPython's boundary, but is patched down to `_io`'s re-exports and the
+`SEEK_*` constants.
+Monty has no metaclasses or `abc`, so the `IOBase`, `RawIOBase`, `BufferedIOBase` and `TextIOBase` ABCs and the
+`Reader` and `Writer` protocols are dropped, along with the `_io` names Monty lacks (see [io.md](io.md)).
 
 `textwrap` is patched because Monty does not parse `del` yet: the class-body `del` that CPython uses to remove the
 regex building blocks is dropped, so `TextWrapper.word_punct`, `TextWrapper.letter`, `TextWrapper.nowhitespace`

@@ -1,6 +1,7 @@
 # /// monty
 # mount-fs = true
 # ///
+import _io
 import csv
 import io
 import json
@@ -16,6 +17,31 @@ def check(exc_type, message, fn):
     else:
         assert False, 'did not raise'
 
+
+# === the native `_io` and pure-Python `io` split ===
+# `io` re-exports `_io`'s objects and adds the seek constants
+for name in [
+    'DEFAULT_BUFFER_SIZE',
+    'BlockingIOError',
+    'UnsupportedOperation',
+    'open',
+    'open_code',
+    'text_encoding',
+    'StringIO',
+    'BytesIO',
+    'TextIOWrapper',
+    'BufferedReader',
+    'BufferedWriter',
+    'BufferedRandom',
+]:
+    assert getattr(io, name) is getattr(_io, name)
+# Monty builds a fresh native module per import (see limitations/modules.md), so compare its contents
+assert io._io.StringIO is _io.StringIO
+assert io.__name__ == 'io'
+assert not hasattr(_io, 'SEEK_SET')
+assert not hasattr(_io, '__all__')
+assert {'StringIO', 'BytesIO', 'SEEK_SET', 'text_encoding', 'open'} <= set(io.__all__)
+assert all(hasattr(io, name) for name in io.__all__)
 
 # === constants ===
 assert io.SEEK_SET == 0

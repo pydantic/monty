@@ -80,7 +80,7 @@ Register only Monty's selected modules and their type-checking dependencies.
 -_threading_local: 3.0-
 -_tkinter: 3.0-
 -_tracemalloc: 3.4-
-+_io: 3.0-  # not importable at runtime, only for type checking
++_io: 3.0-
 +_stat: 3.0-  # not importable at runtime, only for type checking (stat re-exports from it)
  _typeshed: 3.0-  # not present at runtime, only for type checking
 -_warnings: 3.0-
@@ -213,7 +213,7 @@ Register only Monty's selected modules and their type-checking dependencies.
 -inspect: 3.0-
 -io: 3.0-
 -ipaddress: 3.3-
-+io: 3.0-  # not importable at runtime, only for type checking
++io: 3.0-
  itertools: 3.0-
  json: 3.0-
  keyword: 3.0-
