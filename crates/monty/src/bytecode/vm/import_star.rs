@@ -135,6 +135,8 @@ impl VM<'_> {
                 dict_set(dict, key, value, this)
             }
             (FrameGlobals::Slots, None) => {
+                let mut value = DropGuard::new(value, this);
+                let (_, this) = value.as_parts();
                 let name = name.as_str(this).expect("import_star_load checked the name is a str");
                 let existing = this
                     .interns
@@ -142,12 +144,12 @@ impl VM<'_> {
                     .and_then(|name_id| this.global_names.get(name_id));
                 // Checked before interning, so a full namespace never grows the interner.
                 if existing.is_none() && NamespaceId::new(this.global_names.len()).is_none() {
-                    value.drop_with(this);
                     return Err(SimpleException::new_msg(ExcType::SyntaxError, namespace_overflow_message()).into());
                 }
                 // Code compiled later finds the slot by this ID; a new name takes a
                 // fresh slot, as preparing a store to it would.
-                let name_id = this.interns.intern_runtime(name);
+                let name_id = this.interns.intern_runtime(name, &this.heap.tracker)?;
+                let (value, this) = value.into_parts();
                 let slot = this
                     .global_names
                     .ensure_slot(name_id, CodeRange::default())

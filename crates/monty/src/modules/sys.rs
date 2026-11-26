@@ -318,7 +318,7 @@ fn intern(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         .ok_or_else(|| ExcType::type_error(format!("intern() argument must be str, not {}", value.py_type_name(vm))))?;
     let id = match string {
         PyStr::Interned(id) => id,
-        _ => vm.interns.intern_runtime(string.as_str(vm)),
+        _ => vm.interns.intern_runtime(string.as_str(vm), &vm.heap.tracker)?,
     };
     Ok(Value::InternString(id))
 }

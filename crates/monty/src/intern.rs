@@ -33,6 +33,7 @@ use std::{
 
 use ahash::AHashMap;
 pub(crate) use compile::CompileInterns;
+use monty_types::{ResourceError, ResourceTracker};
 use num_bigint::BigInt;
 use storage::Entries;
 use strum::{EnumString, FromRepr, IntoStaticStr};
@@ -3720,19 +3721,31 @@ impl Interns {
         intern_static(&self.static_string_ids, &self.strings, value)
     }
 
-    /// Returns the canonical ID for runtime text, including names used by later compilations.
-    pub(crate) fn intern_runtime(&self, text: &str) -> StringId {
+    /// Returns the canonical ID for runtime text, checking owned allocations before insertion.
+    pub(crate) fn intern_runtime(&self, text: &str, tracker: &ResourceTracker) -> Result<StringId, ResourceError> {
         assert!(!self.compiling.get(), "runtime interning during compilation");
         if let Some(id) = self.get_string_id_by_name(text) {
-            id
+            Ok(id)
         } else if let Ok(value) = text.parse::<StaticStrings>() {
-            intern_static(&self.static_string_ids, &self.strings, value)
+            Ok(intern_static(&self.static_string_ids, &self.strings, value))
         } else {
+            let mut ids = self.string_id_by_name.borrow_mut();
+            // Rehashing keeps the old buckets live. Allow three new buckets per usable slot
+            // to account for doubling and empty buckets, plus a control byte per bucket.
+            let index_growth = ResourceTracker::growth_bytes(
+                ids.len(),
+                ids.capacity(),
+                3 * (mem::size_of::<(Arc<str>, StringId)>() + 1),
+            );
+            // The Arc allocation holds two counters, the text, and alignment padding.
+            let text_bytes = text.len().saturating_add(3 * mem::size_of::<usize>());
+            tracker.check_allocation(text_bytes.saturating_add(index_growth))?;
+
             let id = next_string_id(self.strings.len());
             let text: Arc<str> = Arc::from(text);
             self.strings.push(InternedString::owned(Arc::clone(&text)));
-            self.string_id_by_name.borrow_mut().insert(text, id);
-            id
+            ids.insert(text, id);
+            Ok(id)
         }
     }
 

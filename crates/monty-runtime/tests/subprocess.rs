@@ -1705,6 +1705,10 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         // Case methods and `re.escape` check their result before building it; a non-ASCII mapping that
         // outgrows its input (`'ΐ'.upper()` is 6 bytes from 2) is checked as it grows.
         ("s = 'x' * (16 * 1024 * 1024)\ns.lower()", 24 * 1024 * 1024),
+        (
+            "from sys import intern\ns = 'x' * (16 * 1024 * 1024)\nintern(s)",
+            24 * 1024 * 1024,
+        ),
         ("s = 'x' * (16 * 1024 * 1024)\ns.title()", 24 * 1024 * 1024),
         ("s = 'é' * (8 * 1024 * 1024)\ns.upper()", 24 * 1024 * 1024),
         ("s = 'ΐ' * (4 * 1024 * 1024)\ns.upper()", 24 * 1024 * 1024),
