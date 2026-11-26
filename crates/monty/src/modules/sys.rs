@@ -239,9 +239,9 @@ fn float_info(vm: &VM<'_>) -> Value {
 /// Monty is started with none, so every switch reads `0`/`False`. Two fields
 /// are not merely "unset" but describe the sandbox: `dont_write_bytecode` is
 /// `1` to agree with `sys.dont_write_bytecode`, and `hash_randomization` is
-/// `0` because Monty seeds no hashes. `int_max_str_digits` reports the limit
-/// Monty actually enforces, though it has no `sys.set_int_max_str_digits` to
-/// change it.
+/// `0` because Python string and bytes hashes use fixed seeds.
+/// `int_max_str_digits` reports the limit Monty enforces. There is no
+/// `sys.set_int_max_str_digits` to change it.
 fn flags(vm: &VM<'_>) -> Value {
     let named_tuple = NamedTuple::new(
         EitherStr::Interned(vm.interns.intern_static(StaticStrings::SysFlags)),
@@ -312,23 +312,57 @@ pub(super) fn call(vm: &mut VM<'_>, function: SysFunctions, args: ArgValues) -> 
     }
 }
 
-/// Reuses a live runtime intern or an existing compiler string before indexing a new one.
+/// Returns one canonical result for equal strings passed to `sys.intern()`
+/// while a caller holds a reference to that result.
+///
+/// # Canonical identity
+///
+/// Empty strings and single ASCII characters use reserved IDs. Other strings
+/// up to `InlineStr::CAPACITY` UTF-8 bytes are canonicalized to an inline value
+/// whose identity comes from its bytes. This needs no heap allocation or
+/// index entry, even when the input is a literal with a separate identity.
+///
+/// Longer strings can reuse an existing ID in the session's permanent string
+/// table. A new runtime intern stays in its original heap slot. If a later feed
+/// compiles an equal literal, it gets its own permanent ID. The live runtime
+/// intern still takes precedence so repeated calls keep returning the same
+/// object. Python leaves literal identity implementation-dependent, so callers
+/// use the value returned by `sys.intern()` for identity comparisons.
+///
+/// # Heap ownership
+///
+/// The weak index stores the hash and slot of each canonical heap string.
+/// A private per-heap seed makes it harder for sandboxed code to force many
+/// strings into the same hash range. Lookup checks the full text of candidates.
+/// Strings are immutable, so the heap can recompute the key at deletion.
+/// It removes the index entry before reusing the slot. Dumps persist the
+/// marker on the heap entry, and restore rebuilds the index from marked entries.
+///
+/// The index owns no reference. The argument stays alive through registration,
+/// and the returned heap value owns a separate reference. The VM performs
+/// the lookups and registration without re-entering Python.
 fn intern(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let args = args.reject_kwargs("sys.intern", vm.heap)?;
     let value = args.get_one_arg("sys.intern", vm.heap)?;
+    // Keep the argument's reference until the PyStr read guard is dropped.
     defer_drop!(value, vm);
 
     let string = PyStr::from_value(value, vm)
         .ok_or_else(|| ExcType::type_error(format!("intern() argument must be str, not {}", value.py_type_name(vm))))?;
     let text = string.as_str(vm);
+    // Normalize short strings regardless of how the argument is stored.
     if text.len() <= InlineStr::CAPACITY {
         return Ok(allocate_string(text, vm.heap));
     }
+    // A marked slot already holds the canonical string. The fast path only
+    // increments the refcount, skipping hashing and text comparison.
     if let PyStr::Heap(string) = &string
         && vm.heap.is_interned_string(string.id())
     {
         return Ok(value.clone_with_heap(vm.heap));
     }
+    // Honor an earlier runtime intern before accepting a permanent ID. A hit
+    // already carries an owned reference for the returned Value.
     if let Some(id) = vm.heap.interned_string(text) {
         return Ok(Value::Ref(id));
     }
@@ -336,9 +370,13 @@ fn intern(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     match &string {
         PyStr::Interned(id) => Ok(Value::InternString(*id)),
         PyStr::Heap(string) => {
+            // Only reuse existing permanent entries. Appending here would
+            // retain user strings for the rest of the session.
             if let Some(id) = vm.interns.get_string_id_by_name(text) {
                 Ok(Value::InternString(id))
             } else {
+                // Register the input in place and acquire the result's
+                // reference before the argument's reference is released.
                 vm.heap.remember_interned_string(string.id());
                 Ok(value.clone_with_heap(vm.heap))
             }
