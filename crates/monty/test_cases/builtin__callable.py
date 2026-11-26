@@ -95,7 +95,7 @@ assert callable(part) is True
 assert callable(list[int]) is True
 
 # NamedTuple class vs instance
-Point = collections.namedtuple("Point", ["x", "y"])
+Point = collections.namedtuple('Point', ['x', 'y'])
 assert callable(Point) is True
 p_nt = Point(1, 2)
 assert callable(p_nt) is False

@@ -502,7 +502,7 @@ impl PythonBridge {
             return true;
         };
         if self.spans_disabled.load(Ordering::Acquire) {
-            return false;
+            return self.logs_enabled();
         }
         self.call_spans(|py| {
             let key = SpanKey {
