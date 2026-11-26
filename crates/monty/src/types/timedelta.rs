@@ -16,11 +16,11 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
 use smallvec::smallvec;
 
 use crate::{
-    args::{ArgValues, FromArgs, FromValue, FromValueFail, is_long_int},
+    args::{ArgValues, FromArgs, FromValue, FromValueFail},
     bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
-    heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    heap::{Heap, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StaticStrings,
     types::{
         CmpOrder, LazyHeapSet, PyTrait, Type, TypeRef, date, datetime, long_int, str::allocate_string,
@@ -200,10 +200,7 @@ pub(crate) fn from_total_microseconds(total_microseconds: i128) -> RunResult<Tim
 /// The zero check lives here so `/`, `//`, `%` and `divmod` all raise the same
 /// `ZeroDivisionError` rather than each repeating it.
 pub(crate) fn rhs_microseconds(other: &Value, vm: &VM<'_>) -> RunResult<Option<i128>> {
-    let Value::Ref(id) = other else {
-        return Ok(None);
-    };
-    let HeapData::TimeDelta(rhs) = vm.heap.get(*id) else {
+    let Some(rhs) = other.get_as::<TimeDelta>(vm.heap) else {
         return Ok(None);
     };
     let total = total_microseconds(rhs);
@@ -334,7 +331,7 @@ impl FromValue for DeltaComponent {
         match value {
             Value::Bool(b) => Ok(Self(i128::from(b))),
             Value::Int(i) => Ok(Self(i128::from(i))),
-            _ if is_long_int(&value, vm) => {
+            _ if value.as_long_int(vm).is_some() => {
                 value.drop_with(vm);
                 Err(FromValueFail::Raise(ExcType::overflow_c_int()))
             }

@@ -31,12 +31,12 @@ use crate::{
     bytecode::{CallResult, VM, unpack_exact},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapReadOutput},
+    heap::{ContainsHeap, DropGuard, DropWithContext, HeapReadOutput},
     intern::StaticStrings,
     modules::ModuleFunctions,
     os_dispatch::{PostConversionEffect, urandom_reply_error},
     types::{
-        List, LongInt, Module, PyTrait, Type,
+        List, LongInt, Module, PyTrait, Tuple, Type,
         bytes::allocate_bytes,
         iter::collect_owned_iterable,
         long_int::bigint_to_f64_checked,
@@ -217,7 +217,7 @@ fn seed_from_reply(
     vm: &mut VM<'_>,
 ) -> RunResult<Value> {
     defer_drop!(reply, vm);
-    let seeded = match value_as_bytes(reply, vm) {
+    let seeded = match reply.as_bytes(vm) {
         Some(bytes) if bytes.len() == SEED_BYTES => Ok(Mt19937::from_entropy(bytes)),
         Some(bytes) => Err(urandom_reply_error(Ok(bytes.len()), SEED_BYTES)),
         None => Err(urandom_reply_error(Err(&reply.py_type_name(vm)), SEED_BYTES)),
@@ -239,18 +239,6 @@ fn seed_from_reply(
                 unreachable!("a seeded generator never suspends")
             }
         },
-    }
-}
-
-/// Borrows the bytes behind a `bytes` value, interned or heap-allocated.
-fn value_as_bytes<'a>(value: &'a Value, vm: &'a VM<'_>) -> Option<&'a [u8]> {
-    match value {
-        Value::InternBytes(id) => Some(vm.interns.get_bytes(*id)),
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Bytes(bytes) => Some(bytes.as_slice()),
-            _ => None,
-        },
-        _ => None,
     }
 }
 
@@ -407,14 +395,7 @@ fn setstate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult
     let entries: Vec<Value> = if version == 2 {
         reduce_state_words(internal, vm)?
     } else {
-        let tuple = match internal {
-            Value::Ref(id) => match vm.heap.get(*id) {
-                HeapData::Tuple(tuple) => Some(tuple),
-                _ => None,
-            },
-            _ => None,
-        };
-        let Some(tuple) = tuple else {
+        let Some(tuple) = internal.get_as::<Tuple>(vm.heap) else {
             return Err(ExcType::type_error("state vector must be a tuple"));
         };
         // Size first, so an oversized tuple is rejected before it is copied.

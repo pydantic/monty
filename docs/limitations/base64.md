@@ -32,6 +32,10 @@ Encoders take `bytes`; decoders take `bytes` or an ASCII-only `str`. Monty has
 no `bytearray`, `memoryview` or `array`, so the "bytes-like object" the CPython
 docs describe is always `bytes` here.
 
+For invalid encoder inputs, Monty uses the standard bytes-like `TypeError` message.
+CPython prefixes that message with `memoryview: ` for `b32encode`, `b32hexencode`,
+`b85encode`, `z85encode` and `a85encode`.
+
 ## Module attributes
 
 The attributes CPython leaks as a side effect of how `base64` is written —

@@ -21,7 +21,7 @@ use crate::{
     expressions::CmpOperator,
     fstring::FormatFloat,
     hash::{HashValue, identity_hash},
-    heap::{DropWithContext, Heap, HeapData, HeapId, HeapObjectRead, HeapReadOutput, HeapReader},
+    heap::{DropWithContext, Heap, HeapId, HeapObjectRead, HeapReadOutput, HeapReader},
     heap_data::heap_payloads,
     identity::Identity,
     intern::{FunctionId, StaticStrings},
@@ -932,11 +932,12 @@ impl<'a> PythonIdDisplay<'a> {
     fn new(value: &'a Value, heap: &'a Heap) -> Self {
         match value {
             Value::Int(value) => Self::Int(*value),
-            Value::Ref(id) => match heap.get(*id) {
-                HeapData::LongInt(value) => Self::LongInt(value.inner()),
-                _ => unreachable!("identity values are integers"),
-            },
-            _ => unreachable!("identity values are integers"),
+            _ => Self::LongInt(
+                value
+                    .get_as::<LongInt>(heap)
+                    .expect("identity values are integers")
+                    .inner(),
+            ),
         }
     }
 }
@@ -958,7 +959,7 @@ mod tests {
     use crate::{
         builtins::BuiltinsFunctions,
         defer_drop_mut,
-        heap::{DropGuard, HeapReader},
+        heap::{DropGuard, HeapData, HeapReader},
         heap_data::CellValue,
         intern::{BytesId, CompileInterns, LongIntId, StringId},
         modules::math::MathFunctions,

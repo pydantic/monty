@@ -379,7 +379,7 @@ impl Dict {
     /// Ownership follows [`Dict::set`]: `key` and `value` transfer to the dict,
     /// and are released here if the insertion exceeds the memory limit.
     pub fn set_json_string_key(&mut self, key: Value, value: Value, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
-        debug_assert!(json_key_string_slice(&key, vm.heap, vm.interns).is_some());
+        debug_assert!(key.as_str(vm).is_some());
 
         if matches!(key, Value::Ref(_)) || matches!(value, Value::Ref(_)) {
             self.contains_refs = true;
@@ -389,8 +389,7 @@ impl Dict {
             .py_hash(vm)?
             .expect("json object keys are always hashable strings")
             .raw();
-        let key_str =
-            json_key_string_slice(&key, vm.heap, vm.interns).expect("json object keys are always string values");
+        let key_str = key.as_str(vm).expect("json object keys are always string values");
         let found = self.table.find(hash, |entry| {
             json_key_equals_str(&entry.key, key_str, vm.heap, vm.interns)
         });
@@ -409,14 +408,6 @@ impl Dict {
             Ok(None)
         }
     }
-}
-
-/// Returns the underlying string slice for a JSON object key value.
-///
-/// JSON object parsing only inserts string keys, but the helper remains
-/// defensive and returns `None` for any non-string value.
-fn json_key_string_slice<'a>(key: &'a Value, heap: &'a Heap, interns: &'a Interns) -> Option<&'a str> {
-    key.as_str_heap(heap, interns)
 }
 
 /// Returns whether `key` is a string equal to `expected`.
@@ -1843,9 +1834,7 @@ fn dict_merge_from_value(dict: &mut Dict, other_value: Value, vm: &mut VM<'_>) -
     let mut other_value_guard = DropGuard::new(other_value, vm);
     {
         let (other_value, vm) = other_value_guard.as_parts();
-        if let Value::Ref(id) = other_value
-            && let HeapData::Dict(src_dict) = vm.heap.get(*id)
-        {
+        if let Some(src_dict) = other_value.get_as::<Dict>(vm.heap) {
             // The snapshot stays live while the pairs are applied, so charge it
             // up front. Only the snapshot: how much the target grows depends on
             // how many of these keys it already holds, and charging for all of

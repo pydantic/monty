@@ -31,7 +31,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_python_str},
-    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapObjectRead},
+    heap::{DropGuard, DropWithContext, Heap, HeapObjectRead},
     identity::Identity,
     intern::{Interns, StaticStrings, StringId},
     percent_format::percent_format,
@@ -39,7 +39,7 @@ use crate::{
     str_format::str_format,
     string_builder::StringBuilder,
     types::{
-        LazyHeapSet, Type, TypeRef,
+        LazyHeapSet, Slice, Tuple, Type, TypeRef,
         py_trait::PyObjectIdentity,
         slice::{SearchRange, search_range, slice_collect_iterator},
     },
@@ -88,14 +88,9 @@ impl<'h> PyStr<'h> {
         if object.is_str(vm.heap) {
             return Err(ExcType::type_error_decoding_str_not_supported());
         }
-        let bytes: &[u8] = match object {
-            Value::InternBytes(bytes_id) => vm.interns.get_bytes(*bytes_id),
-            Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
-                HeapData::Bytes(b) => b.as_slice(),
-                _ => return Err(ExcType::type_error_decoding_need_bytes(object.py_type_name(vm))),
-            },
-            _ => return Err(ExcType::type_error_decoding_need_bytes(object.py_type_name(vm))),
-        };
+        let bytes = object
+            .as_bytes(vm)
+            .ok_or_else(|| ExcType::type_error_decoding_need_bytes(object.py_type_name(vm)))?;
         let encoding = ctor_str_arg(encoding.as_ref(), "utf-8", vm)?;
         let errors = ctor_str_arg(errors.as_ref(), "strict", vm)?;
         let codec = Codec::find(encoding).ok_or_else(|| ExcType::lookup_error_unknown_encoding(encoding))?;
@@ -399,7 +394,7 @@ fn str_ctor_arg_check(arg: Option<&Value>, name: &str, vm: &VM<'_>) -> RunResult
 fn ctor_str_arg<'a>(arg: Option<&'a Value>, default: &'a str, vm: &'a VM<'_>) -> RunResult<&'a str> {
     match arg {
         None => Ok(default),
-        Some(v) => v.try_to_str(vm),
+        Some(v) => v.try_as_str(vm),
     }
 }
 
@@ -519,9 +514,7 @@ fn str_add(s: &str, ascii: bool, other: &Value, vm: &VM<'_>) -> RunResult<Option
 /// Indexes protected text, allowing `__index__` to execute before borrowing it.
 ///
 fn str_getitem<'h>(s: &PyStr<'h>, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
-    if let Value::Ref(id) = key
-        && let HeapData::Slice(slice) = vm.heap.get(*id)
-    {
+    if let Some(slice) = key.get_as::<Slice>(vm.heap) {
         let text = s.as_str(vm);
         let length = s.checked_char_len(vm)?;
         let ascii = length == text.len();
@@ -1111,9 +1104,7 @@ fn affix_matches(
         return Ok(check(text));
     }
 
-    if let Value::Ref(heap_id) = affix
-        && let HeapData::Tuple(tuple) = vm.heap.get(*heap_id)
-    {
+    if let Some(tuple) = affix.get_as::<Tuple>(vm.heap) {
         for item in tuple.as_slice() {
             let Some(text) = item.as_str(vm) else {
                 return Err(ExcType::type_error_affix_tuple_item(
