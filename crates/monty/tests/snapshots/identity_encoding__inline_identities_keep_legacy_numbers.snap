@@ -43,8 +43,9 @@ issubclass: 2098346
 object.__new__: 2098378
 object.__init__: 2098410
 type.mro: 2098474
-BaseException.__new__: 2098506
-BaseException.__init__: 2098538
+delattr: 2098506
+BaseException.__new__: 2098538
+BaseException.__init__: 2098570
 Exception: 2105354
 BaseException: 2105386
 SystemExit: 2105418
@@ -77,6 +78,7 @@ NotADirectoryError: 2106250
 PermissionError: 2106282
 io.UnsupportedOperation: 2106314
 TimeoutError: 2106346
+BlockingIOError: 2107178
 AssertionError: 2106378
 MemoryError: 2106410
 StopIteration: 2106442

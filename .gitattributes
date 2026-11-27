@@ -8,6 +8,6 @@ crates/monty-datatest/vendor/cpython/** -text
 /crates/monty-runtime/LICENSE text eol=lf
 /crates/monty-typeshed/LICENSE text eol=lf
 
-# Preserve pinned upstream bytes and keep the copied overrides in sync.
+# Preserve pinned upstream bytes and patch context.
 /crates/monty-typeshed/vendor/typeshed/** -text
-/crates/monty-typeshed/custom/** text eol=lf
+/crates/monty-typeshed/patches/** -text whitespace=-blank-at-eol

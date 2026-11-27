@@ -12,7 +12,6 @@ use crate::{
     asyncio::{UnawaitedWait, WaitFuture, WaitFutureState},
     bytecode::{CallResult, VM},
     exception_private::{ExcType, RunResult, SimpleException},
-    heap::HeapData,
     heap_traits::DropGuard,
     modules::time::{HostSleep, host_sleep},
     os_dispatch::{PostConversionEffect, SleepDestination},
@@ -41,16 +40,17 @@ pub(crate) fn wait(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let (((fs, return_when), timeout), vm) = args_guard.into_parts();
     timeout.drop_with(vm);
 
-    let wait_id = vm.heap.allocate(HeapData::WaitFuture(Box::new(WaitFuture {
-        state: WaitFutureState::Unawaited(UnawaitedWait {
-            fs,
-            return_when,
-            timer: None,
-            timed_out,
-        }),
-    })));
-
-    let wait = Value::Ref(wait_id);
+    let wait = Value::allocate(
+        WaitFuture {
+            state: WaitFutureState::Unawaited(UnawaitedWait {
+                fs,
+                return_when,
+                timer: None,
+                timed_out,
+            }),
+        },
+        vm.heap,
+    );
 
     match call {
         Some(call) => Ok(CallResult::OsCallWithEffect {

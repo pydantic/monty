@@ -5,6 +5,20 @@
 
 import sys
 
+for stream in (sys.stdout, sys.stderr):
+    try:
+        stream.flush()
+    except AttributeError as exc:
+        assert str(exc) == "'_io.TextIOWrapper' object has no attribute 'flush'"
+    else:
+        assert False, 'expected flush to raise AttributeError'
+    try:
+        stream.write('x')
+    except AttributeError as exc:
+        assert str(exc) == "'_io.TextIOWrapper' object has no attribute 'write'"
+    else:
+        assert False, 'expected write to raise AttributeError'
+
 # === sys.version ===
 assert sys.version == '3.14.0 (Monty)', f'version should be 3.14.0 (Monty), got {sys.version!r}'
 
@@ -50,25 +64,38 @@ assert sys.abiflags == ''
 assert sys.dont_write_bytecode is True
 assert sys.pycache_prefix is None
 
-# === sys.builtin_module_names is the whole importable set ===
+# === sys.builtin_module_names lists native modules ===
 # `gc` is only registered in test builds, so compare against the production set.
 assert tuple(name for name in sys.builtin_module_names if name != 'gc') == (
+    '_io',
+    'annotationlib',
     'asyncio',
     'base64',
     'binascii',
     'bisect',
     'collections',
+    'copy',
+    'csv',
     'dataclasses',
     'datetime',
+    'decimal',
+    'errno',
+    'fnmatch',
     'functools',
+    'hashlib',
     'itertools',
     'json',
     'math',
     'os',
+    'os.path',
     'pathlib',
+    'posixpath',
     'random',
     're',
+    'statistics',
     'sys',
+    'time',
+    'tomllib',
     'typing',
     'unicodedata',
 )

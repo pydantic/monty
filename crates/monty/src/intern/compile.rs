@@ -24,7 +24,7 @@ pub(crate) struct CompileInterns<'i> {
 #[derive(Debug, Default)]
 struct PendingInterns {
     strings: Vec<InternedString>,
-    string_ids: AHashMap<String, StringId>,
+    string_ids: AHashMap<Arc<str>, StringId>,
     static_string_ids: AHashMap<StaticStrings, StringId>,
     bytes: Vec<WithHash<Vec<u8>>>,
     long_ints: Vec<WithHash<BigInt>>,
@@ -97,7 +97,7 @@ impl<'i> CompileInterns<'i> {
             if let Some(id) = existing {
                 id
             } else {
-                self.push_string(InternedString::owned(text.to_owned()))
+                self.push_string(InternedString::owned(Arc::from(text)))
             }
         }
     }
@@ -256,7 +256,7 @@ impl<'i> CompileInterns<'i> {
             if let Some(tag) = entry.static_value() {
                 pending.static_string_ids.insert(tag, id);
             } else {
-                pending.string_ids.insert(entry.as_str().to_owned(), id);
+                pending.string_ids.insert(Arc::clone(entry.owned_text()), id);
             }
             pending.strings.push(entry);
             id
@@ -268,7 +268,7 @@ impl<'i> CompileInterns<'i> {
                 self.base
                     .string_id_by_name
                     .borrow_mut()
-                    .insert(entry.as_str().to_owned(), id);
+                    .insert(Arc::clone(entry.owned_text()), id);
             }
             self.base.strings.push(entry);
             id

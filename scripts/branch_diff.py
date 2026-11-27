@@ -71,6 +71,7 @@ RULES: list[tuple[str, Category]] = [
     ('**/LICENSE', OTHER),
     ('**/NOTICE', OTHER),
     ('crates/monty/stdlib/vendor.toml', OTHER),
+    ('crates/monty-typeshed/vendor.toml', OTHER),
     ('crates/monty-proto/tests/oracle/**', OTHER),
     ('crates/monty-js/ts/worker/component/**', OTHER),
     # tests, benchmarks, the crates that only exist to run them and the scripts the test harness imports
@@ -89,6 +90,7 @@ RULES: list[tuple[str, Category]] = [
     ('scripts/cpython_watchdog.py', TEST),
     ('scripts/run_traceback.py', TEST),
     ('scripts/test_fixtures.py', TEST),
+    ('scripts/test_vendor_common.py', TEST),
     # tooling that is never shipped, including the API docs generator
     ('crates/monty-apidoc/**', OTHER),
     ('crates/monty-js/scripts/**', OTHER),
@@ -115,6 +117,7 @@ RULES: list[tuple[str, Category]] = [
     ('crates/monty-proto/proto/**/*.proto', PRODUCTION),
     ('crates/monty-wasm-runtime/wit/**', PRODUCTION),
     ('crates/monty-typeshed/custom/**', PRODUCTION),
+    ('crates/monty-typeshed/patches/**', PRODUCTION),
     ('crates/monty-typeshed/vendor/**', PRODUCTION),
     # vendored CPython stdlib modules and their patches, embedded in the interpreter
     ('crates/monty/stdlib/Lib/**', PRODUCTION),

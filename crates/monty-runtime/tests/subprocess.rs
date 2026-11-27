@@ -1418,10 +1418,10 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         ("('a' * 1000).replace('a', 'b' * 2000)", 2_047_539),
         // Every `%Z` copies the zone name into a `StringBuilder`, refused at a
         // capacity doubling like the formatter cases above: fixed-size pushes
-        // make that step deterministic.
+        // make that step deterministic. Formatting borrows the receiver's zone name.
         (
             "from datetime import datetime, timezone, timedelta\ntz = timezone(timedelta(0), 'n' * 100_000)\ndatetime(2024, 1, 1, tzinfo=tz).strftime('%Z' * 5_000)",
-            1_255_965,
+            1_155_965,
         ),
         // Bulk container clones: `+=` preflights the temp clone plus the target
         // growth, `+` preflights each side's clone.
@@ -1516,8 +1516,8 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
             16_044_735,
         ),
         // `re.finditer` preflights the matches it builds from its scanned spans as a whole.
-        ("import re\nre.finditer('ab', 'ab ' * 10_000)", 3_217_199),
-        ("import re\nre.finditer('(a)(b)', 'ab ' * 10_000)", 4_596_045),
+        ("import re\nre.finditer('ab', 'ab ' * 10_000)", 3_218_319),
+        ("import re\nre.finditer('(a)(b)', 'ab ' * 10_000)", 4_597_165),
         // A split's piece buffer is grown under the same checks as `re.split`'s.
         ("('ab,' * 100_000).split(',')", 1_392_992),
         ("('ab,' * 100_000).rsplit(',')", 1_392_993),
@@ -1525,6 +1525,11 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         ("(b'ab,' * 100_000).rsplit(b',')", 1_401_217),
         // Empty lines allocate no heap entry, so only the line buffer's growth check sees them.
         ("('\\n' * 200_000).splitlines()", 1_292_858),
+        // `str.translate` grows its output through a builder on lookup misses too, not only for mapped values.
+        (
+            "s = 'a' + 'b' * 240_000\nlen(s.translate({97: 'x' * 240_000}))",
+            1_245_188,
+        ),
         // The json encoder preflights each doubling of its output buffer.
         ("import json\njson.dumps(['x' * 1000] * 2000)", 1_168_792),
         // `randbytes` charges its word buffer and the byte buffer it fills.
@@ -1540,6 +1545,57 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         (
             "import statistics\njunk = [None] * 12_000\nstatistics.multimode(range(8_000))",
             1_096_974,
+        ),
+        // An io stream's buffer is preflighted at each doubling, including through `print(file=)`.
+        (
+            "import _io\ns = 'x' * 300_000\nb = _io.StringIO()\nfor _ in range(3):\n    b.write(s)",
+            1_246_590,
+        ),
+        (
+            "import _io\ns = 'x' * 300_000\nb = _io.StringIO()\nfor _ in range(3):\n    print(s, file=b)",
+            1_246_742,
+        ),
+        (
+            "import _io\ns = b'x' * 300_000\nb = _io.BytesIO()\nfor _ in range(3):\n    b.write(s)",
+            1_254_799,
+        ),
+        // `readlines` grows its list under the same checks as `splitlines`.
+        ("import _io\n_io.StringIO('\\n' * 100_000).readlines()", 1_194_779),
+        ("import _io\n_io.BytesIO(b'\\n' * 100_000).readlines()", 1_065_226),
+        // A write past the end of an io stream pads the gap, which is preflighted.
+        (
+            "import _io\ns = _io.StringIO()\ns.seek(10_000_000)\ns.write('x')",
+            10_046_477,
+        ),
+        (
+            "import _io\nb = _io.BytesIO()\nb.seek(10_000_000)\nb.write(b'x')",
+            10_054_686,
+        ),
+        // Copying a stream's buffer out is preflighted: the copy can match the whole budget.
+        (
+            "import _io\nb = _io.BytesIO()\nb.seek(600_000)\nb.write(b'x')\nb.getvalue()",
+            1_254_769,
+        ),
+        (
+            "import _io\nb = _io.BytesIO()\nb.seek(600_000)\nb.write(b'x')\nb.seek(0)\nb.read()",
+            1_254_783,
+        ),
+        (
+            "import _io, copy\nb = _io.BytesIO()\nb.seek(600_000)\nb.write(b'x')\ncopy.copy(b)",
+            1_255_491,
+        ),
+        (
+            "import _io\ns = _io.StringIO()\ns.seek(600_000)\ns.write('x')\ns.getvalue()",
+            1_246_560,
+        ),
+        (
+            "import _io\ns = _io.StringIO()\ns.seek(600_000)\ns.write('x')\ns.seek(0)\ns.readline()",
+            1_246_578,
+        ),
+        // `newline='\r\n'` can double the text it translates, so the copy and its translation are preflighted.
+        (
+            "import _io\nt = '\\n' * 400_000\n_io.StringIO(newline='\\r\\n').write(t)",
+            1_646_558,
         ),
         // `itertools.batched` preflights one batch, capped at `n`.
         (
@@ -2712,6 +2768,44 @@ fn refused_findall_leaves_no_partial_result() {
     }
 }
 
+/// `str.translate` validates its arguments before copying the receiver, so an
+/// invalid call on a string too large to copy raises `TypeError`, not `MemoryError`.
+#[test]
+fn translate_checks_args_before_copying_receiver() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    assert_eq!(
+        child.feed_complete("s = 'x' * 600_000\nlen(s)"),
+        MontyObject::int(600_000)
+    );
+    for (code, message) in [
+        ("s.translate()", "str.translate() takes exactly one argument (0 given)"),
+        ("s.translate(table={})", "str.translate() takes no keyword arguments"),
+    ] {
+        let (_, event) = child.feed(code);
+        let error = expect_error(event);
+        assert_eq!(
+            (error.exc_type.as_str(), error.message.as_deref()),
+            ("TypeError", Some(message)),
+            "{code}"
+        );
+    }
+    child.shutdown();
+}
+
+/// A write to a closed `BytesIO` reports the closure even when copying its payload would cross
+/// `max_memory`, as CPython checks closure before it copies.
+#[test]
+fn closed_bytes_io_write_reports_closure_before_memory() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    let (_, event) = child.feed("import io\nb = io.BytesIO()\nb.close()\nb.write(b'x' * 600_000)");
+    let error = expect_error(event);
+    assert_eq!(error.exc_type, "ValueError");
+    assert_eq!(error.message.as_deref(), Some("I/O operation on closed file."));
+    child.shutdown();
+}
+
 /// Assert a `memory limit exceeded` message reports roughly `expected` bytes
 /// used against a 1 MiB limit.
 ///
@@ -2856,6 +2950,22 @@ fn expanding_codecs_fail_softly() {
         assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{call}");
         child.shutdown();
     }
+}
+
+/// A custom ignorechars needs a copy of the input while the decoder holds its output buffer.
+#[test]
+fn a85decode_budgets_for_custom_ignorechars() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(2_400_000));
+    child.feed_complete("import base64\nsrc = b'!' * 1_000_000");
+    assert_eq!(
+        child.feed_complete("len(base64.a85decode(src))"),
+        MontyObject::int(800_000)
+    );
+
+    let (_, event) = child.feed("len(base64.a85decode(src, ignorechars=b''))");
+    assert_eq!(expect_error(event).exc_type, "MemoryError");
+    child.shutdown();
 }
 
 /// A conversion that appends to, or frames, a buffer it filled exactly must

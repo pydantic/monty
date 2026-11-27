@@ -12,16 +12,18 @@ use std::{
 };
 
 use jiff::SignedDuration;
+use monty_macros::pyattrs;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
 use smallvec::smallvec;
 
 use crate::{
-    args::{ArgValues, FromArgs, FromValue, FromValueFail, is_long_int},
+    args::{ArgValues, FromArgs, FromValue, FromValueFail},
     bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
-    heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    heap::{Heap, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StaticStrings,
+    py_attrs::PyAttrs,
     types::{
         CmpOrder, LazyHeapSet, PyTrait, Type, TypeRef, date, datetime, long_int, str::allocate_string,
         tuple::allocate_tuple,
@@ -200,10 +202,7 @@ pub(crate) fn from_total_microseconds(total_microseconds: i128) -> RunResult<Tim
 /// The zero check lives here so `/`, `//`, `%` and `divmod` all raise the same
 /// `ZeroDivisionError` rather than each repeating it.
 pub(crate) fn rhs_microseconds(other: &Value, vm: &VM<'_>) -> RunResult<Option<i128>> {
-    let Value::Ref(id) = other else {
-        return Ok(None);
-    };
-    let HeapData::TimeDelta(rhs) = vm.heap.get(*id) else {
+    let Some(rhs) = other.get_as::<TimeDelta>(vm.heap) else {
         return Ok(None);
     };
     let total = total_microseconds(rhs);
@@ -239,21 +238,6 @@ pub(crate) fn floor_div_rem(total: i128, divisor: i128) -> (i128, i128) {
     } else {
         (quotient, remainder)
     }
-}
-
-/// `timedelta.min`, `timedelta.max` and `timedelta.resolution`.
-pub(crate) fn class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
-    // One microsecond short of `MAX_TIMEDELTA_DAYS + 1` days, which normalizes to
-    // CPython's `timedelta(days=999999999, seconds=86399, microseconds=999999)`.
-    const MAX_MICROS: i128 = ((MAX_TIMEDELTA_DAYS as i128) + 1) * DAY_MICROSECONDS - 1;
-    const MIN_MICROS: i128 = (MIN_TIMEDELTA_DAYS as i128) * DAY_MICROSECONDS;
-    let micros = match attr.static_string(vm.interns)? {
-        StaticStrings::Min => MIN_MICROS,
-        StaticStrings::Max => MAX_MICROS,
-        StaticStrings::Resolution => 1,
-        _ => return None,
-    };
-    Some(allocate_micros(micros, vm.heap))
 }
 
 /// Allocates a `timedelta` from a microsecond count known to be in range.
@@ -334,7 +318,7 @@ impl FromValue for DeltaComponent {
         match value {
             Value::Bool(b) => Ok(Self(i128::from(b))),
             Value::Int(i) => Ok(Self(i128::from(i))),
-            _ if is_long_int(&value, vm) => {
+            _ if value.as_long_int(vm).is_some() => {
                 value.drop_with(vm);
                 Err(FromValueFail::Raise(ExcType::overflow_c_int()))
             }
@@ -573,16 +557,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
         Ok(Some(allocate_tuple(smallvec![quotient, remainder], vm.heap)))
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        if attr.static_string(vm.interns) == Some(StaticStrings::TotalSeconds) {
-            // Copy the TimeDelta to release the HeapRead borrow before checking args
-            let td = *self.get(vm.heap);
-            args.check_zero_args("timedelta.total_seconds", vm.heap)?;
-            return Ok(CallResult::Value(Value::Float(total_seconds(&td))));
-        }
-        Err(ExcType::attribute_error_method(Type::TimeDelta, attr, args, vm))
-    }
-
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let (days, seconds, microseconds) = components(self.get(vm.heap));
         match attr.static_string(vm.interns) {
@@ -591,5 +565,38 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
             Some(StaticStrings::Microseconds) => Ok(Some(CallResult::Value(Value::Int(i64::from(microseconds))))),
             _ => Ok(None),
         }
+    }
+}
+
+pub(crate) struct PyTimeDeltaImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyTimeDeltaImpl {
+    type Receiver = HeapObjectRead<'heap, TimeDelta>;
+
+    #[pymethod(TotalSeconds)]
+    fn total_seconds<'h>(
+        value: &mut HeapObjectRead<'h, TimeDelta>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Value> {
+        let td = *value.get(vm.heap);
+        args.check_zero_args("timedelta.total_seconds", vm.heap)?;
+        Ok(Value::Float(total_seconds(&td)))
+    }
+
+    #[pyvalue(Min)]
+    fn min(vm: &mut VM<'_>) -> Value {
+        allocate_micros(i128::from(MIN_TIMEDELTA_DAYS) * DAY_MICROSECONDS, vm.heap)
+    }
+
+    #[pyvalue(Max)]
+    fn max(vm: &mut VM<'_>) -> Value {
+        allocate_micros((i128::from(MAX_TIMEDELTA_DAYS) + 1) * DAY_MICROSECONDS - 1, vm.heap)
+    }
+
+    #[pyvalue(Resolution)]
+    fn resolution(vm: &mut VM<'_>) -> Value {
+        allocate_micros(1, vm.heap)
     }
 }

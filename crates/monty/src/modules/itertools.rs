@@ -7,15 +7,18 @@
 
 use std::mem;
 
+use monty_macros::pyattrs;
+
 use crate::{
     args::{ArgValues, FromArgs, LaxBool},
     builtins::Builtins,
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{DropGuard, DropWithContext, HEAP_ENTRY_SIZE},
+    heap::{DropGuard, DropWithContext, HEAP_ENTRY_SIZE, HeapRead},
     intern::StaticStrings,
     modules::ModuleFunctions,
+    py_attrs::PyAttrs,
     resource_checks::check_estimated_size,
     types::{
         ItertoolsIter, Module, TupleVec, Type, allocate_tuple,
@@ -25,7 +28,7 @@ use crate::{
             Pairwise, Permutations, Product, Repeat, StarMap, TakeWhile, ZipLongest, tee,
         },
     },
-    value::{EitherStr, VALUE_SIZE, Value},
+    value::{VALUE_SIZE, Value},
 };
 
 /// The `itertools` callables that are not type objects.
@@ -98,12 +101,17 @@ pub(crate) fn call(vm: &mut VM<'_>, function: ItertoolsFunctions, args: ArgValue
     }
 }
 
-/// `chain.from_iterable`, the one attribute an `itertools` type carries. Handed
-/// out as a value so it can be bound and called later, not only called in place.
-pub(crate) fn chain_class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
-    (attr.static_string(vm.interns) == Some(StaticStrings::FromIterable)).then_some(Value::ModuleFunction(
-        ModuleFunctions::Itertools(ItertoolsFunctions::ChainFromIterable),
-    ))
+/// The chain namespace also exposes its factory as a callable value.
+pub(crate) struct PyChainImpl;
+
+#[pyattrs]
+impl<'h> PyAttrs<'h> for PyChainImpl {
+    type Receiver = HeapRead<'h, ItertoolsIter>;
+
+    #[pyvalue(FromIterable)]
+    fn from_iterable(_vm: &mut VM<'_>) -> Value {
+        Value::ModuleFunction(ModuleFunctions::Itertools(ItertoolsFunctions::ChainFromIterable))
+    }
 }
 
 /// Constructs one of the module's iterators, reached through [`Type::call`].

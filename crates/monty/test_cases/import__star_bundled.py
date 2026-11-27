@@ -260,6 +260,8 @@ IMPLEMENTED = [
             'Pattern',
             'PatternError',
             'S',
+            'VERBOSE',
+            'X',
             'compile',
             'error',
             'escape',

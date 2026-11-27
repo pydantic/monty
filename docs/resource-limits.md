@@ -312,6 +312,19 @@ Set `max_checkouts_per_worker` (`maxCheckoutsPerWorker` in JavaScript) to change
 every session a fresh worker, and `None` (`null`) never recycles.
 Remote checkouts are single-use, so the count does not apply to them.
 
+## Import stubs
+
+Each import-stubs reply has a 64 MiB estimated storage budget, independent of its encoded frame size.
+The client and worker check this budget before copying sources or constructing file paths.
+It covers module names, source text, generated file paths and entry structures, including spare vector capacity.
+`None` entries create no files and do not count.
+
+A module such as `a.b.c` needs ancestor packages `a/__init__.pyi` and `a/b/__init__.pyi` as well as its own stub.
+The estimate charges each module and all its ancestors as package paths, even when paths are shared or already supplied.
+Shared source strings and duplicate entries also count separately.
+This conservative estimate prevents compact replies from expanding into large collections of files and copied sources.
+It excludes temporary string copies and the type checker's database and analysis allocations, so it does not cap peak or total session memory.
+
 ## What is not covered
 
 - **Compilation time.** Parsing and bytecode compilation happen before the VM exists and are not charged to the duration
@@ -327,6 +340,7 @@ Remote checkouts are single-use, so the count does not apply to them.
 - **Protocol decoding.** Protobuf frames have a separate cumulative allocation budget, covering generated messages
     and decoded values before allocation; see [message limits](limitations/host-values.md#message-size).
     It applies per frame, not to total host memory or subsequent host conversions.
+    [Import stubs](#import-stubs) have a separate budget for storage created after decoding.
 - **Print collectors.** [`CollectString`][pydantic_monty.CollectString] and [`CollectStreams`][pydantic_monty.CollectStreams] live in the host process, so their 10 MiB default cap is
     separate from `max_memory`.
 - **Mount memory.** Each [mount](filesystem.md) has its own `memory_usage_limit`, defaulting to [`DEFAULT_MEMORY_USAGE_LIMIT`](api/rust/monty-fs.md#default_memory_usage_limit), shared between

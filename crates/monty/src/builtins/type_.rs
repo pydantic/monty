@@ -5,12 +5,15 @@ use std::mem;
 use super::object::builtin_object_init_subclass;
 use crate::{
     args::{ArgValues, FromArgs, KwargsValues},
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::StaticStrings,
-    types::{Class, Dict, List, PyTrait, Type, TypeRef, type_ref::c3_merge},
+    types::{
+        Class, Dict, List, OwnedTypeRef, PyTrait, Tuple, Type, TypeRef, descriptor, instance::bind_method,
+        type_ref::c3_merge,
+    },
     value::Value,
 };
 
@@ -24,13 +27,13 @@ use crate::{
 /// because the "exactly 1 *or* 3 positionals, same name" overload isn't
 /// expressible by any of the binder families — CPython special-cases `type`'s
 /// argument parsing in `type_new`/`type_init` for the same reason.
-pub fn builtin_type(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_type(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let (mut pos, kwargs) = args.into_parts();
     match pos.len() {
         1 => {
             let value = pos.next().expect("length checked");
             if kwargs.is_empty() {
-                Ok(type_of(vm, value))
+                Ok(CallResult::Value(type_of(vm, value)))
             } else {
                 value.drop_with(vm);
                 kwargs.drop_with(vm);
@@ -85,7 +88,7 @@ fn create_class(
     bases: Value,
     namespace: Value,
     kwargs: KwargsValues,
-) -> RunResult<Value> {
+) -> RunResult<CallResult> {
     defer_drop!(name, vm);
     defer_drop!(bases, vm);
     defer_drop!(namespace, vm);
@@ -98,11 +101,7 @@ fn create_class(
     let bases = class_bases(bases, vm)?;
     let mro = linearize(&bases, vm)?;
 
-    let Value::Ref(ns_id) = namespace else {
-        let got = namespace.py_type(vm).cpython_arg_name(vm.heap, vm.interns);
-        return Err(ExcType::type_error_bad_arg_pos("type.__new__", 3, "dict", got));
-    };
-    let HeapData::Dict(source) = vm.heap.get(*ns_id) else {
+    let Some(source) = namespace.get_as::<Dict>(vm.heap) else {
         let got = namespace.py_type(vm).cpython_arg_name(vm.heap, vm.interns);
         return Err(ExcType::type_error_bad_arg_pos("type.__new__", 3, "dict", got));
     };
@@ -156,12 +155,18 @@ fn create_class(
     }
     let namespace_dict = Dict::from_pairs(pairs, vm)?;
 
-    let owned_bases = bases.iter().map(|base| (*base).to_owned(vm.heap)).collect();
-    let class = Class::with_bases(class_name, namespace_dict, owned_bases, mro.into());
+    let owned_bases = bases
+        .iter()
+        .map(|base| match *base {
+            TypeRef::Native(ty) => OwnedTypeRef::Native(ty),
+            TypeRef::Class(id) => {
+                vm.heap.inc_ref(id);
+                OwnedTypeRef::Class(id)
+            }
+        })
+        .collect();
+    let class = Class::with_bases(class_name, namespace_dict, owned_bases, mro.into(), vm.heap);
     let class_value = Value::allocate(class, vm.heap);
-    let mut class_guard = DropGuard::new(class_value, vm);
-    let (class_value, vm) = class_guard.as_parts_mut();
-    let class_id = class_value.ref_id().expect("classes are heap values");
 
     if let Some(cell_id) = class_cell {
         let HeapReadOutput::Cell(cell) = vm.heap.read(cell_id) else {
@@ -173,8 +178,7 @@ fn create_class(
     }
 
     let kwargs = mem::replace(kwargs, KwargsValues::Empty);
-    run_init_subclass(class_id, kwargs, vm)?;
-    Ok(class_guard.into_inner())
+    descriptor::finish_class(class_value, kwargs, vm)
 }
 
 /// Validates the `bases` tuple of a new class, returning the bases it names.
@@ -182,12 +186,9 @@ fn create_class(
 /// Monty classes derive only from other classes and `object`: the native
 /// types CPython lets a class subclass are rejected (see `limitations/classes.md`).
 fn class_bases(bases: &Value, vm: &VM<'_>) -> RunResult<Vec<TypeRef>> {
-    let tuple = match bases {
-        Value::Ref(id) if let HeapData::Tuple(tuple) = vm.heap.get(*id) => tuple,
-        _ => {
-            let got = bases.py_type(vm).cpython_arg_name(vm.heap, vm.interns);
-            return Err(ExcType::type_error_bad_arg_pos("type.__new__", 2, "tuple", got));
-        }
+    let Some(tuple) = bases.get_as::<Tuple>(vm.heap) else {
+        let got = bases.py_type(vm).cpython_arg_name(vm.heap, vm.interns);
+        return Err(ExcType::type_error_bad_arg_pos("type.__new__", 2, "tuple", got));
     };
     let mut out: Vec<TypeRef> = Vec::with_capacity(tuple.as_slice().len());
     for (index, base) in tuple.as_slice().iter().enumerate() {
@@ -245,7 +246,7 @@ fn linearize(bases: &[TypeRef], vm: &VM<'_>) -> RunResult<Vec<TypeRef>> {
 /// Runs the first `__init_subclass__` among the new class's ancestors, as
 /// CPython's `super(cls, cls).__init_subclass__(**kwargs)`: a user hook
 /// receives the class first, `object`'s rejects any keyword argument.
-fn run_init_subclass(class_id: HeapId, kwargs: KwargsValues, vm: &mut VM<'_>) -> RunResult<()> {
+pub(crate) fn run_init_subclass(class_id: HeapId, kwargs: KwargsValues, vm: &mut VM<'_>) -> RunResult<()> {
     let HeapData::Class(class) = vm.heap.get(class_id) else {
         unreachable!("run_init_subclass takes a class")
     };
@@ -256,23 +257,26 @@ fn run_init_subclass(class_id: HeapId, kwargs: KwargsValues, vm: &mut VM<'_>) ->
         },
         TypeRef::Native(_) => None,
     });
-    vm.heap.inc_ref(class_id);
-    let args = ArgValues::from_parts(vec![Value::Ref(class_id)], kwargs);
-    match hook.map(|hook| hook.clone_with_heap(vm.heap)) {
-        Some(hook) => {
-            defer_drop!(hook, vm);
-            // Re-entry restarts the dispatch countdown; poll so nested class
-            // creation inside hooks cannot defer the time limit.
-            if let Err(error) = vm.heap.tracker.check_time() {
-                args.drop_with(vm);
-                return Err(error.into());
-            }
-            let result = vm.evaluate_function(hook, args)?;
-            result.drop_with(vm);
-            Ok(())
-        }
-        None => builtin_object_init_subclass(vm, args).map(|_| ()),
-    }
+    let Some(hook) = hook.map(|v| v.clone_with_heap(vm.heap)) else {
+        vm.heap.inc_ref(class_id);
+        let args = ArgValues::from_parts(vec![Value::Ref(class_id)], kwargs);
+        return builtin_object_init_subclass(vm, args).map(|_| ());
+    };
+    defer_drop!(hook, vm);
+    let mut guard = DropGuard::new(kwargs, vm);
+    let (_, vm) = guard.as_parts_mut();
+    // Re-entry restarts the dispatch countdown, so poll before running a class hook.
+    vm.heap.tracker.check_time()?;
+    let callable = if descriptor::has_get(hook, vm) {
+        descriptor::get(hook, None, class_id, vm)?.require_synchronous(vm)?
+    } else {
+        bind_method(hook, class_id, vm)
+    };
+    let (kwargs, vm) = guard.into_parts();
+    defer_drop!(callable, vm);
+    let result = vm.evaluate_function(callable, ArgValues::from_parts(Vec::new(), kwargs))?;
+    result.drop_with(vm);
+    Ok(())
 }
 
 /// Arguments of `type.mro(cls, /)`.

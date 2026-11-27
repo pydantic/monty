@@ -2,25 +2,36 @@
 
 use std::mem;
 
+use monty_macros::pyattrs;
+
 use crate::{
     args::{ArgValues, FromArgs, KwargsValues},
     builtins::{Builtins, BuiltinsFunctions},
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, ExceptionArgs, PyException, RunResult},
-    heap::{DropWithContext, HeapData, HeapId, HeapReadOutput},
+    heap::{DropWithContext, HeapData, HeapId, HeapObjectRead, HeapReadOutput},
+    py_attrs::PyAttrs,
     types::{OwnedTypeRef, Type, TypeRef, allocate_string},
-    value::{EitherStr, Value},
+    value::Value,
 };
 
-/// Resolves `BaseException`'s class attributes (`__new__`, `__init__`).
-pub(crate) fn base_exception_class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
-    let function = match attr.as_str(vm.interns) {
-        "__new__" => BuiltinsFunctions::BaseExceptionNew,
-        "__init__" => BuiltinsFunctions::BaseExceptionInit,
-        _ => return None,
-    };
-    Some(Value::Builtin(Builtins::Function(function)))
+/// Attributes inherited from BaseException by exception classes.
+pub(crate) struct PyBaseExceptionImpl;
+
+#[pyattrs]
+impl<'h> PyAttrs<'h> for PyBaseExceptionImpl {
+    type Receiver = HeapObjectRead<'h, PyException>;
+
+    #[pyvalue(DunderNew)]
+    fn __new__(_vm: &mut VM<'_>) -> Value {
+        Value::Builtin(Builtins::Function(BuiltinsFunctions::BaseExceptionNew))
+    }
+
+    #[pyvalue(DunderInit)]
+    fn __init__(_vm: &mut VM<'_>) -> Value {
+        Value::Builtin(Builtins::Function(BuiltinsFunctions::BaseExceptionInit))
+    }
 }
 
 /// Arguments of `BaseException.__new__(cls, /, *args, **kwargs)`.

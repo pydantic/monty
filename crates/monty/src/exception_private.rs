@@ -43,6 +43,20 @@ pub use monty_types::{ExcType, unicode_decode_error_msg};
 /// stay in `monty` as a `pub(crate)` extension trait with default bodies.
 /// Import the trait to call them as `ExcType::type_error(...)`.
 pub(crate) trait ExcTypeExt: Sized {
+    /// Mutation-only descriptors report the missing protocol hook by name.
+    fn attribute_error_descriptor_hook(name: &str) -> RunError {
+        SimpleException::new_msg(ExcType::AttributeError, name).into()
+    }
+
+    /// CPython names the property, when available, and the actual receiver's class.
+    fn attribute_error_property(name_repr: Option<&str>, owner: &str, accessor: &str) -> RunError {
+        let name = name_repr.map_or_else(String::new, |name| format!(" {name}"));
+        SimpleException::new_msg(
+            ExcType::AttributeError,
+            format!("property{name} of '{owner}' object has no {accessor}"),
+        )
+        .into()
+    }
     /// Creates an AttributeError for when an attribute is not found (GET operation).
     ///
     /// Sets `hide_caret: true` because CPython doesn't show carets for attribute GET errors.
@@ -1120,6 +1134,12 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::TypeError, msg).into()
     }
 
+    /// The buffer protocol's type error for an unsupported argument.
+    #[must_use]
+    fn type_error_bytes_like(type_name: impl fmt::Display) -> RunError {
+        Self::type_error(format_args!("a bytes-like object is required, not '{type_name}'"))
+    }
+
     /// Creates the TypeError raised when a `with` statement's context expression
     /// does not implement the context-manager protocol.
     ///
@@ -1159,7 +1179,7 @@ pub(crate) trait ExcTypeExt: Sized {
             Ok(repr_value) => {
                 defer_drop!(repr_value, vm);
                 repr_value
-                    .try_to_str(vm)
+                    .try_as_str(vm)
                     .map_or_else(|_| format!("<{}>", key.py_type_name(vm)), str::to_owned)
             }
             Err(err) => return err,
@@ -1977,6 +1997,19 @@ pub(crate) trait ExcTypeExt: Sized {
         ))
     }
 
+    /// The `ImportError` for a relative import in a module with no `__package__`,
+    /// such as the main script or a top-level module.
+    #[must_use]
+    fn relative_import_no_parent() -> RunError {
+        import_error_without_caret("attempted relative import with no known parent package".to_owned())
+    }
+
+    /// The `ImportError` for a relative import with more dots than `__package__` has components.
+    #[must_use]
+    fn relative_import_beyond_top_level() -> RunError {
+        import_error_without_caret("attempted relative import beyond top-level package".to_owned())
+    }
+
     /// The `TypeError` for a non-`str` name `from module import *` would bind:
     /// an item of `__all__`, or a key of the module's namespace without one.
     /// Like every star-import error, CPython shows it without carets.
@@ -2356,6 +2389,74 @@ pub(crate) trait ExcTypeExt: Sized {
             format!("sequence item {index}: expected str instance, {item_type} found"),
         )
         .into()
+    }
+
+    /// Creates a TypeError for `str.translate()` when a mapping returns something other than an int, `None` or str.
+    ///
+    /// Matches CPython's format: `TypeError: character mapping must return integer, None or str`
+    #[must_use]
+    fn type_error_translate_value() -> RunError {
+        SimpleException::new_msg(ExcType::TypeError, "character mapping must return integer, None or str").into()
+    }
+
+    /// Creates a ValueError for `str.translate()` when a mapped int is not a code point.
+    ///
+    /// Matches CPython's format: `ValueError: character mapping must be in range(0x110000)`
+    #[must_use]
+    fn value_error_translate_range() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "character mapping must be in range(0x110000)").into()
+    }
+
+    /// Creates a ValueError for `str.maketrans(x, y)` when `x` and `y` differ in length.
+    ///
+    /// Matches CPython's format: `ValueError: the first two maketrans arguments must have equal length`
+    #[must_use]
+    fn value_error_maketrans_lengths() -> RunError {
+        SimpleException::new_msg(
+            ExcType::ValueError,
+            "the first two maketrans arguments must have equal length",
+        )
+        .into()
+    }
+
+    /// Creates a ValueError for a `str.maketrans(dict)` key that is not one character long (typo is CPython's).
+    ///
+    /// Matches CPython's format: `ValueError: string keys in translatetable must be of length 1`
+    #[must_use]
+    fn value_error_maketrans_key_length() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "string keys in translatetable must be of length 1").into()
+    }
+
+    /// Creates a TypeError for `str.maketrans(x)` when `x` is not a dict.
+    ///
+    /// Matches CPython's format: `TypeError: if you give only one argument to maketrans it must be a dict`
+    #[must_use]
+    fn type_error_maketrans_dict() -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            "if you give only one argument to maketrans it must be a dict",
+        )
+        .into()
+    }
+
+    /// Creates a TypeError for `str.maketrans(x, y)` when `x` is not a str.
+    ///
+    /// Matches CPython's format: `TypeError: first maketrans argument must be a string if there is a second argument`
+    #[must_use]
+    fn type_error_maketrans_first_str() -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            "first maketrans argument must be a string if there is a second argument",
+        )
+        .into()
+    }
+
+    /// Creates a TypeError for a `str.maketrans(dict)` key that is neither a str nor an int (typo is CPython's).
+    ///
+    /// Matches CPython's format: `TypeError: keys in translate table mustbe strings or integers`
+    #[must_use]
+    fn type_error_maketrans_key_type() -> RunError {
+        SimpleException::new_msg(ExcType::TypeError, "keys in translate table mustbe strings or integers").into()
     }
 
     /// Creates a TypeError for str.join() when the argument is not iterable.
@@ -2877,6 +2978,115 @@ pub(crate) trait ExcTypeExt: Sized {
             format!("deque() takes at most 2 arguments ({given} given)"),
         )
         .into()
+    }
+
+    /// `ValueError: I/O operation on closed file.` — the wording of `IOBase`
+    /// methods and of `BytesIO`, `open()` files and text-mode reads.
+    #[must_use]
+    fn value_error_closed_file() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "I/O operation on closed file.").into()
+    }
+
+    /// `ValueError: I/O operation on closed file` — no full stop, as
+    /// `StringIO`'s own methods word it.
+    #[must_use]
+    fn value_error_closed_string_io() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "I/O operation on closed file").into()
+    }
+
+    /// `io.UnsupportedOperation: {message}`, e.g. `fileno` on an in-memory stream or
+    /// `read()` on a write-only `open()` file.
+    #[must_use]
+    fn unsupported_operation(message: &str) -> RunError {
+        SimpleException::new_msg(ExcType::UnsupportedOperation, message).into()
+    }
+
+    /// `TypeError: argument should be integer or None, not 'X'` — CPython's
+    /// `_Py_convert_optional_to_ssize_t`, behind the io `size` arguments.
+    #[must_use]
+    fn type_error_integer_or_none(type_: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("argument should be integer or None, not '{type_}'"),
+        )
+        .into()
+    }
+
+    /// `TypeError: integer argument expected, got 'X'` — `BytesIO.readlines(hint)`.
+    #[must_use]
+    fn type_error_integer_argument_expected(type_: &str) -> RunError {
+        SimpleException::new_msg(ExcType::TypeError, format!("integer argument expected, got '{type_}'")).into()
+    }
+
+    /// `TypeError: a bytes-like object is required, not 'X'`.
+    #[must_use]
+    fn type_error_bytes_like_required(type_: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("a bytes-like object is required, not '{type_}'"),
+        )
+        .into()
+    }
+
+    /// `TypeError: string argument expected, got 'X'` — `StringIO.write()`.
+    #[must_use]
+    fn type_error_string_argument_expected(type_: &str) -> RunError {
+        SimpleException::new_msg(ExcType::TypeError, format!("string argument expected, got '{type_}'")).into()
+    }
+
+    /// `TypeError: {arg} must be str or None, not X` — `StringIO()`'s
+    /// `initial_value` and `newline`.
+    #[must_use]
+    fn type_error_str_or_none(arg: &str, type_: &str) -> RunError {
+        SimpleException::new_msg(ExcType::TypeError, format!("{arg} must be str or None, not {type_}")).into()
+    }
+
+    /// `ValueError: illegal newline value: 'x'`.
+    #[must_use]
+    fn value_error_illegal_newline(value: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::ValueError,
+            format!("illegal newline value: {}", StringRepr(value)),
+        )
+        .into()
+    }
+
+    /// `ValueError: Invalid whence (N, should be 0, 1 or 2)` (`StringIO`), or
+    /// the lower-case `invalid whence` `BytesIO` uses.
+    #[must_use]
+    fn value_error_invalid_whence(whence: i64, capitalised: bool) -> RunError {
+        let word = if capitalised { "Invalid" } else { "invalid" };
+        SimpleException::new_msg(
+            ExcType::ValueError,
+            format!("{word} whence ({whence}, should be 0, 1 or 2)"),
+        )
+        .into()
+    }
+
+    /// `OSError: Can't do nonzero cur-relative seeks` — a text stream's
+    /// `seek()` with a nonzero offset from the current position or the end.
+    #[must_use]
+    fn os_error_nonzero_relative_seek() -> RunError {
+        SimpleException::new_msg(ExcType::OSError, "Can't do nonzero cur-relative seeks").into()
+    }
+
+    /// `OverflowError: new position too large` — `BytesIO.seek()` or a `StringIO`
+    /// write past `ssize_t`.
+    #[must_use]
+    fn overflow_new_position_too_large() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "new position too large").into()
+    }
+
+    /// `OverflowError: new buffer size too large` — a `BytesIO` write ending past `ssize_t`.
+    #[must_use]
+    fn overflow_new_buffer_size_too_large() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "new buffer size too large").into()
+    }
+
+    /// `TypeError: {name}() takes no arguments`, without the count `type_error_no_args` adds.
+    #[must_use]
+    fn type_error_takes_no_arguments(name: &str) -> RunError {
+        SimpleException::new_msg(ExcType::TypeError, format!("{name}() takes no arguments")).into()
     }
 }
 

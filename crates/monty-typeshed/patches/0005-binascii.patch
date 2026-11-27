@@ -1,0 +1,13 @@
+Narrow readable buffers to bytes; Monty implements the Python 3.14 functions.
+
+--- a/binascii.pyi
++++ b/binascii.pyi
+@@ -1,5 +1,7 @@
++# Modified from python/typeshed: Monty accepts only bytes as buffers.
++
+ import sys
+-from _typeshed import ReadableBuffer
++from builtins import bytes as ReadableBuffer
+ from typing_extensions import TypeAlias, deprecated
+ 
+ # Many functions in binascii accept buffer objects

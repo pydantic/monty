@@ -621,34 +621,6 @@ fn directory_entries(value: MontyObject, receiver: Option<(&str, &ResourceTracke
 // Path-method dispatcher (used by `types/path.rs`).
 // =============================================================================
 
-/// Pre-flight check for [`build_path_os_call`]: lets the caller decide whether
-/// to commit ownership of the path/args to the builder.
-#[must_use]
-pub(crate) fn is_path_os_method(method: StaticStrings) -> bool {
-    matches!(
-        method,
-        StaticStrings::Exists
-            | StaticStrings::IsFile
-            | StaticStrings::IsDir
-            | StaticStrings::IsSymlink
-            | StaticStrings::ReadText
-            | StaticStrings::ReadBytes
-            | StaticStrings::StatMethod
-            | StaticStrings::Iterdir
-            | StaticStrings::Resolve
-            | StaticStrings::Absolute
-            | StaticStrings::Unlink
-            | StaticStrings::Rmdir
-            | StaticStrings::WriteText
-            | StaticStrings::AppendText
-            | StaticStrings::WriteBytes
-            | StaticStrings::AppendBytes
-            | StaticStrings::Mkdir
-            | StaticStrings::Rename
-            | StaticStrings::Replace
-    )
-}
-
 /// Builds a host request and its resume action for a `pathlib.Path` OS method.
 /// Owns `args` and cleans up its references on every error path.
 pub(crate) fn build_path_os_call(
@@ -727,7 +699,7 @@ pub(crate) fn build_path_os_call(
         }
         _ => {
             args.drop_with(vm.heap);
-            unreachable!("is_path_os_method gates the call");
+            unreachable!("the registered Path method selects the call");
         }
     };
     Ok(CallResult::OsCall(call))
@@ -744,7 +716,7 @@ fn extract_str_data(
 ) -> RunResult<PathStringDataArgs> {
     let data = arg_or_missing_data(method, args, heap)?;
     // Only `str`: a path-like is not text, so CPython refuses `Path` and `DirEntry` here.
-    let data_str = data.try_to_str_heap(heap, interns).ok().map(str::to_owned);
+    let data_str = data.try_as_str_heap(heap, interns).ok().map(str::to_owned);
 
     // CPython names the type by its `__name__`: no module (`DirEntry`, not
     // `posix.DirEntry`), but a class's own name (`Point` for a named tuple).
@@ -771,7 +743,7 @@ fn extract_bytes_data(
     interns: &Interns,
 ) -> RunResult<PathBytesDataArgs> {
     let data = arg_or_missing_data(method, args, heap)?;
-    let bytes = value_to_owned_bytes(&data, heap, interns);
+    let bytes = data.as_bytes_heap(heap, interns).map(<[u8]>::to_vec);
 
     let py_type = data.py_type_name_heap(heap, interns);
     data.drop_with(heap);
@@ -924,23 +896,6 @@ pub(crate) fn value_as_path_str<'a>(value: &'a Value, heap: &'a Heap, interns: &
         Value::Ref(id) => match heap.get(*id) {
             HeapData::Path(p) => Some(p.as_str()),
             HeapData::DirScan(scan) => scan.fspath(),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// Owned `Vec<u8>` if `value` is a `bytes` (interned or heap), else `None`.
-pub(crate) fn value_to_owned_bytes(value: &Value, heap: &Heap, interns: &Interns) -> Option<Vec<u8>> {
-    value_as_bytes(value, heap, interns).map(<[u8]>::to_vec)
-}
-
-/// The bytes of a `bytes` `value` (interned or heap), borrowed, else `None`.
-pub(crate) fn value_as_bytes<'a>(value: &Value, heap: &'a Heap, interns: &'a Interns) -> Option<&'a [u8]> {
-    match value {
-        Value::InternBytes(id) => Some(interns.get_bytes(*id)),
-        Value::Ref(id) => match heap.get(*id) {
-            HeapData::Bytes(b) => Some(b.as_slice()),
             _ => None,
         },
         _ => None,

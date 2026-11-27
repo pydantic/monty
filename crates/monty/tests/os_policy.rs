@@ -194,6 +194,12 @@ fn fixed_clock_reads_local_wall_time() {
         "datetime.datetime(2023, 11, 15, 0, 13, 20, 123456)"
     );
     assert_eq!(run_repr("date.today()", FIXED), "datetime.date(2023, 11, 15)");
+    for receiver in ["datetime", "datetime(2000, 1, 1)"] {
+        assert_eq!(
+            run_repr(&format!("{receiver}.today()"), FIXED),
+            "datetime.datetime(2023, 11, 15, 0, 13, 20, 123456)"
+        );
+    }
 }
 
 #[test]
@@ -680,6 +686,15 @@ fn iterative_execution_answers_the_clock_unless_told_to_call_the_host() {
         .unwrap();
     let call = progress.into_os_call().expect("date.today() suspends to the host");
     assert_eq!(call.function_call.name(), "date.today");
+
+    for receiver in ["datetime", "datetime(2000, 1, 1)"] {
+        let code = format!("from datetime import datetime\n{receiver}.today()");
+        let progress = runner(&code, call_host())
+            .start(vec![], ResourceTracker::default(), PrintWriter::Disabled)
+            .unwrap();
+        let call = progress.into_os_call().expect("inherited today() suspends to the host");
+        assert!(matches!(call.function_call, OsFunctionCall::DateTimeNow(None)));
+    }
 }
 
 #[test]

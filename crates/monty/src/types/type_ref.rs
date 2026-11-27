@@ -328,7 +328,7 @@ mod tests {
         let owned_native = native.to_owned(&heap);
         assert_eq!(owned_native, OwnedTypeRef::Native(Type::Int));
 
-        let class = Class::new(EitherStr::Heap("Foo".to_string()), Dict::new());
+        let class = Class::new(EitherStr::Heap("Foo".to_string()), Dict::new(), &heap);
         let class_id = heap.allocate(HeapData::Class(Box::new(class)));
         let class_ref = TypeRef::Class(class_id);
         let owned_class = class_ref.to_owned(&heap);
@@ -340,7 +340,7 @@ mod tests {
     #[test]
     fn test_owned_type_ref_clone_with_heap() {
         let mut heap = Heap::new(16, ResourceTracker::default());
-        let class = Class::new(EitherStr::Heap("Bar".to_string()), Dict::new());
+        let class = Class::new(EitherStr::Heap("Bar".to_string()), Dict::new(), &heap);
         let class_id = heap.allocate(HeapData::Class(Box::new(class)));
         let owned_class = OwnedTypeRef::Class(class_id);
         let cloned_owned = owned_class.clone_with_heap(&heap);

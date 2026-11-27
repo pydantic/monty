@@ -1,23 +1,25 @@
 //! Fixed-capacity UTF-8 strings shared by values, views and iterators.
 
-use std::str;
+use std::{fmt, str};
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
-use crate::{bytecode::VM, heap::HeapData, value::Value};
+use crate::{bytecode::VM, intern::StringId, value::Value};
 
 /// UTF-8 text of at most 15 bytes.
 /// The tag enum supplies niches so a containing `Value` remains 16 bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct InlineStr {
     tag: InlineTag,
-    bytes: [u8; 15],
+    bytes: [u8; Self::CAPACITY],
 }
 
 impl InlineStr {
+    pub(super) const CAPACITY: usize = 15;
+
     /// Returns `None` when the text exceeds the 15-byte inline capacity.
     pub(crate) fn new(text: &str) -> Option<Self> {
-        if text.len() > 15 {
+        if text.len() > Self::CAPACITY {
             return None;
         }
 
@@ -28,9 +30,32 @@ impl InlineStr {
     pub(crate) fn with_ascii(text: &str, ascii: bool) -> Option<Self> {
         let tag = InlineTag::from_len(text.len(), ascii)?;
         debug_assert_eq!(ascii, text.is_ascii());
-        let mut bytes = [0; 15];
+        let mut bytes = [0; Self::CAPACITY];
         bytes[..text.len()].copy_from_slice(text.as_bytes());
         Some(Self { tag, bytes })
+    }
+
+    /// Copies fragments and their known ASCII status into a string value.
+    ///
+    /// # Panics
+    /// Panics if the fragments total more than [`Self::CAPACITY`] bytes.
+    pub(super) fn allocate_fragments<'a>(fragments: impl IntoIterator<Item = &'a str>, ascii: bool) -> Value {
+        let mut bytes = [0; Self::CAPACITY];
+        let mut len = 0;
+        for fragment in fragments {
+            let end = len + fragment.len();
+            bytes[len..end].copy_from_slice(fragment.as_bytes());
+            len = end;
+        }
+        debug_assert_eq!(ascii, bytes[..len].is_ascii());
+        match len {
+            0 => Value::InternString(StringId::EMPTY),
+            1 => Value::InternString(StringId::from_ascii(bytes[0])),
+            _ => Value::InlineString(Self {
+                tag: InlineTag::from_len(len, ascii).expect("fragments fit inline"),
+                bytes,
+            }),
+        }
     }
 
     #[inline]
@@ -50,11 +75,7 @@ impl InlineStr {
     pub(crate) fn eq_value(&self, other: &Value, vm: &VM<'_>) -> Option<bool> {
         match other {
             Value::InlineString(other) => Some(self == other),
-            Value::InternString(id) => Some(self.as_bytes() == vm.interns.get_str(*id).as_bytes()),
-            Value::Ref(id) if let HeapData::Str(other) = vm.heap.get(*id) => {
-                Some(self.as_bytes() == other.as_str().as_bytes())
-            }
-            _ => None,
+            _ => other.as_str(vm).map(|s| self.as_bytes() == s.as_bytes()),
         }
     }
 
@@ -62,8 +83,10 @@ impl InlineStr {
         &self.bytes[..self.tag.byte_len()]
     }
 
+    #[expect(unsafe_code)]
     pub(crate) fn as_str(&self) -> &str {
-        str::from_utf8(self.as_bytes()).expect("inline string contains valid UTF-8")
+        // SAFETY: Constructors copy whole `&str` fragments. Deserialization calls `new` with decoded text.
+        unsafe { str::from_utf8_unchecked(self.as_bytes()) }
     }
 }
 
@@ -75,8 +98,27 @@ impl Serialize for InlineStr {
 
 impl<'de> Deserialize<'de> for InlineStr {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let text = String::deserialize(deserializer)?;
-        Self::new(&text).ok_or_else(|| D::Error::custom("inline string exceeds capacity"))
+        deserializer.deserialize_str(InlineStrVisitor)
+    }
+}
+
+/// Copies decoded text directly into inline storage.
+struct InlineStrVisitor;
+
+impl de::Visitor<'_> for InlineStrVisitor {
+    type Value = InlineStr;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a string")
+    }
+
+    fn visit_str<E: de::Error>(self, text: &str) -> Result<Self::Value, E> {
+        InlineStr::new(text).ok_or_else(|| E::custom("inline string exceeds capacity"))
+    }
+
+    fn visit_bytes<E: de::Error>(self, bytes: &[u8]) -> Result<Self::Value, E> {
+        let text = str::from_utf8(bytes).map_err(|_| E::invalid_value(de::Unexpected::Bytes(bytes), &self))?;
+        self.visit_str(text)
     }
 }
 
@@ -237,3 +279,7 @@ mod tests {
         assert_eq!(serde_json::to_value(restored).unwrap(), stored);
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/unit/inline_str_deserialization.rs"]
+mod deserialization_tests;

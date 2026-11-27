@@ -1402,7 +1402,7 @@ fn value_to_float(value: &Value, vm: &VM<'_>) -> RunResult<f64> {
         _ => match value.as_long_int(vm) {
             Some(n) => bigint_to_f64_checked(n),
             // `Decimal.__float__`, as `PyFloat_AsDouble` calls it.
-            None => match decimal::py::as_decimal(value, vm) {
+            None => match value.get_as::<decimal::Decimal>(vm.heap) {
                 Some(d) => d.to_f64(),
                 None => Err(ExcType::type_error_not_real_number(&value.py_type_name(vm))),
             },

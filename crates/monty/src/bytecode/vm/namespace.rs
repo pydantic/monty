@@ -16,6 +16,7 @@ use crate::{
     bytecode::{FrameExit, NAME_CALLABLE, NAME_GLOBAL_ONLY},
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
+    heap_data::CellValue,
     intern::{CompileInterns, FunctionId, StringId},
     prepare::SnippetNames,
     types::{Dict, ForwardRef},
@@ -557,13 +558,9 @@ impl<'h> VM<'h> {
             this.snapshot_entry(dict_id, name_id, value)?;
         }
         for (slot, name_id) in names.filter(|(slot, _)| cell_slots.contains(slot)) {
-            let value = match &this.stack[base + slot] {
-                Value::Ref(cell_id) => match this.heap.get(*cell_id) {
-                    HeapData::Cell(cell) => cell.0.clone_with_heap(this.heap),
-                    _ => Value::Undefined,
-                },
-                _ => Value::Undefined,
-            };
+            let value = this.stack[base + slot]
+                .get_as::<CellValue>(this.heap)
+                .map_or(Value::Undefined, |cell| cell.0.clone_with_heap(this.heap));
             this.snapshot_entry(dict_id, name_id, value)?;
         }
         let (dict, _) = dict_guard.into_parts();

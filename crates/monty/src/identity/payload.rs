@@ -52,6 +52,7 @@ pub(super) fn module_function(value: ModuleFunctions) -> u128 {
         ModuleFunctions::Binascii(function) => function as u32,
         ModuleFunctions::Random(function) => function as u32,
         ModuleFunctions::Copy(function) => function as u32,
+        ModuleFunctions::Descriptor(method) => method as u32,
         ModuleFunctions::Frozen(function) => function as u32,
         ModuleFunctions::Time(function) => function as u32,
         ModuleFunctions::Hashlib(function) => function as u32,
@@ -63,6 +64,7 @@ pub(super) fn module_function(value: ModuleFunctions) -> u128 {
         ModuleFunctions::Typing(function) => function as u32,
         ModuleFunctions::Annotationlib(function) => function as u32,
         ModuleFunctions::Statistics(function) => function as u32,
+        ModuleFunctions::Io(function) => function as u32,
         #[cfg(feature = "test-hooks")]
         ModuleFunctions::Gc(function) => function as u32,
         #[cfg(feature = "test-hooks")]

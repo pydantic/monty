@@ -21,6 +21,7 @@ in the next feed, and after a dump (see [random.md](random.md)).
 
 | Module          | See                                   |
 | --------------- | ------------------------------------- |
+| `_io`           | [io.md](io.md)                        |
 | `annotationlib` | [annotationlib.md](annotationlib.md)  |
 | `asyncio`       | [asyncio.md](asyncio.md)              |
 | `base64`        | [base64.md](base64.md)                |
@@ -33,9 +34,11 @@ in the next feed, and after a dump (see [random.md](random.md)).
 | `dataclasses`   | [dataclasses.md](dataclasses.md)      |
 | `datetime`      | [datetime.md](datetime.md)            |
 | `decimal`       | [decimal.md](decimal.md)              |
+| `errno`         | [errno.md](errno.md)                  |
 | `fnmatch`       | [fnmatch.md](fnmatch.md)              |
 | `functools`     | [functools.md](functools.md)          |
 | `hashlib`       | [hashlib.md](hashlib.md)              |
+| `io`            | [io.md](io.md)                        |
 | `itertools`     | [itertools.md](itertools.md)          |
 | `json`          | [json.md](json.md)                    |
 | `keyword`       | [vendored](#vendored-cpython-modules) |
@@ -49,6 +52,7 @@ in the next feed, and after a dump (see [random.md](random.md)).
 | `stat`          | [vendored](#vendored-cpython-modules) |
 | `statistics`    | [statistics.md](statistics.md)        |
 | `sys`           | [sys.md](sys.md)                      |
+| `textwrap`      | [vendored](#vendored-cpython-modules) |
 | `time`          | [time.md](time.md)                    |
 | `tomllib`       | [tomllib.md](tomllib.md)              |
 | `typing`        | [typing.md](typing.md)                |
@@ -67,7 +71,7 @@ production sandboxes never see it.
 Common modules that are *not* importable in Monty (non-exhaustive):
 `abc`, `argparse`, `array`, `contextlib`,
 `ctypes`, `enum`, `fractions`,
-`heapq`, `hmac`, `http`, `inspect`, `io`,
+`heapq`, `hmac`, `http`, `inspect`,
 `logging`, `multiprocessing`, `operator`, `pickle`, `queue`,
 `socket`, `string`, `struct`, `subprocess`, `tempfile`, `threading`,
 `traceback`, `unittest`, `urllib`, `uuid`, `warnings`, `weakref`,
@@ -80,6 +84,7 @@ are unimplemented and may appear over time.
 Some available modules cover only part of their CPython surface: `functools`
 implements only `reduce`, `partial`, `lru_cache`, and `cache`, `copy` only `copy()` and `deepcopy()`,
 `time` everything but `tzset` and the `clock_*` family, `hashlib` everything but `file_digest()` and `scrypt()`,
+`io` the in-memory streams, `open()` and its constants but not the ABCs or `FileIO` (see [io.md](io.md)),
 and `collections` only the four types above; `tomllib` all three of its names, with the argument and exception differences listed in [tomllib.md](tomllib.md).
 The absent names are missing from
 the module namespace rather than stubbed, so they fail type checking as well as
@@ -87,16 +92,15 @@ raising `AttributeError` at runtime; see each module's page for the specifics.
 
 ## Modules the type checker resolves but the runtime does not
 
-`abc`, `enum`, `io`, `_io`, `types`, `typing_extensions`, `_collections_abc` and `_typeshed` support the
-vendored stubs, so their imports pass type checking.
-`io` and `_io` declare the file objects `open()` returns.
+`abc`, `enum`, `types`, `typing_extensions`, `_collections_abc` and `_typeshed` support the vendored
+stubs, so their imports pass type checking.
 At runtime, the host must provide them or the import raises `ModuleNotFoundError`.
 The worker never requests host stubs for vendored typeshed modules: a host-provided `abc` is checked against
 typeshed's `abc` declarations.
 
 ## Vendored CPython modules
 
-`colorsys`, `keyword` and `stat` run CPython 3.14's own `Lib/*.py`, copied from the release pinned in
+`colorsys`, `io`, `keyword`, `stat` and `textwrap` run CPython 3.14's own `Lib/*.py`, copied from the release pinned in
 `crates/monty/stdlib/vendor.toml`, so they match CPython wherever the language features they use do.
 They differ from CPython's modules in how they are loaded:
 
@@ -127,6 +131,19 @@ pure-Python functions accept.
     raises `OverflowError: can't convert negative value to unsigned int`.
 - Platform-specific constants take `stat.py`'s portable values: `S_IFWHT` is `0` and `SF_SETTABLE` is `0xffff0000`,
     where CPython on macOS reports `0o160000` and `0x3fff0000`.
+
+`io` runs over a native `_io`, split on CPython's boundary, but is patched down to `_io`'s re-exports and the
+`SEEK_*` constants.
+Monty has no metaclasses or `abc`, so the `IOBase`, `RawIOBase`, `BufferedIOBase` and `TextIOBase` ABCs and the
+`Reader` and `Writer` protocols are dropped, along with the `_io` names Monty lacks (see [io.md](io.md)).
+
+`textwrap` is patched because Monty does not parse `del` yet: the class-body `del` that CPython uses to remove the
+regex building blocks is dropped, so `TextWrapper.word_punct`, `TextWrapper.letter`, `TextWrapper.nowhitespace`
+and `TextWrapper.whitespace` exist as class attributes (CPython deletes them), and the statements `del chunks[-1]` and
+`del cur_line[-1]` are `.pop()` calls with the same effect.
+`dedent()` is also patched to name a non-`str` argument's type by `__name__` in its `TypeError`, because Monty types
+have no `__qualname__` (see [classes.md](classes.md)): a class defined inside a function shows as `'Adder'` where
+CPython shows `'make.<locals>.Adder'`.
 
 ## Star imports
 
@@ -201,8 +218,7 @@ Differences from CPython:
     `__path__` directories, joined to the working directory.
     Monty reads lists, tuples, and named tuples for `__path__`. CPython also searches other iterable paths.
     Only the first 32 directories of `__path__` are searched; later entries are ignored.
-    Relative imports (`from . import x`) are rejected, so a package that uses them raises
-    `ImportError: attempted relative import with no known parent package` when imported.
+    Relative imports inside a package are supported; see [language.md](language.md#imports) for their differences.
     Directories without an `__init__.py` (namespace packages) are not found.
 - Module globals are `__name__`, `__file__`, `__package__` and, for a package, `__path__`; `__spec__`, `__loader__`,
     `__cached__`, `__builtins__` and `__doc__` are not defined.

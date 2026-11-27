@@ -12,7 +12,7 @@ use strum::{Display, EnumString, FromRepr, IntoStaticStr, VariantNames};
 /// Uses strum derives for automatic `Display`, `FromStr`, and `IntoStaticStr` implementations.
 /// All variants serialize to lowercase (e.g., `Print` -> "print").
 /// Explicit discriminants are bytecode operands and identity codes; never change or reuse them.
-#[monty_macros::explicit_discriminants(checksum = 0x6c90_1629_7e25_a340)]
+#[monty_macros::explicit_discriminants(checksum = 0x4277_6e28_a513_95aa)]
 #[derive(
     Debug,
     Clone,
@@ -139,12 +139,14 @@ pub enum BuiltinsFunctions {
     #[strum(serialize = "type.mro")]
     #[serde(rename = "type.mro")]
     TypeMro = 41,
+    /// Delete an attribute, including descriptor deletion.
+    Delattr = 42,
     /// `BaseException.__new__(cls, /, *args, **kwargs)`, reached through `BaseException` or `super()`.
     #[strum(serialize = "BaseException.__new__")]
     #[serde(rename = "BaseException.__new__")]
-    BaseExceptionNew = 42,
+    BaseExceptionNew = 43,
     /// `BaseException.__init__(self, /, *args, **kwargs)`, reached through `BaseException` or `super()`.
     #[strum(serialize = "BaseException.__init__")]
     #[serde(rename = "BaseException.__init__")]
-    BaseExceptionInit = 43,
+    BaseExceptionInit = 44,
 }

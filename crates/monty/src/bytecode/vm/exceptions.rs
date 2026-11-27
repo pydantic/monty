@@ -16,7 +16,7 @@ use crate::{
     expressions::CmpOperator,
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::{StaticStrings, StringId},
-    types::{LazyHeapSet, PyTrait, Type, TypeRef},
+    types::{LazyHeapSet, PyTrait, Tuple, Type, TypeRef},
     value::Value,
 };
 
@@ -755,10 +755,7 @@ impl VM<'_> {
         }
         // Flat tuple of exception classes. CPython does not descend into
         // nested tuples in this position, so neither do we.
-        let Value::Ref(id) = exc_type else {
-            return Err(ExcType::except_invalid_type_error());
-        };
-        let HeapData::Tuple(tuple) = self.heap.get(*id) else {
+        let Some(tuple) = exc_type.get_as::<Tuple>(self.heap) else {
             // A non-tuple heap value (e.g. an exception instance) is not a
             // valid exception type for an `except` clause.
             return Err(ExcType::except_invalid_type_error());

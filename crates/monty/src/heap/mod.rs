@@ -257,6 +257,9 @@ pub(crate) trait HeapPayload: Sized {
     /// Wraps this payload in its corresponding `HeapData` variant.
     fn into_heap_data(self) -> HeapData;
 
+    /// Borrows this payload from its matching heap variant.
+    fn from_heap_data(data: &HeapData) -> Option<&Self>;
+
     /// Extracts this payload's typed handle from a dynamic heap read.
     fn try_from_read(read: HeapReadOutput<'_>) -> Result<HeapObjectRead<'_, Self>, HeapReadOutput<'_>>;
 }
@@ -289,6 +292,11 @@ macro_rules! define_heap_read_support {
                 #[inline]
                 fn into_heap_data(self) -> HeapData {
                     HeapData::$variant(heap_storage_value!($storage self))
+                }
+
+                #[inline]
+                fn from_heap_data(data: &HeapData) -> Option<&Self> {
+                    if let HeapData::$variant(payload) = data { Some(payload) } else { None }
                 }
 
                 #[inline]
@@ -2057,6 +2065,7 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 }
             }
         }
+        HeapData::BuiltinDescriptor(d) => d.visit_children(&mut on_child),
         HeapData::BoundMethod(bm) => {
             if let Value::Ref(id) = &bm.instance {
                 on_child(*id);
@@ -2277,6 +2286,7 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         HeapData::HostClassType(t) => t.py_dec_ref_ids(stack),
         HeapData::Class(class) => class.py_dec_ref_ids(stack),
         HeapData::Instance(instance) => instance.py_dec_ref_ids(stack),
+        HeapData::BuiltinDescriptor(d) => d.py_dec_ref_ids(stack),
         HeapData::BoundMethod(bm) => bm.py_dec_ref_ids(stack),
         HeapData::DataclassField(field) => field.py_dec_ref_ids(stack),
         HeapData::DataclassMethod(method) => method.py_dec_ref_ids(stack),
