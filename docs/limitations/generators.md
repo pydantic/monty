@@ -20,8 +20,9 @@ See [comprehensions.md](comprehensions.md) for restrictions on generator express
     CPython closes a generator that is garbage collected, raising `GeneratorExit` at the paused `yield`.
     Monty releases its references without resuming it.
 - **Consumers that advance an iterator in Rust cannot suspend.**
-    `list()`, `tuple()`, `sum()`, `sorted()`, `str.join()` and the `itertools` adaptors run the generator to completion
-    without returning to the host, so a host call in its body raises
+    `*` unpacking (including `asyncio.gather(*(f(x) for x in xs))`), `list()`, `tuple()`, `sum()`, `sorted()`,
+    `str.join()` and the `itertools` adaptors run the generator to completion without returning to the host, so a host
+    call in its body raises
     `NotImplementedError: external function 'name' cannot suspend in this synchronous context` inside the generator,
     where it can be caught.
     Advance the generator with `for`, a list, set or dict comprehension, `next()`, `send()` or `yield from` to allow suspension.
