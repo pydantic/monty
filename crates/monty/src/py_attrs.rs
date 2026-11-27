@@ -102,17 +102,26 @@ pub(crate) fn read_member(ty: Type, attr: &EitherStr, instance: Option<&Value>, 
     let (owner, definition) = ty.lookup_static_attr(key)?;
     let receiver = match definition {
         AttrDef::Value(get) => return instance.is_none().then(|| get(vm)),
-        AttrDef::ClassMethod(_) => Some(TypeRef::Native(ty).to_value(vm.heap)),
+        AttrDef::ClassMethod(_) => Some(
+            instance
+                .map_or(TypeRef::Native(ty), |value| value.py_class(vm))
+                .to_value(vm.heap),
+        ),
         AttrDef::Method(_) => instance.map(|value| value.clone_with_heap(vm)),
     };
+    Some(native_method_value(owner, key, receiver, vm))
+}
+
+/// Takes an owned receiver when lookup binds the descriptor.
+pub(crate) fn native_method_value(owner: Type, key: StaticStrings, receiver: Option<Value>, vm: &VM<'_>) -> Value {
     let method = Value::NativeMethod(NativeMethod {
         owner,
         name: vm.interns.intern_static(key),
     });
-    Some(match receiver {
+    match receiver {
         Some(receiver) => BoundMethod::allocate(receiver, method, vm.heap),
         None => method,
-    })
+    }
 }
 
 /// Calls an instance method through a type, taking the receiver from the first positional argument.

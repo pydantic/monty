@@ -392,7 +392,7 @@ impl<'h> PyValue<'h> {
             Self::Bool(false) => Ok(f.write_str("False")?),
             Self::Float(value) => Ok(write!(f, "{}", FormatFloat(*value))?),
             Self::Builtin(value) => Ok(value.py_repr_fmt(f)?),
-            Self::NativeMethod(method) => Ok(write!(f, "<method '{}' of '{}' objects>", vm.interns.get_str(method.name), method.owner.dunder_name())?),
+            Self::NativeMethod(method) => Ok(write!(f, "<method '{}' of '{}' objects>", vm.interns.get_str(method.name), method.owner.name())?),
             Self::ModuleFunction(function) => {
                 let py_id = self.py_identity().into_value(vm.heap);
                 defer_drop!(py_id, vm);

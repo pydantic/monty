@@ -109,7 +109,21 @@ impl Type {
     ) -> RunResult<CallResult> {
         match self.lookup_attr(attr, vm.interns) {
             Some((owner, AttrDef::Method(call))) => py_attrs::call_method(owner, obj, attr, call, args, vm),
-            Some((_, AttrDef::ClassMethod(classmethod))) => classmethod(obj.py_type(vm), args, vm),
+            Some((_, AttrDef::ClassMethod(classmethod))) => {
+                let class = if let PyValue::NamedTuple(tuple) = obj {
+                    let Some(id) = tuple.get(vm.heap).class_id() else {
+                        args.drop_with(vm);
+                        return Err(ExcType::attribute_error(
+                            tuple.get(vm.heap).name(vm.interns),
+                            attr.as_str(vm.interns),
+                        ));
+                    };
+                    TypeRef::Class(id)
+                } else {
+                    obj.py_type(vm)
+                };
+                classmethod(class, args, vm)
+            }
             _ => obj.call_dynamic_attr(vm, attr, args),
         }
     }

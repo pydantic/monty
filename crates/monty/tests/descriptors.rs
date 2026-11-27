@@ -38,14 +38,28 @@ fn restore_idle(repl: MontyRepl) -> MontyRepl {
 fn saved_native_methods_survive_restore() {
     let mut repl = repl();
     repl.feed_run(
-        "items = []\nappend = items.append\nunbound = list.append\nmake = dict.fromkeys\nlookup = {unbound: 1}",
+        "from collections import namedtuple
+Point = namedtuple('Point', ['x'])
+make_point = Point(1)._make
+items = []
+append = items.append
+unbound = list.append
+make = dict.fromkeys
+lookup = {unbound: 1}",
         vec![],
         PrintWriter::Disabled,
     )
     .unwrap();
     restore_idle(repl)
         .feed_run(
-            "append(1)\nunbound(items, 2)\nassert items == [1, 2]\nassert append.__self__ is items\nassert lookup[list.append] == 1\nassert make(items) == {1: None, 2: None}",
+            "append(1)
+unbound(items, 2)
+assert items == [1, 2]
+assert append.__self__ is items
+assert lookup[list.append] == 1
+assert make(items) == {1: None, 2: None}
+assert make_point.__self__ is Point
+assert type(make_point([3])) is Point",
             vec![],
             PrintWriter::Disabled,
         )

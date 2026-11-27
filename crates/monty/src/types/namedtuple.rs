@@ -40,7 +40,7 @@ use crate::{
     heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
     modules::copy::{Memo, PyDeepCopy, deep_copy_slots},
-    py_attrs::{MethodCall, PyAttrs},
+    py_attrs::{MethodCall, PyAttrs, native_method_value},
     py_value::PyValue,
     resource_checks::{check_repeat_size, repeated_len},
     types::{
@@ -783,14 +783,6 @@ impl<'h> HeapRead<'h, NamedTuple> {
         }
         Ok(build_namedtuple(name, field_names, items, class_id, vm))
     }
-
-    /// `p._make(iterable)` — a new instance of the same class from an iterable.
-    fn method_make(&self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<Value> {
-        let name = self.get(vm.heap).name.clone();
-        let field_names = self.get(vm.heap).field_names.clone();
-        let class_id = self.get(vm.heap).class_id;
-        make_from_iterable(name, field_names, class_id, vm, args)
-    }
 }
 
 // ============================================================================
@@ -922,6 +914,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTupleClass> {
                 fields_tuple_from(&names, vm)
             }
             Some(StaticStrings::UnderFieldDefaults) => self.field_defaults_dict(vm)?,
+            Some(StaticStrings::UnderMake) => native_method_value(
+                Type::NamedTuple,
+                StaticStrings::UnderMake,
+                Some(self.clone_value(vm.heap)),
+                vm,
+            ),
             Some(StaticStrings::DunderDoc) => {
                 let doc = synthesise_doc(self.get(vm.heap), vm.interns);
                 allocate_string(doc, vm.heap)
@@ -1229,18 +1227,6 @@ fn make_namedtuple(class_id: HeapId, vm: &mut VM<'_>, args: ArgValues) -> RunRes
         HeapData::NamedTupleClass(c) => (c.name.clone(), c.field_names.clone()),
         _ => unreachable!("make_namedtuple called on a non-namedtuple-class heap entry"),
     };
-    make_from_iterable(name, field_names, Some(class_id), vm, args)
-}
-
-/// Shared `_make` body: collect the iterable, length-check it against the
-/// fields, and build the instance.
-fn make_from_iterable(
-    name: EitherStr,
-    field_names: Vec<EitherStr>,
-    class_id: Option<HeapId>,
-    vm: &mut VM<'_>,
-    args: ArgValues,
-) -> RunResult<Value> {
     let n = field_names.len();
     let iterable = args.get_one_arg("_make", vm.heap)?;
     let items = collect_owned_iterable::<Vec<Value>>(iterable, vm)?;
@@ -1249,7 +1235,7 @@ fn make_from_iterable(
         items.drop_with(vm);
         return Err(ExcType::type_error(format!("Expected {n} arguments, got {got}")));
     }
-    Ok(build_namedtuple(name, field_names, items, class_id, vm))
+    Ok(build_namedtuple(name, field_names, items, Some(class_id), vm))
 }
 
 /// Allocates a [`NamedTuple`] instance, taking ownership of `items` and, when
@@ -1362,13 +1348,14 @@ impl<'heap> PyAttrs<'heap> for PyNamedTupleImpl {
         this.method_replace(vm, args)
     }
 
-    #[pymethod(UnderMake)]
-    fn under_make<'h>(this: &mut HeapObjectRead<'h, NamedTuple>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        if this.get(vm.heap).class_id().is_none() {
+    #[pyclassmethod(UnderMake)]
+    fn under_make(_name: StaticStrings, class: TypeRef, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+        if let TypeRef::Class(id) = class {
+            make_namedtuple(id, vm, args).map(CallResult::Value)
+        } else {
             args.drop_with(vm);
-            return Err(ExcType::attribute_error(this.get(vm.heap).name(vm.interns), "_make"));
+            Err(ExcType::attribute_error_type(&class.name(vm.heap, vm.interns), "_make"))
         }
-        this.method_make(vm, args)
     }
 }
 

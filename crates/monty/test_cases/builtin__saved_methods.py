@@ -56,6 +56,8 @@ factory = {}.fromkeys
 assert factory.__self__ is dict
 assert factory(['a', 'b'], 2) == {'a': 2, 'b': 2}
 replace = date.replace
+assert repr(replace) == "<method 'replace' of 'datetime.date' objects>"
+assert replace.__qualname__ == 'date.replace'
 assert replace(datetime(2024, 2, 3), year=2025) == datetime(2025, 2, 3)
 stream = StringIO()
 write = stream.write
@@ -76,6 +78,15 @@ assert str(join('b')) == 'a/b'
 Point = namedtuple('Point', 'count x')
 point = Point(7, 3)
 assert point.count == 7
+make = point._make
+assert make.__self__ is Point
+assert Point._make.__self__ is Point
+assert make == Point._make
+made = make([5, 6])
+assert type(made) is Point and made == (5, 6)
+assert type(Point._make([7, 8])) is Point
+assert type(point._make([7, 8])) is Point
+assert not hasattr(sys.version_info, '_make')
 as_dict = point._asdict
 assert as_dict() == {'count': 7, 'x': 3}
 assert not hasattr(sys.version_info, '_asdict')
