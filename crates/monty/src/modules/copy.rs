@@ -176,9 +176,9 @@ fn shallow_copy(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
 
 /// Deep-copying, implemented by the heap types `copy.deepcopy` rebuilds.
 ///
-/// Only types classified as rebuilt by [`classify`] implement this trait.
-/// Containers that fill an empty shell memoize it first so recursive references
-/// resolve to that shell.
+/// Used for [`Copyability::Rebuilt`] and [`Copyability::ShallowShared`] values.
+/// If an implementation fills an empty shell, memoize it before copying children
+/// so recursive references resolve to it, and keep it in a [`DropGuard`] until filling succeeds.
 pub(crate) trait PyDeepCopy<'h> {
     /// Returns a new object holding deep copies of everything this one holds.
     ///
