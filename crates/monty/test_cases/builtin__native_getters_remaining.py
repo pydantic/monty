@@ -54,9 +54,11 @@ assert ForwardRef.__forward_arg__.__get__(ForwardRef('Later')) == 'Later'
 f = field(default=4)
 assert type(f).default.__get__(f) == 4
 
+
 @dataclass(frozen=True)
 class Example:
     x: int
+
 
 params = Example.__dataclass_params__
 assert type(params).frozen.__get__(params) is True

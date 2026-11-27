@@ -35,7 +35,7 @@ new_traps = {signal: traps[signal] for signal in traps}
 new_traps[Inexact] = True
 ctx.traps = new_traps
 assert traps[Inexact] and ctx.traps[Inexact]
-assert not hasattr(Context, "flags") and not hasattr(Context, "traps")
+assert not hasattr(Context, 'flags') and not hasattr(Context, 'traps')
 try:
     ctx.prec = 0
 except ValueError:
