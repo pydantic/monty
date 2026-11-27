@@ -29,6 +29,7 @@ use crate::{
         Bytes, Deque, Dict, ForwardRef, FrozenSet, List, Partial, Path, Random, Range, Set, Slice, TimeZone, Tuple,
         bytes, complex, date, datetime, decimal, dict, numeric, path,
         str::{self, PyStr},
+        super_::super_new,
         time, timedelta, timezone,
         r#type::{bool_init, float_init, int_init, union_init},
     },
@@ -441,6 +442,7 @@ impl Type {
             Self::Filter => 164,
             Self::Task => 165,
             Self::InvalidStateError => 166,
+            Self::Super => 167,
         }
     }
 
@@ -1172,6 +1174,7 @@ native_types! {
     /// `asyncio.InvalidStateError`, raised by `Task.result()` / `Task.exception()` on a pending task.
     InvalidStateError("asyncio.exceptions.InvalidStateError", Exception)
         .exc(ExcType::InvalidStateError),
+    Super("super").builtin().basetype().ctor(Constructor::Value(super_new)),
 }
 
 #[cfg(test)]

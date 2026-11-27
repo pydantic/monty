@@ -195,6 +195,15 @@ class type:
     if sys.version_info >= (3, 14):
         __annotate__: AnnotateFunc | None
 
+@disjoint_base
+class super:
+    @overload
+    def __init__(self, t: Any, obj: Any, /) -> None: ...
+    @overload
+    def __init__(self, t: Any, /) -> None: ...
+    @overload
+    def __init__(self) -> None: ...
+
 _PositiveInteger: TypeAlias = Literal[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
 _NegativeInteger: TypeAlias = Literal[-1, -2, -3, -4, -5, -6, -7, -8, -9, -10, -11, -12, -13, -14, -15, -16, -17, -18, -19, -20]
 _LiteralInteger = _PositiveInteger | _NegativeInteger | Literal[0]  # noqa: Y026  # TODO: Use TypeAlias once mypy bugs are fixed

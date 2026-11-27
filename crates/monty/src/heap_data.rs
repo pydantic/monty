@@ -194,6 +194,8 @@ macro_rules! heap_payloads {
             DecimalSignalDict(inline $crate::types::decimal::py_context::SignalDict),
             /// The manager `decimal.localcontext()` returns.
             DecimalContextManager(inline $crate::types::decimal::py_context::ContextManager),
+            /// A `super` proxy into a receiver's method resolution order.
+            Super(inline $crate::types::super_::Super),
         }
     };
 }
@@ -265,6 +267,7 @@ impl HeapData {
             | Self::Class(_)
             | Self::Instance(_)
             | Self::BoundMethod(_)
+            | Self::Super(_)
             | Self::DataclassField(_)
             | Self::DataclassMethod(_)
             | Self::ListIterator(_)
@@ -382,6 +385,7 @@ impl HeapData {
             // A class object's type is `type`.
             Self::HostClassType(_) | Self::Class(_) => Type::Type,
             Self::BoundMethod(_) => Type::Function,
+            Self::Super(_) => Type::Super,
             Self::DataclassField(_) => Type::DataclassField,
             Self::DataclassMethod(_) => Type::Function,
             Self::DataclassParams(_) => Type::DataclassParams,

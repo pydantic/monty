@@ -614,6 +614,11 @@ impl Signature {
             .map_or_default(|v| v.iter().filter(|&x| x.is_some()).count())
     }
 
+    /// Whether the signature declares a first positional parameter, excluding `*args`.
+    pub(crate) fn has_positional_param(&self) -> bool {
+        self.pos_arg_count() != 0 || self.arg_count() != 0
+    }
+
     /// Returns the number of positional-only parameters.
     fn pos_arg_count(&self) -> usize {
         self.pos_args.as_ref().map_or(0, Vec::len)

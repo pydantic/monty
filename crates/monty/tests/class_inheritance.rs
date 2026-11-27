@@ -305,6 +305,49 @@ fn inherited_initializer_resumes_after_dump_restore() {
 }
 
 #[test]
+#[cfg(not(feature = "memory-model-checks"))]
+fn super_lookup_survives_suspension_and_dump_restore() {
+    let repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    let progress = repl
+        .feed_start(
+            r"
+class Parent:
+    def read(self):
+        return ext_fn()
+
+class Child(Parent):
+    def read(self, alternate):
+        def receiver():
+            return self
+
+        proxy = super()
+        value = proxy.read()
+        self = alternate
+        make_proxy = super
+        bound = make_proxy()
+        assert bound.__self__ is alternate
+        assert receiver() is alternate
+        return value + bound.step
+
+Parent.step = 2
+Child().read(Child())
+",
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    let bytes = dump("test.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
+    let Session::Suspended(restored) = Dump::load(&bytes).unwrap().state else {
+        panic!("expected a suspended super call");
+    };
+    let call = restored.into_function_call().expect("expected an external call");
+    assert_eq!(call.function_name, "ext_fn");
+    let completed = call.resume(MontyObject::int(40), PrintWriter::Stdout).unwrap();
+    let (_, output) = completed.into_complete().expect("expected super call to complete");
+    assert_eq!(output, MontyObject::int(42));
+}
+
+#[test]
 #[cfg(feature = "ref-count-return")]
 fn parent_child_cycles_are_collected() {
     let code = r"
@@ -317,6 +360,26 @@ def make_cycle():
 
 for _ in range(10):
     make_cycle()
+";
+    let output = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default())
+        .unwrap()
+        .run_ref_counts(vec![])
+        .unwrap();
+    assert!(output.unreachable.is_empty(), "{:?}", output.unreachable);
+}
+
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn super_receiver_cycles_are_collected() {
+    let code = r"
+class Parent:
+    pass
+
+class Child(Parent):
+    def __init__(self):
+        self.proxy = super()
+
+Child()
 ";
     let output = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default())
         .unwrap()

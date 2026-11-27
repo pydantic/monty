@@ -61,9 +61,9 @@ subclass-first rule for reflected operators and `==` all follow CPython.
     Types CPython refuses (`bool`, `range`, ...) raise CPython's
     `type 'bool' is not an acceptable base type`. In particular there are no
     user-defined exception classes yet (see [exceptions.md](exceptions.md)).
-- **No `super()`**: the name is undefined, so `super().__init__()` raises
-    `NameError: name 'super' is not defined`. Call the base class explicitly
-    (`Base.__init__(self, ...)`, `object.__init_subclass__(**kwargs)`).
+- **`super` uses the actual type of its receiver.** Unlike CPython, it does not fall back to a receiver's overridden `__class__` attribute.
+    Only members Monty exposes for ordinary class lookup are available through `super`; it does not resolve host-backed attributes.
+    Unbound `super` objects do not act as descriptors when stored on a class, and `super.__get__` is not exposed.
 - **No metaclasses**: `class Foo(metaclass=M)` and `**kwargs` unpacking in a
     class statement are rejected at parse time.
 - **`object()` cannot be instantiated**: `object()` and `object.__new__(object)`

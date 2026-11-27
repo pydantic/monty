@@ -26,6 +26,7 @@ files = [
 [tests]
 files = [
     "test/test_colorsys.py",
+    "test/test_super.py",
     "test/test_textwrap.py",
     "unittest/__init__.py",
     "unittest/case.py",

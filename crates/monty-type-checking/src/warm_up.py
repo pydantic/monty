@@ -2,6 +2,7 @@
 # `TypeChecker::warm_up` checks this so later checks skip resolving builtins.
 object
 type
+super
 int
 float
 complex

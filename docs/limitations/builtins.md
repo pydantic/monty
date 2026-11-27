@@ -28,7 +28,6 @@ These raise `NameError`:
 - **Decorators / descriptors**: `classmethod`, `staticmethod`, `property`.
     (`@property` on functions is not recognized; use a method.)
 - **Construction / coercion**: `bytearray`, `memoryview`, `object`, `ascii`.
-- **Inheritance**: `super`; call the base explicitly (`Base.__init__(self, ...)`).
 - **Other**: `callable`, `delattr`, `aiter`, `anext`.
 
 `object` exists as the root class but cannot be instantiated, and `issubclass()`
@@ -37,8 +36,7 @@ works on classes; see [classes.md](classes.md#inheritance).
 ## Behavioural divergences
 
 - **No `__class__` on builtin values** — `[].__class__`, `list.__class__` and
-    `list[int].__class__` raise `AttributeError`; only instances of Monty classes
-    carry it (see [classes.md](classes.md)). Use `type(x)`.
+    `list[int].__class__` raise `AttributeError`. Use `type(x)`.
 - **Builtin methods are call-only** — reading one without calling it raises
     `AttributeError`, so `[1].append`, `'a'.upper`, `{}.get`, `dict.fromkeys`
     and `list.__class_getitem__` cannot be assigned, passed as a callback or
