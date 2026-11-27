@@ -18,9 +18,7 @@ The divergences are the ones the rest of the numeric tower already has.
 
 ## Members
 
-- **`z.conjugate` as a value** (without calling it) raises `AttributeError`; only the call `z.conjugate()` works.
-    Builtin methods are not first-class values in Monty (see [builtins.md](builtins.md)).
-- **`complex.real`, `complex.imag` and `complex.conjugate` on the type** raise `AttributeError`; CPython returns
+- **`complex.real` and `complex.imag` on the type** raise `AttributeError`; CPython returns
     descriptors.
 - **`real`, `imag` and `conjugate()` on `int` and `float`** raise `AttributeError`; only `complex` carries them.
 - **Dunder methods** such as `z.__abs__()` or `z.__complex__()` raise `AttributeError`; use `abs(z)` and `complex(z)`.

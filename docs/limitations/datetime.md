@@ -59,7 +59,6 @@ either.
 see "Reading the clock" below.
 `fromtimestamp()` reads the [session zone](#reading-the-clock) where CPython reads the host's.
 Its errors differ as `datetime.fromtimestamp()`'s do (below).
-No class method can be read without calling it (see [builtins.md](builtins.md)).
 
 Constructor overflow wording on Windows: CPython's `i` converter goes
 through C `long`, which is 32 bits on Windows, so `date(2**40, 1, 1)`
@@ -121,7 +120,6 @@ Class methods supported: `today()`, `now(tz=None)`, `fromtimestamp(timestamp, tz
     the seconds only) raises `ValueError: Inconsistent use of : in +0102:03` in Monty, where CPython leaks
     `ValueError: invalid literal for int() with base 10: ':0'`. The mirrored `'+01:0203'` matches CPython exactly.
 - `utcnow()` (the deprecated class method) is not implemented.
-- Class methods cannot be read without calling them (see [builtins.md](builtins.md)).
 - A naive `fromtimestamp()` reads the [session zone](#reading-the-clock) where CPython reads the host's.
     Microseconds round half to even and the `time_t`, `NaN` and year errors match CPython on Linux and macOS,
     except where the platform's `gmtime()` / `localtime()` fails and CPython raises `OSError`:

@@ -91,7 +91,10 @@ impl Type {
     /// Returns the first definition in the MRO and the native namespace that owns it.
     /// The owner validates descriptors; class methods bind to the accessing class.
     pub(crate) fn lookup_attr(self, attr: &EitherStr, interns: &Interns) -> Option<(Self, AttrDef)> {
-        let name = attr.static_string(interns)?;
+        self.lookup_static_attr(attr.static_string(interns)?)
+    }
+
+    pub(crate) fn lookup_static_attr(self, name: StaticStrings) -> Option<(Self, AttrDef)> {
         self.mro()
             .find_map(|owner| (owner.def().attrs?.lookup)(name).map(|definition| (owner, definition)))
     }
@@ -168,7 +171,7 @@ impl Type {
                 vm.heap,
             ),
             "__init_subclass__" => bind_init_subclass(type_value(self), self.class_constant(attr, vm)?, vm.heap),
-            _ => self.class_constant(attr, vm)?,
+            _ => py_attrs::read_member(self, attr, None, vm)?,
         })
     }
 

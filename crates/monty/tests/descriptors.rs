@@ -34,6 +34,24 @@ fn restore_idle(repl: MontyRepl) -> MontyRepl {
     *repl
 }
 
+#[test]
+fn saved_native_methods_survive_restore() {
+    let mut repl = repl();
+    repl.feed_run(
+        "items = []\nappend = items.append\nunbound = list.append\nmake = dict.fromkeys\nlookup = {unbound: 1}",
+        vec![],
+        PrintWriter::Disabled,
+    )
+    .unwrap();
+    restore_idle(repl)
+        .feed_run(
+            "append(1)\nunbound(items, 2)\nassert items == [1, 2]\nassert append.__self__ is items\nassert lookup[list.append] == 1\nassert make(items) == {1: None, 2: None}",
+            vec![],
+            PrintWriter::Disabled,
+        )
+        .unwrap();
+}
+
 /// Forwarded annotation getters retain the caller's fallback across a host error and restore.
 #[test]
 fn bound_method_attribute_errors_survive_suspension_and_restore() {

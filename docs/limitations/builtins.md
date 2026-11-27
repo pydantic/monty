@@ -37,14 +37,10 @@ works on classes; see [classes.md](classes.md#inheritance).
 - **No `__class__` on builtin values** — `[].__class__`, `list.__class__` and
     `list[int].__class__` raise `AttributeError`; only instances of Monty classes
     carry it (see [classes.md](classes.md)). Use `type(x)`.
-- **Builtin methods are call-only** — reading one without calling it raises
-    `AttributeError`, so `[1].append`, `'a'.upper`, `{}.get`, `dict.fromkeys`
-    and `list.__class_getitem__` cannot be assigned, passed as a callback or
-    reached through `getattr`.
-    Direct calls with an explicit first positional receiver, such as `str.upper('foo')` and `list.append(items, value)`,
-    are supported for registered builtin instance methods.
-    Date methods called directly accept datetime receivers, but only the implemented date methods are available
-    (see [datetime.md](datetime.md)).
+- **Reading builtin methods.** Methods registered on a native type can be saved or passed as callbacks.
+    For example, `list.append` takes the list as its first argument, and `items.append` retains `items` as its receiver.
+    Some operations have only a direct-call implementation, including `list.__class_getitem__` and `int.bit_length`.
+    Reading those attributes raises `AttributeError`.
     Counter's Python-defined methods have additional receiver restrictions (see [collections.md](collections.md#counter)).
 - **`str.translate()`** — a table entry (from a dict or `str.maketrans()`) that maps to a surrogate code point
     (`0xD800`–`0xDFFF`) raises `ValueError: character mapping must be in range(0x110000)`, because Monty strings cannot

@@ -607,9 +607,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTuple> {
         }
         if let Some(value) = self.get(vm.heap).get_by_name(attr_name, vm.interns) {
             Ok(Some(CallResult::Value(value.clone_with_heap(vm.heap))))
-        } else {
-            // we use name here, not `self.py_type(heap)` hence returning a Ok(None)
+        } else if self.get(vm.heap).class_id().is_none() && matches!(attr_name, "_make" | "_asdict" | "_replace") {
             Err(ExcType::attribute_error(self.get(vm.heap).name(vm.interns), attr_name))
+        } else {
+            Ok(None)
         }
     }
 }
