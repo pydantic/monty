@@ -57,6 +57,7 @@ not supported; passing more than one argument raises an internal error.
     itself, so `str(exc)` and `repr(exc)` quote non-string keys:
     `{}[1]` gives `KeyError('1')` where CPython gives `KeyError(1)`, and a
     `bytes` key gives `KeyError("b'a'")`.
+    An uncaught error for a non-string key displays that text directly in its traceback.
     The key's `__str__` therefore runs when the `KeyError` is raised, which CPython never does.
     An exception from it is replaced by the type name (`KeyError('<K>')`), but a resource limit hit inside it
     ends the run with `MemoryError` or `TimeoutError` where CPython raises a plain `KeyError`.

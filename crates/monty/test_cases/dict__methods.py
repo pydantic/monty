@@ -53,6 +53,13 @@ assert result is None
 assert d == {'a': 1, 'b': None}
 
 # === dict.popitem() ===
+try:
+    {}.popitem()
+    assert False, 'expected KeyError'
+except KeyError as exc:
+    assert exc.args == ('popitem(): dictionary is empty',)
+    assert str(exc) == "'popitem(): dictionary is empty'"
+
 d = {'a': 1, 'b': 2}
 item = d.popitem()
 assert item == ('b', 2)

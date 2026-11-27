@@ -24,6 +24,8 @@ pub struct MontyException {
     traceback: Vec<StackFrame>,
     /// Structured payload for exception types that carry more than a message.
     data: ExcData,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    quote_key_error: bool,
 }
 
 /// Number of identical consecutive frames to show before collapsing.
@@ -69,11 +71,7 @@ impl fmt::Display for MontyException {
             }
         }
 
-        if let Some(msg) = &self.message {
-            write!(f, "{}: {}", self.exc_type, msg)
-        } else {
-            write!(f, "{}", self.exc_type)
-        }
+        self.write_summary(f)
     }
 }
 
@@ -90,6 +88,7 @@ impl MontyException {
             message,
             traceback: vec![],
             data: ExcData::None,
+            quote_key_error: false,
         }
     }
 
@@ -107,6 +106,7 @@ impl MontyException {
             message,
             traceback,
             data: ExcData::None,
+            quote_key_error: false,
         }
     }
 
@@ -118,6 +118,19 @@ impl MontyException {
     pub fn with_data(mut self, data: ExcData) -> Self {
         self.data = data;
         self
+    }
+
+    /// Treats the message as a string key when rendering a `KeyError`.
+    #[must_use]
+    pub fn with_quoted_key_error(mut self, quote: bool) -> Self {
+        self.quote_key_error = quote && self.exc_type == ExcType::KeyError && self.message.is_some();
+        self
+    }
+
+    /// Whether the summary renders the message using Python's string repr.
+    #[must_use]
+    pub fn quotes_key_error(&self) -> bool {
+        self.quote_key_error
     }
 
     /// The structured payload, [`ExcData::None`] for most exceptions.
@@ -164,6 +177,7 @@ impl MontyException {
             message: Some(err.to_string()),
             traceback: vec![],
             data: ExcData::None,
+            quote_key_error: false,
         }
     }
 
@@ -203,10 +217,15 @@ impl MontyException {
     /// If there's no message, just returns the exception type name.
     #[must_use]
     pub fn summary(&self) -> String {
-        if let Some(msg) = &self.message {
-            format!("{}: {}", self.exc_type, msg)
-        } else {
-            self.exc_type.to_string()
+        fmt::from_fn(|f| self.write_summary(f)).to_string()
+    }
+
+    fn write_summary(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.exc_type)?;
+        match &self.message {
+            Some(msg) if self.quote_key_error => write!(f, ": {}", StringRepr(msg)),
+            Some(msg) => write!(f, ": {msg}"),
+            None => Ok(()),
         }
     }
 

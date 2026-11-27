@@ -17,7 +17,13 @@ impl From<&MontyException> for pb::RaisedException {
             exc_type: exc.exc_type().to_string(),
             message: exc.message().map(ToOwned::to_owned),
             traceback: exc.traceback().iter().map(pb::StackFrame::from).collect(),
-            data: pb_exc_data(exc.data()),
+            data: if exc.quotes_key_error() {
+                Some(pb::ExcData {
+                    kind: Some(pb::exc_data::Kind::QuotedKeyError(pb::Unit {})),
+                })
+            } else {
+                pb_exc_data(exc.data())
+            },
         }
     }
 }
@@ -36,16 +42,20 @@ impl TryFrom<pb::RaisedException> for MontyException {
         // dropped rather than trusted when malformed (see `sanitize_unicode_data`);
         // the worst a bogus-but-well-formed payload can do is put odd
         // attribute values on the receiver's exception.
-        let data = match err.data.and_then(|data| data.kind) {
+        let wire_data = err.data.and_then(|data| data.kind);
+        let quote_key_error = matches!(wire_data, Some(pb::exc_data::Kind::QuotedKeyError(_)));
+        let data = match wire_data {
             Some(pb::exc_data::Kind::Unicode(unicode)) => {
                 sanitize_unicode_data(unicode).map_or(ExcData::None, ExcData::Unicode)
             }
             Some(pb::exc_data::Kind::Json(json)) => {
                 sanitize_json_data(json, message.as_deref()).map_or(ExcData::None, ExcData::Json)
             }
-            None => ExcData::None,
+            Some(pb::exc_data::Kind::QuotedKeyError(_)) | None => ExcData::None,
         };
-        Ok(Self::with_traceback(exc_type, message, traceback).with_data(data))
+        Ok(Self::with_traceback(exc_type, message, traceback)
+            .with_data(data)
+            .with_quoted_key_error(quote_key_error))
     }
 }
 

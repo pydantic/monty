@@ -1290,7 +1290,7 @@ fn record_error(error: &pb::Error, micros: u64, max_feed_duration: Option<u64>, 
                 exc_data.colno = j.colno,
             );
         }
-        None => error_event!(base_cut),
+        Some(pb::exc_data::Kind::QuotedKeyError(_)) | None => error_event!(base_cut),
     }
 }
 
