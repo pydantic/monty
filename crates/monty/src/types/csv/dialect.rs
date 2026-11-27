@@ -5,13 +5,15 @@
 //! the attributes), then the `excel` default; conversion and validation errors keep CPython's
 //! wording and order.
 
+use monty_macros::pyattrs;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{ContainsHeap, DropGuard, DropWithContext},
+    heap::{ContainsHeap, DropGuard, DropWithContext, HeapObjectRead},
     intern::StaticStrings,
+    py_attrs::PyAttrs,
     types::{CsvObject, PyTrait, Type, str::allocate_string},
     value::{EitherStr, Value},
 };
@@ -223,21 +225,6 @@ impl Dialect {
         }
     }
 
-    /// Whether `attr` names one of the eight `_csv.Dialect` attributes.
-    pub(crate) fn is_attr(attr: StaticStrings) -> bool {
-        matches!(
-            attr,
-            StaticStrings::Delimiter
-                | StaticStrings::Quotechar
-                | StaticStrings::Escapechar
-                | StaticStrings::Doublequote
-                | StaticStrings::Skipinitialspace
-                | StaticStrings::Lineterminator
-                | StaticStrings::Quoting
-                | StaticStrings::Strict
-        )
-    }
-
     /// The value of a `_csv.Dialect` attribute, or `None` for a name that is not one.
     pub(crate) fn attr(&self, attr: StaticStrings, vm: &VM<'_>) -> Option<Value> {
         Some(match attr {
@@ -252,6 +239,60 @@ impl Dialect {
             _ => return None,
         })
     }
+}
+
+pub(crate) struct PyCsvDialectImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyCsvDialectImpl {
+    type Receiver = HeapObjectRead<'heap, CsvObject>;
+
+    #[pyget(Delimiter)]
+    fn delimiter<'h>(this: &HeapObjectRead<'h, CsvObject>, vm: &mut VM<'h>) -> Value {
+        dialect_attribute(this, StaticStrings::Delimiter, vm)
+    }
+
+    #[pyget(Quotechar)]
+    fn quotechar<'h>(this: &HeapObjectRead<'h, CsvObject>, vm: &mut VM<'h>) -> Value {
+        dialect_attribute(this, StaticStrings::Quotechar, vm)
+    }
+
+    #[pyget(Escapechar)]
+    fn escapechar<'h>(this: &HeapObjectRead<'h, CsvObject>, vm: &mut VM<'h>) -> Value {
+        dialect_attribute(this, StaticStrings::Escapechar, vm)
+    }
+
+    #[pyget(Doublequote)]
+    fn doublequote<'h>(this: &HeapObjectRead<'h, CsvObject>, vm: &mut VM<'h>) -> Value {
+        dialect_attribute(this, StaticStrings::Doublequote, vm)
+    }
+
+    #[pyget(Skipinitialspace)]
+    fn skipinitialspace<'h>(this: &HeapObjectRead<'h, CsvObject>, vm: &mut VM<'h>) -> Value {
+        dialect_attribute(this, StaticStrings::Skipinitialspace, vm)
+    }
+
+    #[pyget(Lineterminator)]
+    fn lineterminator<'h>(this: &HeapObjectRead<'h, CsvObject>, vm: &mut VM<'h>) -> Value {
+        dialect_attribute(this, StaticStrings::Lineterminator, vm)
+    }
+
+    #[pyget(Quoting)]
+    fn quoting<'h>(this: &HeapObjectRead<'h, CsvObject>, vm: &mut VM<'h>) -> Value {
+        dialect_attribute(this, StaticStrings::Quoting, vm)
+    }
+
+    #[pyget(Strict)]
+    fn strict<'h>(this: &HeapObjectRead<'h, CsvObject>, vm: &mut VM<'h>) -> Value {
+        dialect_attribute(this, StaticStrings::Strict, vm)
+    }
+}
+
+fn dialect_attribute<'h>(this: &HeapObjectRead<'h, CsvObject>, attr: StaticStrings, vm: &VM<'h>) -> Value {
+    let CsvObject::Dialect(dialect) = this.get(vm.heap) else {
+        unreachable!("dispatched on CsvObject::Dialect");
+    };
+    dialect.attr(attr, vm).expect("registered dialect attribute")
 }
 
 /// A single-character `str` value.

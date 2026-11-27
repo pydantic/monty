@@ -14,7 +14,7 @@ mod method;
 mod options;
 
 pub(crate) use self::{
-    field::DataclassField,
+    field::{DataclassField, PyDataclassFieldImpl},
     legacy::{LEGACY_DUMP_VERSION, upgrade_legacy_classes},
     method::{
         DataclassMethod, dataclass_eq, dataclass_hash, dataclass_repr_fmt, frozen_assignment_error,

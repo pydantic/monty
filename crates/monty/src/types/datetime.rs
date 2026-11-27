@@ -36,7 +36,7 @@ use crate::{
         time::{self, Time, TimeSpec},
         timedelta, timezone,
     },
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 pub(crate) mod strptime;
@@ -1229,27 +1229,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
             _ => Ok(None),
         }
     }
-
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        // Read only the field being asked for: cloning the whole `DateTime` would
-        // copy the timezone name's `String` on every `dt.year`.
-        let int_attr = |value: i64| Ok(Some(CallResult::Value(Value::Int(value))));
-        match attr.static_string(vm.interns) {
-            Some(StaticStrings::Year) => Ok(Some(CallResult::Value(Value::Int(i64::from(
-                self.get(vm.heap).naive.date().year(),
-            ))))),
-            Some(StaticStrings::Month) => int_attr(i64::from(self.get(vm.heap).naive.month())),
-            Some(StaticStrings::Day) => int_attr(i64::from(self.get(vm.heap).naive.day())),
-            Some(StaticStrings::Hour) => int_attr(i64::from(self.get(vm.heap).naive.hour())),
-            Some(StaticStrings::Minute) => int_attr(i64::from(self.get(vm.heap).naive.minute())),
-            Some(StaticStrings::Second) => int_attr(i64::from(self.get(vm.heap).naive.second())),
-            Some(StaticStrings::Microsecond) => {
-                int_attr(i64::from(self.get(vm.heap).naive.subsec_nanosecond() / 1_000))
-            }
-            Some(StaticStrings::Tzinfo) => Ok(Some(CallResult::Value(self.tzinfo_value(vm)))),
-            _ => Ok(None),
-        }
-    }
 }
 
 /// Datetime behaviour that needs both the object and the VM, so it cannot be
@@ -1361,6 +1340,31 @@ pub(crate) struct PyDateTimeImpl;
 #[pyattrs]
 impl<'heap> PyAttrs<'heap> for PyDateTimeImpl {
     type Receiver = HeapObjectRead<'heap, DateTime>;
+
+    #[pyget(Hour)]
+    fn hour<'h>(this: &HeapObjectRead<'h, DateTime>, vm: &mut VM<'h>) -> Value {
+        Value::Int(i64::from(this.get(vm.heap).naive.hour()))
+    }
+
+    #[pyget(Minute)]
+    fn minute<'h>(this: &HeapObjectRead<'h, DateTime>, vm: &mut VM<'h>) -> Value {
+        Value::Int(i64::from(this.get(vm.heap).naive.minute()))
+    }
+
+    #[pyget(Second)]
+    fn second<'h>(this: &HeapObjectRead<'h, DateTime>, vm: &mut VM<'h>) -> Value {
+        Value::Int(i64::from(this.get(vm.heap).naive.second()))
+    }
+
+    #[pyget(Microsecond)]
+    fn microsecond<'h>(this: &HeapObjectRead<'h, DateTime>, vm: &mut VM<'h>) -> Value {
+        Value::Int(i64::from(this.get(vm.heap).naive.subsec_nanosecond() / 1_000))
+    }
+
+    #[pyget(Tzinfo)]
+    fn tzinfo<'h>(this: &HeapObjectRead<'h, DateTime>, vm: &mut VM<'h>) -> Value {
+        this.tzinfo_value(vm)
+    }
 
     #[pymethod(Isoformat)]
     fn isoformat<'h>(this: &mut HeapObjectRead<'h, DateTime>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {

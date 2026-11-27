@@ -3,6 +3,7 @@
 # skip-cpython-windows = true
 # ///
 import os
+import sys
 from collections import namedtuple
 from pathlib import Path
 
@@ -283,6 +284,8 @@ with os.scandir(root) as it:
 assert sorted(entries) == ['data.bin', 'empty.txt', 'hello.txt', 'readonly.txt', 'subdir']
 hello = entries['hello.txt']
 assert hello.path == str(root / 'hello.txt')
+assert type(hello).name.__get__(hello) == 'hello.txt'
+assert type(hello).path.__get__(hello) == hello.path
 assert hello.is_file()
 assert not hello.is_dir()
 assert not hello.is_symlink()
@@ -368,7 +371,12 @@ try:
     hello.name = 'x'
     assert False, 'expected AttributeError'
 except AttributeError as e:
-    assert str(e) == 'readonly attribute'
+    expected = (
+        "attribute 'name' of 'posix.DirEntry' objects is not writable"
+        if sys.platform == 'monty'
+        else 'readonly attribute'
+    )
+    assert str(e) == expected
 try:
     hello.foo
     assert False, 'expected AttributeError'

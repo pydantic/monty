@@ -47,6 +47,13 @@ try:
             assert f'name={filename!r}' in repr(f)
     with Path('./hello.txt').open() as f:
         assert f.name == 'hello.txt'
+        assert type(f).name.__get__(f) == f.name
+        assert type(f).encoding.__get__(f) == f.encoding
+        assert not hasattr(type(f), 'mode')
+    with open('hello.txt', 'rb') as f:
+        assert type(f).mode.__get__(f) == 'rb'
+        assert not hasattr(type(f), 'encoding')
+        assert not hasattr(f, 'encoding')
     with open('out.txt', 'w') as f:
         f.write('written')
     assert (root / 'out.txt').read_text() == 'written'

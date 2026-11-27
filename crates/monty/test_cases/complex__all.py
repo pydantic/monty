@@ -1,3 +1,5 @@
+import sys
+
 # === Literals and construction ===
 assert 1j == complex(0, 1)
 assert 2.5j == complex(0, 2.5)
@@ -173,7 +175,10 @@ try:
     z.real = 2
     assert False, 'expected AttributeError'
 except AttributeError as exc:
-    assert str(exc) == 'readonly attribute'
+    expected = (
+        "attribute 'real' of 'complex' objects is not writable" if sys.platform == 'monty' else 'readonly attribute'
+    )
+    assert str(exc) == expected
 
 # === Arithmetic ===
 assert 1j * 1j == -1 + 0j

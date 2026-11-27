@@ -26,6 +26,7 @@ use crate::{
     identity::Identity,
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
     modules::ModuleFunctions,
+    py_attrs::{self, AttrDef},
     py_value::PyValue,
     types::{
         Bytes, BytesIterator, CmpOrder, Complex, HeapStr, LazyHeapSet, LongInt, Property, PyTrait, Type, TypeRef,
@@ -1287,6 +1288,12 @@ impl Value {
     ///
     /// Returns `AttributeError` for other types or unknown attributes.
     pub fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'_>) -> RunResult<CallResult> {
+        if !matches!(self, Self::Builtin(Builtins::Type(_)))
+            && let TypeRef::Native(ty) = self.py_type(vm)
+            && let Some((owner, AttrDef::GetSet { get, .. })) = ty.lookup_attr(attr, vm.interns)
+        {
+            return py_attrs::get_attribute(owner, attr, get, &mut self.py_value(vm), vm).map(CallResult::Value);
+        }
         match self {
             // Instances resolve attributes (instance dict → class methods/vars,
             // binding methods) in a dedicated path that has the heap id needed to
@@ -1329,7 +1336,12 @@ impl Value {
 
     /// Sets an attribute, consuming `value` on both success and error.
     pub fn py_set_attr(&self, name: &EitherStr, value: Self, vm: &mut VM<'_>) -> RunResult<()> {
-        if let Self::Ref(heap_id) = self {
+        if !matches!(self, Self::Builtin(Builtins::Type(_)))
+            && let TypeRef::Native(ty) = self.py_type(vm)
+            && let Some((owner, AttrDef::GetSet { kind, set, .. })) = ty.lookup_attr(name, vm.interns)
+        {
+            py_attrs::set_attribute(owner, name, kind, set, &mut self.py_value(vm), value, vm)
+        } else if let Self::Ref(heap_id) = self {
             PyValue::from_heap(*heap_id, vm.heap).py_set_attr(name, value, vm)
         } else {
             value.drop_with(vm);

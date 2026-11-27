@@ -1174,6 +1174,8 @@ pub enum StaticStrings {
     /// `__forward_module__` attribute of `annotationlib.ForwardRef`.
     #[strum(serialize = "__forward_module__")]
     DunderForwardModule,
+    #[strum(serialize = "__func__")]
+    DunderFunc,
     /// `__getnewargs__` — the copy/pickle hook on named tuples.
     #[strum(serialize = "__getnewargs__")]
     DunderGetnewargs,
@@ -1213,6 +1215,8 @@ pub enum StaticStrings {
     /// `generator.__next__`.
     #[strum(serialize = "__next__")]
     DunderNext,
+    #[strum(serialize = "__objclass__")]
+    DunderObjclass,
     /// `__origin__` of a `types.GenericAlias`.
     #[strum(serialize = "__origin__")]
     DunderOrigin,
@@ -1653,6 +1657,8 @@ pub enum StaticStrings {
     FieldNames,
     /// `csv.field_size_limit()` function.
     FieldSizeLimit,
+    #[strum(serialize = "type")]
+    FieldType,
     /// `fieldnames` parameter and attribute of `csv.DictReader` / `csv.DictWriter`.
     Fieldnames,
     /// Kwarg name `file` — `open(file=...)`.

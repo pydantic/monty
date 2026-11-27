@@ -9,22 +9,23 @@
 
 use std::fmt::Write;
 
+use monty_macros::pyattrs;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
 use crate::{
     builtins::Builtins,
-    bytecode::{CallResult, VM},
+    bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_one},
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapPayload},
-    intern::StaticStrings,
+    py_attrs::PyAttrs,
     types::{
         LazyHeapSet, PyTrait, Tuple, Type, TypeRef, generic_alias::repr_type_arg, list::repr_should_truncate,
         tuple::allocate_tuple,
     },
-    value::{EitherStr, VALUE_SIZE, Value},
+    value::{VALUE_SIZE, Value},
 };
 
 /// A union of two or more members, such as `int | None`.
@@ -376,20 +377,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Union> {
         Ok(())
     }
 
-    /// `__args__`, `__origin__` (the `typing.Union` type) and `__parameters__`
-    /// (always `()`); nothing is delegated, so any other name is an
-    /// `AttributeError` on the union.
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        match attr.static_string(vm.interns) {
-            Some(StaticStrings::DunderArgs) => Ok(Some(CallResult::Value(self.get(vm.heap).args(vm.heap)))),
-            Some(StaticStrings::DunderOrigin) => {
-                Ok(Some(CallResult::Value(Value::Builtin(Builtins::Type(Type::Union)))))
-            }
-            Some(StaticStrings::DunderParameters) => Ok(Some(CallResult::Value(vm.heap.get_empty_tuple()))),
-            _ => Ok(None),
-        }
-    }
-
     fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Union::heap_or(self, other, vm)
     }
@@ -403,5 +390,27 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Union> {
     fn py_getitem(&self, _key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         let repr = self.repr_string(vm)?;
         Err(ExcType::type_error_not_generic_class(&repr))
+    }
+}
+
+pub(crate) struct PyUnionImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyUnionImpl {
+    type Receiver = HeapObjectRead<'heap, Union>;
+
+    #[pyget(DunderArgs)]
+    fn args<'h>(this: &HeapObjectRead<'h, Union>, vm: &mut VM<'h>) -> Value {
+        this.get(vm.heap).args(vm.heap)
+    }
+
+    #[pyget(DunderOrigin)]
+    fn origin<'h>(_this: &HeapObjectRead<'h, Union>, _vm: &mut VM<'h>) -> Value {
+        Value::Builtin(Builtins::Type(Type::Union))
+    }
+
+    #[pyget(DunderParameters)]
+    fn parameters<'h>(_this: &HeapObjectRead<'h, Union>, vm: &mut VM<'h>) -> Value {
+        vm.heap.get_empty_tuple()
     }
 }

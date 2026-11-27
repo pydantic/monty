@@ -2,7 +2,9 @@
 
 use std::fmt::{self, Write};
 
-use super::{LazyHeapSet, PyTrait, Type, instance::bind_method};
+use monty_macros::pyattrs;
+
+use super::{LazyHeapSet, PyTrait, Type, TypeRef, instance::bind_method, str::allocate_string};
 use crate::{
     args::{ArgValues, FromArgs},
     builtins::type_of_ref,
@@ -11,7 +13,9 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     hash::{HashValue, identity_hash},
     heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    intern::StringId,
     modules::ModuleFunctions,
+    py_attrs::{self, AttrDef, PyAttrs},
     value::{EitherStr, Value},
 };
 
@@ -28,9 +32,17 @@ pub(crate) enum BuiltinDescriptor {
     },
     ClassMethod(Value),
     StaticMethod(Value),
+    Native {
+        owner: Type,
+        name: StringId,
+    },
 }
 
 impl BuiltinDescriptor {
+    pub(crate) fn is_data(&self) -> bool {
+        matches!(self, Self::Property { .. } | Self::Native { .. })
+    }
+
     /// Include every owned edge, including names installed by __set_name__, in cycle collection.
     pub(crate) fn visit_children(&self, on_child: &mut impl FnMut(HeapId)) {
         let mut visit = |value: &Value| {
@@ -54,6 +66,7 @@ impl BuiltinDescriptor {
                 }
             }
             Self::ClassMethod(function) | Self::StaticMethod(function) => visit(function),
+            Self::Native { .. } => {}
         }
     }
 
@@ -63,6 +76,7 @@ impl BuiltinDescriptor {
             Self::Property { .. } => Type::Property,
             Self::ClassMethod(_) => Type::ClassMethod,
             Self::StaticMethod(_) => Type::StaticMethod,
+            Self::Native { .. } => Type::GetSetDescriptor,
         }
     }
 }
@@ -141,6 +155,28 @@ fn allocate(descriptor: BuiltinDescriptor, vm: &mut VM<'_>) -> Value {
     Value::Ref(vm.heap.allocate(HeapData::BuiltinDescriptor(Box::new(descriptor))))
 }
 
+/// A class read exposes the descriptor without evaluating the getter.
+pub(crate) fn native_attribute(owner: Type, name: StringId, vm: &mut VM<'_>) -> Value {
+    allocate(BuiltinDescriptor::Native { owner, name }, vm)
+}
+
+fn native_access(owner: Type, name: StringId, instance: &Value, vm: &VM<'_>) -> RunResult<(EitherStr, AttrDef)> {
+    let attr = EitherStr::Interned(name);
+    if !instance.py_type(vm).is_subclass_of(owner.into(), vm.heap) {
+        return Err(ExcType::type_error(format!(
+            "descriptor '{}' for '{}' objects doesn't apply to a '{}' object",
+            attr.as_str(vm.interns),
+            owner.name(),
+            instance.py_type_name(vm),
+        )));
+    }
+    let definition = owner
+        .lookup_class_attr(&attr, vm.interns)
+        .and_then(|(declaring_type, definition)| (declaring_type == owner).then_some(definition))
+        .ok_or_else(|| owner.attribute_error(&attr, vm))?;
+    Ok((attr, definition))
+}
+
 /// Bind an implicit attribute read using its instance and owning sandbox class.
 pub(crate) fn get(id: HeapId, instance: Option<HeapId>, owner: HeapId, vm: &mut VM<'_>) -> RunResult<CallResult> {
     let instance = instance.map_or(Value::None, |id| {
@@ -174,9 +210,15 @@ fn protocol_get(id: HeapId, instance: &Value, owner: Option<&Value>, vm: &mut VM
                 super::BoundMethod { instance, func },
             )))))
         }
-        BuiltinDescriptor::Property { .. } if matches!(instance, Value::None) => {
+        BuiltinDescriptor::Property { .. } | BuiltinDescriptor::Native { .. } if matches!(instance, Value::None) => {
             vm.heap.inc_ref(id);
             Ok(CallResult::Value(Value::Ref(id)))
+        }
+        BuiltinDescriptor::Native { owner, name } => {
+            let (attr, AttrDef::GetSet { get, .. }) = native_access(*owner, *name, instance, vm)? else {
+                return Err(ExcType::type_error("invalid native descriptor"));
+            };
+            py_attrs::get_attribute(*owner, &attr, get, &mut instance.py_value(vm), vm).map(CallResult::Value)
         }
         BuiltinDescriptor::Property { fget, .. } => {
             let function = fget.clone_with_heap(vm);
@@ -200,6 +242,27 @@ pub(crate) fn mutate(id: HeapId, object: &Value, value: Option<Value>, vm: &mut 
     let HeapData::BuiltinDescriptor(descriptor) = vm.heap.get(id) else {
         return Err(ExcType::type_error("invalid descriptor receiver"));
     };
+    if let BuiltinDescriptor::Native { owner, name } = **descriptor {
+        let (attr, AttrDef::GetSet { set, kind, .. }) = native_access(owner, name, object, vm)? else {
+            return Err(ExcType::type_error("invalid native descriptor"));
+        };
+        let Some(value) = value.as_ref() else {
+            return Err(ExcType::attribute_error_not_writable(
+                attr.as_str(vm.interns),
+                owner.name(),
+            ));
+        };
+        py_attrs::set_attribute(
+            owner,
+            &attr,
+            kind,
+            set,
+            &mut object.py_value(vm),
+            value.clone_with_heap(vm.heap),
+            vm,
+        )?;
+        return Ok(CallResult::Value(Value::None));
+    }
     let BuiltinDescriptor::Property { fset, fdel, .. } = &**descriptor else {
         return Err(ExcType::type_error("descriptor does not support mutation"));
     };
@@ -367,6 +430,7 @@ impl HeapItem for BuiltinDescriptor {
                 }
             }
             Self::ClassMethod(function) | Self::StaticMethod(function) => function.py_dec_ref_ids(stack),
+            Self::Native { .. } => {}
         }
     }
 }
@@ -389,49 +453,39 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BuiltinDescriptor> {
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _: &mut LazyHeapSet) -> RunResult<()> {
-        Ok(write!(f, "<{} object>", self.get(vm.heap).kind())?)
+        match self.get(vm.heap) {
+            BuiltinDescriptor::Native { owner, name } => Ok(write!(
+                f,
+                "<attribute '{}' of '{}' objects>",
+                vm.interns.get_str(*name),
+                owner.name()
+            )?),
+            descriptor => Ok(write!(f, "<{} object>", descriptor.kind())?),
+        }
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let descriptor = self.get(vm.heap);
         let name = attr.as_str(vm.interns);
         let method = match descriptor {
-            BuiltinDescriptor::Property {
-                fget,
-                fset,
-                fdel,
-                doc,
-                name: property_name,
-            } => {
-                let value = match name {
-                    "fget" => Some(fget),
-                    "fset" => Some(fset),
-                    "fdel" => Some(fdel),
-                    "__doc__" => Some(doc),
-                    "__name__" => property_name.as_ref(),
-                    _ => None,
-                };
-                if let Some(value) = value {
-                    return Ok(Some(CallResult::Value(value.clone_with_heap(vm.heap))));
-                }
-                match name {
-                    "getter" => DescriptorMethod::Getter,
-                    "setter" => DescriptorMethod::Setter,
-                    "deleter" => DescriptorMethod::Deleter,
-                    "__get__" => DescriptorMethod::Get,
-                    "__set__" => DescriptorMethod::Set,
-                    "__delete__" => DescriptorMethod::Delete,
-                    "__set_name__" => DescriptorMethod::SetName,
-                    _ => return Ok(None),
-                }
-            }
-            BuiltinDescriptor::ClassMethod(function) | BuiltinDescriptor::StaticMethod(function) => match name {
+            BuiltinDescriptor::Property { .. } => match name {
+                "getter" => DescriptorMethod::Getter,
+                "setter" => DescriptorMethod::Setter,
+                "deleter" => DescriptorMethod::Deleter,
                 "__get__" => DescriptorMethod::Get,
-                "__func__" | "__wrapped__" => return Ok(Some(CallResult::Value(function.clone_with_heap(vm.heap)))),
-                "__name__" => {
-                    return Ok(function_name(function, vm)
-                        .map(|name| CallResult::Value(super::str::allocate_string(name, vm.heap))));
-                }
+                "__set__" => DescriptorMethod::Set,
+                "__delete__" => DescriptorMethod::Delete,
+                "__set_name__" => DescriptorMethod::SetName,
+                _ => return Ok(None),
+            },
+            BuiltinDescriptor::Native { .. } => match name {
+                "__get__" => DescriptorMethod::Get,
+                "__set__" => DescriptorMethod::Set,
+                "__delete__" => DescriptorMethod::Delete,
+                _ => return Ok(None),
+            },
+            BuiltinDescriptor::ClassMethod(_) | BuiltinDescriptor::StaticMethod(_) => match name {
+                "__get__" => DescriptorMethod::Get,
                 _ => return Ok(None),
             },
         };
@@ -502,4 +556,108 @@ pub(crate) fn set_name(id: HeapId, name: &Value, vm: &mut VM<'_>) -> RunResult<(
     };
     old.drop_with(vm);
     Ok(())
+}
+
+pub(crate) struct PyPropertyImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyPropertyImpl {
+    type Receiver = HeapObjectRead<'heap, BuiltinDescriptor>;
+
+    #[pyget(Fget)]
+    fn fget<'h>(this: &HeapObjectRead<'h, BuiltinDescriptor>, vm: &mut VM<'h>) -> Value {
+        let BuiltinDescriptor::Property { fget, .. } = this.get(vm.heap) else {
+            unreachable!("dispatched on a property");
+        };
+        fget.clone_with_heap(vm.heap)
+    }
+
+    #[pyget(Fset)]
+    fn fset<'h>(this: &HeapObjectRead<'h, BuiltinDescriptor>, vm: &mut VM<'h>) -> Value {
+        let BuiltinDescriptor::Property { fset, .. } = this.get(vm.heap) else {
+            unreachable!("dispatched on a property");
+        };
+        fset.clone_with_heap(vm.heap)
+    }
+
+    #[pyget(Fdel)]
+    fn fdel<'h>(this: &HeapObjectRead<'h, BuiltinDescriptor>, vm: &mut VM<'h>) -> Value {
+        let BuiltinDescriptor::Property { fdel, .. } = this.get(vm.heap) else {
+            unreachable!("dispatched on a property");
+        };
+        fdel.clone_with_heap(vm.heap)
+    }
+
+    #[pyget(DunderDoc, instance_only)]
+    fn doc<'h>(this: &HeapObjectRead<'h, BuiltinDescriptor>, vm: &mut VM<'h>) -> Value {
+        let BuiltinDescriptor::Property { doc, .. } = this.get(vm.heap) else {
+            unreachable!("dispatched on a property");
+        };
+        doc.clone_with_heap(vm.heap)
+    }
+
+    #[pyget(DunderName)]
+    fn name<'h>(this: &HeapObjectRead<'h, BuiltinDescriptor>, vm: &mut VM<'h>) -> RunResult<Value> {
+        let BuiltinDescriptor::Property { name, .. } = this.get(vm.heap) else {
+            unreachable!("dispatched on a property");
+        };
+        name.as_ref()
+            .map(|name| name.clone_with_heap(vm.heap))
+            .ok_or_else(|| ExcType::attribute_error(Type::Property, "__name__"))
+    }
+}
+
+pub(crate) struct PyNativeDescriptorImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyNativeDescriptorImpl {
+    type Receiver = HeapObjectRead<'heap, BuiltinDescriptor>;
+
+    #[pyget(DunderName)]
+    fn name<'h>(this: &HeapObjectRead<'h, BuiltinDescriptor>, vm: &mut VM<'h>) -> Value {
+        let BuiltinDescriptor::Native { name, .. } = this.get(vm.heap) else {
+            unreachable!("dispatched on a native descriptor");
+        };
+        Value::InternString(*name)
+    }
+
+    #[pyget(DunderObjclass)]
+    fn owner<'h>(this: &HeapObjectRead<'h, BuiltinDescriptor>, vm: &mut VM<'h>) -> Value {
+        let BuiltinDescriptor::Native { owner, .. } = this.get(vm.heap) else {
+            unreachable!("dispatched on a native descriptor");
+        };
+        TypeRef::Native(*owner).to_value(vm.heap)
+    }
+}
+
+pub(crate) struct PyFunctionWrapperImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyFunctionWrapperImpl {
+    type Receiver = HeapObjectRead<'heap, BuiltinDescriptor>;
+
+    #[pyget(DunderFunc)]
+    fn func<'h>(this: &HeapObjectRead<'h, BuiltinDescriptor>, vm: &mut VM<'h>) -> Value {
+        wrapped_function(this.get(vm.heap)).clone_with_heap(vm.heap)
+    }
+
+    #[pyget(DunderWrapped)]
+    fn wrapped<'h>(this: &HeapObjectRead<'h, BuiltinDescriptor>, vm: &mut VM<'h>) -> Value {
+        wrapped_function(this.get(vm.heap)).clone_with_heap(vm.heap)
+    }
+
+    #[pyget(DunderName, instance_only)]
+    fn name<'h>(this: &HeapObjectRead<'h, BuiltinDescriptor>, vm: &mut VM<'h>) -> RunResult<Value> {
+        let descriptor = this.get(vm.heap);
+        function_name(wrapped_function(descriptor), vm)
+            .map(|name| allocate_string(name, vm.heap))
+            .ok_or_else(|| ExcType::attribute_error(descriptor.kind(), "__name__"))
+    }
+}
+
+fn wrapped_function(descriptor: &BuiltinDescriptor) -> &Value {
+    match descriptor {
+        BuiltinDescriptor::ClassMethod(function) | BuiltinDescriptor::StaticMethod(function) => function,
+        _ => unreachable!("dispatched on a function wrapper"),
+    }
 }

@@ -133,7 +133,7 @@ The table contains enumerable entries and a lookup function generated from the s
 `TypeDef::attrs` registers each native namespace once.
 Lookup follows the native MRO and retains the defining namespace for descriptor receiver checks.
 Class methods receive the accessing class as a borrowed `TypeRef`; the caller keeps that class alive during the call.
-Bases with different native payloads register a `TypeDef::subtype_call` adapter for their instance methods.
+Bases with different native payloads can register `TypeDef::subtype_call` and `TypeDef::subtype_get` adapters.
 
 Each annotation names its `StaticStrings` key explicitly:
 
@@ -143,6 +143,13 @@ Each annotation names its `StaticStrings` key explicitly:
 - `#[pyclassmethod(Fromkeys)]` registers `(StaticStrings, TypeRef, ArgValues, &mut VM) -> RunResult<CallResult>`.
   The adapter supplies the registered key and bound class, including calls through instances.
 - `#[pyvalue(Min)]` registers `(&mut VM) -> Value`.
+- `#[pyget(Fieldnames)]` registers `(Receiver, &mut VM)` returning `Value` or `RunResult<Value>` for an instance attribute.
+  Reading the name through the class returns a `getset_descriptor`.
+  Use `#[pyget(Flags, instance_only)]` for an attribute accessible only through instances.
+- `#[pyset(Fieldnames)]` adds a setter for the getter with the same key.
+  It takes `(Receiver, Value, &mut VM)` and returns `()` or `RunResult<()>`.
+  The setter owns the incoming value and must release or store it on every path.
+  A getter without a setter is read-only.
 
 `Receiver` declares the view borrowed from `PyValue`:
 `HeapRead<'heap, T>`, `HeapReadMut<'heap, T>`, `HeapObjectRead<'heap, T>`,

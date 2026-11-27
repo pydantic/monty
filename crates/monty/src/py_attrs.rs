@@ -4,7 +4,7 @@ use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcType, ExcTypeExt, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{DropGuard, DropWithContext},
     intern::StaticStrings,
     py_value::PyValue,
@@ -15,6 +15,25 @@ use crate::{
 /// The receiver is the bound class object, including when called through an instance.
 pub(crate) type ClassMethodCall = for<'h> fn(TypeRef, ArgValues, &mut VM<'h>) -> RunResult<CallResult>;
 pub(crate) type MethodCall = for<'h> fn(&mut PyValue<'h>, ArgValues, &mut VM<'h>) -> RunResult<CallResult>;
+pub(crate) type Getter = for<'h> fn(&mut PyValue<'h>, &mut VM<'h>) -> RunResult<Value>;
+pub(crate) type Setter = for<'h> fn(&mut PyValue<'h>, Value, &mut VM<'h>) -> RunResult<()>;
+
+/// Adapts both infallible and fallible native accessors to the table signature.
+pub(crate) trait IntoAttrResult<T> {
+    fn into_attr_result(self) -> RunResult<T>;
+}
+
+impl<T> IntoAttrResult<T> for T {
+    fn into_attr_result(self) -> RunResult<T> {
+        Ok(self)
+    }
+}
+
+impl<T> IntoAttrResult<T> for RunResult<T> {
+    fn into_attr_result(self) -> Self {
+        self
+    }
+}
 
 /// Python attribute definitions and the native view passed to their methods.
 pub(crate) trait PyAttrs<'h> {
@@ -30,10 +49,62 @@ pub(crate) struct AttrTable {
 }
 
 #[derive(Clone, Copy)]
+pub(crate) enum AccessorKind {
+    GetSet,
+    /// A fixed instance attribute without a descriptor on the class.
+    InstanceOnly,
+}
+
+#[derive(Clone, Copy)]
 pub(crate) enum AttrDef {
     Method(MethodCall),
     ClassMethod(ClassMethodCall),
     Value(fn(&mut VM<'_>) -> Value),
+    GetSet {
+        get: Getter,
+        set: Option<Setter>,
+        kind: AccessorKind,
+    },
+}
+
+pub(crate) type SubtypeGet = for<'h> fn(&mut PyValue<'h>, &EitherStr, Getter, &mut VM<'h>) -> RunResult<Value>;
+
+pub(crate) fn get_attribute<'h>(
+    owner: Type,
+    attr: &EitherStr,
+    get: Getter,
+    receiver: &mut PyValue<'h>,
+    vm: &mut VM<'h>,
+) -> RunResult<Value> {
+    if let Some(adapt) = owner.def().subtype_get
+        && receiver.py_type(vm) != owner
+    {
+        adapt(receiver, attr, get, vm)
+    } else {
+        get(receiver, vm)
+    }
+}
+
+/// Writes a native descriptor, consuming the value even when it is read-only.
+pub(crate) fn set_attribute<'h>(
+    owner: Type,
+    attr: &EitherStr,
+    kind: AccessorKind,
+    setter: Option<Setter>,
+    receiver: &mut PyValue<'h>,
+    value: Value,
+    vm: &mut VM<'h>,
+) -> RunResult<()> {
+    if let Some(set) = setter {
+        set(receiver, value, vm)
+    } else {
+        value.drop_with(vm);
+        let name = attr.as_str(vm.interns);
+        Err(match kind {
+            AccessorKind::GetSet => ExcType::attribute_error_not_writable(name, owner.name()),
+            AccessorKind::InstanceOnly => ExcType::attribute_error_no_setattr(owner.name(), name),
+        })
+    }
 }
 
 /// Calls an instance method through a type, taking the receiver from the first positional argument.
@@ -98,8 +169,12 @@ pub(crate) type SubtypeCall =
 /// A table adapter could not project the receiver to its declared native view.
 pub(crate) fn invalid_receiver(name: StaticStrings, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
     args.drop_with(vm);
+    Err(invalid_receiver_error(name))
+}
+
+pub(crate) fn invalid_receiver_error(name: StaticStrings) -> RunError {
     let name: &str = name.into();
-    Err(ExcType::type_error(format!("unsupported native receiver for '{name}'")))
+    ExcType::type_error(format!("unsupported native receiver for '{name}'"))
 }
 
 /// Splits a positional receiver from the call without consuming keyword-only calls.

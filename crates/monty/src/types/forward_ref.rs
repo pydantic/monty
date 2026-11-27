@@ -629,26 +629,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ForwardRef> {
     /// The `__forward_*__` introspection attributes; any other name composes
     /// `Later.attr` on a stringifier and is an `AttributeError` otherwise.
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let this = self.get(vm.heap);
-        let value = match attr.static_string(vm.interns) {
-            Some(StaticStrings::DunderForwardArg | StaticStrings::DunderResolvedStr) => {
-                this.arg.clone_with_heap(vm.heap)
-            }
-            Some(StaticStrings::DunderForwardModule) => this.module.clone_with_heap(vm.heap),
-            Some(StaticStrings::DunderOwner) => this.owner.clone_with_heap(vm.heap),
-            Some(StaticStrings::DunderForwardIsArgument) => Value::Bool(this.is_argument),
-            Some(StaticStrings::DunderForwardIsClass) => Value::Bool(this.is_class),
-            _ if self.composes(vm) => {
-                let mut text = String::new();
-                self.write_operand(Precedence::Atom, vm, &mut text);
-                text.push('.');
-                text.push_str(attr.as_str(vm.interns));
-                self.compose(text, Precedence::Atom, vm)
-            }
-            // Named as CPython does, not by the qualified type name.
-            _ => return Err(ExcType::attribute_error("ForwardRef", attr.as_str(vm.interns))),
-        };
-        Ok(Some(CallResult::Value(value)))
+        if !self.composes(vm) {
+            return Err(ExcType::attribute_error("ForwardRef", attr.as_str(vm.interns)));
+        }
+        let mut text = String::new();
+        self.write_operand(Precedence::Atom, vm, &mut text);
+        text.push('.');
+        text.push_str(attr.as_str(vm.interns));
+        Ok(Some(CallResult::Value(self.compose(text, Precedence::Atom, vm))))
     }
 
     /// Unknown methods compose `Later.method(...)` on a stringifier.
@@ -942,6 +930,36 @@ pub(crate) struct PyForwardRefImpl;
 #[pyattrs]
 impl<'heap> PyAttrs<'heap> for PyForwardRefImpl {
     type Receiver = HeapObjectRead<'heap, ForwardRef>;
+
+    #[pyget(DunderForwardArg)]
+    fn forward_arg<'h>(this: &HeapObjectRead<'h, ForwardRef>, vm: &mut VM<'h>) -> Value {
+        this.get(vm.heap).arg.clone_with_heap(vm.heap)
+    }
+
+    #[pyget(DunderResolvedStr)]
+    fn resolved_str<'h>(this: &HeapObjectRead<'h, ForwardRef>, vm: &mut VM<'h>) -> Value {
+        this.get(vm.heap).arg.clone_with_heap(vm.heap)
+    }
+
+    #[pyget(DunderForwardModule)]
+    fn forward_module<'h>(this: &HeapObjectRead<'h, ForwardRef>, vm: &mut VM<'h>) -> Value {
+        this.get(vm.heap).module.clone_with_heap(vm.heap)
+    }
+
+    #[pyget(DunderOwner)]
+    fn owner<'h>(this: &HeapObjectRead<'h, ForwardRef>, vm: &mut VM<'h>) -> Value {
+        this.get(vm.heap).owner.clone_with_heap(vm.heap)
+    }
+
+    #[pyget(DunderForwardIsArgument)]
+    fn is_argument<'h>(this: &HeapObjectRead<'h, ForwardRef>, vm: &mut VM<'h>) -> Value {
+        Value::Bool(this.get(vm.heap).is_argument)
+    }
+
+    #[pyget(DunderForwardIsClass)]
+    fn is_class<'h>(this: &HeapObjectRead<'h, ForwardRef>, vm: &mut VM<'h>) -> Value {
+        Value::Bool(this.get(vm.heap).is_class)
+    }
 
     #[pymethod(Evaluate)]
     fn evaluate<'h>(value: &HeapObjectRead<'h, ForwardRef>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {

@@ -31,12 +31,26 @@ mod value {
 mod exception_private {
     pub type RunResult<T> = Result<T, &'static str>;
 }
+mod heap {
+    use super::*;
+
+    pub trait DropWithContext {
+        fn drop_with(self, vm: &mut VM<'_>);
+    }
+
+    impl DropWithContext for Value {
+        fn drop_with(self, _: &mut VM<'_>) {}
+    }
+}
 mod intern {
     #[derive(Clone, Copy, PartialEq)]
     pub enum StaticStrings {
         Count,
         FromNumber,
         Min,
+        Size,
+        InstanceValue,
+        Other,
     }
 }
 mod bytecode {
@@ -59,6 +73,23 @@ mod py_value {
 }
 mod py_attrs {
     use super::*;
+    /// Adapts both infallible and fallible native accessors to the table signature.
+    pub trait IntoAttrResult<T> {
+        fn into_attr_result(self) -> RunResult<T>;
+    }
+
+    impl<T> IntoAttrResult<T> for T {
+        fn into_attr_result(self) -> RunResult<T> {
+            Ok(self)
+        }
+    }
+
+    impl<T> IntoAttrResult<T> for RunResult<T> {
+        fn into_attr_result(self) -> Self {
+            self
+        }
+    }
+
     pub trait PyAttrs<'h> {
         type Receiver;
         const TABLE: AttrTable;
@@ -67,11 +98,28 @@ mod py_attrs {
         pub entries: &'static [(StaticStrings, AttrDef)],
         pub lookup: fn(StaticStrings) -> Option<AttrDef>,
     }
+    type Getter = for<'h> fn(&mut PyValue<'h>, &mut VM<'h>) -> RunResult<Value>;
+    type Setter = for<'h> fn(&mut PyValue<'h>, Value, &mut VM<'h>) -> RunResult<()>;
+
+    #[derive(Clone, Copy)]
+    pub enum AccessorKind {
+        GetSet,
+        InstanceOnly,
+    }
+
     #[derive(Clone, Copy)]
     pub enum AttrDef {
         Method(for<'h> fn(&mut PyValue<'h>, ArgValues, &mut VM<'h>) -> RunResult<bytecode::CallResult>),
         ClassMethod(for<'h> fn(TypeRef, ArgValues, &mut VM<'h>) -> RunResult<bytecode::CallResult>),
         Value(fn(&mut VM<'_>) -> Value),
+        GetSet {
+            get: Getter,
+            set: Option<Setter>,
+            kind: AccessorKind,
+        },
+    }
+    pub fn invalid_receiver_error(_: StaticStrings) -> &'static str {
+        "invalid receiver"
     }
     pub fn invalid_receiver(_: StaticStrings, _: ArgValues, _: &mut VM<'_>) -> RunResult<bytecode::CallResult> {
         Err("invalid receiver")
@@ -123,10 +171,78 @@ impl PyAttrs<'_> for FloatMethods {
     fn make(_: StaticStrings, class: TypeRef, _: ArgValues, _: &mut VM<'_>) -> RunResult<bytecode::CallResult> {
         Ok(bytecode::CallResult(Value(i64::try_from(class.0.len()).unwrap())))
     }
+    #[pyset(Size)]
+    #[expect(clippy::unnecessary_wraps, reason = "setter adapter requires a fallible handler")]
+    fn set_size(_: f64, _: Value, _: &mut VM<'_>) -> RunResult<()> {
+        Ok(())
+    }
+
+    #[pyget(Size)]
+    fn size(_: f64, _: &mut VM<'_>) -> Value {
+        Value(3)
+    }
+
+    #[pyget(InstanceValue, instance_only)]
+    fn instance_value(_: f64, _: &mut VM<'_>) -> Value {
+        Value(1)
+    }
+
+    #[pyget(Other)]
+    fn other(_: f64, _: &mut VM<'_>) -> Value {
+        Value(0)
+    }
+
     #[pyvalue(Min)]
     fn minimum(_: &mut VM<'_>) -> Value {
         Value(-1)
     }
+}
+
+#[test]
+fn pairs_getter_and_setter_in_one_entry() {
+    let mut vm = VM(PhantomData);
+    let Some(py_attrs::AttrDef::GetSet {
+        get,
+        set: Some(set),
+        kind: py_attrs::AccessorKind::GetSet,
+    }) = (FloatMethods::TABLE.lookup)(StaticStrings::Size)
+    else {
+        panic!("getter/setter missing");
+    };
+    assert_eq!(
+        FloatMethods::TABLE
+            .entries
+            .iter()
+            .filter(|entry| entry.0 == StaticStrings::Size)
+            .count(),
+        1
+    );
+    assert!(matches!(
+        (FloatMethods::TABLE.lookup)(StaticStrings::InstanceValue),
+        Some(py_attrs::AttrDef::GetSet {
+            kind: py_attrs::AccessorKind::InstanceOnly,
+            set: None,
+            ..
+        })
+    ));
+    assert!(matches!(
+        (FloatMethods::TABLE.lookup)(StaticStrings::Other),
+        Some(py_attrs::AttrDef::GetSet {
+            kind: py_attrs::AccessorKind::GetSet,
+            set: None,
+            ..
+        })
+    ));
+    assert_eq!(get(&mut PyValue::Float(1.0), &mut vm), Ok(Value(3)));
+    assert_eq!(
+        get(&mut PyValue::Int(PyInt::Small(1)), &mut vm),
+        Err("invalid receiver")
+    );
+    assert_eq!(set(&mut PyValue::Float(1.0), Value(4), &mut vm), Ok(()));
+    assert_eq!(
+        set(&mut PyValue::Int(PyInt::Small(1)), Value(4), &mut vm),
+        Err("invalid receiver")
+    );
 }
 
 #[test]
@@ -193,6 +309,10 @@ fn rejects_invalid_attribute_declarations() {
             "expected one StaticStrings key",
         ),
         (
+            "type Receiver = bool; #[pyget(A, member)] fn get() {}",
+            "unexpected attribute option",
+        ),
+        (
             "type Receiver = bool; #[pymethod(A)] #[pyvalue(B)] fn first() {}",
             "use one Python attribute annotation per function",
         ),
@@ -202,6 +322,14 @@ fn rejects_invalid_attribute_declarations() {
         ),
         (
             "type Receiver = bool; #[pymethod(A)] fn first() {} #[pyvalue(A)] fn second() {}",
+            "duplicate Python attribute name",
+        ),
+        (
+            "type Receiver = bool; #[pyset(A)] fn set() {}",
+            "#[pyset] requires a matching #[pyget]",
+        ),
+        (
+            "type Receiver = bool; #[pyget(A)] fn first() {} #[pyget(A)] fn second() {}",
             "duplicate Python attribute name",
         ),
     ] {

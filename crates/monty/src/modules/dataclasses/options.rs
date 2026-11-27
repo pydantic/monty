@@ -3,13 +3,16 @@
 
 use std::fmt::Write;
 
+use monty_macros::pyattrs;
+
 use crate::{
-    bytecode::{CallResult, VM},
-    exception_private::{ExcType, ExcTypeExt, RunResult},
+    bytecode::VM,
+    exception_private::RunResult,
     hash::{HashValue, identity_hash},
-    heap::{HeapId, HeapItem, HeapObjectRead},
+    heap::{HeapId, HeapItem, HeapObjectRead, HeapRead},
+    py_attrs::PyAttrs,
     types::{LazyHeapSet, PyTrait, Type, TypeRef},
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// The `@dataclass(...)` options Monty implements.
@@ -95,21 +98,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DataclassParams> {
             python_bool(options.frozen),
         )?)
     }
-
-    /// Every flag CPython exposes; the unimplemented ones read as the defaults
-    /// the decorator insists on.
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let attr_str = attr.as_str(vm.interns);
-        let options = self.get(vm.heap).options;
-        let value = match attr_str {
-            "eq" => Value::Bool(options.eq),
-            "frozen" => Value::Bool(options.frozen),
-            "init" | "repr" | "match_args" => Value::Bool(true),
-            "order" | "unsafe_hash" | "kw_only" | "slots" | "weakref_slot" => Value::Bool(false),
-            _ => return Err(ExcType::attribute_error("_DataclassParams", attr_str)),
-        };
-        Ok(Some(CallResult::Value(value)))
-    }
 }
 
 /// Python's spelling of a bool, for the constant flags in the repr above.
@@ -120,5 +108,62 @@ fn python_bool(value: bool) -> &'static str {
 impl HeapItem for DataclassParams {
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
         // Two bools, no heap references.
+    }
+}
+
+type Receiver<'h> = <DataclassParams as PyAttrs<'h>>::Receiver;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for DataclassParams {
+    type Receiver = HeapRead<'heap, DataclassParams>;
+
+    #[pyget(Eq)]
+    fn eq<'h>(this: &Receiver<'h>, vm: &mut VM<'h>) -> Value {
+        Value::Bool(this.get(vm.heap).options.eq)
+    }
+
+    #[pyget(Frozen)]
+    fn frozen<'h>(this: &Receiver<'h>, vm: &mut VM<'h>) -> Value {
+        Value::Bool(this.get(vm.heap).options.frozen)
+    }
+
+    #[pyget(Init)]
+    fn init_flag(_: &Receiver<'_>, _: &mut VM<'_>) -> Value {
+        Value::Bool(true)
+    }
+
+    #[pyget(Repr)]
+    fn repr_flag(_: &Receiver<'_>, _: &mut VM<'_>) -> Value {
+        Value::Bool(true)
+    }
+
+    #[pyget(MatchArgs)]
+    fn match_args(_: &Receiver<'_>, _: &mut VM<'_>) -> Value {
+        Value::Bool(true)
+    }
+
+    #[pyget(Order)]
+    fn order(_: &Receiver<'_>, _: &mut VM<'_>) -> Value {
+        Value::Bool(false)
+    }
+
+    #[pyget(UnsafeHash)]
+    fn unsafe_hash(_: &Receiver<'_>, _: &mut VM<'_>) -> Value {
+        Value::Bool(false)
+    }
+
+    #[pyget(KwOnly)]
+    fn kw_only(_: &Receiver<'_>, _: &mut VM<'_>) -> Value {
+        Value::Bool(false)
+    }
+
+    #[pyget(Slots)]
+    fn slots(_: &Receiver<'_>, _: &mut VM<'_>) -> Value {
+        Value::Bool(false)
+    }
+
+    #[pyget(WeakrefSlot)]
+    fn weakref_slot(_: &Receiver<'_>, _: &mut VM<'_>) -> Value {
+        Value::Bool(false)
     }
 }

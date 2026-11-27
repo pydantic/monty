@@ -834,3 +834,18 @@ assert p.__get__([1, 2]) == 2
     )
     .unwrap();
 }
+
+#[test]
+fn native_attribute_descriptors_survive_restore() {
+    let mut repl = repl();
+    repl.feed_run(
+        "import csv\nrows = csv.DictReader(['a,b'])\nfieldnames = csv.DictReader.fieldnames",
+        vec![],
+        PrintWriter::Disabled,
+    )
+    .unwrap();
+    restore_idle(repl).feed_run(
+        "assert rows.line_num == 0\nassert fieldnames.__get__(rows) == ['a', 'b']\nfieldnames.__set__(rows, ['x', 'y'])\nassert rows.fieldnames == ['x', 'y']",
+        vec![], PrintWriter::Disabled,
+    ).unwrap();
+}

@@ -27,7 +27,7 @@ use crate::{
         str::{StringRepr, allocate_string},
         r#type::strip_underscores,
     },
-    value::{EitherStr, Value, eq_f64},
+    value::{Value, eq_f64},
 };
 
 /// A Python `complex`: real and imaginary IEEE doubles.
@@ -749,25 +749,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
         }
         Ok(Some(widen(base).pow(c)?.into_value(vm.heap)))
     }
-
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let c = *self.get(vm.heap);
-        Ok(match attr.static_string(vm.interns) {
-            Some(StaticStrings::Real) => Some(CallResult::Value(Value::Float(c.real))),
-            Some(StaticStrings::Imag) => Some(CallResult::Value(Value::Float(c.imag))),
-            _ => None,
-        })
-    }
-
-    /// `real` and `imag` exist but are read-only, which CPython words differently
-    /// from a missing attribute.
-    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
-        value.drop_with(vm);
-        Err(match name.static_string(vm.interns) {
-            Some(StaticStrings::Real | StaticStrings::Imag) => ExcType::attribute_error_readonly(),
-            _ => ExcType::attribute_error_no_setattr(&self.py_type_name(vm), name.as_str(vm.interns)),
-        })
-    }
 }
 
 pub(crate) struct PyComplexImpl;
@@ -775,6 +756,16 @@ pub(crate) struct PyComplexImpl;
 #[pyattrs]
 impl<'heap> PyAttrs<'heap> for PyComplexImpl {
     type Receiver = HeapObjectRead<'heap, Complex>;
+
+    #[pyget(Real)]
+    fn real<'h>(this: &HeapObjectRead<'h, Complex>, vm: &mut VM<'h>) -> Value {
+        Value::Float(this.get(vm.heap).real)
+    }
+
+    #[pyget(Imag)]
+    fn imag<'h>(this: &HeapObjectRead<'h, Complex>, vm: &mut VM<'h>) -> Value {
+        Value::Float(this.get(vm.heap).imag)
+    }
 
     #[pymethod(Conjugate)]
     fn conjugate<'h>(value: &mut HeapObjectRead<'h, Complex>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {

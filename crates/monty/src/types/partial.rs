@@ -12,8 +12,8 @@ use std::{
 };
 
 use ahash::AHashMap;
+use monty_macros::pyattrs;
 use serde::{Deserialize, Serialize};
-use smallvec::SmallVec;
 
 use crate::{
     args::{ArgValues, KwargsValues},
@@ -22,10 +22,10 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
-    intern::StaticStrings,
     modules::copy::{Memo, PyDeepCopy, deep_copy, deep_copy_pair},
+    py_attrs::PyAttrs,
     types::{Dict, LazyHeapSet, PyTrait, Type, TypeRef, list::repr_should_truncate, tuple::allocate_tuple},
-    value::{EitherStr, VALUE_SIZE, Value},
+    value::{VALUE_SIZE, Value},
 };
 
 /// A callable that prepends bound arguments to `func` on every call.
@@ -407,45 +407,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Partial> {
 
         Ok(f.write_char(')')?)
     }
-
-    /// `func`, `args` and `keywords`, all read-only.
-    ///
-    /// `args` and `keywords` are rebuilt on each access, so mutating the
-    /// returned dict does not change what the partial passes on.
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let attr = match attr.static_string(vm.interns) {
-            Some(StaticStrings::Func) => "func",
-            Some(StaticStrings::Args) => "args",
-            Some(StaticStrings::Keywords) => "keywords",
-            Some(_) => return Ok(None),
-            None => attr.as_str(vm.interns),
-        };
-        match attr {
-            "func" => {
-                let func = self.get(vm.heap).func.clone_with_heap(vm);
-                Ok(Some(CallResult::Value(func)))
-            }
-            "args" => {
-                check_clone_slots(self.get(vm.heap).args.len(), vm.heap)?;
-                let args: SmallVec<_> = (0..self.get(vm.heap).args.len())
-                    .map(|index| self.get(vm.heap).args[index].clone_with_heap(vm))
-                    .collect();
-                Ok(Some(CallResult::Value(allocate_tuple(args, vm.heap))))
-            }
-            "keywords" => {
-                check_clone_slots(self.get(vm.heap).keywords.len().saturating_mul(2), vm.heap)?;
-                let pairs: Vec<(Value, Value)> = (0..self.get(vm.heap).keywords.len())
-                    .map(|index| {
-                        let (name, value) = &self.get(vm.heap).keywords[index];
-                        (name.clone_with_heap(vm), value.clone_with_heap(vm))
-                    })
-                    .collect();
-                let dict = Dict::from_pairs(pairs, vm)?;
-                Ok(Some(CallResult::Value(Value::allocate(dict, vm.heap))))
-            }
-            _ => Ok(None),
-        }
-    }
 }
 
 impl<'h> HeapRead<'h, Partial> {
@@ -593,5 +554,37 @@ mod tests {
             assert_eq!(index.len(), 1);
             assert_eq!(index.get("key"), Some(&1));
         });
+    }
+}
+
+pub(crate) struct PyPartialImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyPartialImpl {
+    type Receiver = HeapObjectRead<'heap, Partial>;
+
+    #[pyget(Func)]
+    fn func<'h>(this: &HeapObjectRead<'h, Partial>, vm: &mut VM<'h>) -> Value {
+        this.get(vm.heap).func.clone_with_heap(vm.heap)
+    }
+
+    #[pyget(Args)]
+    fn args<'h>(this: &HeapObjectRead<'h, Partial>, vm: &mut VM<'h>) -> RunResult<Value> {
+        let args = &this.get(vm.heap).args;
+        check_clone_slots(args.len(), vm.heap)?;
+        let items = args.iter().map(|value| value.clone_with_heap(vm.heap)).collect();
+        Ok(allocate_tuple(items, vm.heap))
+    }
+
+    #[pyget(Keywords)]
+    fn keywords<'h>(this: &HeapObjectRead<'h, Partial>, vm: &mut VM<'h>) -> RunResult<Value> {
+        let keywords = &this.get(vm.heap).keywords;
+        check_clone_slots(keywords.len().saturating_mul(2), vm.heap)?;
+        let pairs = keywords
+            .iter()
+            .map(|(name, value)| (name.clone_with_heap(vm.heap), value.clone_with_heap(vm.heap)))
+            .collect();
+        let dict = Dict::from_pairs(pairs, vm)?;
+        Ok(Value::allocate(dict, vm.heap))
     }
 }

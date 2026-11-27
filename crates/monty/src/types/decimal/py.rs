@@ -659,24 +659,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Decimal> {
     fn py_float_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<f64>> {
         self.get(vm.heap).to_f64().map(Some)
     }
-
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let value = match attr.as_str(vm.interns) {
-            "real" => self.clone_value(vm.heap),
-            "imag" => decimal_value(Decimal::zero(false, 0), vm),
-            _ => return Ok(None),
-        };
-        Ok(Some(CallResult::Value(value)))
-    }
-
-    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
-        value.drop_with(vm);
-        let name = name.as_str(vm.interns);
-        Err(match name {
-            "real" | "imag" => ExcType::attribute_error_not_writable(name, &self.py_type_name(vm)),
-            _ => ExcType::attribute_error_no_setattr(&self.py_type_name(vm), name),
-        })
-    }
 }
 
 impl<'h> HeapObjectRead<'h, Decimal> {
@@ -1523,6 +1505,16 @@ pub(crate) struct PyDecimalImpl;
 #[pyattrs]
 impl<'heap> PyAttrs<'heap> for PyDecimalImpl {
     type Receiver = HeapObjectRead<'heap, Decimal>;
+
+    #[pyget(Real)]
+    fn real<'h>(this: &HeapObjectRead<'h, Decimal>, vm: &mut VM<'h>) -> Value {
+        this.clone_value(vm.heap)
+    }
+
+    #[pyget(Imag)]
+    fn imag<'h>(_this: &HeapObjectRead<'h, Decimal>, vm: &mut VM<'h>) -> Value {
+        decimal_value(Decimal::zero(false, 0), vm)
+    }
 
     #[pymethod(Adjusted)]
     fn adjusted<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
