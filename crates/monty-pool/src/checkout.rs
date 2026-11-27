@@ -37,7 +37,7 @@ use crate::telemetry::{
     tracing::{SnapshotOperation, SnapshotSpan},
 };
 use crate::{
-    CrashCause, PoolConfig, PoolError, RemoteCause, cpu,
+    CrashCause, PoolConfig, PoolError, RemoteCause, RemoteDisconnect, cpu,
     pool::{CapacityGuard, PoolInner},
     streamed_args::{StreamedArgs, streamed_args_limit},
     worker::Worker,
@@ -2580,10 +2580,28 @@ impl Checkout {
                     let Some(exception) = error.exception else {
                         return Err(self.protocol_violation("error event with no exception"));
                     };
-                    return match MontyException::try_from(exception) {
-                        Ok(exc) => Err(PoolError::Runtime(exc)),
-                        Err(err) => Err(self.protocol_violation(format!("invalid exception payload: {err}"))),
+                    let exc = match MontyException::try_from(exception) {
+                        Ok(exc) => exc,
+                        Err(err) => return Err(self.protocol_violation(format!("invalid exception payload: {err}"))),
                     };
+                    // The relay also sends trailers, but they need not have
+                    // reached the reader when this reply completes the turn.
+                    if self.pool.config.transport.is_remote()
+                        && error.terminal_cause == Some(pb::TerminalErrorCause::RelayTurnTimeout as i32)
+                    {
+                        self.discard_worker();
+                        return Err(PoolError::Disconnected {
+                            context: "waiting for a reply".to_owned(),
+                            remote: Some(Box::new(RemoteDisconnect {
+                                status_code: None,
+                                status_message: None,
+                                cause: Some(RemoteCause::TurnTimeout),
+                                transport_error: None,
+                                retry_after: None,
+                            })),
+                        });
+                    }
+                    return Err(PoolError::Runtime(exc));
                 }
                 Some(pb::worker_event::Kind::TypingError(typing)) => {
                     // TypingError can only end a checked feed or its pending import_stubs call.

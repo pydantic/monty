@@ -1394,6 +1394,7 @@ mod tests {
         let (mut metrics, capture) = recorder();
         metrics.begin_turn(&feed());
         metrics.event(&event(pb::worker_event::Kind::Error(pb::Error {
+            terminal_cause: None,
             exception: Some(pb::RaisedException {
                 exc_type: "MyCustomError".to_owned(),
                 message: None,
@@ -1576,6 +1577,7 @@ mod tests {
             },
         )));
         metrics.event(&event(pb::worker_event::Kind::Error(pb::Error {
+            terminal_cause: None,
             exception: Some(pb::RaisedException {
                 exc_type: "ValueError".to_owned(),
                 message: None,
@@ -1660,7 +1662,10 @@ mod tests {
             ("kind".to_owned(), "function".to_owned()),
             ("outcome".to_owned(), "aborted".to_owned()),
         ]));
-        metrics.event(&event(pb::worker_event::Kind::Error(pb::Error { exception: None })));
+        metrics.event(&event(pb::worker_event::Kind::Error(pb::Error {
+            terminal_cause: None,
+            exception: None,
+        })));
 
         // a worker dropped mid-suspension is no longer waiting on anyone
         metrics.begin_turn(&feed());

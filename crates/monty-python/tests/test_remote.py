@@ -749,6 +749,70 @@ async def _serve_behaviour(behaviour: Any) -> AsyncGenerator[str]:
         await server.stop(None)
 
 
+@pytest.mark.parametrize('bundled', [True, False], ids=['first-feed', 'later-feed'])
+@pytest.mark.parametrize('cause', [None, 0, 1, 73], ids=['missing', 'unspecified', 'relay-deadline', 'future'])
+async def test_terminal_error_reply_before_trailers(bundled: bool, cause: int | None):
+    opens = 0
+    # Complete with one result node, integer 7.
+    complete_seven = b'\x32\x08\x12\x06\x08\x01\x12\x02\x28\x0e'
+    reason = b'the request exceeded the server time limit for a single turn'
+
+    async def behaviour(
+        requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
+    ) -> AsyncIterator[bytes]:
+        nonlocal opens
+        opens += 1
+        await context.send_initial_metadata(())
+        await anext(requests)  # Configure carrying the first feed.
+        if not bundled:
+            yield complete_seven
+            await anext(requests)
+        raised = _bytes_field(1, b'TimeoutError') + _bytes_field(2, reason)
+        error = _bytes_field(1, raised)
+        if cause is not None:
+            error += b'\x10' + _encode_varint(cause)
+        yield _bytes_field(7, error)
+        # Hold trailers until the next request or EOF. A known terminal
+        # reply must end the checkout without waiting for either.
+        if await anext(requests, None) is not None:
+            yield complete_seven
+
+    async with _serve_behaviour(behaviour) as url, AsyncMontyRemote(url) as pool, pool.checkout() as session:
+        if not bundled:
+            assert await session.feed_run('7') == snapshot(7)
+        if cause == 1:
+            with anyio.fail_after(2), pytest.raises(MontyDisconnectError) as caught:
+                await session.feed_run('slow()')
+            assert caught.value.cause == snapshot('turn_timeout')
+            assert caught.value.status_code is None
+            assert caught.value.status_message is None
+            assert caught.value.transport_error is None
+            with pytest.raises(RuntimeError, match='this checkout has already been finished'):
+                await session.feed_run('7')
+        else:
+            with anyio.fail_after(2), pytest.raises(MontyRuntimeError) as caught:
+                await session.feed_run('slow()')
+            assert isinstance(caught.value.exception(), TimeoutError)
+            assert str(caught.value.exception()) == snapshot(
+                'the request exceeded the server time limit for a single turn'
+            )
+            assert await session.feed_run('7') == snapshot(7)
+    assert opens == snapshot(1)
+
+
+async def test_terminal_error_reply_still_requires_exception():
+    async def behaviour(
+        requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
+    ) -> AsyncIterator[bytes]:
+        await context.send_initial_metadata(())
+        await anext(requests)
+        yield _bytes_field(7, b'\x10\x01')
+
+    async with _serve_behaviour(behaviour) as url, AsyncMontyRemote(url) as pool, pool.checkout() as session:
+        with pytest.raises(RuntimeError, match='error event with no exception'):
+            await session.feed_run('slow()')
+
+
 @pytest.mark.parametrize(
     'status,message,cause',
     [

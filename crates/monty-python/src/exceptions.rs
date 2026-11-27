@@ -389,10 +389,8 @@ impl MontyCrashedError {
 ///
 /// The sandbox may have died, the connection may have dropped, or the server
 /// may have ended the session by policy: an idle/session/turn timeout, or
-/// being over capacity. A server that did so says which in `status_code`,
-/// `status_message` and `cause`; otherwise this error claims no more than
-/// that the stream went away. The request may have run. Do not replay it
-/// automatically.
+/// being over capacity. The server can report a `cause` in a terminal reply
+/// before sending gRPC status. The request may have run; do not replay it automatically.
 #[pyclass(extends=MontyError, module="pydantic_monty")]
 pub struct MontyDisconnectError {
     /// The gRPC status code the server ended the stream with, by name.

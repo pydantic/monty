@@ -141,6 +141,7 @@ async fn dump_retry_error_keeps_the_original_operation_span() {
         send_kind(
             &mut replacement,
             pb::worker_event::Kind::Error(pb::Error {
+                terminal_cause: None,
                 exception: Some(pb::RaisedException {
                     exc_type: "RuntimeError".to_owned(),
                     message: Some("replacement refused the dump".to_owned()),
@@ -238,6 +239,7 @@ async fn dump_span_scenario() {
         send_event(
             &mut socket,
             &event_kind(pb::worker_event::Kind::Error(pb::Error {
+                terminal_cause: None,
                 exception: Some(pb::RaisedException {
                     exc_type: "RuntimeError".to_owned(),
                     message: Some("snapshot store refused the dump".to_owned()),
@@ -450,6 +452,7 @@ async fn restore_span_scenario() {
         send_event(
             &mut socket,
             &event_kind(pb::worker_event::Kind::Error(pb::Error {
+                terminal_cause: None,
                 exception: Some(pb::RaisedException {
                     exc_type: "RuntimeError".to_owned(),
                     message: Some("snapshot unavailable".to_owned()),

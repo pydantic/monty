@@ -498,6 +498,7 @@ async fn a_child_exit_keeps_its_original_exit_status() {
 async fn a_raw_host_abort_allows_a_fresh_feed() {
     let exception = MontyException::new(ExcType::RuntimeError, Some("aborted".to_owned()));
     let error = framed(&worker_event(pb::worker_event::Kind::Error(pb::Error {
+        terminal_cause: None,
         exception: Some((&exception).into()),
     })));
     let action = format!("if count == 1: SUSPEND\n    elif count == 2: send({error:?})\n    else: COMPLETE");
@@ -666,6 +667,7 @@ async fn typed_control_errors_preserve_raw_suspension_accounting() {
 async fn typed_dump_errors_do_not_refund_cumulative_cpu() {
     let exception = MontyException::new(ExcType::RuntimeError, Some("dump refused".to_owned()));
     let mut error = worker_event(pb::worker_event::Kind::Error(pb::Error {
+        terminal_cause: None,
         exception: Some((&exception).into()),
     }));
     // A control error cannot declare the suspended execution complete.
@@ -787,6 +789,7 @@ async fn explicit_raw_abort_validates_the_exception_and_ends_the_feed() {
 async fn raw_errors_without_suspension_metadata_do_not_refund_cpu() {
     let exception = MontyException::new(ExcType::RuntimeError, Some("legacy error".to_owned()));
     let error = framed(&worker_event(pb::worker_event::Kind::Error(pb::Error {
+        terminal_cause: None,
         exception: Some((&exception).into()),
     })));
     let action = format!("if count % 2 == 1: burn(15); SUSPEND\n    else: send({error:?})");
