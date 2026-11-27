@@ -210,7 +210,9 @@ for val in [1, INTERNED_LONG, 10**30, True, 1.5]:
         setattr(val, 'nonexistent_attribute', 99)
     except AttributeError as e:
         expected_type = 'bool' if type(val) is bool else ('float' if type(val) is float else 'int')
-        assert str(e) == f"'{expected_type}' object has no attribute 'nonexistent_attribute' and no __dict__ for setting new attributes"
+        assert (
+            str(e)
+            == f"'{expected_type}' object has no attribute 'nonexistent_attribute' and no __dict__ for setting new attributes"
+        )
     else:
         raise AssertionError('expected AttributeError for setattr nonexistent')
-
