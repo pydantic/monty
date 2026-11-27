@@ -164,16 +164,12 @@ try:
 except ValueError as e:
     assert 'pow() 3rd argument cannot be 0' in str(e), f'pow mod=0 error: {e}'
 
-# Note: pow(2, -1, 5) computes modular inverse in Python 3.8+, not an error
-# But pow(2, -1, 4) raises an error because 2 is not invertible mod 4
-try:
-    pow(2, -1, 4)  # gcd(2, 4) != 1, no inverse exists
-    assert False, 'pow(2, -1, 4) should raise ValueError'
-except ValueError as e:
-    # CPython: "base is not invertible for the given modulus"
-    # Monty: "pow() 2nd argument cannot be negative when 3rd argument specified"
-    # Accept either message since Monty doesn't support modular inverse yet
-    assert 'not invertible' in str(e) or 'cannot be negative' in str(e), f'pow non-invertible error: {e}'
+for modulus in (4, -4, 2**100):
+    try:
+        pow(2, -1, modulus)
+        assert False, 'expected ValueError for a non-invertible base'
+    except ValueError as e:
+        assert str(e) == 'base is not invertible for the given modulus'
 
 try:
     pow(2.0, 2, 5)

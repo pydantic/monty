@@ -13,7 +13,6 @@
 //! See `limitations/random.md` for divergences.
 
 use std::{
-    cmp::Ordering,
     f64::consts::{E, PI, TAU},
     iter::once,
     mem,
@@ -21,7 +20,9 @@ use std::{
 
 use ahash::AHashSet;
 use monty_types::{OsFunctionCall, ResourceTracker, UrandomArgs};
-use num_bigint::{BigInt, BigUint};
+use num_bigint::BigInt;
+use num_integer::Integer;
+use num_traits::Signed;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
@@ -39,7 +40,7 @@ use crate::{
         List, LongInt, Module, PyTrait, Tuple, Type,
         bytes::allocate_bytes,
         iter::collect_owned_iterable,
-        long_int::bigint_to_f64_checked,
+        long_int::{bigint_to_f64_checked, integer_value},
         random::{Mt19937, RandomTarget, SEED_BYTES, seed_key_from_value},
         tuple::{TupleVec, allocate_tuple},
     },
@@ -513,13 +514,8 @@ fn getrandbits(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunRes
         let bits = target.with_generator(vm, |random, _| random.rng().getrandbits_u128(k as u32));
         return Ok(LongInt::value_from_u128(bits, vm.heap));
     }
-    let words = usize::try_from((k - 1) / 32 + 1).map_err(|_| ExcType::value_error("number of bits too large"))?;
-    // One preflight for the word buffer and the big int built from it.
-    vm.heap.tracker.check_allocation(words.saturating_mul(8))?;
-    let words = target.with_generator(vm, |random, vm| {
-        random.rng().getrandbits_words(k, words, &vm.heap.tracker)
-    })?;
-    Ok(LongInt::new(BigInt::from(BigUint::from_slice(&words))).into_value(vm.heap))
+    let bits = target.with_generator(vm, |random, vm| random.rng().getrandbits_big(k, &vm.heap.tracker))?;
+    Ok(LongInt::new(BigInt::from(bits)).into_value(vm.heap))
 }
 
 /// `randbytes(n)` — a Python `def`: `getrandbits(n * 8).to_bytes(n, 'little')`.
@@ -579,63 +575,84 @@ fn randrange(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResul
     defer_drop!(stop, vm);
     defer_drop!(step, vm);
 
-    let istart = i128::from(start.as_int(vm)?);
-    if matches!(stop, Value::None) {
-        // CPython tests `step is not _ONE`, and `1` is that very object.
-        if step.as_ref().is_some_and(|step| !matches!(step, Value::Int(1))) {
+    let istart = start.py_index(vm)?;
+    defer_drop!(istart, vm);
+    let istop = if matches!(stop, Value::None) {
+        None
+    } else {
+        Some(stop.py_index(vm)?)
+    };
+    defer_drop!(istop, vm);
+    let istep = match (istop, step) {
+        // CPython tests `step is not _ONE` before calling `__index__` on it.
+        (None, Some(step)) if !matches!(step, Value::Int(1)) => {
             return Err(ExcType::type_error("Missing a non-None stop argument"));
         }
-        return if istart > 0 {
-            Ok(int_value(istart_plus(
-                0,
-                target.with_generator(vm, |random, vm| {
-                    random.rng().randbelow(as_u128(istart), &vm.heap.tracker)
-                })?,
-            )))
-        } else {
-            Err(ExcType::value_error("empty range for randrange()"))
-        };
+        (Some(_), Some(step)) => step.py_index(vm)?,
+        _ => Value::Int(1),
+    };
+    defer_drop!(istep, vm);
+    if matches!(istep, Value::Int(0)) {
+        return Err(ExcType::value_error("zero step for randrange()"));
     }
 
-    let istop = i128::from(stop.as_int(vm)?);
-    let width = istop - istart;
-    let istep = match step {
-        Some(step) => i128::from(step.as_int(vm)?),
-        None => 1,
+    let (first, limit) = match istop {
+        Some(istop) => (istart, istop),
+        None => (&Value::Int(0), istart),
     };
-    if istep == 1 {
-        return if width > 0 {
-            let offset = target.with_generator(vm, |random, vm| {
-                random.rng().randbelow(as_u128(width), &vm.heap.tracker)
-            })?;
-            Ok(int_value(istart_plus(istart, offset)))
+    let result = if let (Value::Int(first), Value::Int(limit), Value::Int(step)) = (first, limit, istep) {
+        let (first, limit, step) = (i128::from(*first), i128::from(*limit), i128::from(*step));
+        let n = range_count(limit - first, &step);
+        if n > 0 {
+            let offset =
+                target.with_generator(vm, |random, vm| random.rng().randbelow(as_u128(n), &vm.heap.tracker))?;
+            Some(int_value(
+                first + step * i128::try_from(offset).expect("offset below n"),
+            ))
         } else {
-            Err(ExcType::value_error(format!(
-                "empty range in randrange({}, {})",
-                int_arg_str(start),
-                int_arg_str(stop)
-            )))
-        };
-    }
-
-    let n = match istep.cmp(&0) {
-        Ordering::Greater => floor_div(width + istep - 1, istep),
-        Ordering::Less => floor_div(width + istep + 1, istep),
-        Ordering::Equal => return Err(ExcType::value_error("zero step for randrange()")),
+            None
+        }
+    } else {
+        randrange_big(target, first, limit, istep, vm)?
     };
-    if n <= 0 {
-        let step = step.as_ref().expect("a unit step returned above");
-        return Err(ExcType::value_error(format!(
-            "empty range in randrange({}, {}, {})",
-            int_arg_str(start),
-            int_arg_str(stop),
-            int_arg_str(step)
-        )));
+    if let Some(value) = result {
+        Ok(value)
+    } else if istop.is_none() {
+        Err(ExcType::value_error("empty range for randrange()"))
+    } else {
+        let start = randrange_arg_str(start, vm)?;
+        let stop = randrange_arg_str(stop, vm)?;
+        let message = if matches!(istep, Value::Int(1)) {
+            format!("empty range in randrange({start}, {stop})")
+        } else {
+            let step = randrange_arg_str(step.as_ref().expect("a non-unit step was supplied"), vm)?;
+            format!("empty range in randrange({start}, {stop}, {step})")
+        };
+        Err(ExcType::value_error(message))
     }
-    let offset = target.with_generator(vm, |random, vm| random.rng().randbelow(as_u128(n), &vm.heap.tracker))?;
-    Ok(int_value(
-        istart + istep * i128::try_from(offset).expect("offset below n"),
-    ))
+}
+
+/// Draws from a range whose already-coerced arguments do not all fit in `i64`.
+fn randrange_big(
+    target: RandomTarget,
+    start: &Value,
+    stop: &Value,
+    step: &Value,
+    vm: &mut VM<'_>,
+) -> RunResult<Option<Value>> {
+    target.with_generator(vm, |random, vm| {
+        let start = integer_value(start, vm).expect("__index__ returned an integer");
+        let stop = integer_value(stop, vm).expect("__index__ returned an integer");
+        let step = integer_value(step, vm).expect("__index__ returned an integer");
+        let n = range_count(stop.as_ref() - start.as_ref(), step.as_ref());
+        if n.is_positive() {
+            let offset = random.rng().randbelow_big(n.magnitude(), &vm.heap.tracker)?;
+            let result = start.as_ref() + step.as_ref() * BigInt::from(offset);
+            Ok(Some(LongInt::new(result).into_value(vm.heap)))
+        } else {
+            Ok(None)
+        }
+    })
 }
 
 /// `randint(a, b)` — a Python `def`.
@@ -677,20 +694,16 @@ fn int_value(n: i128) -> Value {
     Value::Int(i64::try_from(n).expect("result lies within the i64 arguments"))
 }
 
-/// Python's floor division for the `randrange` step arithmetic.
-fn floor_div(a: i128, b: i128) -> i128 {
-    let q = a / b;
-    if (a % b != 0) && ((a < 0) != (b < 0)) { q - 1 } else { q }
+/// A non-positive count represents an empty range.
+fn range_count<T: Integer>(width: T, step: &T) -> T {
+    if step.is_one() { width } else { width.div_ceil(step) }
 }
 
-/// How `randrange` spells an argument in its empty-range message: the
-/// f-string formats the original object, so `True` stays `True`.
-fn int_arg_str(value: &Value) -> String {
-    match value {
-        Value::Bool(b) => if *b { "True" } else { "False" }.to_owned(),
-        Value::Int(i) => i.to_string(),
-        _ => unreachable!("only ints and bools pass `as_int`"),
-    }
+/// Empty-range errors format the original arguments, not their `__index__` results.
+fn randrange_arg_str(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
+    let text = value.py_str(vm)?;
+    defer_drop!(text, vm);
+    Ok(text.try_as_str(vm)?.to_owned())
 }
 
 // ============================================================================

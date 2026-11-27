@@ -169,9 +169,8 @@ works on classes; see [classes.md](classes.md#inheritance).
     or a tuple of those. Passing a host-supplied dataclass / namedtuple as the
     second argument raises `TypeError`.
 - **`iter()`** — see [iter.md](iter.md) for iterator and `iter(callable, sentinel)` divergences.
-- **`pow(base, exp, mod)` with integer operands** rejects negative exponents with `ValueError`
-    instead of computing a modular inverse. Non-modular exponents whose result cannot be materialized raise
-    `OverflowError` (see [resource_limits.md](resource_limits.md)).
+- **`pow(base, exp)` with integer operands** raises `OverflowError` if the result cannot be materialized
+    (see [resource_limits.md](resource_limits.md)).
 - **`pow(base, exp)` and `**` with float operands and a real result** — overflow raises
     `OverflowError` like CPython, always worded
     `(34, 'Numerical result out of range')` (glibc's `strerror(ERANGE)`; CPython

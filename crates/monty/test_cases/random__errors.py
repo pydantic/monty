@@ -129,6 +129,18 @@ try:
 except TypeError as exc:
     assert str(exc) == 'Missing a non-None stop argument'
 # an explicit step of 1 is the default object in CPython, so no error
+large_bound = 2**100
+try:
+    random.randrange(large_bound, large_bound - 1)
+    assert False, 'expected ValueError for an empty range'
+except ValueError as exc:
+    assert str(exc) == f'empty range in randrange({large_bound}, {large_bound - 1})'
+try:
+    random.randrange(0, large_bound, -large_bound)
+    assert False, 'expected ValueError for an empty descending range'
+except ValueError as exc:
+    assert str(exc) == f'empty range in randrange(0, {large_bound}, {-large_bound})'
+
 assert 0 <= random.randrange(10, None, 1) < 10
 assert 1 <= random.randrange(start=1, stop=5) < 5
 try:

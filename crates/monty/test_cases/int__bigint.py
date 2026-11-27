@@ -349,6 +349,15 @@ assert pow_result == pow_2_100
 pow_bigger_2 = bigger * bigger
 pow_result2 = pow(bigger, 2)
 assert pow_result2 == pow_bigger_2
+
+assert pow(3, -1, 11) == 4
+assert pow(-3, -1, 11) == 7
+assert pow(3, -2, -11) == -6
+assert pow(0, -1, 1) == 0
+assert pow(0, -1, -1) == 0
+assert pow(pow_2_100, -1, pow_2_100 + 1) == pow_2_100
+assert pow(3, -pow_2_100, 11) == 4
+
 assert bigger**-bigger == 0.0
 assert bigger ** (-bigger - 1) == 0.0
 assert (-1) ** bigger == 1
