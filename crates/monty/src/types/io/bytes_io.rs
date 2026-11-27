@@ -6,17 +6,19 @@
 
 use std::{fmt::Write, ops::Range};
 
+use monty_macros::pyattrs;
 use serde::{Deserialize, Serialize};
 
-use super::{buffer_growth, non_negative, optional_size, position_value, seek_args};
+use super::{buffer_growth, non_negative, optional_size, position_value, seek_args, unsupported_no_args};
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
-    heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead},
+    heap::{DropGuard, HeapData, HeapId, HeapItem, HeapObjectRead},
     intern::StaticStrings,
+    py_attrs::PyAttrs,
     py_value::PyValue,
     types::{LazyHeapSet, List, PyTrait, Type, TypeRef, bytes::allocate_bytes},
     value::{EitherStr, VALUE_SIZE, Value},
@@ -194,108 +196,138 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BytesIo> {
         Ok((attr.static_string(vm.interns) == Some(StaticStrings::Closed))
             .then(|| CallResult::Value(Value::Bool(self.get(vm.heap).closed))))
     }
+}
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let value = match attr.static_string(vm.interns) {
-            // Re-running the constructor reopens the stream and, as in CPython, empties it
-            // before checking the payload, so a rejected payload leaves it empty.
-            Some(StaticStrings::DunderInit) => {
-                let BytesIoArgs { initial_bytes } = BytesIoArgs::from_args(args, vm)?;
-                defer_drop!(initial_bytes, vm);
-                *self.get_mut(vm.heap) = BytesIo::default();
-                self.get_mut(vm.heap).buf = initial_payload(initial_bytes, vm)?;
-                Value::None
-            }
-            Some(method @ (StaticStrings::Read | StaticStrings::Read1)) => {
-                let (kw_name, name) = if method == StaticStrings::Read {
-                    ("BytesIO.read", "read")
-                } else {
-                    ("BytesIO.read1", "read1")
-                };
-                let size = args.reject_kwargs(kw_name, vm.heap)?;
-                let size = optional_size(size.get_zero_one_arg(name, vm.heap)?, vm)?;
-                let stream = self.get_mut(vm.heap);
-                ensure_open(stream)?;
-                let data = stream.read(non_negative(size));
-                self.copy_out(data, vm)?
-            }
-            Some(StaticStrings::Readline) => {
-                let size = args.reject_kwargs("BytesIO.readline", vm.heap)?;
-                let size = optional_size(size.get_zero_one_arg("readline", vm.heap)?, vm)?;
-                let stream = self.get_mut(vm.heap);
-                ensure_open(stream)?;
-                let line = stream.readline(non_negative(size));
-                self.copy_out(line, vm)?
-            }
-            Some(StaticStrings::Readlines) => self.readlines(args, vm)?,
-            Some(StaticStrings::Write) => {
-                let data = args
-                    .reject_kwargs("BytesIO.write", vm.heap)?
-                    .get_one_arg("BytesIO.write", vm.heap)?;
-                defer_drop!(data, vm);
-                self.write_value(data, vm)?
-            }
-            Some(StaticStrings::Writelines) => self.writelines(args, vm)?,
-            Some(StaticStrings::Getvalue) => {
-                args.check_zero_args("BytesIO.getvalue", vm.heap)?;
-                let stream = self.get(vm.heap);
-                ensure_open(stream)?;
-                self.copy_out(0..stream.buf.len(), vm)?
-            }
-            Some(StaticStrings::Tell) => {
-                args.check_zero_args("BytesIO.tell", vm.heap)?;
-                let stream = self.get(vm.heap);
-                ensure_open(stream)?;
-                position_value(stream.pos)
-            }
-            Some(StaticStrings::Seek) => self.seek(args, vm)?,
-            Some(StaticStrings::Truncate) => self.truncate(args, vm)?,
-            Some(StaticStrings::Close) => {
-                args.check_zero_args("BytesIO.close", vm.heap)?;
-                close(self.get_mut(vm.heap));
-                Value::None
-            }
-            Some(
-                method @ (StaticStrings::Flush
-                | StaticStrings::Readable
-                | StaticStrings::Writable
-                | StaticStrings::Seekable
-                | StaticStrings::Isatty),
-            ) => {
-                let name = match method {
-                    StaticStrings::Flush => "BytesIO.flush",
-                    StaticStrings::Readable => "BytesIO.readable",
-                    StaticStrings::Writable => "BytesIO.writable",
-                    StaticStrings::Seekable => "BytesIO.seekable",
-                    _ => "BytesIO.isatty",
-                };
-                args.check_zero_args(name, vm.heap)?;
-                ensure_open(self.get(vm.heap))?;
-                match method {
-                    StaticStrings::Flush => Value::None,
-                    StaticStrings::Isatty => Value::Bool(false),
-                    _ => Value::Bool(true),
-                }
-            }
-            Some(method @ (StaticStrings::Fileno | StaticStrings::Detach)) => {
-                let name = if method == StaticStrings::Fileno {
-                    "fileno"
-                } else {
-                    "detach"
-                };
-                if matches!(args, ArgValues::Empty) {
-                    return Err(ExcType::unsupported_operation(name));
-                }
-                args.drop_with(vm);
-                return Err(ExcType::type_error_takes_no_arguments(name));
-            }
-            _ => {
-                args.drop_with(vm);
-                return Err(ExcType::attribute_error(Type::BytesIo, attr.as_str(vm.interns)));
-            }
-        };
-        Ok(CallResult::Value(value))
+/// `BytesIO`'s methods; the `closed` attribute stays in `py_getattr`.
+pub(crate) struct PyBytesIoImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyBytesIoImpl {
+    type Receiver = HeapObjectRead<'heap, BytesIo>;
+
+    /// Re-running the constructor reopens the stream and, as in CPython, empties it
+    /// before checking the payload, so a rejected payload leaves it empty.
+    #[pymethod(DunderInit)]
+    fn __init__<'h>(this: &mut HeapObjectRead<'h, BytesIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let BytesIoArgs { initial_bytes } = BytesIoArgs::from_args(args, vm)?;
+        defer_drop!(initial_bytes, vm);
+        *this.get_mut(vm.heap) = BytesIo::default();
+        this.get_mut(vm.heap).buf = initial_payload(initial_bytes, vm)?;
+        Ok(Value::None)
     }
+
+    #[pymethod(Read)]
+    fn read<'h>(this: &mut HeapObjectRead<'h, BytesIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        this.read(args, "BytesIO.read", "read", vm)
+    }
+
+    #[pymethod(Read1)]
+    fn read1<'h>(this: &mut HeapObjectRead<'h, BytesIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        this.read(args, "BytesIO.read1", "read1", vm)
+    }
+
+    #[pymethod(Readline)]
+    fn readline<'h>(this: &mut HeapObjectRead<'h, BytesIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let size = args.reject_kwargs("BytesIO.readline", vm.heap)?;
+        let size = optional_size(size.get_zero_one_arg("readline", vm.heap)?, vm)?;
+        let stream = this.get_mut(vm.heap);
+        ensure_open(stream)?;
+        let line = stream.readline(non_negative(size));
+        this.copy_out(line, vm)
+    }
+
+    #[pymethod(Readlines)]
+    fn readlines<'h>(this: &mut HeapObjectRead<'h, BytesIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        this.readlines(args, vm)
+    }
+
+    #[pymethod(Write)]
+    fn write<'h>(this: &mut HeapObjectRead<'h, BytesIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let data = args
+            .reject_kwargs("BytesIO.write", vm.heap)?
+            .get_one_arg("BytesIO.write", vm.heap)?;
+        defer_drop!(data, vm);
+        this.write_value(data, vm)
+    }
+
+    #[pymethod(Writelines)]
+    fn writelines<'h>(this: &mut HeapObjectRead<'h, BytesIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        this.writelines(args, vm)
+    }
+
+    #[pymethod(Getvalue)]
+    fn getvalue<'h>(this: &mut HeapObjectRead<'h, BytesIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        args.check_zero_args("BytesIO.getvalue", vm.heap)?;
+        let stream = this.get(vm.heap);
+        ensure_open(stream)?;
+        this.copy_out(0..stream.buf.len(), vm)
+    }
+
+    #[pymethod(Tell)]
+    fn tell<'h>(this: &mut HeapObjectRead<'h, BytesIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        args.check_zero_args("BytesIO.tell", vm.heap)?;
+        let stream = this.get(vm.heap);
+        ensure_open(stream)?;
+        Ok(position_value(stream.pos))
+    }
+
+    #[pymethod(Seek)]
+    fn seek<'h>(this: &mut HeapObjectRead<'h, BytesIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        this.seek(args, vm)
+    }
+
+    #[pymethod(Truncate)]
+    fn truncate<'h>(this: &mut HeapObjectRead<'h, BytesIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        this.truncate(args, vm)
+    }
+
+    #[pymethod(Close)]
+    fn close<'h>(this: &mut HeapObjectRead<'h, BytesIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        args.check_zero_args("BytesIO.close", vm.heap)?;
+        close(this.get_mut(vm.heap));
+        Ok(Value::None)
+    }
+
+    #[pymethod(Flush)]
+    fn flush<'h>(this: &mut HeapObjectRead<'h, BytesIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        check_open(this, "BytesIO.flush", args, vm).map(|()| Value::None)
+    }
+
+    #[pymethod(Readable)]
+    fn readable<'h>(this: &mut HeapObjectRead<'h, BytesIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        check_open(this, "BytesIO.readable", args, vm).map(|()| Value::Bool(true))
+    }
+
+    #[pymethod(Writable)]
+    fn writable<'h>(this: &mut HeapObjectRead<'h, BytesIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        check_open(this, "BytesIO.writable", args, vm).map(|()| Value::Bool(true))
+    }
+
+    #[pymethod(Seekable)]
+    fn seekable<'h>(this: &mut HeapObjectRead<'h, BytesIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        check_open(this, "BytesIO.seekable", args, vm).map(|()| Value::Bool(true))
+    }
+
+    #[pymethod(Isatty)]
+    fn isatty<'h>(this: &mut HeapObjectRead<'h, BytesIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        check_open(this, "BytesIO.isatty", args, vm).map(|()| Value::Bool(false))
+    }
+
+    #[pymethod(Fileno)]
+    fn fileno<'h>(_this: &mut HeapObjectRead<'h, BytesIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        unsupported_no_args("fileno", args, vm)
+    }
+
+    #[pymethod(Detach)]
+    fn detach<'h>(_this: &mut HeapObjectRead<'h, BytesIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        unsupported_no_args("detach", args, vm)
+    }
+}
+
+/// Rejects arguments to a zero-argument method, then checks the stream is open.
+fn check_open<'h>(this: &HeapObjectRead<'h, BytesIo>, name: &str, args: ArgValues, vm: &mut VM<'h>) -> RunResult<()> {
+    args.check_zero_args(name, vm.heap)?;
+    ensure_open(this.get(vm.heap))
 }
 
 impl<'h> HeapObjectRead<'h, BytesIo> {
@@ -303,6 +335,16 @@ impl<'h> HeapObjectRead<'h, BytesIo> {
     fn copy_out(&self, range: Range<usize>, vm: &VM<'h>) -> RunResult<Value> {
         vm.heap.tracker.check_allocation(range.len())?;
         Ok(allocate_bytes(self.get(vm.heap).buf[range].to_vec(), vm.heap))
+    }
+
+    /// `read(size=-1, /)` and `read1(size=-1, /)`: a negative or `None` size reads to the end.
+    fn read(&self, args: ArgValues, kw_name: &str, name: &str, vm: &mut VM<'h>) -> RunResult<Value> {
+        let size = args.reject_kwargs(kw_name, vm.heap)?;
+        let size = optional_size(size.get_zero_one_arg(name, vm.heap)?, vm)?;
+        let stream = self.get_mut(vm.heap);
+        ensure_open(stream)?;
+        let data = stream.read(non_negative(size));
+        self.copy_out(data, vm)
     }
 
     /// `readlines(hint=None, /)`: lines until their total reaches a positive

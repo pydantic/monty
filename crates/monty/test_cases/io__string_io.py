@@ -396,3 +396,17 @@ d = copy.deepcopy([s, s])
 assert d[0] is d[1]
 check(ValueError, 'I/O operation on closed file', lambda: copy.copy(closed_stream()))
 check(ValueError, 'I/O operation on closed file', lambda: copy.deepcopy(closed_stream()))
+
+# === unbound methods ===
+s = StringIO('xy\nz')
+assert StringIO.readline(s) == 'xy\n'
+assert StringIO.write(s, '!') == 1 and StringIO.getvalue(s) == 'xy\n!'
+assert StringIO.__init__(s, 'reset') is None and s.getvalue() == 'reset'
+check(
+    TypeError,
+    "descriptor 'getvalue' for '_io.StringIO' objects doesn't apply to a '_io.BytesIO' object",
+    lambda: StringIO.getvalue(io.BytesIO()),
+)
+check(
+    TypeError, "descriptor 'tell' for '_io.StringIO' objects doesn't apply to a 'int' object", lambda: StringIO.tell(1)
+)

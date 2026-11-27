@@ -29,7 +29,7 @@ use crate::{
     types::{
         Bytes, Deque, Dict, ForwardRef, FrozenSet, List, Partial, Path, Random, Range, Set, Slice, TimeZone, Tuple,
         complex, date, datetime, decimal,
-        io::{BytesIo, StringIo},
+        io::{BytesIo, PyBytesIoImpl, PyStringIoImpl, StringIo},
         numeric,
         str::PyStr,
         time, timedelta,
@@ -732,12 +732,14 @@ native_types! {
     StringIo("_io.StringIO")
         .basetype()
         .iterator()
-        .ctor(Constructor::Value(StringIo::init)),
+        .ctor(Constructor::Value(StringIo::init))
+        .attrs(<PyStringIoImpl as PyAttrs<'static>>::TABLE),
     /// `io.BytesIO`, an in-memory binary stream.
     BytesIo("_io.BytesIO")
         .basetype()
         .iterator()
-        .ctor(Constructor::Value(BytesIo::init)),
+        .ctor(Constructor::Value(BytesIo::init))
+        .attrs(<PyBytesIoImpl as PyAttrs<'static>>::TABLE),
     /// typing module special forms (Any, Optional, Union, etc.) - displays as "typing._SpecialForm"
     SpecialForm("typing._SpecialForm"),
     /// A filesystem path from `pathlib.Path` - displays as "PosixPath"

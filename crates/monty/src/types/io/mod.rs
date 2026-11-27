@@ -10,16 +10,16 @@ pub(crate) mod bytes_io;
 pub(crate) mod newline;
 pub(crate) mod string_io;
 
-pub(crate) use bytes_io::BytesIo;
+pub(crate) use bytes_io::{BytesIo, PyBytesIoImpl};
 pub(crate) use newline::{Newline, translate_newlines};
-pub(crate) use string_io::StringIo;
+pub(crate) use string_io::{PyStringIoImpl, StringIo};
 
 use crate::{
     args::ArgValues,
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{Heap, HeapData},
+    heap::{DropWithContext, Heap, HeapData},
     types::PyTrait,
     value::Value,
 };
@@ -119,4 +119,14 @@ pub(crate) fn buffer_growth(needed: usize, capacity: usize) -> usize {
 /// A position or length as a Python `int`.
 pub(crate) fn position_value(pos: usize) -> Value {
     Value::Int(i64::try_from(pos).unwrap_or(i64::MAX))
+}
+
+/// `fileno()` / `detach()`: `UnsupportedOperation`, after `TypeError` for any argument.
+pub(crate) fn unsupported_no_args(name: &'static str, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
+    if matches!(args, ArgValues::Empty) {
+        Err(ExcType::unsupported_operation(name))
+    } else {
+        args.drop_with(vm);
+        Err(ExcType::type_error_takes_no_arguments(name))
+    }
 }

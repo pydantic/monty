@@ -12,12 +12,13 @@
 
 use std::{fmt::Write, iter, ops::Range};
 
+use monty_macros::pyattrs;
 use serde::{Deserialize, Serialize};
 
 use super::{
     buffer_growth,
     newline::{Newline, SeenNewlines, translate_newlines},
-    non_negative, optional_size, position_value, seek_args, stream_position,
+    non_negative, optional_size, position_value, seek_args, stream_position, unsupported_no_args,
 };
 use crate::{
     args::{ArgValues, FromArgs},
@@ -25,8 +26,9 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
-    heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead},
+    heap::{DropGuard, HeapData, HeapId, HeapItem, HeapObjectRead},
     intern::StaticStrings,
+    py_attrs::PyAttrs,
     types::{
         LazyHeapSet, List, PyTrait, Type, TypeRef,
         str::{PyStr, allocate_string},
@@ -372,80 +374,134 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, StringIo> {
         };
         Ok(Some(CallResult::Value(value)))
     }
+}
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let value = match attr.static_string(vm.interns) {
-            // Re-running the constructor resets the stream, reopening a closed one, as in CPython.
-            Some(StaticStrings::DunderInit) => {
-                let stream = StringIo::from_init_args(vm, args)?;
-                *self.get_mut(vm.heap) = stream;
-                Value::None
-            }
-            Some(StaticStrings::Read) => self.read(args, vm)?,
-            Some(StaticStrings::Readline) => self.readline(args, vm)?,
-            Some(StaticStrings::Readlines) => self.readlines(args, vm)?,
-            Some(StaticStrings::Write) => self.write(args, vm)?,
-            Some(StaticStrings::Writelines) => self.writelines(args, vm)?,
-            Some(StaticStrings::Getvalue) => {
-                args.check_zero_args("StringIO.getvalue", vm.heap)?;
-                let stream = self.get(vm.heap);
-                ensure_open(stream)?;
-                self.copy_out(0..stream.buf.len(), vm)?
-            }
-            Some(StaticStrings::Tell) => {
-                args.check_zero_args("StringIO.tell", vm.heap)?;
-                let stream = self.get(vm.heap);
-                ensure_open(stream)?;
-                position_value(stream.pos)
-            }
-            Some(StaticStrings::Seek) => self.seek(args, vm)?,
-            Some(StaticStrings::Truncate) => self.truncate(args, vm)?,
-            Some(StaticStrings::Close) => {
-                args.check_zero_args("StringIO.close", vm.heap)?;
-                close(self.get_mut(vm.heap));
-                Value::None
-            }
-            Some(StaticStrings::Flush) => {
-                // `IOBase.flush` on a `StringIO` does not check for closure.
-                args.check_zero_args("_IOBase.flush", vm.heap)?;
-                Value::None
-            }
-            Some(method @ (StaticStrings::Readable | StaticStrings::Writable | StaticStrings::Seekable)) => {
-                let name = match method {
-                    StaticStrings::Readable => "StringIO.readable",
-                    StaticStrings::Writable => "StringIO.writable",
-                    _ => "StringIO.seekable",
-                };
-                args.check_zero_args(name, vm.heap)?;
-                ensure_open(self.get(vm.heap))?;
-                Value::Bool(true)
-            }
-            Some(StaticStrings::Isatty) => {
-                args.check_zero_args("_IOBase.isatty", vm.heap)?;
-                if self.get(vm.heap).closed {
-                    return Err(ExcType::value_error_closed_file());
-                }
-                Value::Bool(false)
-            }
-            Some(method @ (StaticStrings::Fileno | StaticStrings::Detach)) => {
-                let name = if method == StaticStrings::Fileno {
-                    "fileno"
-                } else {
-                    "detach"
-                };
-                if matches!(args, ArgValues::Empty) {
-                    return Err(ExcType::unsupported_operation(name));
-                }
-                args.drop_with(vm);
-                return Err(ExcType::type_error_takes_no_arguments(name));
-            }
-            _ => {
-                args.drop_with(vm);
-                return Err(ExcType::attribute_error(Type::StringIo, attr.as_str(vm.interns)));
-            }
-        };
-        Ok(CallResult::Value(value))
+/// `StringIO`'s methods; `closed`, `newlines` and the other data attributes stay in `py_getattr`.
+pub(crate) struct PyStringIoImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyStringIoImpl {
+    type Receiver = HeapObjectRead<'heap, StringIo>;
+
+    /// Re-running the constructor resets the stream, reopening a closed one, as in CPython.
+    #[pymethod(DunderInit)]
+    fn __init__<'h>(this: &mut HeapObjectRead<'h, StringIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let stream = StringIo::from_init_args(vm, args)?;
+        *this.get_mut(vm.heap) = stream;
+        Ok(Value::None)
     }
+
+    #[pymethod(Read)]
+    fn read<'h>(this: &mut HeapObjectRead<'h, StringIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        this.read(args, vm)
+    }
+
+    #[pymethod(Readline)]
+    fn readline<'h>(this: &mut HeapObjectRead<'h, StringIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        this.readline(args, vm)
+    }
+
+    #[pymethod(Readlines)]
+    fn readlines<'h>(this: &mut HeapObjectRead<'h, StringIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        this.readlines(args, vm)
+    }
+
+    #[pymethod(Write)]
+    fn write<'h>(this: &mut HeapObjectRead<'h, StringIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        this.write(args, vm)
+    }
+
+    #[pymethod(Writelines)]
+    fn writelines<'h>(this: &mut HeapObjectRead<'h, StringIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        this.writelines(args, vm)
+    }
+
+    #[pymethod(Getvalue)]
+    fn getvalue<'h>(this: &mut HeapObjectRead<'h, StringIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        args.check_zero_args("StringIO.getvalue", vm.heap)?;
+        let stream = this.get(vm.heap);
+        ensure_open(stream)?;
+        this.copy_out(0..stream.buf.len(), vm)
+    }
+
+    #[pymethod(Tell)]
+    fn tell<'h>(this: &mut HeapObjectRead<'h, StringIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        args.check_zero_args("StringIO.tell", vm.heap)?;
+        let stream = this.get(vm.heap);
+        ensure_open(stream)?;
+        Ok(position_value(stream.pos))
+    }
+
+    #[pymethod(Seek)]
+    fn seek<'h>(this: &mut HeapObjectRead<'h, StringIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        this.seek(args, vm)
+    }
+
+    #[pymethod(Truncate)]
+    fn truncate<'h>(this: &mut HeapObjectRead<'h, StringIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        this.truncate(args, vm)
+    }
+
+    #[pymethod(Close)]
+    fn close<'h>(this: &mut HeapObjectRead<'h, StringIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        args.check_zero_args("StringIO.close", vm.heap)?;
+        close(this.get_mut(vm.heap));
+        Ok(Value::None)
+    }
+
+    /// `IOBase.flush` on a `StringIO` does not check for closure.
+    #[pymethod(Flush)]
+    fn flush<'h>(_this: &mut HeapObjectRead<'h, StringIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        args.check_zero_args("_IOBase.flush", vm.heap)?;
+        Ok(Value::None)
+    }
+
+    #[pymethod(Readable)]
+    fn readable<'h>(this: &mut HeapObjectRead<'h, StringIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        open_capability(this, "StringIO.readable", args, vm)
+    }
+
+    #[pymethod(Writable)]
+    fn writable<'h>(this: &mut HeapObjectRead<'h, StringIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        open_capability(this, "StringIO.writable", args, vm)
+    }
+
+    #[pymethod(Seekable)]
+    fn seekable<'h>(this: &mut HeapObjectRead<'h, StringIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        open_capability(this, "StringIO.seekable", args, vm)
+    }
+
+    #[pymethod(Isatty)]
+    fn isatty<'h>(this: &mut HeapObjectRead<'h, StringIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        args.check_zero_args("_IOBase.isatty", vm.heap)?;
+        if this.get(vm.heap).closed {
+            Err(ExcType::value_error_closed_file())
+        } else {
+            Ok(Value::Bool(false))
+        }
+    }
+
+    #[pymethod(Fileno)]
+    fn fileno<'h>(_this: &mut HeapObjectRead<'h, StringIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        unsupported_no_args("fileno", args, vm)
+    }
+
+    #[pymethod(Detach)]
+    fn detach<'h>(_this: &mut HeapObjectRead<'h, StringIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        unsupported_no_args("detach", args, vm)
+    }
+}
+
+/// `readable()` / `writable()` / `seekable()`: always `True` on an open stream.
+fn open_capability<'h>(
+    this: &HeapObjectRead<'h, StringIo>,
+    name: &str,
+    args: ArgValues,
+    vm: &mut VM<'h>,
+) -> RunResult<Value> {
+    args.check_zero_args(name, vm.heap)?;
+    ensure_open(this.get(vm.heap))?;
+    Ok(Value::Bool(true))
 }
 
 impl<'h> HeapObjectRead<'h, StringIo> {

@@ -268,3 +268,14 @@ c.write(b'X')
 assert b.getvalue() == b'abc'
 assert copy.deepcopy(b).getvalue() == b'abc'
 check(ValueError, 'I/O operation on closed file.', lambda: copy.copy(closed_stream()))
+
+# === unbound methods ===
+b = BytesIO(b'abc')
+assert BytesIO.read(b, 2) == b'ab' and BytesIO.read1(b) == b'c'
+assert BytesIO.write(b, b'!') == 1 and BytesIO.getvalue(b) == b'abc!'
+check(
+    TypeError,
+    "descriptor 'read' for '_io.BytesIO' objects doesn't apply to a '_io.StringIO' object",
+    lambda: BytesIO.read(io.StringIO()),
+)
+check(TypeError, 'unbound method BytesIO.read() needs an argument', lambda: BytesIO.read())
