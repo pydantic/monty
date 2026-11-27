@@ -9,7 +9,7 @@
 use std::{mem, task::Poll};
 
 use ahash::AHashSet;
-use monty_types::{InvalidInputError, MontyException, ResourceError, ResourceTracker};
+use monty_types::{MontyException, ResourceError, ResourceTracker};
 use smallvec::{SmallVec, smallvec};
 
 use super::{
@@ -31,7 +31,7 @@ use crate::{
         HeapReadOutput, HeapReader,
     },
     intern::{FunctionId, StaticStrings},
-    object_bridge::MontyObjectExt,
+    object_bridge::{ImportError, MontyObjectExt},
     run_progress::{ExtFunctionResult, ExtFunctionResultExt},
     string_builder::StringBuilder,
     types::{List, PyTrait, Set, allocate_tuple, collect_iterable, set::SetEntry},
@@ -1789,17 +1789,21 @@ impl<'h> VM<'h> {
         for (call_id, ext_result) in results {
             match ext_result {
                 ExtFunctionResult::Return(obj) => {
-                    // A resource error is a `MemoryError` here as in `resume`,
-                    // so a large host value is not misreported as a bad type.
                     let value = if self.future_result_is_ignored(call_id) {
                         Value::None
                     } else {
-                        obj.to_value(self).map_err(|e| match e {
-                            InvalidInputError::Resource(err) => RunError::from(err),
-                            other @ InvalidInputError::InvalidType(_) => RunError::from(MontyException::runtime_error(
-                                format!("Invalid return value for call {call_id}: {other}"),
-                            )),
-                        })?
+                        match obj.to_value(self) {
+                            Ok(value) => value,
+                            Err(ImportError::Runtime(error @ RunError::Exc(_))) => {
+                                self.fail_future(call_id, error)?;
+                                continue;
+                            }
+                            Err(error) => {
+                                return Err(
+                                    error.into_run_error(format_args!("Invalid return value for call {call_id}"))
+                                );
+                            }
+                        }
                     };
                     self.resolve_future(call_id, value)?;
                 }

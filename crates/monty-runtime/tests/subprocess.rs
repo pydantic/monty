@@ -2153,6 +2153,30 @@ fn iterdir_joins_are_preflighted() {
     child.shutdown();
 }
 
+#[test]
+fn memory_limit_while_hashing_a_host_return_dict_key() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(8 * 1024 * 1024));
+    let (_, event) = child.feed(
+        "class Key:
+    def __hash__(self):
+        return len('x' * 32_000_000)
+key = Key()
+try:
+    external(key)
+except MemoryError:
+    pass",
+    );
+    let pb::worker_event::Kind::FunctionCall(call) = event else {
+        panic!("expected FunctionCall, got {event:?}");
+    };
+    let call_id = call.call_id;
+    let key = call.into_call_args().unwrap().arg(0).unwrap().to_owned();
+    let (_, event) = child.resume_return(call_id, MontyObject::dict([(key, MontyObject::none())]));
+    assert_eq!(expect_error(event).exc_type, "MemoryError");
+    child.shutdown();
+}
+
 /// Announcing a suspension must not cost extra copies of the value being
 /// announced. A host-call argument sized as a *fraction of the limit* is what
 /// makes this a regression test for that amplification rather than for one

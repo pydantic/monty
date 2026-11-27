@@ -30,7 +30,7 @@ pub(crate) use collections::unpack_exact;
 use exceptions::CaughtException;
 pub(crate) use module_cache::ModuleCache;
 pub(crate) use module_finder::PendingImport;
-use monty_types::{InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, SourceRange};
+use monty_types::{MontyObject, MontyUuid, OsFunctionCall, PrintWriter, SourceRange};
 pub(crate) use namespace::{FrameGlobals, FrameNamespace, MissingNames, function_namespace};
 pub(crate) use recursion::{ContainsVM, RecursionToken, RunReentryGuard};
 use recursion::{frame_recursion_depth, frozen_frame_depth};
@@ -45,7 +45,7 @@ use crate::{
         op::{IMPORT_STAR_BIND, MATCH_KEYS_REST, Opcode, decode_assert_flags},
     },
     defer_drop_mut,
-    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput, HeapReader},
     heap_data::{CellValue, Closure, FunctionDefaults},
     intern::{FunctionId, Interns, StaticStrings, StringId},
@@ -57,7 +57,7 @@ use crate::{
         time::apply_clock_reading,
     },
     name_map::NameMap,
-    object_bridge::MontyObjectExt,
+    object_bridge::{ImportError, MontyObjectExt},
     os_dispatch::{
         PendingEffect, PostConversionEffect, PreConversionEffect, Reshaped, SleepDestination, check_raw_call_paths,
         release_pending_effect, resolve_call_paths, urandom_reply_error,
@@ -2249,24 +2249,15 @@ impl<'h> VM<'h> {
             Some(PendingEffect::Post(PostConversionEffect::SeedRandom { .. }))
         );
         let reply_type = seeding.then(|| obj.as_ref().type_name().to_owned());
-        // Surface resource-exhaustion failures from `to_value` (e.g. a host
-        // string whose `heap.allocate` trips `max_memory`) as the same
-        // `RunError::Resource` that pure-Monty allocations produce, so the
-        // user sees `MemoryError` instead of `RuntimeError: invalid return
-        // type`. Other input errors stay as `RuntimeError`.
         let value = match obj.to_value(self) {
             Ok(value) => value,
-            Err(InvalidInputError::Resource(err)) => return Err(RunError::from(err)),
-            Err(InvalidInputError::InvalidType(_)) if let Some(type_name) = reply_type => {
+            Err(ImportError::Runtime(err)) => return self.resume_with_exception(err),
+            Err(ImportError::InvalidType(_)) if let Some(type_name) = reply_type => {
                 let effect = self.pending_effect.take();
                 release_pending_effect(effect, self.heap);
                 return self.resume_with_exception(urandom_reply_error(Err(&type_name), SEED_BYTES));
             }
-            Err(other @ InvalidInputError::InvalidType(_)) => {
-                return Err(
-                    SimpleException::new(ExcType::RuntimeError, Some(format!("invalid return type: {other}"))).into(),
-                );
-            }
+            Err(other @ ImportError::InvalidType(_)) => return Err(other.into_run_error("invalid return type")),
         };
         let result = match self.pending_effect.take() {
             Some(PendingEffect::Post(PostConversionEffect::BufferStore { file_id })) => {

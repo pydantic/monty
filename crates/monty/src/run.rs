@@ -798,9 +798,10 @@ fn populate_inputs(inputs: Vec<MontyObject>, vm: &mut VM<'_>) -> Result<(), Mont
         return Err(MontyException::runtime_error("too many inputs for namespace"));
     }
     for (i, input) in inputs.into_iter().enumerate() {
-        let value = input
-            .to_value(vm)
-            .map_err(|e| MontyException::runtime_error(format!("invalid input type: {e}")))?;
+        let value = input.to_value(vm).map_err(|e| {
+            e.into_run_error("invalid input type")
+                .into_python_exception(vm.interns, |_| None)
+        })?;
         vm.globals[i] = value;
     }
     Ok(())

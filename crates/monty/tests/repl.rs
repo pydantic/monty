@@ -453,6 +453,33 @@ fn repl_cross_snippet_traceback_resolves_against_defining_source() {
 }
 
 #[test]
+fn repl_import_error_keeps_source_from_the_defining_feed() {
+    let (mut repl, key) = init_repl(
+        "class Key:\n    def __hash__(self):\n        raise ValueError('boom')\nkey = Key()\ndef use(value):\n    return value\nkey",
+    );
+    let dict = MontyObject::dict([(key, MontyObject::none())]);
+    let feed_inputs = vec![("value".to_owned(), dict.clone())];
+    let blocking = repl
+        .feed_run("value", feed_inputs.clone(), PrintWriter::Disabled)
+        .unwrap_err();
+    let call = repl
+        .call_function("use", vec![dict], PrintWriter::Disabled)
+        .unwrap_err();
+    let resumable = repl
+        .feed_start("value", feed_inputs, PrintWriter::Disabled)
+        .unwrap_err()
+        .error;
+
+    for error in [blocking, call, resumable] {
+        assert_eq!(error.exc_type(), ExcType::ValueError);
+        let frame = error.traceback().last().expect("hash raise site");
+        assert_eq!(frame.filename, "<python-input-0>");
+        assert_eq!(frame.start.line, 3);
+        assert_eq!(frame.preview_line.as_deref(), Some("        raise ValueError('boom')"));
+    }
+}
+
+#[test]
 fn repl_dump_load_survives_between_snippets() {
     let (mut repl, _) = init_repl("total = 1");
     feed_run_print(&mut repl, "total = total + 1").unwrap();

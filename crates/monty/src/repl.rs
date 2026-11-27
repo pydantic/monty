@@ -315,7 +315,9 @@ impl MontyRepl {
                 vm.modules = mem::take(&mut this.modules);
 
                 // Inject inputs with VM alive
-                if let Err(error) = inject_inputs_into_vm(&executor.program, input_values, &input_ids, &mut vm) {
+                if let Err(error) =
+                    inject_inputs_into_vm(&executor.program, input_values, &input_ids, &this.sources, &mut vm)
+                {
                     reclaim_vm_state(
                         &mut this.globals,
                         &mut this.cwd,
@@ -422,7 +424,9 @@ impl MontyRepl {
                 vm.random = mem::take(&mut self.random);
                 vm.modules = mem::take(&mut self.modules);
 
-                if let Err(e) = inject_inputs_into_vm(&executor.program, input_values, &input_ids, &mut vm) {
+                if let Err(e) =
+                    inject_inputs_into_vm(&executor.program, input_values, &input_ids, &self.sources, &mut vm)
+                {
                     reclaim_vm_state(
                         &mut self.globals,
                         &mut self.cwd,
@@ -532,7 +536,7 @@ impl MontyRepl {
 
                 vm.random = mem::take(&mut self.random);
                 vm.modules = mem::take(&mut self.modules);
-                let result = match convert_args(args, vm) {
+                let result = match convert_args(args, &self.sources, vm) {
                     Ok(args) => {
                         let (args, kwargs) = args.into_parts();
                         debug_assert!(kwargs.is_empty(), "host function calls only have positional arguments");
@@ -1597,11 +1601,13 @@ fn inject_inputs_into_vm(
     program: &Program,
     input_values: MontyGraph,
     input_ids: &[NodeId],
+    sources: &AHashMap<String, Arc<str>>,
     vm: &mut VM<'_>,
 ) -> Result<(), MontyException> {
-    let values = input_values
-        .to_values(vm)
-        .map_err(|e| MontyException::runtime_error(format!("invalid input type: {e}")))?;
+    let values = input_values.to_values(vm).map_err(|e| {
+        e.into_run_error("invalid input type")
+            .into_python_exception(vm.interns, |fname| sources.get(fname).map(AsRef::as_ref))
+    })?;
     defer_drop!(values, vm);
     for (&slot, id) in program.input_slots.iter().zip(input_ids) {
         let value = values[id.index()].clone_with_heap(vm.heap);
@@ -1703,11 +1709,16 @@ fn build_repl_progress(
 
 /// Converts host call arguments to internal `ArgValues` for function calls;
 /// `call_function` has already refused keyword arguments.
-fn convert_args(args: CallArgs, vm: &mut VM<'_>) -> Result<ArgValues, MontyException> {
+fn convert_args(
+    args: CallArgs,
+    sources: &AHashMap<String, Arc<str>>,
+    vm: &mut VM<'_>,
+) -> Result<ArgValues, MontyException> {
     let (graph, arg_ids, _) = unstable::into_call_args_parts(args);
-    let values = graph
-        .to_values(vm)
-        .map_err(|e| MontyException::runtime_error(format!("invalid argument type: {e}")))?;
+    let values = graph.to_values(vm).map_err(|e| {
+        e.into_run_error("invalid argument type")
+            .into_python_exception(vm.interns, |fname| sources.get(fname).map(AsRef::as_ref))
+    })?;
     defer_drop!(values, vm);
     let mut positional: Vec<Value> = arg_ids
         .iter()

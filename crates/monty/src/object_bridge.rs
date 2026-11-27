@@ -7,11 +7,11 @@
 //! is one node referenced twice and the arena is O(heap objects) rather than
 //! O(paths). Import is one forward pass because a node's children precede it.
 
-use std::mem;
+use std::{borrow::Cow, fmt::Display, mem};
 
 use ahash::{AHashMap, AHashSet};
 use monty_types::{
-    CallArgs, InvalidInputError, MontyComplex, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime,
+    CallArgs, MontyComplex, MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject, MontyTime,
     MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
     unstable::{self, ClassEq, ClassHash, ClassTypeNode, MontyGraph, MontyNode, NodeId},
 };
@@ -21,6 +21,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{RunError, RunResult, SimpleException},
+    hash::HashValue,
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
     intern::StringId,
     modules::dataclasses,
@@ -32,6 +33,7 @@ use crate::{
         decimal::py as py_decimal,
         dict::Dict,
         instance::{class_defines, class_defines_not_none, class_name},
+        key_hash::hash_or_culprit,
         list::List,
         set::{FrozenSet, Set},
         str::allocate_string,
@@ -39,6 +41,26 @@ use crate::{
     },
     value::{EitherStr, Value},
 };
+
+/// Invalid host data or an error raised while constructing its VM value.
+pub(crate) enum ImportError {
+    InvalidType(Cow<'static, str>),
+    Runtime(RunError),
+}
+
+impl ImportError {
+    fn invalid_type(message: impl Into<Cow<'static, str>>) -> Self {
+        Self::InvalidType(message.into())
+    }
+
+    /// Applies the caller's context only to malformed host data.
+    pub(crate) fn into_run_error(self, context: impl Display) -> RunError {
+        match self {
+            Self::InvalidType(message) => MontyException::runtime_error(format!("{context}: {message}")).into(),
+            Self::Runtime(error) => error,
+        }
+    }
+}
 
 /// Crate-internal conversions between a single [`MontyObject`] and a VM `Value`.
 ///
@@ -53,11 +75,11 @@ pub(crate) trait MontyObjectExt: Sized {
     /// callers outside the run loop wrap it in [`VM::export_on_clock`].
     fn export(value: Value, vm: &mut VM<'_>) -> RunResult<Self>;
 
-    /// Imports this value into the heap. Fails with `InvalidInputError` on
+    /// Imports this value into the heap. Fails with `ImportError` on
     /// output-only nodes (`Repr`, `Cycle`), on a sandbox class or instance
-    /// whose sandbox object no longer exists, and on malformed input; a
-    /// memory overshoot is caught at the next soft-limit checkpoint, not here.
-    fn to_value(self, vm: &mut VM<'_>) -> Result<Value, InvalidInputError>;
+    /// whose sandbox object no longer exists, and on malformed input. VM
+    /// errors from hashing or comparing keys and set elements pass through.
+    fn to_value(self, vm: &mut VM<'_>) -> Result<Value, ImportError>;
 }
 
 impl MontyObjectExt for MontyObject {
@@ -68,7 +90,7 @@ impl MontyObjectExt for MontyObject {
         Ok(unstable::object_from_graph(graph, root).expect("exported root is valid"))
     }
 
-    fn to_value(self, vm: &mut VM<'_>) -> Result<Value, InvalidInputError> {
+    fn to_value(self, vm: &mut VM<'_>) -> Result<Value, ImportError> {
         let (graph, root) = unstable::into_graph_parts(self);
         let mut values = graph.to_values(vm)?;
         // `None` is an immediate, so swapping it in leaves nothing to release.
@@ -84,11 +106,11 @@ pub(crate) trait MontyGraphExt {
     /// `Value` per node (so a root is `values[id.index()]`). The caller owns
     /// the vector and must `drop_with` it. Fails as
     /// [`MontyObjectExt::to_value`] does, releasing everything built so far.
-    fn to_values(self, vm: &mut VM<'_>) -> Result<Vec<Value>, InvalidInputError>;
+    fn to_values(self, vm: &mut VM<'_>) -> Result<Vec<Value>, ImportError>;
 }
 
 impl MontyGraphExt for MontyGraph {
-    fn to_values(self, vm: &mut VM<'_>) -> Result<Vec<Value>, InvalidInputError> {
+    fn to_values(self, vm: &mut VM<'_>) -> Result<Vec<Value>, ImportError> {
         let nodes = self.into_nodes();
         // A host-defined class node imports as a type object; a `ClassInstance`
         // of it needs the node's data to build a `HostClass`, so keep it by id.
@@ -926,7 +948,7 @@ fn import_node(
     built: &[Value],
     host_classes: &AHashMap<NodeId, Box<ClassTypeNode>>,
     vm: &mut VM<'_>,
-) -> Result<Value, InvalidInputError> {
+) -> Result<Value, ImportError> {
     match node {
         MontyNode::Ellipsis => Ok(Value::Ellipsis),
         MontyNode::NotImplemented => Ok(Value::NotImplemented),
@@ -954,7 +976,7 @@ fn import_node(
             // `NamedTuple::new` asserts equal lengths; malformed host input
             // (e.g. untrusted serialized data) must error, not panic.
             if field_names.len() != values.len() {
-                return Err(InvalidInputError::invalid_type(
+                return Err(ImportError::invalid_type(
                     "NamedTuple field_names and values must have the same length",
                 ));
             }
@@ -964,9 +986,7 @@ fn import_node(
             Ok(Value::allocate(nt, vm.heap))
         }
         MontyNode::Dict(pairs) => {
-            let pairs = clone_pairs(&pairs, built, vm);
-            let dict =
-                Dict::from_pairs(pairs, vm).map_err(|_| InvalidInputError::invalid_type("unhashable dict keys"))?;
+            let dict = import_dict(&pairs, built, vm, "unhashable dict keys")?;
             Ok(Value::allocate(dict, vm.heap))
         }
         MontyNode::Set(ids) => {
@@ -980,7 +1000,7 @@ fn import_node(
         }
         MontyNode::Date(date) => {
             let value = date_type::from_ymd(date.year, i32::from(date.month), i32::from(date.day))
-                .map_err(|_| InvalidInputError::invalid_type("date"))?;
+                .map_err(|_| ImportError::invalid_type("date"))?;
             Ok(Value::allocate(value, vm.heap))
         }
         MontyNode::DateTime(datetime) => {
@@ -996,12 +1016,12 @@ fn import_node(
                 timezone_name,
             } = datetime;
             if offset_seconds.is_none() && timezone_name.is_some() {
-                return Err(InvalidInputError::invalid_type("datetime"));
+                return Err(ImportError::invalid_type("datetime"));
             }
             let tzinfo = offset_seconds
                 .map(|offset| TimeZone::new(offset, timezone_name))
                 .transpose()
-                .map_err(|_| InvalidInputError::invalid_type("datetime"))?;
+                .map_err(|_| ImportError::invalid_type("datetime"))?;
             let value = datetime_type::from_components(
                 year,
                 i32::from(month),
@@ -1009,12 +1029,12 @@ fn import_node(
                 i32::from(hour),
                 i32::from(minute),
                 i32::from(second),
-                i32::try_from(microsecond).map_err(|_| InvalidInputError::invalid_type("datetime"))?,
+                i32::try_from(microsecond).map_err(|_| ImportError::invalid_type("datetime"))?,
                 tzinfo,
                 None,
                 vm.heap,
             )
-            .map_err(|_| InvalidInputError::invalid_type("datetime"))?;
+            .map_err(|_| ImportError::invalid_type("datetime"))?;
             Ok(Value::allocate(value, vm.heap))
         }
         MontyNode::Time(time) => {
@@ -1028,27 +1048,27 @@ fn import_node(
                 fold,
             } = time;
             if offset_seconds.is_none() && timezone_name.is_some() {
-                return Err(InvalidInputError::invalid_type("time"));
+                return Err(ImportError::invalid_type("time"));
             }
             let tzinfo = offset_seconds
                 .map(|offset| TimeZone::new(offset, timezone_name))
                 .transpose()
-                .map_err(|_| InvalidInputError::invalid_type("time"))?;
+                .map_err(|_| ImportError::invalid_type("time"))?;
             let value = time_type::from_boundary_components(
                 i32::from(hour),
                 i32::from(minute),
                 i32::from(second),
-                i32::try_from(microsecond).map_err(|_| InvalidInputError::invalid_type("time"))?,
+                i32::try_from(microsecond).map_err(|_| ImportError::invalid_type("time"))?,
                 i32::from(fold),
                 tzinfo,
                 vm.heap,
             )
-            .map_err(|_| InvalidInputError::invalid_type("time"))?;
+            .map_err(|_| ImportError::invalid_type("time"))?;
             Ok(Value::allocate(value, vm.heap))
         }
         MontyNode::TimeDelta(delta) => {
             let delta = timedelta_type::new(delta.days, delta.seconds, delta.microseconds)
-                .map_err(|_| InvalidInputError::invalid_type("timedelta"))?;
+                .map_err(|_| ImportError::invalid_type("timedelta"))?;
             Ok(Value::allocate(delta, vm.heap))
         }
         // The host's text is untrusted: it must parse as `Decimal(text)` would,
@@ -1056,14 +1076,14 @@ fn import_node(
         // turned into a NaN.
         MontyNode::Decimal(text) => match decimal_type::parse::parse_str(&text) {
             Ok(Ok(decimal)) => Ok(py_decimal::decimal_value(decimal, vm)),
-            Ok(Err(_)) | Err(_) => Err(InvalidInputError::invalid_type("Decimal")),
+            Ok(Err(_)) | Err(_) => Err(ImportError::invalid_type("Decimal")),
         },
         MontyNode::TimeZone(tz) => {
             if tz.offset_seconds == 0 && tz.name.is_none() {
                 Ok(vm.heap.get_timezone_utc())
             } else {
-                let tz = TimeZone::new(tz.offset_seconds, tz.name)
-                    .map_err(|_| InvalidInputError::invalid_type("timezone"))?;
+                let tz =
+                    TimeZone::new(tz.offset_seconds, tz.name).map_err(|_| ImportError::invalid_type("timezone"))?;
                 Ok(Value::allocate(tz, vm.heap))
             }
         }
@@ -1081,10 +1101,16 @@ fn import_node(
                 Ok(Value::Ref(class_id))
             }
             _ if class.host_defined => {
-                let attrs = clone_pairs(&class.attrs, built, vm);
-                intern_host_class_type(class.name, class.id, class.is_dataclass, attrs, vm).map(Value::Ref)
+                let attrs = import_dict(&class.attrs, built, vm, "unhashable class attr keys")?;
+                Ok(Value::Ref(intern_host_class_type(
+                    class.name,
+                    class.id,
+                    class.is_dataclass,
+                    attrs,
+                    vm,
+                )))
             }
-            _ => Err(InvalidInputError::invalid_type(format!(
+            _ => Err(ImportError::invalid_type(format!(
                 "sandbox class '{}' (id {}) no longer exists",
                 class.name, class.id
             ))),
@@ -1105,16 +1131,14 @@ fn import_node(
             }
             _ if host_classes.contains_key(&class_type) => {
                 let class = &host_classes[&class_type];
-                let pairs = clone_pairs(&attrs, built, vm);
-                let dict = Dict::from_pairs(pairs, vm)
-                    .map_err(|_| InvalidInputError::invalid_type("unhashable class instance attr keys"))?;
+                let dict = import_dict(&attrs, built, vm, "unhashable class instance attr keys")?;
                 // Guarded while the class type interns (its attrs can fail
                 // too); `HostClass::new` then takes both.
                 let mut dict_guard = DropGuard::new(dict, vm);
                 let (_, vm) = dict_guard.as_parts_mut();
-                let class_attrs = clone_pairs(&class.attrs, built, vm);
+                let class_attrs = import_dict(&class.attrs, built, vm, "unhashable class attr keys")?;
                 let class_id =
-                    intern_host_class_type(class.name.clone(), class.id, class.is_dataclass, class_attrs, vm)?;
+                    intern_host_class_type(class.name.clone(), class.id, class.is_dataclass, class_attrs, vm);
                 let (dict, vm) = dict_guard.into_parts();
                 let hc = HostClass::new(instance_id, class_id, dict);
                 Ok(Value::allocate(hc, vm.heap))
@@ -1123,7 +1147,7 @@ fn import_node(
                 let Value::Ref(class_id) = built[class_type.index()] else {
                     unreachable!("class nodes always import as heap references");
                 };
-                Err(InvalidInputError::invalid_type(format!(
+                Err(ImportError::invalid_type(format!(
                     "sandbox instance of '{}' (id {instance_id}) no longer exists",
                     class_name(class_id, vm.heap, vm.interns)
                 )))
@@ -1132,9 +1156,7 @@ fn import_node(
         // A host module is a real module object: attribute errors are raised
         // in the sandbox, nothing routes back to the host by identity.
         MontyNode::Module { name, id, attrs } => {
-            let pairs = clone_pairs(&attrs, built, vm);
-            let dict = Dict::from_pairs(pairs, vm)
-                .map_err(|_| InvalidInputError::invalid_type("unhashable module attr keys"))?;
+            let dict = import_dict(&attrs, built, vm, "unhashable module attr keys")?;
             let module = Module::host(name, id, dict);
             Ok(Value::allocate(module, vm.heap))
         }
@@ -1146,8 +1168,8 @@ fn import_node(
         MontyNode::Type(t) => Ok(Value::Builtin(Builtins::Type(t.to_internal()))),
         MontyNode::BuiltinFunction(f) => Ok(Value::Builtin(Builtins::Function(f))),
         MontyNode::Function { name, is_async, .. } => Ok(vm.heap.get_ext_function(&name, is_async)),
-        MontyNode::Repr(_) => Err(InvalidInputError::invalid_type("'Repr' is not a valid input value")),
-        MontyNode::Cycle(_) => Err(InvalidInputError::invalid_type("'Cycle' is not a valid input value")),
+        MontyNode::Repr(_) => Err(ImportError::invalid_type("'Repr' is not a valid input value")),
+        MontyNode::Cycle(_) => Err(ImportError::invalid_type("'Cycle' is not a valid input value")),
     }
 }
 
@@ -1158,17 +1180,37 @@ fn clone_children(ids: &[NodeId], built: &[Value], vm: &VM<'_>) -> Vec<Value> {
         .collect()
 }
 
-/// Owned clones of already-imported `(key, value)` children.
-fn clone_pairs(pairs: &[(NodeId, NodeId)], built: &[Value], vm: &VM<'_>) -> Vec<(Value, Value)> {
-    pairs
-        .iter()
-        .map(|(key, value)| {
-            (
-                built[key.index()].clone_with_heap(vm.heap),
-                built[value.index()].clone_with_heap(vm.heap),
-            )
-        })
-        .collect()
+/// Distinguishes a value with no hash from an error raised by hashing it.
+fn import_hash(value: &Value, vm: &mut VM<'_>, unhashable_msg: &'static str) -> Result<u64, ImportError> {
+    let hash = hash_or_culprit(value, vm).map_err(ImportError::Runtime)?;
+    hash.map(HashValue::raw)
+        .map_err(|_| ImportError::invalid_type(unhashable_msg))
+}
+
+/// Builds a dictionary from already-imported children without rehashing keys.
+fn import_dict(
+    pairs: &[(NodeId, NodeId)],
+    built: &[Value],
+    vm: &mut VM<'_>,
+    unhashable_msg: &'static str,
+) -> Result<Dict, ImportError> {
+    let mut guard = DropGuard::new(Dict::with_capacity(pairs.len()), vm);
+    let (dict, vm) = guard.as_parts_mut();
+    for &(key, value) in pairs {
+        let key = &built[key.index()];
+        let hash = import_hash(key, vm, unhashable_msg)?;
+        let key = key.clone_with_heap(vm.heap);
+        let value = built[value.index()].clone_with_heap(vm.heap);
+        if let Some(old) = vm
+            .heap
+            .protect_mut(dict)
+            .set_known_hash(key, value, hash, vm)
+            .map_err(ImportError::Runtime)?
+        {
+            old.drop_with(vm);
+        }
+    }
+    Ok(guard.into_inner())
 }
 
 /// Builds a `Set` from already-imported elements, dropping the partially-built
@@ -1178,13 +1220,14 @@ fn import_set(
     built: &[Value],
     vm: &mut VM<'_>,
     unhashable_msg: &'static str,
-) -> Result<Set, InvalidInputError> {
+) -> Result<Set, ImportError> {
     let mut guard = DropGuard::new(Set::new(), vm);
     let (set, vm) = guard.as_parts_mut();
     for id in ids {
-        let value = built[id.index()].clone_with_heap(vm.heap);
-        set.add(value, vm)
-            .map_err(|_| InvalidInputError::invalid_type(unhashable_msg))?;
+        let value = &built[id.index()];
+        let hash = import_hash(value, vm, unhashable_msg)?;
+        set.add_with_hash(value.clone_with_heap(vm.heap), hash, vm)
+            .map_err(ImportError::Runtime)?;
     }
     Ok(guard.into_inner())
 }
@@ -1198,11 +1241,9 @@ fn intern_host_class_type(
     name: String,
     type_id: MontyUuid,
     is_dataclass: bool,
-    attr_pairs: Vec<(Value, Value)>,
+    attrs: Dict,
     vm: &mut VM<'_>,
-) -> Result<HeapId, InvalidInputError> {
-    let attrs =
-        Dict::from_pairs(attr_pairs, vm).map_err(|_| InvalidInputError::invalid_type("unhashable class attr keys"))?;
+) -> HeapId {
     let name = EitherStr::Heap(name);
     match vm.heap.resolve_host_type(&type_id) {
         Some(class_id) => {
@@ -1213,11 +1254,11 @@ fn intern_host_class_type(
             let replaced = (!attrs.is_empty()).then_some(attrs);
             let old_attrs = ty.update_from_wire(name, is_dataclass, replaced, vm.heap);
             old_attrs.drop_with(vm);
-            Ok(class_id)
+            class_id
         }
-        None => Ok(vm
+        None => vm
             .heap
-            .allocate_host_type(HostClassType::new(name, type_id, is_dataclass, attrs))),
+            .allocate_host_type(HostClassType::new(name, type_id, is_dataclass, attrs)),
     }
 }
 
