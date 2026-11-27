@@ -133,6 +133,7 @@ const SANDBOX_MODULES = new Set([
   'functools',
   'gc',
   'hashlib',
+  'io',
   'itertools',
   'json',
   'keyword',

@@ -31,7 +31,7 @@ from _typeshed import (
     SupportsWrite,
 )
 from collections.abc import Awaitable, Callable, Iterable, Iterator, MutableSet, Reversible, Set as AbstractSet, Sized
-from io import BufferedRandom, BufferedReader, BufferedWriter, FileIO, TextIOWrapper
+from io import BufferedRandom, BufferedReader, BufferedWriter, TextIOWrapper
 from types import CellType, CodeType, GenericAlias, TracebackType
 
 # mypy crashes if any of {ByteString, Sequence, MutableSequence, Mapping, MutableMapping}
@@ -1368,19 +1368,6 @@ def open(
     opener: _Opener | None = None,
 ) -> TextIOWrapper: ...
 
-# Unbuffered binary mode: returns a FileIO
-@overload
-def open(
-    file: FileDescriptorOrPath,
-    mode: OpenBinaryMode,
-    buffering: Literal[0],
-    encoding: None = None,
-    errors: None = None,
-    newline: None = None,
-    closefd: bool = True,
-    opener: _Opener | None = None,
-) -> FileIO: ...
-
 # Buffering is on: return BufferedRandom, BufferedReader, or BufferedWriter
 @overload
 def open(
@@ -1792,6 +1779,9 @@ class ModuleNotFoundError(ImportError): ...
 class IndexError(LookupError): ...
 class KeyError(LookupError): ...
 class UnboundLocalError(NameError): ...
+
+class BlockingIOError(OSError):
+    characters_written: int
 
 class FileExistsError(OSError): ...
 class FileNotFoundError(OSError): ...

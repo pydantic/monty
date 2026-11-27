@@ -19,7 +19,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     frozen::{FrozenFunction, FrozenFunctions},
     hash::{HashValue, identity_hash},
-    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    heap::{ContainsHeap, DropGuard, DropWithContext, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StaticStrings,
     modules::ModuleFunctions,
     py_attrs::PyAttrs,
@@ -253,12 +253,8 @@ fn key_hash(key: &Value, vm: &mut VM<'_>) -> RunResult<u64> {
 fn store_result(cache: &Value, key: Value, value: &Value, vm: &mut VM<'_>) -> RunResult<()> {
     let mut key_guard = DropGuard::new(key, vm);
     let (key, vm) = key_guard.as_parts_mut();
-    let cache_id = match cache {
-        Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::LruCache(_)) => *id,
-        _ => return Err(ExcType::type_error("store() requires a cache wrapper")),
-    };
-    let HeapReadOutput::LruCache(mut cache) = vm.heap.read(cache_id) else {
-        unreachable!("checked cache type above")
+    let Some(mut cache) = cache.read_as::<LruCache>(vm.heap) else {
+        return Err(ExcType::type_error("store() requires a cache wrapper"));
     };
     if cache.get(vm.heap).maxsize == Some(0) {
         return Ok(());

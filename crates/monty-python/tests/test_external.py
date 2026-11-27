@@ -442,6 +442,7 @@ def test_external_function_json_decode_error_missing_attributes(monty_run: RunMo
         (ModuleNotFoundError, 'ModuleNotFoundError'),
         # OSError hierarchy
         (TimeoutError, 'TimeoutError'),
+        (BlockingIOError, 'BlockingIOError'),
         (FileNotFoundError, 'FileNotFoundError'),
         (OSError, 'OSError'),
         # Other exceptions
@@ -488,6 +489,7 @@ def test_external_function_exception_hierarchy(
         (ModuleNotFoundError, ImportError, 'child'),
         # OSError hierarchy (TimeoutError is a subclass since Python 3.3)
         (TimeoutError, OSError, 'child'),
+        (BlockingIOError, OSError, 'child'),
     ],
 )
 def test_external_function_exception_caught_by_parent(

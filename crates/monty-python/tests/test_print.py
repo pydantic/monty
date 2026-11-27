@@ -347,7 +347,7 @@ def test_print_file_unsupported_object(monty_run: RunMonty) -> None:
         monty_run('print("x", file=42)')
 
     assert str(exc_info.value) == snapshot(
-        "TypeError: print() 'file' argument must be sys.stdout or sys.stderr, not int"
+        "TypeError: print() 'file' argument must be sys.stdout, sys.stderr, io.StringIO or io.BytesIO, not int"
     )
 
 

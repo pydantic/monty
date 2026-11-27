@@ -43,14 +43,8 @@ pub(crate) enum CmpOrder {
 }
 
 impl CmpOrder {
-    /// Maps an `Option<Ordering>` from a numeric comparison helper, where `None`
-    /// can *only* mean a `NaN` operand (`f64::partial_cmp`, `i64_cmp_f64`,
-    /// `bigint_cmp_f64`, and `LongInt::partial_cmp_f64` all return `None`
-    /// exclusively for `NaN`). `None` therefore becomes [`Unordered`], never
-    /// [`Incomparable`].
-    ///
-    /// [`Unordered`]: Self::Unordered
-    /// [`Incomparable`]: Self::Incomparable
+    /// Numeric comparisons such as [`bigint_cmp_f64`](super::long_int::bigint_cmp_f64)
+    /// return `None` for NaN. Map that case to [`Self::Unordered`].
     pub(crate) fn from_numeric(ordering: Option<Ordering>) -> Self {
         match ordering {
             Some(ordering) => Self::Ordered(ordering),

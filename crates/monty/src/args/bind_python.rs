@@ -23,7 +23,7 @@ use crate::{
     defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     expressions::Identifier,
-    heap::{DropGuard, DropWithContext, HeapData},
+    heap::{DropGuard, DropWithContext},
     intern::{Interns, StringId},
     resource_checks::check_estimated_size,
     types::{Dict, allocate_tuple, str::PyStr},
@@ -560,9 +560,8 @@ impl Signature {
         // Namespace layout: [pos_args][args][*args?][kwargs][**kwargs?]
         let (excess_kwargs, vm) = excess_kwargs_guard.into_parts();
         if let Some(excess_kwargs) = excess_kwargs {
-            let dict_id = vm.heap.allocate(HeapData::Dict(excess_kwargs));
             let last_slot = namespace.len() - 1;
-            namespace[last_slot] = Value::Ref(dict_id);
+            namespace[last_slot] = Value::allocate(excess_kwargs, vm.heap);
         }
 
         Ok(())

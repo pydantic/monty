@@ -29,6 +29,7 @@ use crate::{
     hash::HashValue,
     heap::{DropWithContext, Heap, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
+    modules::time,
     py_attrs::{MethodCall, PyAttrs},
     py_value::PyValue,
     string_builder::StringBuilder,
@@ -689,6 +690,13 @@ impl<'heap> PyAttrs<'heap> for PyDateImpl {
     #[pymethod(Toordinal)]
     fn toordinal<'h>(value: &mut HeapObjectRead<'h, Date>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         ordinal_value(*value.get(vm.heap), args, vm)
+    }
+
+    #[pymethod(Timetuple)]
+    fn timetuple<'h>(value: &mut HeapObjectRead<'h, Date>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        args.check_zero_args("date.timetuple", vm.heap)?;
+        let midnight = value.get(vm.heap).0.to_datetime(civil::Time::midnight());
+        Ok(time::naive_struct_time(midnight, vm))
     }
 
     #[pyclassmethod(Fromordinal)]

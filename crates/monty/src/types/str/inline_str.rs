@@ -4,7 +4,7 @@ use std::{fmt, str};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
-use crate::{bytecode::VM, heap::HeapData, intern::StringId, value::Value};
+use crate::{bytecode::VM, intern::StringId, value::Value};
 
 /// UTF-8 text of at most 15 bytes.
 /// The tag enum supplies niches so a containing `Value` remains 16 bytes.
@@ -75,11 +75,7 @@ impl InlineStr {
     pub(crate) fn eq_value(&self, other: &Value, vm: &VM<'_>) -> Option<bool> {
         match other {
             Value::InlineString(other) => Some(self == other),
-            Value::InternString(id) => Some(self.as_bytes() == vm.interns.get_str(*id).as_bytes()),
-            Value::Ref(id) if let HeapData::Str(other) = vm.heap.get(*id) => {
-                Some(self.as_bytes() == other.as_str().as_bytes())
-            }
-            _ => None,
+            _ => other.as_str(vm).map(|s| self.as_bytes() == s.as_bytes()),
         }
     }
 

@@ -28,7 +28,9 @@ use crate::{
     py_attrs::{AttrTable, PyAttrs, SubtypeCall},
     types::{
         Bytes, Deque, Dict, ForwardRef, FrozenSet, List, Partial, Path, Random, Range, Set, Slice, TimeZone, Tuple,
-        complex, date, datetime, decimal, numeric,
+        builtin_descriptor, complex, date, datetime, decimal,
+        io::{BytesIo, PyBytesIoImpl, PyStringIoImpl, StringIo},
+        numeric,
         str::PyStr,
         time, timedelta,
         r#type::{bool_init, float_init, int_init, union_init},
@@ -434,6 +436,11 @@ impl Type {
             Self::Filter => 164,
             Self::Task => 165,
             Self::InvalidStateError => 166,
+            Self::StringIo => 167,
+            Self::BytesIo => 168,
+            Self::BlockingIOError => 169,
+            Self::ClassMethod => 170,
+            Self::StaticMethod => 171,
         }
     }
 
@@ -587,7 +594,7 @@ native_types! {
     Type("type")
         .builtin()
         .class_getitem()
-        .ctor(Constructor::Value(builtin_type)),
+        .ctor(Constructor::Call(builtin_type)),
     NoneType("NoneType"),
     Bool("bool", Int)
         .builtin()
@@ -723,6 +730,18 @@ native_types! {
     /// Binary file object returned by read/write binary modes.
     BufferedRandom("_io.BufferedRandom")
         .attrs(<super::file::PyFileImpl as PyAttrs<'static>>::TABLE),
+    /// `io.StringIO`, an in-memory text stream.
+    StringIo("_io.StringIO")
+        .basetype()
+        .iterator()
+        .ctor(Constructor::Value(StringIo::init))
+        .attrs(<PyStringIoImpl as PyAttrs<'static>>::TABLE),
+    /// `io.BytesIO`, an in-memory binary stream.
+    BytesIo("_io.BytesIO")
+        .basetype()
+        .iterator()
+        .ctor(Constructor::Value(BytesIo::init))
+        .attrs(<PyBytesIoImpl as PyAttrs<'static>>::TABLE),
     /// typing module special forms (Any, Optional, Union, etc.) - displays as "typing._SpecialForm"
     SpecialForm("typing._SpecialForm"),
     /// A filesystem path from `pathlib.Path` - displays as "PosixPath"
@@ -732,6 +751,7 @@ native_types! {
         .ctor(Constructor::Value(Path::init)),
     /// A property descriptor - displays as "property"
     Property("property")
+        .ctor(Constructor::Value(builtin_descriptor::property_init))
         .builtin()
         .basetype(),
     /// A compiled regex pattern from `re.compile()` - displays as "re.Pattern"
@@ -1070,6 +1090,10 @@ native_types! {
     TimeoutError("TimeoutError", OSError)
         .builtin()
         .exc(ExcType::TimeoutError),
+    /// Subclass of OSError, also exported as `io.BlockingIOError`.
+    BlockingIOError("BlockingIOError", OSError)
+        .builtin()
+        .exc(ExcType::BlockingIOError),
     AssertionError("AssertionError", Exception)
         .builtin()
         .exc(ExcType::AssertionError),
@@ -1189,6 +1213,8 @@ native_types! {
     /// `asyncio.InvalidStateError`, raised by `Task.result()` / `Task.exception()` on a pending task.
     InvalidStateError("asyncio.exceptions.InvalidStateError", Exception)
         .exc(ExcType::InvalidStateError),
+    ClassMethod("classmethod").builtin().basetype().ctor(Constructor::Value(builtin_descriptor::classmethod_init)),
+    StaticMethod("staticmethod").builtin().basetype().ctor(Constructor::Value(builtin_descriptor::staticmethod_init)),
 }
 
 #[cfg(test)]

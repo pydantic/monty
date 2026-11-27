@@ -31,7 +31,7 @@ use crate::{
     bytecode::{CallResult, VM, unpack_exact},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{ContainsHeap, DropGuard, DropWithContext, HeapReadOutput},
+    heap::{ContainsHeap, DropGuard, DropWithContext},
     intern::StaticStrings,
     modules::ModuleFunctions,
     os_dispatch::{PostConversionEffect, urandom_reply_error},
@@ -732,9 +732,7 @@ fn shuffle(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<
     let ShuffleArgs { x } = ShuffleArgs::from_args(args, vm)?;
     defer_drop_mut!(x, vm);
     let len = len_of(x, vm)?;
-    if let Value::Ref(id) = x
-        && let HeapReadOutput::List(list) = vm.heap.read(*id)
-    {
+    if let Some(list) = x.read_as::<List>(vm.heap) {
         return target.with_generator(vm, |random, vm| {
             for i in (1..len).rev() {
                 vm.heap.tracker.check_time_every(i)?;

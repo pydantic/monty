@@ -15,6 +15,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{ContainsHeap, DropGuard, HeapData, HeapId, HeapReadOutput, HeapReader},
+    intern::StaticStrings,
     os_dispatch::PostConversionEffect,
     types::{
         Dict, List, LongInt,
@@ -127,6 +128,10 @@ pub(super) fn call_load(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResul
                 CallResult::Value(text) => parse_owned(text, vm).map(CallResult::Value),
                 suspended => Ok(suspended),
             }
+        }
+        FileTarget::Stream(id) => {
+            let text = FileTarget::call_stream(id, StaticStrings::Read, ArgValues::Empty, vm)?;
+            parse_owned(text, vm).map(CallResult::Value)
         }
         FileTarget::Method(read) => {
             defer_drop!(read, vm);

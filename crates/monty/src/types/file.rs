@@ -84,6 +84,7 @@ use monty_types::{
 use super::{
     LazyHeapSet, List, PyTrait, Type, TypeRef,
     bytes::{Bytes, bytes_repr_fmt},
+    io::{Newline, translate_newlines},
     str::{allocate_string, allocate_string_on_heap},
 };
 use crate::{
@@ -155,76 +156,6 @@ pub(crate) enum ReadSpec {
 }
 
 pub use monty_types::FileMode;
-
-/// The `newline` argument to `open()` for text files: where lines end on read,
-/// whether `\r\n` / `\r` are translated to `\n`, and what `\n` becomes on write.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
-pub(crate) enum Newline {
-    /// `None`: universal newlines translated to `\n` on read; `\n` written as is,
-    /// since the sandbox's `os.linesep` is `\n` on every host.
-    #[default]
-    Universal,
-    /// `''`: universal line splitting with terminators kept; nothing translated.
-    Passthrough,
-    /// `'\n'`: lines end at `\n` only; nothing translated.
-    Lf,
-    /// `'\r'`: lines end at `\r`; `\n` is written as `\r`.
-    Cr,
-    /// `'\r\n'`: lines end at `\r\n`; `\n` is written as `\r\n`.
-    CrLf,
-}
-
-impl Newline {
-    /// Parses the str form of the argument; `None` for a value CPython rejects.
-    fn parse(value: &str) -> Option<Self> {
-        match value {
-            "" => Some(Self::Passthrough),
-            "\n" => Some(Self::Lf),
-            "\r" => Some(Self::Cr),
-            "\r\n" => Some(Self::CrLf),
-            _ => None,
-        }
-    }
-
-    /// Whether `\r\n` and `\r` become `\n` when the buffer is installed.
-    fn translates_on_read(self) -> bool {
-        matches!(self, Self::Universal)
-    }
-
-    /// Byte length of the first line of `tail` including its terminator, or all
-    /// of `tail` for an unterminated last line. A `Universal` buffer was
-    /// translated on load, so only `\n` is left to find.
-    fn line_len(self, tail: &str) -> usize {
-        match self {
-            Self::Universal | Self::Lf => tail.find('\n').map_or(tail.len(), |i| i + 1),
-            Self::Cr => tail.find('\r').map_or(tail.len(), |i| i + 1),
-            Self::CrLf => tail.find("\r\n").map_or(tail.len(), |i| i + 2),
-            Self::Passthrough => match tail.find(['\r', '\n']) {
-                Some(i) if tail[i..].starts_with("\r\n") => i + 2,
-                Some(i) => i + 1,
-                None => tail.len(),
-            },
-        }
-    }
-
-    /// Applies the write-side translation: `\n` becomes `\r` or `\r\n` for
-    /// those modes, every other mode writes `text` as passed. Also returns the
-    /// original char count when the payload changed, since `write()` reports
-    /// the length of the text it was given rather than what reached the file.
-    fn translate_write(self, text: String) -> (String, Option<usize>) {
-        let replacement = match self {
-            Self::Cr => "\r",
-            Self::CrLf => "\r\n",
-            Self::Universal | Self::Passthrough | Self::Lf => return (text, None),
-        };
-        if text.contains('\n') {
-            let chars = text.chars().count();
-            (text.replace('\n', replacement), Some(chars))
-        } else {
-            (text, None)
-        }
-    }
-}
 
 /// Crate-internal extension mapping a [`FileMode`] to the runtime `_io`
 /// wrapper [`Type`] (`FileMode` lives in `monty-types`, `Type` does not).
@@ -471,7 +402,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, OpenFile> {
         let file = self.get(vm.heap);
         file.ensure_open()?;
         if !file.mode.readable() {
-            Err(unsupported_operation("not readable"))
+            Err(ExcType::unsupported_operation("not readable"))
         } else if file.buffer.is_none() {
             Ok(Some(self.buffer_load_call(
                 vm,
@@ -569,7 +500,7 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
                 let file = self.get(vm.heap);
                 file.ensure_open()?;
                 if !file.mode.readable() {
-                    return Err(unsupported_operation("not readable"));
+                    return Err(ExcType::unsupported_operation("not readable"));
                 }
                 file.mode.is_binary()
             };
@@ -707,7 +638,7 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
         if file.mode.readable() {
             Ok(())
         } else {
-            Err(unsupported_operation("not readable"))
+            Err(ExcType::unsupported_operation("not readable"))
         }
     }
 
@@ -791,7 +722,7 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
             Ok(())
         } else {
             let message = if file.mode.is_binary() { "write" } else { "not writable" };
-            Err(unsupported_operation(message))
+            Err(ExcType::unsupported_operation(message))
         }
     }
 
@@ -1017,8 +948,7 @@ pub(crate) fn apply_open_name(
 ) -> RunResult<Value> {
     let parsed = newline.as_deref().map_or(Some(Newline::default()), Newline::parse);
     if let Some(parsed) = parsed
-        && let Value::Ref(id) = &value
-        && let HeapReadOutput::OpenFile(file) = vm.heap.read(*id)
+        && let Some(file) = value.read_as::<OpenFile>(vm.heap)
     {
         let file = file.get_mut(vm.heap);
         if !file.path.is_empty() && !file.path.starts_with('/') {
@@ -1176,24 +1106,6 @@ fn install_buffer<'h>(file: &HeapReadMut<'h, OpenFile>, result: Value, vm: &mut 
     // Populate the cache so the upcoming slice (and every later read) starts
     // from a known byte position and length without re-scanning the buffer.
     populate_buffer_meta(file, vm)
-}
-
-/// Rewrites `\r\n` and lone `\r` to `\n` in one pass: universal newlines on
-/// read. The output is never longer than the input, so a plain `String` is fine.
-fn translate_newlines(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\r' {
-            if chars.peek() == Some(&'\n') {
-                chars.next();
-            }
-            out.push('\n');
-        } else {
-            out.push(c);
-        }
-    }
-    out
 }
 
 /// The next line of a loaded buffer for the iterator protocol: `None` at EOF
@@ -1442,9 +1354,13 @@ fn compute_slice_text<'h>(
                     items.push(allocate_string(line.to_owned(), vm.heap));
                     start += end;
                 }
-                let list_id = vm.heap.allocate(HeapData::List(List::new(items)));
                 // Past-EOF preservation: matches `ReadSpec::All`.
-                (Value::Ref(list_id), position.max(buffer_total), buffer.len(), true)
+                (
+                    Value::allocate(List::new(items), vm.heap),
+                    position.max(buffer_total),
+                    buffer.len(),
+                    true,
+                )
             }
             ReadSpec::Seek { offset, whence } => {
                 let target = resolve_seek_target_usize(offset, whence, position, buffer_total)?;
@@ -1512,20 +1428,26 @@ fn compute_slice_binary<'h>(
             }
             ReadSpec::Size(n) => {
                 let take = tail.len().min(n);
-                let id = vm.heap.allocate(HeapData::Bytes(Bytes::new(tail[..take].to_vec())));
                 // Advance from the un-clamped user position so a past-EOF
                 // `read(N)` (which yields no bytes) leaves `position` alone
                 // instead of snapping it back to `buffer_total`.
                 let new_pos = position + take;
-                (Value::Ref(id), new_pos, new_pos >= buffer_total)
+                (
+                    Value::allocate(Bytes::new(tail[..take].to_vec()), vm.heap),
+                    new_pos,
+                    new_pos >= buffer_total,
+                )
             }
             ReadSpec::Line => {
                 let end = tail.iter().position(|b| *b == b'\n').map_or(tail.len(), |i| i + 1);
-                let id = vm.heap.allocate(HeapData::Bytes(Bytes::new(tail[..end].to_vec())));
                 // See `Size` above — past-EOF `readline()` returns `b''`
                 // without rewinding `position`.
                 let new_pos = position + end;
-                (Value::Ref(id), new_pos, new_pos >= buffer_total)
+                (
+                    Value::allocate(Bytes::new(tail[..end].to_vec()), vm.heap),
+                    new_pos,
+                    new_pos >= buffer_total,
+                )
             }
             ReadSpec::Lines => {
                 let mut items: Vec<Value> = Vec::new();
@@ -1533,13 +1455,15 @@ fn compute_slice_binary<'h>(
                 while start < tail.len() {
                     let rest = &tail[start..];
                     let end = rest.iter().position(|b| *b == b'\n').map_or(rest.len(), |i| i + 1);
-                    let id = vm.heap.allocate(HeapData::Bytes(Bytes::new(rest[..end].to_vec())));
-                    items.push(Value::Ref(id));
+                    items.push(Value::allocate(Bytes::new(rest[..end].to_vec()), vm.heap));
                     start += end;
                 }
-                let list_id = vm.heap.allocate(HeapData::List(List::new(items)));
                 // Past-EOF preservation: matches `ReadSpec::All`.
-                (Value::Ref(list_id), position.max(buffer_total), true)
+                (
+                    Value::allocate(List::new(items), vm.heap),
+                    position.max(buffer_total),
+                    true,
+                )
             }
             ReadSpec::Seek { offset, whence } => {
                 // Seek resolves against the un-clamped position so
@@ -1791,14 +1715,6 @@ fn is_bytes(data: &Value, heap: &Heap) -> bool {
         Value::Ref(id) => matches!(heap.get(*id), HeapData::Bytes(_)),
         _ => false,
     }
-}
-
-/// Builds the `io.UnsupportedOperation` used for file operations that the
-/// open mode forbids (e.g. `read()` on `'w'`, `write()` on `'r'`). In CPython
-/// this is a subclass of both `OSError` and `ValueError`; Monty matches both
-/// in `try`/`except` matching through its two bases in the native type table.
-fn unsupported_operation(message: &'static str) -> RunError {
-    SimpleException::new_msg(ExcType::UnsupportedOperation, message).into()
 }
 
 pub(crate) struct PyFileImpl;

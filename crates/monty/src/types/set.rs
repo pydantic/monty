@@ -106,7 +106,7 @@ impl SetStorage {
     }
 
     /// Returns the number of elements in the set.
-    fn len(&self) -> usize {
+    pub(super) fn len(&self) -> usize {
         self.table.len()
     }
 
@@ -391,8 +391,6 @@ impl<'h> HeapRead<'h, SetStorage> {
     /// Other iterables (including dict_values) are accepted by issubset/issuperset, but not by these operators.
     fn compare_operand(&self, other: &Value, op: CmpOperator, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         match other.read_heap(vm) {
-            Some(HeapReadOutput::Set(other)) => self.compare_storage(&other.storage(), op, vm),
-            Some(HeapReadOutput::FrozenSet(other)) => self.compare_storage(&other.storage(), op, vm),
             Some(view @ (HeapReadOutput::DictKeysView(_) | HeapReadOutput::DictItemsView(_))) => {
                 let view = PyValue::from(view);
                 let lhs_len = self.get(vm.heap).len();
@@ -427,7 +425,10 @@ impl<'h> HeapRead<'h, SetStorage> {
                 defer_drop!(storage, vm);
                 self.compare_storage(&vm.heap.protect(storage), op, vm)
             }
-            _ => Ok(None),
+            Some(other) => other
+                .set_storage()
+                .map_or(Ok(None), |storage| self.compare_storage(&storage, op, vm)),
+            None => Ok(None),
         }
     }
 
@@ -860,6 +861,16 @@ impl Set {
     }
 }
 
+impl<'h> HeapReadOutput<'h> {
+    pub(super) fn set_storage(&self) -> Option<BorrowedHeapRead<'_, 'h, SetStorage>> {
+        match self {
+            Self::Set(set) => Some(set.storage()),
+            Self::FrozenSet(set) => Some(set.storage()),
+            _ => None,
+        }
+    }
+}
+
 /// Borrows set/frozenset storage without reader handles; the heap borrow excludes mutation.
 fn borrow_set_storage<'a>(value: &Value, heap: &'a impl ContainsHeap) -> Option<&'a SetStorage> {
     let Value::Ref(id) = value else {
@@ -883,11 +894,12 @@ fn copy_storage_from_set(value: &Value, vm: &mut VM<'_>) -> RunResult<Option<Set
         return Ok(Some(SetStorage::new()));
     }
 
-    match value.read_heap(vm) {
-        Some(HeapReadOutput::Set(set)) => set.storage().copy(vm).map(Some),
-        Some(HeapReadOutput::FrozenSet(set)) => set.storage().copy(vm).map(Some),
-        _ => Ok(None),
-    }
+    value
+        .read_heap(vm)
+        .as_ref()
+        .and_then(HeapReadOutput::set_storage)
+        .map(|storage| storage.copy(vm))
+        .transpose()
 }
 
 impl<'h> HeapObjectRead<'h, Set> {
@@ -983,15 +995,12 @@ impl<'h> HeapReadMut<'h, Set> {
         }
         let mut guard = DropGuard::new(other, vm);
         let (other, vm) = guard.as_parts();
-        let entries = match other.read_heap(vm) {
-            Some(HeapReadOutput::Set(set)) => {
-                Some(set.storage().snapshot_entries(vm, CloneTableEntry::clone_with_heap)?)
-            }
-            Some(HeapReadOutput::FrozenSet(set)) => {
-                Some(set.storage().snapshot_entries(vm, CloneTableEntry::clone_with_heap)?)
-            }
-            _ => None,
-        };
+        let entries = other
+            .read_heap(vm)
+            .as_ref()
+            .and_then(HeapReadOutput::set_storage)
+            .map(|storage| storage.snapshot_entries(vm, CloneTableEntry::clone_with_heap))
+            .transpose()?;
         let (other, vm) = guard.into_parts();
         if let Some(entries) = entries {
             other.drop_with(vm);
@@ -1184,11 +1193,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Set> {
         // `set` and `frozenset` compare equal by their members, regardless of
         // mutability. `set == dict_keys`/`dict_items` is handled by the reflected
         // pass via the dict-view impls.
-        match other.read_heap(vm) {
-            Some(HeapReadOutput::Set(other)) => Ok(Some(self.storage().eq(&other.storage(), vm)?)),
-            Some(HeapReadOutput::FrozenSet(other)) => Ok(Some(self.storage().eq(&other.storage(), vm)?)),
-            _ => Ok(None),
-        }
+        other
+            .read_heap(vm)
+            .as_ref()
+            .and_then(HeapReadOutput::set_storage)
+            .map(|other| self.storage().eq(&other, vm))
+            .transpose()
     }
 
     fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {
@@ -1397,11 +1407,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, FrozenSet> {
         // `frozenset` and `set` compare equal by their members, regardless of
         // mutability. `frozenset == dict_keys`/`dict_items` is handled by the
         // reflected pass via the dict-view impls.
-        match other.read_heap(vm) {
-            Some(HeapReadOutput::FrozenSet(other)) => Ok(Some(self.storage().eq(&other.storage(), vm)?)),
-            Some(HeapReadOutput::Set(other)) => Ok(Some(self.storage().eq(&other.storage(), vm)?)),
-            _ => Ok(None),
-        }
+        other
+            .read_heap(vm)
+            .as_ref()
+            .and_then(HeapReadOutput::set_storage)
+            .map(|other| self.storage().eq(&other, vm))
+            .transpose()
     }
 
     /// Hashes the frozenset by XORing the element hashes stored with its entries.
@@ -1475,22 +1486,11 @@ impl HeapItem for FrozenSet {
 /// only accept CPython's set-like operands (`set`, `frozenset`, `dict_keys`,
 /// and `dict_items`), while method forms accept any iterable.
 fn get_storage_from_set_operand(value: &Value, vm: &mut VM<'_>) -> RunResult<Option<SetStorage>> {
-    let Value::Ref(id) = value else {
-        return Ok(None);
-    };
-
-    match vm.heap.read(*id) {
-        HeapReadOutput::Set(set) => set.storage().copy(vm).map(Some),
-        HeapReadOutput::FrozenSet(set) => set.storage().copy(vm).map(Some),
-        HeapReadOutput::DictKeysView(view) => {
-            let Set(storage) = view.to_set(vm)?;
-            Ok(Some(storage))
-        }
-        HeapReadOutput::DictItemsView(view) => {
-            let Set(storage) = view.to_set(vm)?;
-            Ok(Some(storage))
-        }
-        _ => Ok(None),
+    match value.read_heap(vm) {
+        Some(HeapReadOutput::DictKeysView(view)) => view.to_set(vm).map(|set| Some(set.0)),
+        Some(HeapReadOutput::DictItemsView(view)) => view.to_set(vm).map(|set| Some(set.0)),
+        Some(other) => other.set_storage().map(|storage| storage.copy(vm)).transpose(),
+        None => Ok(None),
     }
 }
 
@@ -1585,12 +1585,15 @@ impl SetIterator {
         let source_id = match source {
             SetIteratorSource::Set(id) | SetIteratorSource::FrozenSet(id) => id,
         };
-        let id = vm.heap.allocate(HeapData::SetIterator(Self {
-            source,
-            cursor: TableCursor::new(expected_len),
-        }));
+        let iterator = Value::allocate(
+            Self {
+                source,
+                cursor: TableCursor::new(expected_len),
+            },
+            vm.heap,
+        );
         vm.heap.inc_ref(source_id);
-        Value::Ref(id)
+        iterator
     }
 }
 

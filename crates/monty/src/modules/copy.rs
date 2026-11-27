@@ -14,7 +14,7 @@ use crate::{
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    types::{Dict, List, Module, hash_table::TableCursor, instance_call_copy_hook},
+    types::{Dict, List, Module, Type, hash_table::TableCursor, instance_call_copy_hook},
     value::{VALUE_SIZE, Value},
 };
 
@@ -103,7 +103,7 @@ fn shallow_copy(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
         return Ok(value.clone_with_heap(vm.heap));
     };
     let id = *id;
-    match classify(&vm.heap.read(id)) {
+    match classify(&vm.heap.read(id), vm) {
         Copyability::Shared | Copyability::ImmutableContainer => Ok(value.clone_with_heap(vm.heap)),
         Copyability::Refused => Err(cannot_copy(value, vm)),
         Copyability::Rebuilt => match vm.heap.read(id) {
@@ -160,6 +160,16 @@ fn shallow_copy(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
             // A second generator at the same point in the same sequence, which is
             // what CPython's `__getstate__`/`__setstate__` pair produces.
             HeapReadOutput::Random(random) => Ok(random.allocate_like(vm)),
+            // CPython copies a stream through `__getstate__`, so its text and
+            // position but not its line-ending history; a closed one refuses.
+            HeapReadOutput::StringIo(stream) => {
+                let copy = stream.get(vm.heap).copy(vm)?;
+                Ok(Value::Ref(vm.heap.allocate(HeapData::StringIo(Box::new(copy)))))
+            }
+            HeapReadOutput::BytesIo(stream) => {
+                let copy = stream.get(vm.heap).copy(vm)?;
+                Ok(Value::Ref(vm.heap.allocate(HeapData::BytesIo(Box::new(copy)))))
+            }
             // `Context.__copy__`: the same settings and flags in a new object.
             HeapReadOutput::DecimalContext(context) => {
                 let settings = *context.get(vm.heap);
@@ -220,7 +230,7 @@ pub(crate) fn deep_copy(source: &Value, memo: &mut Memo, vm: &mut VM<'_>) -> Run
     // Dispatched here rather than in a function of its own: every frame live
     // across the recursion is paid once per level of nesting. `classify`
     // returns before the recursion, so its frame is not one of them.
-    let copy = match classify(&vm.heap.read(id)) {
+    let copy = match classify(&vm.heap.read(id), vm) {
         Copyability::Shared => Ok(source.clone_with_heap(vm.heap)),
         Copyability::Refused => Err(cannot_copy(source, vm)),
         // An immutable container's items still change, so `deepcopy` rebuilds
@@ -237,6 +247,8 @@ pub(crate) fn deep_copy(source: &Value, memo: &mut Memo, vm: &mut VM<'_>) -> Run
             HeapReadOutput::BoundMethod(bound) => bound.py_deep_copy(source, memo, vm),
             HeapReadOutput::Partial(partial) => partial.py_deep_copy(source, memo, vm),
             HeapReadOutput::Random(random) => random.py_deep_copy(source, memo, vm),
+            // A stream holds no references, so its deep copy is its shallow one.
+            HeapReadOutput::StringIo(_) | HeapReadOutput::BytesIo(_) => shallow_copy(source, vm),
             // A context holds no references, so its deep copy is its shallow one.
             HeapReadOutput::DecimalContext(context) => {
                 let settings = *context.get(vm.heap);
@@ -283,7 +295,7 @@ enum Copyability {
 }
 
 /// Decides what the two passes do with a heap value.
-fn classify(output: &HeapReadOutput<'_>) -> Copyability {
+fn classify<'h>(output: &HeapReadOutput<'h>, vm: &VM<'h>) -> Copyability {
     match output {
         HeapReadOutput::List(_)
         | HeapReadOutput::Dict(_)
@@ -294,6 +306,8 @@ fn classify(output: &HeapReadOutput<'_>) -> Copyability {
         | HeapReadOutput::BoundMethod(_)
         | HeapReadOutput::Partial(_)
         | HeapReadOutput::Random(_)
+        | HeapReadOutput::StringIo(_)
+        | HeapReadOutput::BytesIo(_)
         | HeapReadOutput::DecimalContext(_) => Copyability::Rebuilt,
         // A shallow copy of an immutable container holds the same items, so
         // CPython hands back the original; only `deepcopy` rebuilds these.
@@ -302,6 +316,9 @@ fn classify(output: &HeapReadOutput<'_>) -> Copyability {
         }
         // CPython's cache wrappers share their state through both copy operations.
         HeapReadOutput::LruCache(_) => Copyability::Shared,
+        HeapReadOutput::BuiltinDescriptor(d) => {
+            if d.get(vm.heap).kind() == Type::Property { Copyability::Shared } else { Copyability::Refused }
+        }
         // Leaves and immutable containers Monty can never mutate, so a copy
         // that shared them is indistinguishable from one that rebuilt them.
         HeapReadOutput::Str(_)
