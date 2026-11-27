@@ -26,6 +26,7 @@ mod locals;
 pub(crate) mod map;
 mod min_max; // min and max share implementation
 pub(crate) use min_max::candidate_wins;
+pub(crate) use sum::Phase as SumPhase;
 pub(crate) mod next;
 pub(crate) mod object;
 pub(crate) mod object_setattr;
@@ -193,7 +194,8 @@ impl BuiltinsFunctionsExt for BuiltinsFunctions {
             Self::ObjectInitSubclass => object::builtin_object_init_subclass(vm, args),
             Self::TypeMro => type_::builtin_type_mro(vm, args),
             Self::Sorted => sorted::builtin_sorted(vm, args),
-            Self::Sum => sum::builtin_sum(vm, args),
+            // `sum()` over a user iterator may park a native continuation on its `__next__` frame.
+            Self::Sum => return sum::builtin_sum(vm, args),
             Self::Type => type_::builtin_type(vm, args),
             Self::Zip => zip::builtin_zip(vm, args),
             // `eval()` / `exec()` push the compiled snippet's frame.

@@ -25,10 +25,13 @@ use std::{
 /// All tuple methods from Python's builtins are implemented.
 use smallvec::SmallVec;
 
-use super::{CmpOrder, PyTrait, iter::collect_owned_iterable};
+use super::{
+    CmpOrder, PyTrait,
+    iter::{collect_python_iterator, is_user_iterator},
+};
 use crate::{
     args::ArgValues,
-    bytecode::{CallResult, ContainsVM, RecursionToken, VM},
+    bytecode::{CallResult, CollectKind, ContainsVM, NativeCont, RecursionToken, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
@@ -122,18 +125,29 @@ impl Tuple {
     ///
     /// - `tuple()` with no args returns an empty tuple (singleton)
     /// - `tuple(iterable)` creates a tuple from any iterable (list, tuple, range, str, bytes, dict)
-    pub fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    ///
+    /// A user iterator is drained through a native continuation, so its `__next__` may suspend.
+    pub fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
         let value = args.get_zero_one_arg("tuple", vm.heap)?;
         match value {
             None => {
                 // Use empty tuple singleton
-                Ok(vm.heap.get_empty_tuple())
+                Ok(CallResult::Value(vm.heap.get_empty_tuple()))
             }
             // Named tuples still need conversion to a plain tuple.
-            Some(v @ Value::Ref(id)) if matches!(vm.heap.get(id), HeapData::Tuple(_)) => Ok(v),
+            Some(v @ Value::Ref(id)) if matches!(vm.heap.get(id), HeapData::Tuple(_)) => Ok(CallResult::Value(v)),
             Some(v) => {
-                let items = collect_owned_iterable(v, vm)?;
-                Ok(allocate_tuple(items, vm.heap))
+                let iterator = v.into_py_iter(vm)?.require_synchronous(vm)?;
+                if is_user_iterator(&iterator, vm) {
+                    vm.start_native(NativeCont::Collect {
+                        iterator,
+                        items: Vec::new(),
+                        kind: CollectKind::Tuple,
+                    })
+                } else {
+                    let items = collect_python_iterator(iterator, vm)?;
+                    Ok(CallResult::Value(allocate_tuple(items, vm.heap)))
+                }
             }
         }
     }

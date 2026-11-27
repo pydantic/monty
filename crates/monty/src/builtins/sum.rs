@@ -2,14 +2,16 @@
 
 use std::mem;
 
+use serde::{Deserialize, Serialize};
+
 use crate::{
     args::{ArgValues, FromArgs},
-    bytecode::VM,
+    bytecode::{CallResult, NativeCont, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::DropGuard,
     py_value::PyValue,
-    types::{Complex, PyTrait, Type},
+    types::{Complex, PyTrait, Type, iter::is_user_iterator},
     value::Value,
 };
 
@@ -31,13 +33,15 @@ struct SumArgs {
 /// Sums the items of an iterable from left to right with an optional start value.
 /// The default start value is 0. Str and bytes start values are explicitly
 /// rejected, pointing at `''.join(seq)` / `b''.join(seq)` instead.
-pub fn builtin_sum(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+///
+/// A user iterator is folded through a native continuation, so its `__next__` may suspend.
+pub fn builtin_sum(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let SumArgs { iterable, start } = SumArgs::from_args(args, vm)?;
     defer_drop_mut!(start, vm);
 
     let iter = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
-    defer_drop!(iter, vm);
-    let mut iter = iter.read(vm);
+    let mut iter_guard = DropGuard::new(iter, vm);
+    let (iter, vm) = iter_guard.as_parts();
 
     // Reject str/bytes start values - Python explicitly forbids these
     match start.py_type(vm).native() {
@@ -48,27 +52,30 @@ pub fn builtin_sum(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // Take the start value out of its guard (dropping `None` is a no-op).
     let accumulator = mem::replace(start, Value::None);
 
+    let phase = Phase::start(&accumulator, vm);
+    if is_user_iterator(iter, vm) {
+        let (iterator, vm) = iter_guard.into_parts();
+        return vm.start_native(NativeCont::Sum {
+            iterator,
+            total: accumulator,
+            phase,
+        });
+    }
+    let mut iter = iter.read(vm);
+
     // DropGuard for accumulator: on success we extract it via into_inner(),
     // on any error path it's dropped automatically
     let mut acc_guard = DropGuard::new(accumulator, vm);
     let (accumulator, vm) = acc_guard.as_parts_mut();
 
-    let mut phase = Phase::start(accumulator, vm);
+    let mut phase = phase;
     while let Some(item) = iter.py_next(vm)? {
         defer_drop!(item, vm);
-        if phase.add(item, vm)? {
-            continue;
-        }
-
-        phase.store(accumulator, vm);
-        let new_value = accumulator.py_add(item, vm)?;
-        let old = mem::replace(accumulator, new_value);
-        old.drop_with(vm);
-        phase = phase.next(item, accumulator, vm);
+        phase.fold(accumulator, item, vm)?;
     }
     phase.store(accumulator, vm);
 
-    Ok(acc_guard.into_inner())
+    Ok(CallResult::Value(acc_guard.into_inner()))
 }
 
 /// CPython's fast paths through `sum()`, in the order it tries them.
@@ -76,7 +83,11 @@ pub fn builtin_sum(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// The float and complex paths keep a compensated running total instead of
 /// adding item by item, so `sum([0.1] * 10) == 1.0`. Once an item doesn't fit
 /// a path, the total is stored and the sum moves on to a later path for good.
-enum Phase {
+///
+/// A suspended `sum()` over a user iterator keeps its phase in `NativeCont::Sum`, so the
+/// variant and field names are part of the dump format.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub(crate) enum Phase {
     /// The total is an int and every item so far was an int or bool.
     Int,
     Float(CompensatedSum),
@@ -110,6 +121,20 @@ impl Phase {
         }
     }
 
+    /// Adds one item to `total`, through this phase's fast path when the item fits it.
+    ///
+    /// While a compensated path is active `total` is stale; [`Self::store`] writes it back.
+    pub(crate) fn fold(&mut self, total: &mut Value, item: &Value, vm: &mut VM<'_>) -> RunResult<()> {
+        if self.add(item, vm)? {
+            return Ok(());
+        }
+        self.store(total, vm);
+        let new_value = total.py_add(item, vm)?;
+        mem::replace(total, new_value).drop_with(vm);
+        *self = self.next(item, total, vm);
+        Ok(())
+    }
+
     /// Adds `item` to a compensated total, or returns `false` if it doesn't fit this path.
     fn add(&mut self, item: &Value, vm: &VM<'_>) -> RunResult<bool> {
         if matches!(self, Self::Int | Self::Generic) {
@@ -130,7 +155,7 @@ impl Phase {
     }
 
     /// Writes a compensated total back into `total`.
-    fn store(&self, total: &mut Value, vm: &mut VM<'_>) {
+    pub(crate) fn store(&self, total: &mut Value, vm: &mut VM<'_>) {
         let value = match self {
             Self::Float(real) => Value::Float(real.value()),
             Self::Complex(real, imag) => Complex::new(real.value(), imag.value()).into_value(vm.heap),
@@ -151,8 +176,8 @@ impl Phase {
 }
 
 /// A float total with Neumaier compensation, CPython's `CompensatedSum`.
-#[derive(Clone, Copy)]
-struct CompensatedSum {
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub(crate) struct CompensatedSum {
     hi: f64,
     lo: f64,
 }

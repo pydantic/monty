@@ -6,11 +6,11 @@ use smallvec::SmallVec;
 
 use super::{
     CmpOrder, PyTrait,
-    iter::{collect_owned_iterable, collect_python_iterator},
+    iter::{collect_owned_iterable, collect_python_iterator, is_user_iterator},
 };
 use crate::{
     args::ArgValues,
-    bytecode::{CallResult, ContainsVM, RecursionToken, VM},
+    bytecode::{CallResult, CollectKind, ContainsVM, NativeCont, RecursionToken, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{
@@ -271,13 +271,24 @@ impl List {
     ///
     /// - `list()` with no args returns an empty list
     /// - `list(iterable)` creates a list from any iterable (list, tuple, range, str, bytes, dict)
-    pub fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    ///
+    /// A user iterator is drained through a native continuation, so its `__next__` may suspend.
+    pub fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
         let value = args.get_zero_one_arg("list", vm.heap)?;
         match value {
-            None => Ok(Value::allocate(Self::new(Vec::new()), vm.heap)),
+            None => Ok(CallResult::Value(Value::allocate(Self::new(Vec::new()), vm.heap))),
             Some(v) => {
-                let items = collect_owned_iterable(v, vm)?;
-                Ok(Value::allocate(Self::new(items), vm.heap))
+                let iterator = v.into_py_iter(vm)?.require_synchronous(vm)?;
+                if is_user_iterator(&iterator, vm) {
+                    vm.start_native(NativeCont::Collect {
+                        iterator,
+                        items: Vec::new(),
+                        kind: CollectKind::List,
+                    })
+                } else {
+                    let items = collect_python_iterator(iterator, vm)?;
+                    Ok(CallResult::Value(Value::allocate(Self::new(items), vm.heap)))
+                }
             }
         }
     }

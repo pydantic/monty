@@ -657,13 +657,13 @@ native_types! {
         .basetype()
         .class_getitem()
         .sequence_repeat()
-        .ctor(Constructor::Value(List::init)),
+        .ctor(Constructor::Call(List::init)),
     Tuple("tuple")
         .builtin()
         .basetype()
         .class_getitem()
         .sequence_repeat()
-        .ctor(Constructor::Value(Tuple::init)),
+        .ctor(Constructor::Call(Tuple::init)),
     NamedTuple("namedtuple", Tuple)
         .sequence_repeat(),
     Dict("dict")

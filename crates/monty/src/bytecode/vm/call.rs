@@ -140,9 +140,13 @@ impl CallResult {
     }
 
     /// Runs under the caller's native re-entry reservation when a frame needs execution.
-    fn finish_synchronously(self, vm: &mut VM<'_>) -> RunResult<Value> {
+    pub(super) fn finish_synchronously(self, vm: &mut VM<'_>) -> RunResult<Value> {
         match self {
             Self::Value(value) => Ok(value),
+            // A native consumer parked on the frame: drive it here instead of landing on the caller.
+            Self::FramePushed if let Some(cont) = vm.current_frame_mut().continuation.take() => {
+                vm.finish_native_synchronously(*cont)
+            }
             // With no host to answer, `hasattr` and `getattr` see an undefined attribute.
             Self::AttrLookup {
                 effect: Some(effect), ..

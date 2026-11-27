@@ -11,7 +11,7 @@ use std::{collections::VecDeque, mem};
 use ahash::AHashMap;
 use smallvec::{SmallVec, smallvec};
 
-use super::{FrameNamespace, exceptions::CaughtException};
+use super::{FrameNamespace, NativeCont, exceptions::CaughtException};
 use crate::{
     asyncio::{Awaiter, CallId, TaskId},
     exception_private::RunResult,
@@ -71,6 +71,7 @@ impl<C: ContainsHeap> DropWithContext<C> for Task {
         self.exception_stack.drain(..).drop_with(heap);
         for frame in self.frames.drain(..) {
             frame.namespace.drop_with(heap);
+            frame.continuation.drop_with(heap);
         }
         self.state.drop_with(heap);
         if let Some(coro_id) = self.coroutine_id.take() {
@@ -112,6 +113,9 @@ pub(crate) struct SerializedTaskFrame {
     /// The `from ... import` in progress, if the frame parked inside one.
     #[serde(default)]
     pub import_from_module: Option<StringId>,
+    /// Native work waiting for this frame's outcome (see `CallFrame.continuation`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation: Option<Box<NativeCont>>,
 }
 
 impl Task {

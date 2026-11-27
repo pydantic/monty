@@ -478,9 +478,9 @@ every construction request. Divergences:
     indexing is unaffected: `[1, 2, 3][10**30]` raises `IndexError` as CPython
     does.
 - `__contains__` cannot suspend on an external or OS call; it raises `NotImplementedError` inside the method.
-    `__iter__` and `__next__` have the same restriction in collection constructors and synchronous native iterator
-    adaptors, but not in `for`, comprehensions, direct `iter()`/`next()`, or `functools.reduce()` calls.
-    See [iter.md](iter.md) for other iteration restrictions.
+    `__iter__` and `__next__` have the same restriction in most native consumers, but not in `for`, comprehensions,
+    direct `iter()`/`next()` or `functools.reduce()`, and `list()`, `tuple()` and `sum()` can suspend in `__next__`.
+    See [iter.md](iter.md) for the exact list and for other iteration restrictions.
     Two related protocols are still not dispatched:
     - the legacy `__getitem__`-only fallback: CPython iterates a class defining
         `__getitem__` but not `__iter__` from index 0 until `IndexError`, while

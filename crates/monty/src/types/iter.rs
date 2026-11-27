@@ -122,6 +122,12 @@ impl<'h> CollectIter<'h> for ValueRead<'h, '_> {
     }
 }
 
+/// Whether `iterator` is a user instance, whose `__next__` a native consumer must call through a
+/// [`NativeCont`](crate::bytecode::NativeCont) so it can suspend.
+pub(crate) fn is_user_iterator(iterator: &Value, vm: &VM<'_>) -> bool {
+    iterator.read_as::<Instance>(vm.heap).is_some()
+}
+
 /// Collects every item yielded by an iterable into a `Vec`.
 pub fn collect_iterable(value: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
     let iterator = value.py_iter(vm)?.require_synchronous(vm)?;

@@ -18,6 +18,7 @@ pub(crate) use iteration::compile_iteration_catcher;
 mod module_cache;
 mod module_finder;
 mod namespace;
+mod native_cont;
 mod pattern;
 mod recursion;
 mod scheduler;
@@ -32,6 +33,7 @@ pub(crate) use module_cache::ModuleCache;
 pub(crate) use module_finder::PendingImport;
 use monty_types::{InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, SourceRange};
 pub(crate) use namespace::{FrameGlobals, FrameNamespace, MissingNames, function_namespace};
+pub(crate) use native_cont::{CollectKind, NativeCont};
 use recursion::frame_recursion_depth;
 pub(crate) use recursion::{ContainsVM, RecursionToken, RunReentryGuard};
 use scheduler::Scheduler;
@@ -376,6 +378,10 @@ pub struct CallFrame<'code> {
     /// Keeping it on the frame avoids another opcode operand; the compiler emits
     /// no intervening instructions that change it.
     import_from_module: Option<StringId>,
+
+    /// Native work waiting for this frame's outcome; `None` for almost every frame.
+    /// Never set together with `should_return`. Owned: released by `cleanup_frame_state`.
+    continuation: Option<Box<NativeCont>>,
 }
 
 /// Narrows a VM stack index to the frame's `u32` field.
@@ -415,6 +421,7 @@ impl<'code> CallFrame<'code> {
             namespace: None,
             is_initializer: false,
             import_from_module: None,
+            continuation: None,
         }
     }
 
@@ -439,6 +446,7 @@ impl<'code> CallFrame<'code> {
         self.is_parked = true;
         self.is_initializer = false;
         debug_assert!(self.namespace.is_none(), "parked frame still owns a namespace");
+        debug_assert!(self.continuation.is_none(), "parked frame still owns a continuation");
     }
 
     /// Creates a new call frame for a function call.
@@ -472,6 +480,7 @@ impl<'code> CallFrame<'code> {
             namespace,
             is_initializer: false,
             import_from_module: None,
+            continuation: None,
         }
     }
 }
@@ -622,6 +631,10 @@ pub struct SerializedFrame {
     /// The `from ... import` in progress, if the frame suspended inside one.
     #[serde(default, rename = "M")]
     import_from_module: Option<StringId>,
+
+    /// Native work waiting for this frame's outcome (see `CallFrame.continuation`).
+    #[serde(default, rename = "K", skip_serializing_if = "Option::is_none")]
+    continuation: Option<Box<NativeCont>>,
 }
 
 impl CallFrame<'_> {
@@ -643,6 +656,7 @@ impl CallFrame<'_> {
             is_initializer: self.is_initializer,
             namespace: mem::take(&mut self.namespace),
             import_from_module: self.import_from_module,
+            continuation: self.continuation.take(),
         }
     }
 }
@@ -740,6 +754,7 @@ impl VMSnapshot {
             stack.drop_with(heap);
             for frame in frames {
                 frame.namespace.drop_with(heap);
+                frame.continuation.drop_with(heap);
             }
             scheduler.cleanup(heap);
             // a module body interrupted here must run again at the next import
@@ -976,6 +991,7 @@ impl<'h> VM<'h> {
                     namespace: sf.namespace,
                     is_initializer: sf.is_initializer,
                     import_from_module: sf.import_from_module,
+                    continuation: sf.continuation,
                 }
             })
             .collect();
@@ -1974,10 +1990,16 @@ impl<'h> VM<'h> {
                     }
                     // Read the initializer flag before popping the frame.
                     let is_init = self.current_frame().is_initializer;
+                    let continuation = self.current_frame.continuation.take();
+                    let call_offset = self.current_frame.call_offset;
                     // Pop current frame; `stop` requests returning to the host
                     // (e.g. `evaluate_function`).
                     let stop = self.pop_frame();
-                    if is_init {
+                    if let Some(cont) = continuation {
+                        // A native consumer waited on this `__next__`; it decides what lands.
+                        debug_assert!(!stop && !is_init, "continuation frames neither stop nor initialize");
+                        try_catch!(self, self.resume_native(*cont, call_offset, Ok(value)));
+                    } else if is_init {
                         if !matches!(value, Value::None) {
                             // CPython raises at the `Foo(...)` call site: the
                             // initializer frame is already popped, so the traceback
@@ -2520,6 +2542,9 @@ impl<'h> VM<'h> {
         if let Some(namespace) = frame.namespace {
             namespace.drop_with(self.heap);
         }
+        if let Some(continuation) = frame.continuation {
+            continuation.drop_with(self.heap);
+        }
     }
 
     /// Drops the current task's operand and exception stacks and discards its frames.
@@ -2529,8 +2554,10 @@ impl<'h> VM<'h> {
         self.exception_stack.drain(..).drop_with(self.heap);
         for frame in self.suspended_frames.drain(..) {
             frame.namespace.drop_with(self.heap);
+            frame.continuation.drop_with(self.heap);
         }
         self.current_frame.namespace.take().drop_with(self.heap);
+        self.current_frame.continuation.take().drop_with(self.heap);
         self.current_frame.park(self.module_code);
     }
 
