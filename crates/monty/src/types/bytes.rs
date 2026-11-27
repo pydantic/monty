@@ -260,7 +260,7 @@ fn try_bytes_from_size(source: &Value, vm: &mut VM<'_>) -> RunResult<Option<Vec<
 }
 
 /// Drains an owned Python iterator of byte values (integers in 0..=255) into a `Vec<u8>`.
-fn collect_bytes_from_iterator(iterator: Value, vm: &mut VM<'_>) -> RunResult<Vec<u8>> {
+pub(crate) fn collect_bytes_from_iterator(iterator: Value, vm: &mut VM<'_>) -> RunResult<Vec<u8>> {
     defer_drop!(iterator, vm);
     let mut iterator = iterator.read(vm);
     let preallocation_hint = checked_preallocation_hint(iterator.iter_size_hint(vm), 1, &vm.heap.tracker)?;

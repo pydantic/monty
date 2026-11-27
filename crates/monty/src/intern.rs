@@ -753,6 +753,8 @@ pub enum StaticStrings {
     BuiltinModuleNames,
     /// `sys.byteorder` attribute.
     Byteorder,
+    /// `bytes` parameter of `int.from_bytes()`.
+    Bytes,
     /// `io.BytesIO` in-memory binary stream.
     #[strum(serialize = "BytesIO")]
     BytesIo,
@@ -1728,6 +1730,8 @@ pub enum StaticStrings {
     Fp,
     /// `math.frexp()` function.
     Frexp,
+    /// `int.from_bytes()` classmethod.
+    FromBytes,
     /// `Decimal.from_float()`.
     FromFloat,
     /// `chain.from_iterable` — the one attribute an `itertools` type carries.
@@ -2858,6 +2862,8 @@ pub enum StaticStrings {
     Sigma,
     /// `DecimalTuple.sign` field.
     Sign,
+    /// `signed` parameter of `int.to_bytes()` / `int.from_bytes()`.
+    Signed,
     /// `math.sin()` function.
     Sin,
     /// `math.sinh()` function.
@@ -3086,6 +3092,8 @@ pub enum StaticStrings {
     TmYear,
     /// `struct_time.tm_zone` field.
     TmZone,
+    /// `int.to_bytes()` method.
+    ToBytes,
     /// `Decimal.to_eng_string()` / `Context.to_eng_string()`.
     ToEngString,
     /// `Decimal.to_integral()` / `Context.to_integral()`.

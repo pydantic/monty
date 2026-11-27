@@ -30,7 +30,7 @@ use crate::{
         GenericAlias, LazyHeapSet, LongInt, Property, PyTrait, Type, TypeRef, Union, allocate_string, allocate_tuple,
         bytes::PyBytes,
         file::unloaded_iteration_error,
-        long_int::{PyInt, arithmetic::float_binary},
+        long_int::{PyInt, arithmetic::float_binary, int_from_bytes},
         numeric::{round_digits, round_float},
         py_trait::PyObjectIdentity,
         str::{PyStr, string_repr_fmt},
@@ -347,6 +347,10 @@ impl<'h> PyValue<'h> {
                         args.check_zero_args("int.is_integer", vm.heap)?;
                         Ok(CallResult::Value(Value::Bool(true)))
                     }
+                    Some(StaticStrings::ToBytes) => {
+                        PyInt::Small(i64::from(*value)).to_bytes(args, vm).map(CallResult::Value)
+                    }
+                    Some(StaticStrings::FromBytes) => int_from_bytes(args, true, vm).map(CallResult::Value),
                     _ => {
                         args.drop_with(vm);
                         Err(ExcType::attribute_error("bool", attr.as_str(vm.interns)))

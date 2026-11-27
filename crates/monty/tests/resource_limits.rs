@@ -2603,3 +2603,34 @@ fn bytes_iterable_respects_max_memory() {
     let err = ex.run(vec![], tracker, PrintWriter::Stdout).unwrap_err();
     assert_eq!(err.exc_type(), ExcType::MemoryError);
 }
+
+/// An oversized `to_bytes` length raises `MemoryError` instead of aborting on allocation.
+#[test]
+fn to_bytes_unaddressable_length_is_a_memory_error() {
+    let code = "(0).to_bytes(2**62)\n";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let exc = ex
+        .run_no_limits(vec![])
+        .expect_err("an unaddressable result must be refused");
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+}
+
+/// Converting large bytes via `int.from_bytes` preflights scratch and digit storage and halts with MemoryError.
+#[test]
+fn from_bytes_respects_max_memory() {
+    let code = "int.from_bytes(b'\\x01' * 200_000, 'big')";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let tracker = ResourceTracker::new(ResourceLimits::default().max_memory(300_000));
+    let err = ex.run(vec![], tracker, PrintWriter::Stdout).unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::MemoryError);
+}
+
+/// Converting large int via `int.to_bytes` respects max_memory without unbudgeted scratch allocations.
+#[test]
+fn to_bytes_respects_max_memory() {
+    let code = "(1 << 2_000_000).to_bytes(300_000, 'big')\n";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let tracker = ResourceTracker::new(ResourceLimits::default().max_memory(200_000));
+    let err = ex.run(vec![], tracker, PrintWriter::Stdout).unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::MemoryError);
+}

@@ -30,7 +30,7 @@ use crate::{
         Bytes, Deque, Dict, ForwardRef, FrozenSet, List, Partial, Path, Random, Range, Set, Slice, TimeZone, Tuple,
         builtin_descriptor, complex, date, datetime, decimal,
         io::{BytesIo, PyBytesIoImpl, PyStringIoImpl, StringIo},
-        numeric,
+        long_int, numeric,
         str::PyStr,
         time, timedelta,
         r#type::{bool_init, float_init, int_init, union_init},
@@ -602,7 +602,9 @@ native_types! {
     Int("int")
         .builtin()
         .basetype()
-        .ctor(Constructor::Value(int_init)),
+        .ctor(Constructor::Value(int_init))
+        .attrs(long_int::PyIntImpl::TABLE)
+        .subtype_call(long_int::call_subtype_descriptor),
     Float("float")
         .builtin()
         .basetype()
