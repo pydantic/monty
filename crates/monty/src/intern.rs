@@ -1010,6 +1010,8 @@ pub enum StaticStrings {
     Delete,
     /// `delimiter` dialect attribute and `csv` format parameter.
     Delimiter,
+    /// `int.denominator` attribute.
+    Denominator,
     /// `depth` parameter of `hashlib.blake2b()`.
     Depth,
     /// The `collections.deque` type.
@@ -2414,6 +2416,8 @@ pub enum StaticStrings {
     Number,
     /// `Decimal.number_class()` / `Context.number_class()`.
     NumberClass,
+    /// `int.numerator` attribute.
+    Numerator,
     /// Kwarg name `obj` — `json.dumps(obj=...)`.
     Obj,
     /// Kwarg name `object` — `str(object=...)`, `itertools.repeat(object=...)`.
