@@ -4,7 +4,7 @@ use monty_types::MontyUuid;
 use smallvec::smallvec;
 
 use super::{
-    Dict, LazyHeapSet, OwnedTypeRef, PyTrait, Type, TypeRef,
+    Dict, LazyHeapSet, OwnedTypeRef, PyTrait, Type, TypeRef, descriptor,
     instance::{BoundMethod, is_method_value},
     tuple::allocate_tuple,
 };
@@ -58,13 +58,21 @@ pub(crate) struct Class {
     /// its instances) crosses to the host; dumped with the heap so it stays
     /// stable across restores.
     uuid: Option<MontyUuid>,
+    /// No member needs descriptor-hook dispatch; native function binding is handled separately.
+    /// Missing hints in older dumps default to false, retaining full precedence checks.
+    #[serde(default)]
+    descriptor_free: bool,
+    /// Instance storage can be checked first, even with builtin non-data descriptors present.
+    /// User-defined members remain candidates because their types can acquire setter/deleter hooks.
+    #[serde(default)]
+    data_descriptor_free: bool,
 }
 
 impl Class {
     /// Creates a new class object with no explicit bases, so `object` is its only ancestor.
     #[must_use]
-    pub fn new(name: EitherStr, namespace: Dict) -> Self {
-        Self::with_bases(name, namespace, Box::default(), Box::default())
+    pub fn new(name: EitherStr, namespace: Dict, heap: &Heap) -> Self {
+        Self::with_bases(name, namespace, Box::default(), Box::default(), heap)
     }
 
     /// Creates a class with `bases` (whose class references it takes) and the
@@ -75,14 +83,37 @@ impl Class {
         namespace: Dict,
         bases: Box<[OwnedTypeRef]>,
         mro: Box<[TypeRef]>,
+        heap: &Heap,
     ) -> Self {
+        // A base can acquire a descriptor after the subclass is created.
+        let local_only = !mro.iter().any(|base| matches!(base, TypeRef::Class(_)));
+        let descriptor_free = local_only
+            && namespace
+                .iter()
+                .all(|(_, value)| !descriptor::may_be_descriptor(value, heap));
+        let data_descriptor_free = local_only
+            && namespace
+                .iter()
+                .all(|(_, value)| !descriptor::may_be_data_descriptor(value, heap));
         Self {
             name,
             namespace,
             bases,
             mro,
             uuid: None,
+            descriptor_free,
+            data_descriptor_free,
         }
+    }
+
+    /// No stored member can require descriptor-hook dispatch without a namespace write.
+    pub(crate) fn descriptor_free(&self) -> bool {
+        self.descriptor_free
+    }
+
+    /// No stored member can become a data descriptor without a namespace write.
+    pub(crate) fn data_descriptor_free(&self) -> bool {
+        self.data_descriptor_free
     }
 
     /// Boundary identity of the class, generated and stored on first use so
@@ -152,6 +183,14 @@ impl<'h> HeapReadMut<'h, Class> {
     /// Existing instances observe the change immediately: instance attribute reads
     /// fall through to this namespace.
     pub fn set_attr(&self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        // Clear hints before publishing a candidate, including instances whose types have no hooks yet.
+        // Re-enabling after replacement/deletion would require rescanning all remaining candidates.
+        if descriptor::may_be_descriptor(&value, vm.heap) {
+            self.get_mut(vm.heap).descriptor_free = false;
+        }
+        if descriptor::may_be_data_descriptor(&value, vm.heap) {
+            self.get_mut(vm.heap).data_descriptor_free = false;
+        }
         let guarded = name
             .as_either_str(vm.heap)
             .map(|name| name.as_str(vm.interns).to_owned());
@@ -177,6 +216,13 @@ impl<'h> HeapReadMut<'h, Class> {
         heap: &mut HeapReader<'h>,
         interns: &Interns,
     ) -> Option<Value> {
+        // Dump upgrades currently write native methods; keep other future writers conservative too.
+        if descriptor::may_be_descriptor(&value, heap) {
+            self.get_mut(heap).descriptor_free = false;
+        }
+        if descriptor::may_be_data_descriptor(&value, heap) {
+            self.get_mut(heap).data_descriptor_free = false;
+        }
         self.namespace_mut().set_interned_str(name, value, heap, interns)
     }
 
@@ -257,7 +303,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
             return annotations::class_annotations(self.id(), vm).map(Some);
         }
         match class_getattr(self.id(), attr, vm)? {
-            Some(value) => Ok(Some(CallResult::Value(value))),
+            Some(call) => Ok(Some(call)),
             None => Err(ExcType::attribute_error_type(
                 self.get(vm.heap).name.as_str(vm.interns),
                 attr.as_str(vm.interns),
@@ -269,36 +315,28 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
     /// is inserted, the caller passes the instance explicitly. `__init_subclass__`
     /// is an implicit classmethod, which `class_getattr` binds to the class.
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let class_id = self.id();
-        if attr.as_str(vm.interns) == "__annotations__" {
-            let annotations =
-                annotations::class_annotations(class_id, vm).and_then(|call| call.require_synchronous(vm));
-            let annotations = match annotations {
-                Ok(annotations) => annotations,
-                Err(err) => {
-                    args.drop_with(vm);
-                    return Err(err);
-                }
-            };
-            defer_drop!(annotations, vm);
-            return vm.call_function(annotations, args);
+        let mut guard = DropGuard::new(args, vm);
+        let (_, vm) = guard.as_parts_mut();
+        // Synthesized metaclass attributes must follow the same read path as LoadAttr.
+        if !matches!(
+            attr.as_str(vm.interns),
+            "__name__" | "__bases__" | "__mro__" | "__annotate__" | "__annotate_func__" | "__annotations__"
+        ) && matches!(
+            descriptor::resolve_class(self.id(), attr.as_str(vm.interns), vm),
+            descriptor::AttributeResolution::Getter(_)
+        ) {
+            let (args, vm) = guard.into_parts();
+            vm.heap.inc_ref(self.id());
+            descriptor::call_attr(Value::Ref(self.id()), attr, args, vm)
+        } else {
+            let result = self
+                .py_getattr(attr, vm)?
+                .expect("class read returns a result or raises");
+            let callable = result.require_synchronous(vm)?;
+            let (args, vm) = guard.into_parts();
+            defer_drop!(callable, vm);
+            vm.call_function(callable, args)
         }
-        let member = match class_getattr(class_id, attr, vm) {
-            Ok(member) => member,
-            Err(err) => {
-                args.drop_with(vm);
-                return Err(err);
-            }
-        };
-        let Some(member) = member else {
-            args.drop_with(vm);
-            return Err(ExcType::attribute_error_type(
-                self.get(vm.heap).name.as_str(vm.interns),
-                attr.as_str(vm.interns),
-            ));
-        };
-        defer_drop!(member, vm);
-        vm.call_function(member, args)
     }
 }
 
@@ -308,12 +346,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
 /// (`__name__`, `__bases__`, `__mro__`) shadow the class's
 /// own members, which come next in MRO order, then the members native
 /// ancestors provide (`object.__init__`), then `type`'s methods (`mro`).
-pub(crate) fn class_getattr(class_id: HeapId, attr: &EitherStr, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
+pub(crate) fn class_getattr(class_id: HeapId, attr: &EitherStr, vm: &mut VM<'_>) -> RunResult<Option<CallResult>> {
     let HeapData::Class(class) = vm.heap.get(class_id) else {
         unreachable!("class_getattr takes a class")
     };
     let attr_str = attr.as_str(vm.interns);
-    Ok(Some(match attr_str {
+    Ok(Some(CallResult::Value(match attr_str {
         "__name__" => allocate_string(class.name.as_str(vm.interns).to_owned(), vm.heap),
         "__bases__" => bases_tuple(class, vm.heap),
         "__mro__" => mro_tuple(class_id, vm.heap),
@@ -325,6 +363,10 @@ pub(crate) fn class_getattr(class_id: HeapId, attr: &EitherStr, vm: &mut VM<'_>)
         _ => {
             if let Some(member) = class.lookup(attr_str, vm.heap, vm.interns) {
                 let member = member.clone_with_heap(vm.heap);
+                if descriptor::has_get(&member, vm) {
+                    defer_drop!(member, vm);
+                    return descriptor::get(member, None, class_id, vm).map(Some);
+                }
                 if attr_str == "__init_subclass__" && is_method_value(&member, vm) {
                     vm.heap.inc_ref(class_id);
                     bind_init_subclass(Value::Ref(class_id), member, vm.heap)
@@ -353,7 +395,7 @@ pub(crate) fn class_getattr(class_id: HeapId, attr: &EitherStr, vm: &mut VM<'_>)
                 return Ok(None);
             }
         }
-    }))
+    })))
 }
 
 /// `cls.__bases__`: the declared bases, or `(object,)` for a class with none.
