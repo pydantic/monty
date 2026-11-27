@@ -301,6 +301,10 @@ pub enum Expr {
     /// Raises `TypeError` for non-awaitable values.
     /// Unlike standard Python, `await` is allowed at module level (like Jupyter notebooks).
     Await(Box<ExprLoc>),
+    /// `yield value`: suspends the enclosing generator; evaluates to the value sent on resume.
+    Yield(Box<ExprLoc>),
+    /// `yield from iterable`: delegates to an iterator; evaluates to its `StopIteration` value.
+    YieldFrom(Box<ExprLoc>),
     /// F-string expression containing literal and interpolated parts.
     ///
     /// At evaluation time, each part is processed in sequence:
@@ -362,6 +366,8 @@ pub enum Expr {
         signature: ParsedSignature,
         /// The lambda body expression (not yet prepared).
         body: Box<ExprLoc>,
+        /// Whether the body contains `yield`, so calling the lambda creates a generator.
+        is_generator: bool,
     },
     /// Lambda expression: `lambda args: body` (prepared form).
     ///
@@ -386,6 +392,14 @@ pub enum Expr {
         target: Identifier,
         value: Box<ExprLoc>,
     },
+    /// A generator expression before its synthetic function scope is prepared.
+    GeneratorRaw {
+        name_id: StringId,
+        elt: Box<ExprLoc>,
+        generators: Vec<Comprehension>,
+    },
+    /// A generator expression with a prepared child scope.
+    Generator(Box<PreparedGeneratorExpression>),
 }
 
 /// Target for tuple unpacking - a name, attribute, subscript, nested tuple or
@@ -596,6 +610,17 @@ pub struct Comprehension {
     pub iter: ExprLoc,
     /// Zero or more filter conditions (all must be truthy for the element to be included).
     pub ifs: Vec<ExprLoc>,
+}
+
+/// A generator expression's synthetic function and comprehension clauses.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PreparedGeneratorExpression {
+    /// Scope and closure layout; the compiler builds the body from the clauses below.
+    pub func_def: PreparedFunctionDef,
+    pub elt: ExprLoc,
+    /// Only the first `iter` is evaluated in the enclosing scope.
+    pub generators: Vec<Comprehension>,
+    pub captured_slots: Vec<u16>,
 }
 
 impl Expr {
@@ -997,6 +1022,9 @@ pub struct PreparedFunctionDef {
     /// When true, calling this function creates a `Coroutine` object instead of
     /// immediately pushing a frame.
     pub is_async: bool,
+    /// Whether the body yields: calling this function creates a `Generator` instead of
+    /// pushing a frame. Set from the parser's scope tracking, never inferred here.
+    pub is_generator: bool,
     /// The prepared `__annotate__(format)` of an annotated `def`, compiled as a
     /// nested function and recorded on the [`Function`](crate::function::Function).
     pub annotate: Option<Box<Self>>,

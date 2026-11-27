@@ -146,6 +146,27 @@ def with_default(x, y=[1]):
     return x + len(y)
 
 
+def gen_values(start):
+    received = yield start
+    yield (start, received)
+    return 'gen-done'
+
+
+gen_started = gen_values(1)
+next(gen_started)
+gen_fresh = gen_values(5)
+
+
+def gen_delegate():
+    result = yield from gen_values(7)
+    yield result
+
+
+gen_outer = gen_delegate()
+next(gen_outer)
+stop_exc = StopIteration([1])
+
+
 def exec_host(xs, d, b):
     g = {'host_call': host_call, 'xs': xs, 'd': d, 'b': b}
     exec('out = host_call(xs, d, b)', g)
@@ -206,6 +227,8 @@ assert list(dk_it) == ['b', 3] and list(dv_it) == [[2, 3], 'int key'] and next(c
 assert alias == list[int] and opt == (int | None) and str(where) == '/data/file.txt'
 assert with_default(1) == 2
 assert relative_globals['leaf']('/data/file.txt') == 'file.txt'
+assert gen_started.send('x') == (1, 'x') and next(gen_fresh) == 5
+assert next(gen_outer) == (7, None) and next(gen_outer) == 'gen-done' and stop_exc.value == [1]
 assert functools.reduce(lambda a, b: a + b, [1, 2, 3]) == 6
 assert add5(2) == 7
 (result, c.value)

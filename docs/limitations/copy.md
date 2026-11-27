@@ -64,7 +64,9 @@ aliases (`list[int]`) and unions (`int | None`), where CPython builds an equal
 new one through the pickle protocol. `timezone.utc` is the exception, a
 singleton in both, so only other offsets show it. `deepcopy` of a `slice`
 diverges the same way; `copy.copy` of one does not, CPython sharing slices too.
-Nothing in Monty can mutate any of these, so only `is` can tell the difference.
+Nothing in Monty can mutate any of these, so only `is` can tell the difference, with one exception: a
+`StopIteration`'s `.value` can be mutable, and since `copy.deepcopy(e)` is `e`, mutating the copy's `.value` changes the
+original's, where CPython copies it.
 `copy.copy` of a named tuple *does* build a new object, matching CPython.
 
 The cases where sharing is CPython's behaviour too — `str`, `bytes`, `int`,

@@ -11,7 +11,7 @@ use std::{collections::VecDeque, mem};
 use ahash::AHashMap;
 use smallvec::{SmallVec, smallvec};
 
-use super::{FrameNamespace, exceptions::CaughtException};
+use super::{FrameNamespace, GeneratorRole, exceptions::CaughtException};
 use crate::{
     asyncio::{Awaiter, CallId, TaskId},
     exception_private::RunResult,
@@ -71,6 +71,7 @@ impl<C: ContainsHeap> DropWithContext<C> for Task {
         self.exception_stack.drain(..).drop_with(heap);
         for frame in self.frames.drain(..) {
             frame.namespace.drop_with(heap);
+            frame.generator.drop_with(heap);
         }
         self.state.drop_with(heap);
         if let Some(coro_id) = self.coroutine_id.take() {
@@ -114,6 +115,9 @@ pub(crate) struct SerializedTaskFrame {
     /// The `from ... import` in progress, if the frame parked inside one.
     #[serde(default)]
     pub import_from_module: Option<StringId>,
+    /// The frame's generator role, owning a running generator's reference (see `CallFrame.generator`).
+    #[serde(default)]
+    pub generator: GeneratorRole,
 }
 
 impl Task {

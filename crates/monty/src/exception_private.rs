@@ -1636,6 +1636,15 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::RuntimeError, "Set changed size during iteration").into()
     }
 
+    /// Creates the RuntimeError a `StopIteration` escaping a generator or coroutine
+    /// becomes (PEP 479); `kind` is `generator` or `coroutine`.
+    ///
+    /// Matches CPython's format: `RuntimeError: generator raised StopIteration`
+    #[must_use]
+    fn runtime_error_raised_stop_iteration(kind: &str) -> RunError {
+        SimpleException::new_msg(ExcType::RuntimeError, format!("{kind} raised StopIteration")).into()
+    }
+
     /// Creates a TypeError for functions that don't accept keyword arguments.
     ///
     /// Matches CPython's `PyArg_NoKeywords` format: `TypeError: {name}() takes
@@ -3576,11 +3585,6 @@ impl PyException {
         class_id.into_iter().chain(arg_id).chain(chain_ids).chain(attr_ids)
     }
 
-    /// Yields references that this exception owns in its chain.
-    pub(crate) fn owned_chain_ids(&self) -> impl Iterator<Item = HeapId> + '_ {
-        self.child_ids()
-    }
-
     /// Whether this exception needs to be tracked by cycle detection.
     pub(crate) fn is_gc_tracked(&self) -> bool {
         if self.attrs.is_some() || self.chain.is_some() || !matches!(self.class, OwnedTypeRef::Native(_)) {
@@ -3590,6 +3594,48 @@ impl PyException {
             ExceptionArgs::Empty | ExceptionArgs::OneStr(_) => false,
             ExceptionArgs::OneValue(v) => matches!(v, Value::Ref(_)),
             ExceptionArgs::Tuple(_) => true,
+        }
+    }
+
+    /// A new reference to `StopIteration.value`: the stored value, else the message
+    /// of one built from text alone (raised by the host), else `None`.
+    pub(crate) fn stop_iteration_value(&self, vm: &VM<'_>) -> Value {
+        if let Some(attrs) = &self.attrs
+            && let Some(val) = attrs.get_by_str("value", vm.heap, vm.interns)
+        {
+            return val.clone_with_heap(vm.heap);
+        }
+        match &self.args {
+            ExceptionArgs::OneValue(v) => v.clone_with_heap(vm.heap),
+            ExceptionArgs::OneStr(s) => allocate_string(s.as_str(), vm.heap),
+            ExceptionArgs::Tuple(id) => match vm.heap.get(*id) {
+                HeapData::Tuple(t) => t.as_slice().first().map_or(Value::None, |v| v.clone_with_heap(vm.heap)),
+                _ => Value::None,
+            },
+            ExceptionArgs::Empty => Value::None,
+        }
+    }
+
+    /// The `StopIteration` a generator's `return value` raises: no arguments for
+    /// `None`, else the value itself, also as the message when it is a string.
+    pub(crate) fn stop_iteration(value: Value, vm: &mut VM<'_>) -> Self {
+        let is_none = matches!(value, Value::None);
+        let (args, attrs) = if is_none {
+            value.drop_with(vm);
+            (ExceptionArgs::Empty, None)
+        } else {
+            let mut dict = Dict::new();
+            let key = allocate_string("value", vm.heap);
+            let _ = dict.set(key, value.clone_with_heap(vm.heap), vm);
+            (ExceptionArgs::OneValue(value), Some(dict))
+        };
+        Self {
+            class: OwnedTypeRef::Native(Type::StopIteration),
+            exc_type: ExcType::StopIteration,
+            args,
+            data: ExcData::None,
+            chain: None,
+            attrs,
         }
     }
 }

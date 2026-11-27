@@ -23,7 +23,7 @@ use crate::{
 
 impl VM<'_> {
     /// Insert a catcher *below* the advancement so its own exception handlers see errors first.
-    /// The zero-local frame shares the caller's operand boundary, including across snapshots.
+    /// A pushed advancement may already own exception handlers restored from a generator.
     pub(super) fn catch_deferred_iteration(&mut self, call: CallResult, stack_base: usize) -> RunResult<CallResult> {
         let mut guard = DropGuard::new(call, self);
         let (call, vm) = guard.as_parts();
@@ -46,16 +46,19 @@ impl VM<'_> {
                 return Err(error);
             }
         };
-        let call_site = if pushed {
-            vm.current_frame.call_offset.replace(0)
+        let (call_site, exception_stack_base) = if pushed {
+            (
+                vm.current_frame.call_offset.replace(0),
+                vm.current_frame.exception_stack_base(),
+            )
         } else {
-            vm.current_offset()
+            (vm.current_offset(), vm.exception_stack.len())
         };
         let catcher = CallFrame::new_function(
             &vm.interns.get_function(id).code,
             stack_base,
             0,
-            vm.exception_stack.len(),
+            exception_stack_base,
             id,
             call_site,
             None,

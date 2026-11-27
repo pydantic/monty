@@ -52,6 +52,7 @@ nav:
       - Named tuples: 'limitations/namedtuple.md'
       - Exceptions: 'limitations/exceptions.md'
       - iter() and iterators: 'limitations/iter.md'
+      - Generators: 'limitations/generators.md'
       - Comprehensions: 'limitations/comprehensions.md'
       - with statement: 'limitations/with.md'
       - match statement: 'limitations/match.md'

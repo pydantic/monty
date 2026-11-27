@@ -119,6 +119,19 @@ T = type('T', (), {'__annotate__': custom_annotate})
 assert T.__annotations__ == {'a': int}
 assert T.__annotations__ is T.__annotations__
 
+
+def generator_annotate(format):
+    return {'a': int}
+    yield {}
+
+
+GeneratorAnnotated = type('GeneratorAnnotated', (), {'__annotate__': generator_annotate})
+try:
+    GeneratorAnnotated.__annotations__
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "__annotate__ returned non-dict of type 'generator'"
+
 # === getattr() and hasattr() see the computed attribute ===
 assert getattr(f, '__annotations__')['x'] is int
 assert hasattr(f, '__annotations__')

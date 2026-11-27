@@ -175,6 +175,7 @@ macro_rules! forward_py_value {
             Self::SetIterator($value) => $body,
             Self::CallableIterator($value) => $body,
             Self::MapFilter($value) => $body,
+            Self::Generator($value) => $body,
             Self::Itertools($value) => $body,
             Self::DirScan($value) => $body,
             Self::Csv($value) => $body,

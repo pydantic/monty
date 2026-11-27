@@ -86,6 +86,10 @@ pub(crate) struct Function {
     /// and starts execution only when awaited.
     #[serde(rename = "A")]
     pub is_async: bool,
+    /// Whether the body yields: calling it binds the arguments into a `Generator`
+    /// whose frame runs only when advanced. Never set together with `is_async`.
+    #[serde(rename = "Y", default)]
+    pub is_generator: bool,
     /// Cached binder-free call plan, derived from the fields above and cached
     /// via [`Self::exact_positional_call`].
     ///
@@ -143,10 +147,18 @@ impl Function {
             cell_param_indices,
             defaults_count,
             is_async,
+            is_generator: false,
             exact_positional_call: OnceCell::new(),
             annotate: None,
             code,
         }
+    }
+
+    /// Marks the function as a generator, so a call creates a `Generator`.
+    #[must_use]
+    pub fn with_generator(mut self, is_generator: bool) -> Self {
+        self.is_generator = is_generator;
+        self
     }
 
     /// Attaches the compiled `__annotate__` function.
@@ -166,7 +178,8 @@ impl Function {
 
     /// Derives the binder-free call plan from authoritative function metadata.
     fn derive_exact_positional_call(&self) -> Option<ExactPositionalCall> {
-        if self.cell_var_slots.is_empty() && self.free_var_slots.is_empty() {
+        // A generator call never pushes a frame, so it takes the ordinary binding path.
+        if !self.is_generator && self.cell_var_slots.is_empty() && self.free_var_slots.is_empty() {
             self.signature.exact_positional_count().map(|count| {
                 if self.is_async {
                     ExactPositionalCall::Async(count)

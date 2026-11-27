@@ -12,6 +12,9 @@ mod compare;
 mod context_manager;
 mod exceptions;
 mod format;
+mod generator;
+pub(super) use generator::GeneratorRole;
+pub(crate) use generator::{Generator, PyGeneratorImpl};
 mod import_star;
 mod iteration;
 pub(crate) use iteration::compile_iteration_catcher;
@@ -42,7 +45,7 @@ use crate::{
     builtins::Builtins,
     bytecode::{
         code::{Code, LocationEntry},
-        op::{IMPORT_STAR_BIND, MATCH_KEYS_REST, Opcode, decode_assert_flags},
+        op::{IMPORT_STAR_BIND, MATCH_KEYS_REST, Opcode, YIELD_FROM, decode_assert_flags},
     },
     defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -392,6 +395,10 @@ pub struct CallFrame<'code> {
     /// Keeping it on the frame avoids another opcode operand; the compiler emits
     /// no intervening instructions that change it.
     import_from_module: Option<StringId>,
+
+    /// Whether this frame runs a generator or advances a `yield from` delegate;
+    /// owns the running generator's reference until the frame yields or returns.
+    generator: GeneratorRole,
 }
 
 /// Narrows a VM stack index to the frame's `u32` field.
@@ -432,6 +439,7 @@ impl<'code> CallFrame<'code> {
             is_initializer: false,
             result: FrameResult::Value,
             import_from_module: None,
+            generator: GeneratorRole::default(),
         }
     }
 
@@ -457,6 +465,7 @@ impl<'code> CallFrame<'code> {
         self.is_initializer = false;
         self.result = FrameResult::Value;
         debug_assert!(self.namespace.is_none(), "parked frame still owns a namespace");
+        debug_assert!(self.generator.is_plain(), "parked frame still runs a generator");
     }
 
     /// Creates a new call frame for a function call.
@@ -491,6 +500,7 @@ impl<'code> CallFrame<'code> {
             is_initializer: false,
             result: FrameResult::Value,
             import_from_module: None,
+            generator: GeneratorRole::default(),
         }
     }
 }
@@ -643,6 +653,11 @@ pub struct SerializedFrame {
     /// The `from ... import` in progress, if the frame suspended inside one.
     #[serde(default, rename = "M")]
     import_from_module: Option<StringId>,
+
+    /// The frame's generator role, owning a running generator's reference (see
+    /// `CallFrame.generator`).
+    #[serde(default, rename = "G", skip_serializing_if = "GeneratorRole::is_plain")]
+    generator: GeneratorRole,
 }
 
 impl CallFrame<'_> {
@@ -665,6 +680,7 @@ impl CallFrame<'_> {
             result: self.result,
             namespace: mem::take(&mut self.namespace),
             import_from_module: self.import_from_module,
+            generator: mem::take(&mut self.generator),
         }
     }
 }
@@ -762,6 +778,7 @@ impl VMSnapshot {
             stack.drop_with(heap);
             for frame in frames {
                 frame.namespace.drop_with(heap);
+                frame.generator.drop_with(heap);
             }
             scheduler.cleanup(heap);
             // a module body interrupted here must run again at the next import
@@ -1002,6 +1019,7 @@ impl<'h> VM<'h> {
                     is_initializer: sf.is_initializer,
                     result: sf.result,
                     import_from_module: sf.import_from_module,
+                    generator: sf.generator,
                 }
             })
             .collect();
@@ -1986,9 +2004,41 @@ impl<'h> VM<'h> {
                         Err(err) => catch!(self, err),
                     }
                 }
+                Opcode::Yield => {
+                    let mode = self.current_frame.fetch_u8();
+                    let exit = if mode == YIELD_FROM {
+                        match self.yield_from() {
+                            Ok(exit) => exit,
+                            Err(error) => {
+                                catch!(self, error);
+                                None
+                            }
+                        }
+                    } else {
+                        self.yield_value()
+                    };
+                    if let Some(exit) = exit {
+                        return Ok(exit);
+                    }
+                }
                 // Return
                 Opcode::ReturnValue => {
                     let value = self.pop();
+                    if !self.current_frame.generator.is_plain() {
+                        if self.current_frame.generator.is_generator() {
+                            if let Some(error) = self.return_from_generator(value) {
+                                return Err(error);
+                            }
+                            yield_if_parked!(self);
+                        } else {
+                            match self.return_to_delegating_generator(value) {
+                                Ok(Some(exit)) => return Ok(exit),
+                                Ok(None) => {}
+                                Err(error) => catch!(self, error),
+                            }
+                        }
+                        continue;
+                    }
                     if self.suspended_frames.is_empty() {
                         // Last frame - check if this is main task or spawned task
                         let is_main_task = self.is_main_task();
@@ -2583,6 +2633,10 @@ impl<'h> VM<'h> {
         if let Some(namespace) = frame.namespace {
             namespace.drop_with(self.heap);
         }
+        // A generator frame discarded without yielding or returning completes it.
+        if !frame.generator.is_plain() {
+            frame.generator.drop_with(self.heap);
+        }
     }
 
     /// Drops the current task's operand and exception stacks and discards its frames.
@@ -2592,8 +2646,10 @@ impl<'h> VM<'h> {
         self.exception_stack.drain(..).drop_with(self.heap);
         for frame in self.suspended_frames.drain(..) {
             frame.namespace.drop_with(self.heap);
+            frame.generator.drop_with(self.heap);
         }
         self.current_frame.namespace.take().drop_with(self.heap);
+        mem::take(&mut self.current_frame.generator).drop_with(self.heap);
         self.current_frame.park(self.module_code);
         self.frozen_frame_depth = 0;
     }

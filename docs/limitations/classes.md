@@ -488,10 +488,7 @@ every construction request. Divergences:
         `TypeError: '{cls}' object is not reversible`. That matches CPython for a
         class defining neither `__reversed__` nor `__len__` + `__getitem__`, and
         diverges for one that does.
-- `__next__` is looked up on the class only, never the instance `__dict__`, and
-    a `StopIteration` raised anywhere inside it ends the iteration, including one
-    that propagates out of a nested call, where CPython's PEP 479 protections
-    apply only to generators, which Monty does not have.
+- `__next__` is looked up on the class only, never the instance `__dict__`.
 - **A `__contains__` returning a user instance is always `True`.** The result is
     coerced by Monty's truthiness, which reports every instance as truthy (see
     above), where CPython's `PyObject_IsTrue` consults the returned object's

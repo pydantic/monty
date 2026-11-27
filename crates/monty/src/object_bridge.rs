@@ -471,6 +471,7 @@ impl GraphExporter {
             HeapReadOutput::MapFilter(iter) => {
                 MontyNode::Repr(format!("<{} object>", iter.py_type(vm).name(vm.heap, vm.interns)))
             }
+            HeapReadOutput::Generator(generator) => MontyNode::Repr(generator.get(vm.heap).boundary_repr(vm.interns)),
             HeapReadOutput::DirScan(scan) => MontyNode::Repr(scan.get(vm.heap).boundary_repr()),
             // A placeholder despite the real in-sandbox repr (`count(0)`),
             // which would recurse into `repeat`'s arbitrary object.

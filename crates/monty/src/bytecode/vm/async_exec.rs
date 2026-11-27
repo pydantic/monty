@@ -1111,6 +1111,7 @@ impl<'h> VM<'h> {
                 result: f.result,
                 namespace: f.namespace,
                 import_from_module: f.import_from_module,
+                generator: f.generator,
             })
             .collect();
         // The namespace moves across so the frame left behind releases nothing.
@@ -1126,6 +1127,7 @@ impl<'h> VM<'h> {
             result: current.result,
             namespace: mem::take(&mut current.namespace),
             import_from_module: current.import_from_module,
+            generator: mem::take(&mut current.generator),
         });
 
         // Count this task's recursion depth contribution and subtract it from
@@ -1225,6 +1227,7 @@ impl<'h> VM<'h> {
                         is_initializer: sf.is_initializer,
                         result: sf.result,
                         import_from_module: sf.import_from_module,
+                        generator: sf.generator,
                     }
                 })
                 .collect();

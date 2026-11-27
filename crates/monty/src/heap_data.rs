@@ -127,6 +127,8 @@ macro_rules! heap_payloads {
             CallableIterator(inline $crate::types::callable_iterator::CallableIterator),
             /// A lazy `map` or `filter`, retaining its callback and source iterators.
             MapFilter(boxed $crate::types::map_filter::MapFilter),
+            /// A generator object, holding its paused frame between yields.
+            Generator(boxed $crate::bytecode::Generator),
             /// An arbitrary-precision integer used when a Python `int` does not fit in `i64`.
             #[serde(rename = "G")]
             LongInt(inline $crate::types::LongInt),
@@ -240,8 +242,8 @@ impl HeapData {
     /// Returns whether this heap data type can participate in reference cycles.
     ///
     /// Only container types that can hold references to other heap objects need to be
-    /// tracked for GC purposes. Leaf types like Str, Bytes, and Range cannot
-    /// form cycles and should not count toward the GC allocation threshold.
+    /// tracked for GC purposes. Leaf types like Str, Bytes, Range, and simple exceptions
+    /// cannot form cycles and should not count toward the GC allocation threshold.
     ///
     /// This optimization allows programs that allocate many leaf objects (like strings)
     /// to avoid triggering unnecessary GC cycles.
@@ -283,6 +285,7 @@ impl HeapData {
             | Self::SetIterator(_)
             | Self::CallableIterator(_)
             | Self::MapFilter(_)
+            | Self::Generator(_)
             | Self::Module(_)
             | Self::Coroutine(_)
             | Self::GatherFuture(_)
@@ -427,6 +430,7 @@ impl HeapData {
             Self::SetIterator(_) => Type::SetIterator,
             Self::CallableIterator(_) => Type::CallableIterator,
             Self::MapFilter(iter) => iter.py_type(),
+            Self::Generator(_) => Type::WalkGenerator,
             Self::Itertools(i) => i.py_type(),
             Self::DirScan(scan) => scan.py_type(),
             Self::Csv(csv) => csv.py_type(),
