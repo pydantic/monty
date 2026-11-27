@@ -554,6 +554,15 @@ impl Mt19937 {
         Ok(out)
     }
 
+    /// Draws `k > 0` bits, preflighting the word buffer and the integer built from it.
+    pub(crate) fn getrandbits_big(&mut self, k: u64, tracker: &ResourceTracker) -> RunResult<BigUint> {
+        let words = usize::try_from(k.div_ceil(32)).map_err(|_| ExcType::value_error("number of bits too large"))?;
+        // On 64-bit targets `BigUint::new` packs the u32 buffer into a separate u64 buffer;
+        // on 32-bit targets it can reuse the input. Budget for both buffers.
+        tracker.check_allocation(words.saturating_mul(8))?;
+        Ok(BigUint::new(self.getrandbits_words(k, words, tracker)?))
+    }
+
     /// `_randbelow_with_getrandbits(n)`: an int in `[0, n)` for `n > 0`, by
     /// rejection sampling `bit_length(n)` bits at a time.
     pub(crate) fn randbelow(&mut self, n: u128, tracker: &ResourceTracker) -> RunResult<u128> {
@@ -565,6 +574,23 @@ impl Mt19937 {
             attempts = attempts.wrapping_add(1);
             let r = self.getrandbits_u128(k);
             if r < n {
+                return Ok(r);
+            }
+        }
+    }
+
+    /// Draws uniformly below a positive bound without narrowing it.
+    pub(crate) fn randbelow_big(&mut self, n: &BigUint, tracker: &ResourceTracker) -> RunResult<BigUint> {
+        if let Ok(n) = u128::try_from(n) {
+            return Ok(BigUint::from(self.randbelow(n, tracker)?));
+        }
+        let k = n.bits();
+        let mut attempts = 0usize;
+        loop {
+            tracker.check_time_every(attempts)?;
+            attempts = attempts.wrapping_add(1);
+            let r = self.getrandbits_big(k, tracker)?;
+            if &r < n {
                 return Ok(r);
             }
         }

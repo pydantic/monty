@@ -2315,14 +2315,10 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::ValueError, "pow() 3rd argument cannot be 0").into()
     }
 
-    /// Creates a ValueError for a negative exponent passed to modular `pow`.
+    /// Creates a ValueError when modular `pow` needs an inverse that does not exist.
     #[must_use]
-    fn value_error_pow_negative_exponent() -> RunError {
-        SimpleException::new_msg(
-            ExcType::ValueError,
-            "pow() 2nd argument cannot be negative when 3rd argument specified",
-        )
-        .into()
+    fn value_error_pow_not_invertible() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "base is not invertible for the given modulus").into()
     }
 
     /// Creates a TypeError for str.join() when an item is not a string.

@@ -1,0 +1,77 @@
+Defer imports used only by CPython discovery or methods excluded on Monty.
+Monty can then load the suite without those dependencies.
+
+--- a/test/test_dictcomps.py
++++ b/test/test_dictcomps.py
+@@ -1,7 +1,4 @@
+-import traceback
+ import unittest
+-
+-from test.support import BrokenIter
+ 
+ # For scope testing.
+ g = "Global variable"
+@@ -131,6 +128,9 @@
+         self.assertEqual({i: i*i for i in (*range(4),)}, expected)
+ 
+     def test_exception_locations(self):
++        import traceback
++        from test.support import BrokenIter
++
+         # The location of an exception raised from __init__ or
+         # __next__ should should be the iterator expression
+         def init_raises():
+--- a/test/test_strftime.py
++++ b/test/test_strftime.py
+@@ -2,10 +2,8 @@
+ Unittest for time.strftime
+ """
+ 
+-import calendar
+ import sys
+ import re
+-from test import support
+ import time
+ import unittest
+ 
+@@ -74,6 +72,8 @@
+         self.addCleanup(setlocale, LC_TIME, saved_locale)
+ 
+     def test_strftime(self):
++        from test import support
++
+         now = time.time()
+         self._update_variables(now)
+         self.strftest1(now)
+@@ -91,6 +91,9 @@
+                 self.strftest2(arg)
+ 
+     def strftest1(self, now):
++        import calendar
++        from test import support
++
+         if support.verbose:
+             print("strftime test for", time.ctime(now))
+         now = self.now
+@@ -139,6 +142,9 @@
+                           % (e[0], e[2], e[1], result))
+ 
+     def strftest2(self, now):
++        import calendar
++        from test import support
++
+         nowsecs = str(int(now))[:-1]
+         now = self.now
+ 
+--- a/test/test_tomllib/__init__.py
++++ b/test/test_tomllib/__init__.py
+@@ -9,7 +9,8 @@
+ import tomllib
+ 
+ import os
+-from test.support import load_package_tests
+ 
+ def load_tests(*args):
++    from test.support import load_package_tests
++
+     return load_package_tests(os.path.dirname(__file__), *args)

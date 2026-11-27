@@ -1,0 +1,244 @@
+Import tomllib directly so it is checked against the stdlib stub rather than an unresolved re-export from the runtime mount.
+Allow deliberate type errors and CPython-only APIs used by the added suites.
+
+--- a/test/test_dictcomps.py
++++ b/test/test_dictcomps.py
+@@ -74,11 +74,11 @@
+ 
+     def test_illegal_assignment(self):
+         with self.assertRaisesRegex(SyntaxError, "cannot assign"):
+-            compile("{x: y for y, x in ((1, 2), (3, 4))} = 5", "<test>",
++            compile("{x: y for y, x in ((1, 2), (3, 4))} = 5", "<test>",  # ty: ignore[unresolved-reference]
+                     "exec")
+ 
+         with self.assertRaisesRegex(SyntaxError, "illegal expression"):
+-            compile("{x: y for y, x in ((1, 2), (3, 4))} += 5", "<test>",
++            compile("{x: y for y, x in ((1, 2), (3, 4))} += 5", "<test>",  # ty: ignore[unresolved-reference]
+                     "exec")
+ 
+     def test_evaluation_order(self):
+@@ -128,8 +128,8 @@
+         self.assertEqual({i: i*i for i in (*range(4),)}, expected)
+ 
+     def test_exception_locations(self):
+-        import traceback
+-        from test.support import BrokenIter
++        import traceback  # ty: ignore[import-not-found]
++        from test.support import BrokenIter  # ty: ignore[import-not-found]
+ 
+         # The location of an exception raised from __init__ or
+         # __next__ should should be the iterator expression
+--- a/test/test_keywordonlyarg.py
++++ b/test/test_keywordonlyarg.py
+@@ -37,7 +37,7 @@
+ class KeywordOnlyArgTestCase(unittest.TestCase):
+     def assertRaisesSyntaxError(self, codestr):
+         def shouldRaiseSyntaxError(s):
+-            compile(s, "<test>", "single")
++            compile(s, "<test>", "single")  # ty: ignore[unresolved-reference]
+         self.assertRaises(SyntaxError, shouldRaiseSyntaxError, codestr)
+ 
+     def testSyntaxErrorForFunctionDefinition(self):
+@@ -53,16 +53,16 @@
+     def testSyntaxForManyArguments(self):
+         # more than 255 positional arguments, should compile ok
+         fundef = "def f(%s):\n  pass\n" % ', '.join('i%d' % i for i in range(300))
+-        compile(fundef, "<test>", "single")
++        compile(fundef, "<test>", "single")  # ty: ignore[unresolved-reference]
+         # more than 255 keyword-only arguments, should compile ok
+         fundef = "def f(*, %s):\n  pass\n" % ', '.join('i%d' % i for i in range(300))
+-        compile(fundef, "<test>", "single")
++        compile(fundef, "<test>", "single")  # ty: ignore[unresolved-reference]
+ 
+     def testTooManyPositionalErrorMessage(self):
+         def f(a, b=None, *, c=None):
+             pass
+         with self.assertRaises(TypeError) as exc:
+-            f(1, 2, 3)
++            f(1, 2, 3)  # ty: ignore[too-many-positional-arguments]
+         expected = (f"{f.__qualname__}() takes from 1 to 2 "
+                     "positional arguments but 3 were given")
+         self.assertEqual(str(exc.exception), expected)
+@@ -72,16 +72,16 @@
+         self.assertRaisesSyntaxError("f(p, k1=50, *(1,2), k1=100)")
+ 
+     def testRaiseErrorFuncallWithUnexpectedKeywordArgument(self):
+-        self.assertRaises(TypeError, keywordonly_sum, ())
+-        self.assertRaises(TypeError, keywordonly_nodefaults_sum, ())
+-        self.assertRaises(TypeError, Foo, ())
++        self.assertRaises(TypeError, keywordonly_sum, ())  # ty: ignore[missing-argument, too-many-positional-arguments]
++        self.assertRaises(TypeError, keywordonly_nodefaults_sum, ())  # ty: ignore[missing-argument, too-many-positional-arguments]
++        self.assertRaises(TypeError, Foo, ())  # ty: ignore[missing-argument, too-many-positional-arguments]
+         try:
+-            keywordonly_sum(k2=100, non_existing_arg=200)
++            keywordonly_sum(k2=100, non_existing_arg=200)  # ty: ignore[unknown-argument]
+             self.fail("should raise TypeError")
+         except TypeError:
+             pass
+         try:
+-            keywordonly_nodefaults_sum(k2=2)
++            keywordonly_nodefaults_sum(k2=2)  # ty: ignore[missing-argument]
+             self.fail("should raise TypeError")
+         except TypeError:
+             pass
+@@ -146,7 +146,7 @@
+ 
+         self.assertEqual(Example().f(k1=1, k2=2), (1, 2))
+         self.assertEqual(Example.f(Example(), k1=1, k2=2), (1, 2))
+-        self.assertRaises(TypeError, Example.f, k1=1, k2=2)
++        self.assertRaises(TypeError, Example.f, k1=1, k2=2)  # ty: ignore[missing-argument]
+ 
+     def test_issue13343(self):
+         # The Python compiler must scan all symbols of a function to
+@@ -166,11 +166,11 @@
+         # See issue 16967
+         a = 42
+         with self.assertRaises(NameError) as err:
+-            def f(v=a, x=b, *, y=c, z=d):
++            def f(v=a, x=b, *, y=c, z=d):  # ty: ignore[unresolved-reference]
+                 pass
+         self.assertEqual(str(err.exception), "name 'b' is not defined")
+         with self.assertRaises(NameError) as err:
+-            g = lambda v=a, x=b, *, y=c, z=d: None
++            g = lambda v=a, x=b, *, y=c, z=d: None  # ty: ignore[unresolved-reference]
+         self.assertEqual(str(err.exception), "name 'b' is not defined")
+ 
+ 
+--- a/test/test_strftime.py
++++ b/test/test_strftime.py
+@@ -37,7 +37,7 @@
+         if now[3] < 12: self.ampm='(AM|am)'
+         else: self.ampm='(PM|pm)'
+ 
+-        jan1 = time.struct_time(
++        jan1 = time.struct_time(  # ty: ignore[unresolved-attribute]
+             (
+                 now.tm_year,  # Year
+                 1,  # Month (January)
+@@ -66,13 +66,13 @@
+         self.now = now
+ 
+     def setUp(self):
+-        from locale import setlocale, LC_TIME
++        from locale import setlocale, LC_TIME  # ty: ignore[import-not-found]
+         saved_locale = setlocale(LC_TIME)
+         setlocale(LC_TIME, 'C')
+         self.addCleanup(setlocale, LC_TIME, saved_locale)
+ 
+     def test_strftime(self):
+-        from test import support
++        from test import support  # ty: ignore[import-not-found]
+ 
+         now = time.time()
+         self._update_variables(now)
+@@ -91,8 +91,8 @@
+                 self.strftest2(arg)
+ 
+     def strftest1(self, now):
+-        import calendar
+-        from test import support
++        import calendar  # ty: ignore[import-not-found]
++        from test import support  # ty: ignore[import-not-found]
+ 
+         if support.verbose:
+             print("strftime test for", time.ctime(now))
+@@ -142,8 +142,8 @@
+                           % (e[0], e[2], e[1], result))
+ 
+     def strftest2(self, now):
+-        import calendar
+-        from test import support
++        import calendar  # ty: ignore[import-not-found]
++        from test import support  # ty: ignore[import-not-found]
+ 
+         nowsecs = str(int(now))[:-1]
+         now = self.now
+--- a/test/test_tomllib/test_data.py
++++ b/test/test_tomllib/test_data.py
+@@ -4,9 +4,10 @@
+ 
+ import json
+ from pathlib import Path
++import tomllib
+ import unittest
+ 
+-from . import burntsushi, tomllib
++from . import burntsushi  # ty: ignore[import-not-found]
+ 
+ 
+ class MissingFile:
+--- a/test/test_tomllib/test_error.py
++++ b/test/test_tomllib/test_error.py
+@@ -2,9 +2,8 @@
+ # SPDX-FileCopyrightText: 2021 Taneli Hukkinen
+ # Licensed to PSF under a Contributor Agreement.
+ 
++import tomllib
+ import unittest
+-
+-from . import tomllib
+ 
+ 
+ class TestError(unittest.TestCase):
+@@ -41,11 +40,11 @@
+ 
+     def test_type_error(self):
+         with self.assertRaises(TypeError) as exc_info:
+-            tomllib.loads(b"v = 1")  # type: ignore[arg-type]
++            tomllib.loads(b"v = 1")  # ty: ignore[invalid-argument-type]
+         self.assertEqual(str(exc_info.exception), "Expected str object, not 'bytes'")
+ 
+         with self.assertRaises(TypeError) as exc_info:
+-            tomllib.loads(False)  # type: ignore[arg-type]
++            tomllib.loads(False)  # ty: ignore[invalid-argument-type]
+         self.assertEqual(str(exc_info.exception), "Expected str object, not 'bool'")
+ 
+     def test_module_name(self):
+@@ -62,7 +61,7 @@
+ 
+         for invalid_parse_float in (dict_returner, list_returner):
+             with self.assertRaises(ValueError) as exc_info:
+-                tomllib.loads("f=0.1", parse_float=invalid_parse_float)
++                tomllib.loads("f=0.1", parse_float=invalid_parse_float)  # ty: ignore[unknown-argument]
+             self.assertEqual(
+                 str(exc_info.exception), "parse_float must not return dicts or lists"
+             )
+@@ -79,7 +78,7 @@
+             ("one", "two", "three", "four"),
+             ("one", "two", 3, "four", "five"),
+         ]:
+-            with self.assertWarns(DeprecationWarning):
++            with self.assertWarns(DeprecationWarning):  # ty: ignore[unresolved-attribute, unresolved-reference]
+                 e = tomllib.TOMLDecodeError(*args)  # type: ignore[arg-type]
+             self.assertEqual(e.args, args)
+ 
+@@ -91,8 +90,8 @@
+         e = tomllib.TOMLDecodeError(msg, doc, pos)
+         self.assertEqual(e.args, (formatted_msg,))
+         self.assertEqual(str(e), formatted_msg)
+-        self.assertEqual(e.msg, msg)
+-        self.assertEqual(e.doc, doc)
+-        self.assertEqual(e.pos, pos)
+-        self.assertEqual(e.lineno, 3)
+-        self.assertEqual(e.colno, 2)
++        self.assertEqual(e.msg, msg)  # ty: ignore[unresolved-attribute]
++        self.assertEqual(e.doc, doc)  # ty: ignore[unresolved-attribute]
++        self.assertEqual(e.pos, pos)  # ty: ignore[unresolved-attribute]
++        self.assertEqual(e.lineno, 3)  # ty: ignore[unresolved-attribute]
++        self.assertEqual(e.colno, 2)  # ty: ignore[unresolved-attribute]
+--- a/test/test_unicode_identifiers.py
++++ b/test/test_unicode_identifiers.py
+@@ -15,11 +15,11 @@
+ 
+     def test_non_bmp_normalized(self):
+         𝔘𝔫𝔦𝔠𝔬𝔡𝔢 = 1
+-        self.assertIn("Unicode", dir())
++        self.assertIn("Unicode", dir())  # ty: ignore[unresolved-reference]
+ 
+     def test_invalid(self):
+         try:
+-            from test.tokenizedata import badsyntax_3131  # noqa: F401
++            from test.tokenizedata import badsyntax_3131  # noqa: F401  # ty: ignore[import-not-found]
+         except SyntaxError as err:
+             self.assertEqual(str(err),
+               "invalid character '€' (U+20AC) (badsyntax_3131.py, line 2)")

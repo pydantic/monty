@@ -189,3 +189,22 @@ assert r3.random() == random.Random(7).random()
 # a list outer state works as well as a tuple
 r3.setstate([3, state[1], 0.5])
 assert r3.getstate()[2] == 0.5
+
+# === randrange() with arbitrary-precision bounds and steps ===
+random.seed(42)
+large_bound = 2**200
+large_step = 2**196
+first_draw = 0x723EB13B9046685257BDD640FB06671AD11C80317FA3B1799D
+assert random.randrange(large_bound) == first_draw
+assert random.randrange(large_bound, large_bound + 100) == large_bound + 17
+assert random.randrange(-large_bound, 0, large_step) == -13 * large_step
+assert random.randrange(large_bound, 0, -large_step) == 14 * large_step
+assert random.randrange(-(2**63), 2**64) == -0x13FCEE6668D57B97
+
+
+class BigIndex:
+    def __index__(self):
+        return large_bound
+
+
+assert random.Random(42).randrange(BigIndex()) == first_draw

@@ -57,8 +57,9 @@ The session's `random_start` is not restored: a restored session takes the resto
 - **Instance methods must be called directly**, as on other native objects such as `re.Pattern`.
     `rng.random()` works, but `draw = rng.random` and `getattr(rng, 'random')` raise `AttributeError`.
     Module functions can be stored and passed as callbacks: `draw = random.random` works.
-- **Integer ranges are 64-bit.** `randrange`, `randint`, `choice` and `sample` raise
-    `OverflowError: Python int too large to convert to C ssize_t` for bounds outside `i64`; CPython accepts any int.
+- **`randint` bounds must fit in a signed 64-bit integer.** Larger bounds raise
+    `OverflowError: Python int too large to convert to C ssize_t`; CPython accepts any int.
+    The same limit applies to the sequence lengths used by `choice` and `sample`.
     `seed(big_int)` accepts any int, as in CPython.
     `getrandbits(k)` raises `OverflowError: Python int too large for C uint64_t` from `k >= 2**63`, where CPython
     accepts up to `2**64` and then fails to allocate; `randbytes(n)` raises it from `n >= 2**61` in both.

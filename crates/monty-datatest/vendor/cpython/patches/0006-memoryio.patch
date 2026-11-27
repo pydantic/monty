@@ -1,12 +1,14 @@
 Let test_memoryio load and run on Monty with the same calls and assertions.
 On Monty (`sys.platform == "monty"`), which cannot load test.support or _pyio, define the support decorators as no-ops and test the native io in place of _pyio; skips.toml excludes the tests that need either.
 Import gc, pickle and weakref in the methods that use them.
-Monty does not parse `del` (#1032), generators, or method decorators, and its builtin methods are call-only, so: `del x` becomes `x = None` and `del obj.attr` `delattr(obj, attr)`; the error generator in test_writelines_error is an equivalent iterator class; `@support.x` becomes `m = support.x(m)` after the method; the static `buftype` and the pickle tests `ioclass` are plain methods; and `assertRaises(E, stream.method, *args)` becomes `with self.assertRaises(E): stream.method(*args)`.
+Monty does not parse `del x` or generators: release local references with `x = None` and use an equivalent iterator class in test_writelines_error.
+Use factory methods for the pickle tests because Monty cannot subclass native IO types.
+Monty's builtin methods are call-only, so `assertRaises(E, stream.method, *args)` becomes `with self.assertRaises(E): stream.method(*args)`.
 On CPython before 3.14.10, skip test_truncate_size_changes_stream, which crashes it.
 
 --- a/test/test_memoryio.py
 +++ b/test/test_memoryio.py
-@@ -4,14 +4,20 @@
+@@ -4,14 +4,21 @@
  """
  
  import unittest
@@ -22,6 +24,7 @@ On CPython before 3.14.10, skip test_truncate_size_changes_stream, which crashes
 +if sys.platform == 'monty':
 +    # Monty cannot load test.support or _pyio; the methods that need them are excluded there.
 +    class support:
++        @staticmethod
 +        def cpython_only(test):
 +            return test
 +        nomemtest = cpython_only
@@ -33,7 +36,7 @@ On CPython before 3.14.10, skip test_truncate_size_changes_stream, which crashes
  
  class IntLike:
      def __init__(self, num):
-@@ -52,7 +58,8 @@
+@@ -52,7 +59,8 @@
  
          bytesIo.seek(3)
          self.assertEqual(buf[3:], bytesIo.read())
@@ -43,7 +46,7 @@ On CPython before 3.14.10, skip test_truncate_size_changes_stream, which crashes
  
          self.assertEqual(sys.maxsize, bytesIo.seek(sys.maxsize))
          self.assertEqual(self.EOF, bytesIo.read(4))
-@@ -75,7 +82,8 @@
+@@ -75,7 +83,8 @@
  
      def test_detach(self):
          buf = self.ioclass()
@@ -53,7 +56,7 @@ On CPython before 3.14.10, skip test_truncate_size_changes_stream, which crashes
  
      def write_ops(self, f, t):
          self.assertEqual(f.write(t("blah.")), 5)
-@@ -99,9 +107,11 @@
+@@ -99,9 +108,11 @@
          memio = self.ioclass()
          self.write_ops(memio, self.buftype)
          self.assertEqual(memio.getvalue(), buf)
@@ -68,7 +71,7 @@ On CPython before 3.14.10, skip test_truncate_size_changes_stream, which crashes
  
      def test_writelines(self):
          buf = self.buftype("1234567890")
-@@ -112,26 +122,39 @@
+@@ -112,26 +123,39 @@
          memio.writelines([])
          self.assertEqual(memio.getvalue(), buf * 100)
          memio = self.ioclass()
@@ -120,7 +123,7 @@ On CPython before 3.14.10, skip test_truncate_size_changes_stream, which crashes
          memio.seek(6)
          self.assertEqual(memio.truncate(IntLike(8)), 8)
          self.assertEqual(memio.getvalue(), buf[:8])
-@@ -146,10 +169,13 @@
+@@ -146,10 +170,13 @@
          pos = memio.tell()
          self.assertEqual(memio.truncate(None), pos)
          self.assertEqual(memio.tell(), pos)
@@ -138,7 +141,7 @@ On CPython before 3.14.10, skip test_truncate_size_changes_stream, which crashes
  
      def test_init(self):
          buf = self.buftype("1234567890")
-@@ -161,7 +187,8 @@
+@@ -161,7 +188,8 @@
          self.assertEqual(memio.getvalue(), buf * 2)
          memio.__init__(buf)
          self.assertEqual(memio.getvalue(), buf)
@@ -148,7 +151,7 @@ On CPython before 3.14.10, skip test_truncate_size_changes_stream, which crashes
  
      def test_read(self):
          buf = self.buftype("1234567890")
-@@ -191,7 +218,8 @@
+@@ -191,7 +219,8 @@
          self.assertEqual(type(memio.read()), type(buf))
          memio.seek(0)
          self.assertEqual(memio.read(None), buf)
@@ -158,7 +161,7 @@ On CPython before 3.14.10, skip test_truncate_size_changes_stream, which crashes
          memio.seek(len(buf) + 1)
          self.assertEqual(memio.read(1), self.EOF)
          memio.seek(len(buf) + 1)
-@@ -199,7 +227,8 @@
+@@ -199,7 +228,8 @@
          memio.seek(len(buf) + 1)
          self.assertEqual(memio.read(), self.EOF)
          memio.close()
@@ -168,7 +171,7 @@ On CPython before 3.14.10, skip test_truncate_size_changes_stream, which crashes
  
      def test_readline(self):
          buf = self.buftype("1234567890\n")
-@@ -238,9 +267,11 @@
+@@ -238,9 +268,11 @@
          memio.seek(0)
          self.assertEqual(type(memio.readline()), type(buf))
          self.assertEqual(memio.readline(), buf)
@@ -183,7 +186,7 @@ On CPython before 3.14.10, skip test_truncate_size_changes_stream, which crashes
  
      def test_readlines(self):
          buf = self.buftype("1234567890\n")
-@@ -259,12 +290,14 @@
+@@ -259,12 +291,14 @@
          self.assertEqual(type(memio.readlines()[0]), type(buf))
          memio.seek(0)
          self.assertEqual(memio.readlines(None), [buf] * 10)
@@ -200,7 +203,7 @@ On CPython before 3.14.10, skip test_truncate_size_changes_stream, which crashes
  
      def test_iterator(self):
          buf = self.buftype("1234567890\n")
-@@ -289,7 +322,8 @@
+@@ -289,7 +323,8 @@
          self.assertEqual(list(memio), [])
          memio = self.ioclass(buf * 2)
          memio.close()
@@ -210,7 +213,7 @@ On CPython before 3.14.10, skip test_truncate_size_changes_stream, which crashes
  
      def test_getvalue(self):
          buf = self.buftype("1234567890")
-@@ -303,16 +337,20 @@
+@@ -303,16 +338,20 @@
          self.assertEqual(memio.getvalue()[-3:], self.buftype("890"))
          memio = self.ioclass(buf)
          memio.close()
@@ -235,7 +238,7 @@ On CPython before 3.14.10, skip test_truncate_size_changes_stream, which crashes
          self.assertEqual(memio.seek(0), 0)
          self.assertEqual(memio.seek(0, 0), 0)
          self.assertEqual(memio.read(), buf)
-@@ -326,7 +364,8 @@
+@@ -326,7 +365,8 @@
          self.assertEqual(memio.seek(0, 2), len(buf))
          self.assertEqual(memio.read(), self.EOF)
          memio.close()
@@ -245,7 +248,7 @@ On CPython before 3.14.10, skip test_truncate_size_changes_stream, which crashes
  
      def test_overseek(self):
          buf = self.buftype("1234567890")
-@@ -351,7 +390,8 @@
+@@ -351,7 +391,8 @@
          memio.seek(10000)
          self.assertEqual(memio.tell(), 10000)
          memio.close()
@@ -255,7 +258,7 @@ On CPython before 3.14.10, skip test_truncate_size_changes_stream, which crashes
  
      def test_flush(self):
          buf = self.buftype("1234567890")
-@@ -368,10 +408,14 @@
+@@ -368,10 +409,14 @@
          self.assertEqual(memio.isatty(), False)
          self.assertEqual(memio.closed, False)
          memio.close()
@@ -274,7 +277,7 @@ On CPython before 3.14.10, skip test_truncate_size_changes_stream, which crashes
          self.assertEqual(memio.closed, True)
  
      def test_subclassing(self):
-@@ -423,6 +467,7 @@
+@@ -423,6 +468,7 @@
  
          # We only support pickle protocol 2 and onward since we use extended
          # __reduce__ API of PEP 307 to provide pickling support.
@@ -282,29 +285,17 @@ On CPython before 3.14.10, skip test_truncate_size_changes_stream, which crashes
          for proto in range(2, pickle.HIGHEST_PROTOCOL + 1):
              for obj in (memio, submemio):
                  obj2 = pickle.loads(pickle.dumps(obj, protocol=proto))
-@@ -431,8 +476,9 @@
+@@ -431,7 +477,8 @@
                  self.assertEqual(obj.foo, obj2.foo)
                  self.assertEqual(obj.tell(), obj2.tell())
                  obj2.close()
 -                self.assertRaises(ValueError, pickle.dumps, obj2, proto)
--        del __main__.PickleTestMemIO
 +                with self.assertRaises(ValueError):
 +                    pickle.dumps(obj2, proto)
-+        delattr(__main__, 'PickleTestMemIO')
+         del __main__.PickleTestMemIO
  
  
- class PyBytesIOTest(MemoryTestMixin, MemorySeekTestMixin, unittest.TestCase):
-@@ -440,8 +486,7 @@
- 
-     UnsupportedOperation = pyio.UnsupportedOperation
- 
--    @staticmethod
--    def buftype(s):
-+    def buftype(self, s):
-         return s.encode("ascii")
-     ioclass = pyio.BytesIO
-     EOF = b""
-@@ -455,9 +500,12 @@
+@@ -455,9 +502,12 @@
          self.assertEqual(bytes(buf), b"1234567890")
          # Trying to change the size of the BytesIO while a buffer is exported
          # raises a BufferError.
@@ -320,7 +311,7 @@ On CPython before 3.14.10, skip test_truncate_size_changes_stream, which crashes
          self.assertFalse(memio.closed)
          # Mutating the buffer updates the BytesIO
          buf[3:6] = b"abc"
-@@ -465,11 +513,12 @@
+@@ -465,11 +515,12 @@
          self.assertEqual(memio.getvalue(), b"123abc7890")
          # After the buffer gets released, we can resize and close the BytesIO
          # again
@@ -335,7 +326,7 @@ On CPython before 3.14.10, skip test_truncate_size_changes_stream, which crashes
  
      def test_getbuffer_empty(self):
          memio = self.ioclass()
-@@ -477,15 +526,21 @@
+@@ -477,15 +528,21 @@
          self.assertEqual(bytes(buf), b"")
          # Trying to change the size of the BytesIO while a buffer is exported
          # raises a BufferError.
@@ -360,7 +351,7 @@ On CPython before 3.14.10, skip test_truncate_size_changes_stream, which crashes
          memio = self.ioclass(b"1234567890")
          buf = memio.getbuffer()
          memiowr = weakref.ref(memio)
-@@ -495,9 +550,9 @@
+@@ -495,9 +552,9 @@
          a.append(a)
          # The Python implementation emits an unraisable exception.
          with support.catch_unraisable_exception():
@@ -373,7 +364,7 @@ On CPython before 3.14.10, skip test_truncate_size_changes_stream, which crashes
          # The C implementation emits an unraisable exception.
          with support.catch_unraisable_exception():
              gc.collect()
-@@ -528,14 +583,16 @@
+@@ -528,14 +585,16 @@
          memio.seek(0)
          self.assertEqual(memio.readinto(b), 0)
          self.assertEqual(b, b"")
@@ -392,7 +383,7 @@ On CPython before 3.14.10, skip test_truncate_size_changes_stream, which crashes
          memio = self.ioclass(b"123")
          b = bytearray()
          memio.seek(42)
-@@ -570,8 +627,10 @@
+@@ -570,8 +629,10 @@
          memio = self.ioclass()
  
          self.assertRaises(TypeError, self.ioclass, "1234567890")
@@ -405,7 +396,7 @@ On CPython before 3.14.10, skip test_truncate_size_changes_stream, which crashes
  
      def test_bytes_array(self):
          buf = b"1234567890"
-@@ -594,7 +653,8 @@
+@@ -594,7 +655,8 @@
                  return memoryview(b"A")
  
          memio = self.ioclass()
@@ -415,7 +406,7 @@ On CPython before 3.14.10, skip test_truncate_size_changes_stream, which crashes
  
      # Prevent crashes when memio.write() or memio.writelines()
      # concurrently mutates (e.g., closes or exports) 'memio'.
-@@ -607,7 +667,8 @@
+@@ -607,7 +669,8 @@
                  return memoryview(b"A")
  
          memio = self.ioclass()
@@ -425,7 +416,7 @@ On CPython before 3.14.10, skip test_truncate_size_changes_stream, which crashes
  
      def test_write_concurrent_export(self):
          class B:
-@@ -617,7 +678,8 @@
+@@ -617,7 +680,8 @@
                  return memoryview(b"A")
  
          memio = self.ioclass()
@@ -435,7 +426,7 @@ On CPython before 3.14.10, skip test_truncate_size_changes_stream, which crashes
  
      def test_writelines_concurrent_export(self):
          class B:
-@@ -627,7 +689,8 @@
+@@ -627,7 +691,8 @@
                  return memoryview(b"A")
  
          memio = self.ioclass()
@@ -445,23 +436,7 @@ On CPython before 3.14.10, skip test_truncate_size_changes_stream, which crashes
  
      def test_write_mutating_buffer(self):
          # Test that buffer is exported only once during write().
-@@ -651,7 +714,6 @@
-         self.assertEqual(memio.getvalue(), b"01AAA56789")
-         self.assertEqual(memio.tell(), 5)
- 
--    @support.nomemtest
-     def test_memory_error(self):
-         # gh-157242: io.BytesIO() must not close the file on MemoryError
- 
-@@ -673,6 +735,7 @@
-             with support.inject_memory_error_cm():
-                 stream.truncate(5)
-         self.assertEqual(stream.getvalue(), data)
-+    test_memory_error = support.nomemtest(test_memory_error)
- 
- 
- class TextIOTestMixin:
-@@ -699,12 +762,18 @@
+@@ -699,12 +764,18 @@
      def test_relative_seek(self):
          memio = self.ioclass()
  
@@ -486,7 +461,7 @@ On CPython before 3.14.10, skip test_truncate_size_changes_stream, which crashes
  
      def test_textio_properties(self):
          memio = self.ioclass()
-@@ -849,11 +918,9 @@
+@@ -849,11 +920,9 @@
      UnsupportedOperation = pyio.UnsupportedOperation
      EOF = ""
  
@@ -501,7 +476,7 @@ On CPython before 3.14.10, skip test_truncate_size_changes_stream, which crashes
  
  
  class CBytesIOTest(PyBytesIOTest):
-@@ -861,6 +928,9 @@
+@@ -861,6 +930,9 @@
      UnsupportedOperation = io.UnsupportedOperation
  
      def test_truncate_size_changes_stream(self):
@@ -511,7 +486,7 @@ On CPython before 3.14.10, skip test_truncate_size_changes_stream, which crashes
          class Size:
              def __init__(self, action):
                  self.action = action
-@@ -897,7 +967,8 @@
+@@ -897,7 +969,8 @@
          if state[2] is not None:
              self.assertIsInstance(state[2], dict)
          memio.close()
@@ -521,7 +496,7 @@ On CPython before 3.14.10, skip test_truncate_size_changes_stream, which crashes
  
      def test_setstate(self):
          # This checks whether __setstate__ does proper input validation.
-@@ -905,19 +976,26 @@
+@@ -905,15 +978,23 @@
          memio.__setstate__((b"no error", 0, None))
          memio.__setstate__((bytearray(b"no error"), 0, None))
          memio.__setstate__((b"no error", 0, {'spam': 3}))
@@ -554,63 +529,7 @@ On CPython before 3.14.10, skip test_truncate_size_changes_stream, which crashes
  
      check_sizeof = support.check_sizeof
  
--    @support.cpython_only
-     def test_sizeof(self):
-         if support.Py_GIL_DISABLED:
-             basesize = support.calcobjsize('P2n2Pni')
-@@ -928,6 +1006,7 @@
-         check(io.BytesIO(), basesize )
-         n = 1000  # use a variable to prevent constant folding
-         check(io.BytesIO(b'a' * n), basesize + sys.getsizeof(b'a' * n))
-+    test_sizeof = support.cpython_only(test_sizeof)
- 
-     # Various tests of copy-on-write behaviour for BytesIO.
- 
-@@ -940,22 +1019,21 @@
-         mutation(memio)
-         self.assertEqual(sys.getrefcount(imm), old_rc)
- 
--    @support.cpython_only
-     def test_cow_truncate(self):
-         # Ensure truncate causes a copy.
-         def mutation(memio):
-             memio.truncate(1)
-         self._test_cow_mutation(mutation)
--
--    @support.cpython_only
-+    test_cow_truncate = support.cpython_only(test_cow_truncate)
-+
-     def test_cow_write(self):
-         # Ensure write that would not cause a resize still results in a copy.
-         def mutation(memio):
-             memio.seek(0)
-             memio.write(b'foo')
-         self._test_cow_mutation(mutation)
--
--    @support.cpython_only
-+    test_cow_write = support.cpython_only(test_cow_write)
-+
-     def test_cow_setstate(self):
-         # __setstate__ should cause buffer to be released.
-         memio = self.ioclass(b'foooooo')
-@@ -963,8 +1041,8 @@
-         def mutation(memio):
-             memio.__setstate__(state)
-         self._test_cow_mutation(mutation)
--
--    @support.cpython_only
-+    test_cow_setstate = support.cpython_only(test_cow_setstate)
-+
-     def test_cow_mutable(self):
-         # BytesIO should accept only Bytes for copy-on-write sharing, since
-         # arbitrary buffer-exporting objects like bytearray() aren't guaranteed
-@@ -973,12 +1051,14 @@
-         old_rc = sys.getrefcount(ba)
-         memio = self.ioclass(ba)
-         self.assertEqual(sys.getrefcount(ba), old_rc)
-+    test_cow_mutable = support.cpython_only(test_cow_mutable)
- 
-     def test_write_with_export(self):
+@@ -978,7 +1059,8 @@
          memio = self.ioclass(b"abcd")
          memio.seek(2)
          with memio.getbuffer() as view:
@@ -620,7 +539,7 @@ On CPython before 3.14.10, skip test_truncate_size_changes_stream, which crashes
              self.assertEqual(memio.tell(), 2)
              self.assertEqual(memio.getvalue(), b"abcd")
              self.assertEqual(bytes(view), b"abcd")
-@@ -1014,24 +1094,35 @@
+@@ -1014,24 +1096,35 @@
          if state[3] is not None:
              self.assertIsInstance(state[3], dict)
          memio.close()
@@ -668,7 +587,7 @@ On CPython before 3.14.10, skip test_truncate_size_changes_stream, which crashes
  
      def test_write_str_subclass(self):
          # Writing a str subclass should use the subclass's unicode data
-@@ -1056,11 +1147,9 @@
+@@ -1056,11 +1149,9 @@
  class CStringIOPickleTest(PyStringIOPickleTest):
      UnsupportedOperation = io.UnsupportedOperation
  

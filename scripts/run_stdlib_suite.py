@@ -77,7 +77,7 @@ def run(root: str, path: str, name: str) -> str:
     """Run the full suite, including methods excluded on Monty."""
     with _load_suite(root, path, name) as (_, suite):
         output = io.StringIO()
-        result = unittest.TextTestRunner(stream=output, verbosity=2).run(suite)
+        result = unittest.TextTestRunner(stream=output, verbosity=2, buffer=True).run(suite)
         if not result.wasSuccessful() or not result.testsRun:
             raise RuntimeError(output.getvalue())
         return output.getvalue() if result.skipped else ''

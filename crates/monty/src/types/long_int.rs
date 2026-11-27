@@ -1082,13 +1082,17 @@ pub(crate) fn modular_pow(base: &BigInt, exponent: &Value, modulus: &Value, vm: 
     if modulus.is_zero() {
         return Err(ExcType::value_error_pow_modulus_zero());
     }
-    if exponent.is_negative() {
-        return Err(ExcType::value_error_pow_negative_exponent());
-    }
-
     let modulus_abs = modulus.abs();
+    if modulus_abs.is_one() {
+        return Ok(Some(Value::Int(0)));
+    }
     // Reducing first keeps the base non-negative and no larger than the modulus.
     let base = base.mod_floor(&modulus_abs);
+    let base = if exponent.is_negative() {
+        modular_inverse(base, &modulus_abs, &heap.tracker)?
+    } else {
+        base
+    };
     let (base, exponent, modulus_mag) = (base.magnitude(), exponent.magnitude(), modulus_abs.magnitude());
     // A `num-bigint` digit is pointer-sized, so wasm32 counts twice as many words.
     let words = modulus_mag.bits().div_ceil(u64::from(usize::BITS));
@@ -1103,6 +1107,26 @@ pub(crate) fn modular_pow(base: &BigInt, exponent: &Value, modulus: &Value, vm: 
         result -= modulus_abs;
     }
     Ok(Some(LongInt::new(result).into_value(heap)))
+}
+
+/// Finds the inverse of a reduced base with the extended Euclidean algorithm.
+fn modular_inverse(mut base: BigInt, modulus: &BigInt, tracker: &ResourceTracker) -> RunResult<BigInt> {
+    let mut remainder = modulus.clone();
+    let mut coefficient = BigInt::ZERO;
+    let mut next_coefficient = BigInt::one();
+    while !base.is_zero() {
+        // Division and coefficient multiplication can each process modulus-sized operands.
+        tracker.check_time()?;
+        let (quotient, next_remainder) = remainder.div_rem(&base);
+        (remainder, base) = (base, next_remainder);
+        let next = coefficient - quotient * &next_coefficient;
+        (coefficient, next_coefficient) = (next_coefficient, next);
+    }
+    if remainder.is_one() {
+        Ok(coefficient.mod_floor(modulus))
+    } else {
+        Err(ExcType::value_error_pow_not_invertible())
+    }
 }
 
 /// Left-to-right square-and-multiply that polls the time limit before every exponent bit.
@@ -1153,7 +1177,7 @@ fn long_int_pow_value(base: &BigInt, exponent: &BigInt, heap: &Heap) -> RunResul
 }
 
 /// Borrows or promotes an integer value into its arbitrary-precision representation.
-fn integer_value<'a>(value: &Value, vm: &'a VM<'_>) -> Option<Cow<'a, BigInt>> {
+pub(crate) fn integer_value<'a>(value: &Value, vm: &'a VM<'_>) -> Option<Cow<'a, BigInt>> {
     match value {
         Value::Int(value) => Some(Cow::Owned(BigInt::from(*value))),
         Value::Bool(value) => Some(Cow::Owned(BigInt::from(*value))),

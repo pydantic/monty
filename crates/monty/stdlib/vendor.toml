@@ -25,5 +25,26 @@ files = [
 # `make test-cpython` prepares all of Lib/test but runs only these suites.
 # `support` lists additional Lib/ paths to extract; list test helper files here if a patch edits them.
 [tests]
-suites = ["test_colorsys.py", "test_fnmatch.py", "test_keyword.py", "test_memoryio.py", "test_textwrap.py"]
-support = ["unittest/__init__.py", "unittest/case.py", "unittest/util.py"]
+suites = [
+    "test_colorsys.py",
+    "test_dictcomps.py",
+    "test_errno.py",
+    "test_fnmatch.py",
+    "test_int_literal.py",
+    "test_keyword.py",
+    "test_keywordonlyarg.py",
+    "test_memoryio.py",
+    "test_pow.py",
+    "test_strftime.py",
+    "test_textwrap.py",
+    "test_tomllib/test_data.py",
+    "test_tomllib/test_error.py",
+    "test_unary.py",
+    "test_unicode_identifiers.py",
+]
+support = [
+    "test/test_tomllib/__init__.py",
+    "unittest/__init__.py",
+    "unittest/case.py",
+    "unittest/util.py",
+]

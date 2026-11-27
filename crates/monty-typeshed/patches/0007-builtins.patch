@@ -25,28 +25,19 @@ Remove unsupported top-level builtins and model the sandbox exception constructo
  from types import CellType, CodeType, GenericAlias, TracebackType
  
  # mypy crashes if any of {ByteString, Sequence, MutableSequence, Mapping, MutableMapping}
-@@ -62,7 +61,6 @@
- 
- # we can't import `Literal` from typing or mypy crashes: see #11247
- from typing_extensions import (  # noqa: Y023
--    Concatenate,
-     Literal,
-     LiteralString,
-     ParamSpec,
-@@ -142,47 +140,6 @@
-     def __subclasshook__(cls, subclass: type, /) -> bool: ...
- 
- @disjoint_base
--class staticmethod(Generic[_P, _R_co]):
--    @property
--    def __func__(self) -> Callable[_P, _R_co]: ...
--    @property
+@@ -146,41 +145,29 @@
+     @property
+     def __func__(self) -> Callable[_P, _R_co]: ...
+     @property
 -    def __isabstractmethod__(self) -> bool: ...
--    def __init__(self, f: Callable[_P, _R_co], /) -> None: ...
--    @overload
--    def __get__(self, instance: None, owner: type, /) -> Callable[_P, _R_co]: ...
--    @overload
--    def __get__(self, instance: _T, owner: type[_T] | None = None, /) -> Callable[_P, _R_co]: ...
++    def __name__(self) -> str: ...
++    @property
++    def __wrapped__(self) -> Callable[_P, _R_co]: ...
+     def __init__(self, f: Callable[_P, _R_co], /) -> None: ...
+     @overload
+     def __get__(self, instance: None, owner: type, /) -> Callable[_P, _R_co]: ...
+     @overload
+     def __get__(self, instance: _T, owner: type[_T] | None = None, /) -> Callable[_P, _R_co]: ...
 -    if sys.version_info >= (3, 10):
 -        __name__: str
 -        __qualname__: str
@@ -56,18 +47,22 @@ Remove unsupported top-level builtins and model the sandbox exception constructo
 -    if sys.version_info >= (3, 14):
 -        def __class_getitem__(cls, item: Any, /) -> GenericAlias: ...
 -        __annotate__: AnnotateFunc | None
--
--@disjoint_base
--class classmethod(Generic[_T, _P, _R_co]):
--    @property
--    def __func__(self) -> Callable[Concatenate[type[_T], _P], _R_co]: ...
--    @property
++    def __call__(self, *args: _P.args, **kwargs: _P.kwargs) -> _R_co: ...
+ 
+ @disjoint_base
+ class classmethod(Generic[_T, _P, _R_co]):
+     @property
+     def __func__(self) -> Callable[Concatenate[type[_T], _P], _R_co]: ...
+     @property
 -    def __isabstractmethod__(self) -> bool: ...
--    def __init__(self, f: Callable[Concatenate[type[_T], _P], _R_co], /) -> None: ...
--    @overload
--    def __get__(self, instance: _T, owner: type[_T] | None = None, /) -> Callable[_P, _R_co]: ...
--    @overload
--    def __get__(self, instance: None, owner: type[_T], /) -> Callable[_P, _R_co]: ...
++    def __name__(self) -> str: ...
++    @property
++    def __wrapped__(self) -> Callable[Concatenate[type[_T], _P], _R_co]: ...
+     def __init__(self, f: Callable[Concatenate[type[_T], _P], _R_co], /) -> None: ...
+     @overload
+     def __get__(self, instance: _T, owner: type[_T] | None = None, /) -> Callable[_P, _R_co]: ...
+     @overload
+     def __get__(self, instance: None, owner: type[_T], /) -> Callable[_P, _R_co]: ...
 -    if sys.version_info >= (3, 10):
 -        __name__: str
 -        __qualname__: str
@@ -76,12 +71,10 @@ Remove unsupported top-level builtins and model the sandbox exception constructo
 -    if sys.version_info >= (3, 14):
 -        def __class_getitem__(cls, item: Any, /) -> GenericAlias: ...
 -        __annotate__: AnnotateFunc | None
--
--@disjoint_base
+ 
+ @disjoint_base
  class type:
-     # object.__base__ is None. Otherwise, it would be a type.
-     @property
-@@ -237,15 +194,6 @@
+@@ -237,15 +224,6 @@
      __annotations__: dict[str, AnnotationForm]
      if sys.version_info >= (3, 14):
          __annotate__: AnnotateFunc | None
@@ -97,7 +90,7 @@ Remove unsupported top-level builtins and model the sandbox exception constructo
  
  _PositiveInteger: TypeAlias = Literal[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
  _NegativeInteger: TypeAlias = Literal[-1, -2, -3, -4, -5, -6, -7, -8, -9, -10, -11, -12, -13, -14, -15, -16, -17, -18, -19, -20]
-@@ -765,206 +713,9 @@
+@@ -765,206 +743,9 @@
  
      def __buffer__(self, flags: int, /) -> memoryview: ...
  
@@ -304,7 +297,7 @@ Remove unsupported top-level builtins and model the sandbox exception constructo
  
  @final
  class bool(int):
-@@ -1064,57 +815,6 @@
+@@ -1064,57 +845,6 @@
      def count(self, value: Any, /) -> int: ...
      def index(self, value: Any, start: SupportsIndex = 0, stop: SupportsIndex = sys.maxsize, /) -> int: ...
      def __class_getitem__(cls, item: Any, /) -> GenericAlias: ...
@@ -362,7 +355,7 @@ Remove unsupported top-level builtins and model the sandbox exception constructo
  
  @disjoint_base
  class list(MutableSequence[_T]):
-@@ -1384,78 +1084,17 @@
+@@ -1384,78 +1114,19 @@
  def abs(x: SupportsAbs[_T], /) -> _T: ...
  def all(iterable: Iterable[object], /) -> bool: ...
  def any(iterable: Iterable[object], /) -> bool: ...
@@ -436,12 +429,13 @@ Remove unsupported top-level builtins and model the sandbox exception constructo
  copyright: _sitebuiltins._Printer
  credits: _sitebuiltins._Printer
  
--def delattr(obj: object, name: str, /) -> None: ...
+ def delattr(obj: object, name: str, /) -> None: ...
 -def dir(o: object = ..., /) -> list[str]: ...
++
  @overload
  def divmod(x: SupportsDivMod[_T_contra, _T_co], y: _T_contra, /) -> _T_co: ...
  @overload
-@@ -1540,7 +1179,6 @@
+@@ -1540,7 +1211,6 @@
  def getattr(o: object, name: str, default: dict[Any, Any], /) -> Any | dict[Any, Any]: ...
  @overload
  def getattr(o: object, name: str, default: _T, /) -> Any | _T: ...
@@ -449,7 +443,7 @@ Remove unsupported top-level builtins and model the sandbox exception constructo
  def hasattr(obj: object, name: str, /) -> bool: ...
  def hash(obj: object, /) -> int: ...
  
-@@ -1548,7 +1186,6 @@
+@@ -1548,7 +1218,6 @@
  
  def hex(number: SupportsIndex, /) -> str: ...
  def id(obj: object, /) -> int: ...
@@ -457,7 +451,7 @@ Remove unsupported top-level builtins and model the sandbox exception constructo
  @type_check_only
  class _GetItemIterable(Protocol[_T_co]):
      def __getitem__(self, i: int, /) -> _T_co: ...
-@@ -1574,6 +1211,7 @@
+@@ -1574,6 +1243,7 @@
  license: _sitebuiltins._Printer
  
  def locals() -> dict[str, Any]: ...
@@ -465,7 +459,7 @@ Remove unsupported top-level builtins and model the sandbox exception constructo
  @disjoint_base
  class map(Generic[_S]):
      # 3.14 adds `strict` argument.
-@@ -1910,8 +1548,6 @@
+@@ -1910,8 +1580,6 @@
  @overload
  def round(number: _SupportsRound2[_T], ndigits: SupportsIndex) -> _T: ...
  
@@ -474,7 +468,7 @@ Remove unsupported top-level builtins and model the sandbox exception constructo
  def setattr(obj: object, name: str, value: Any, /) -> None: ...
  @overload
  def sorted(
-@@ -1939,12 +1575,6 @@
+@@ -1939,12 +1607,6 @@
  @overload
  def sum(iterable: Iterable[_AddableT1], /, start: _AddableT2) -> _AddableT1 | _AddableT2: ...
  
@@ -487,7 +481,7 @@ Remove unsupported top-level builtins and model the sandbox exception constructo
  @disjoint_base
  class zip(Generic[_T_co]):
      if sys.version_info >= (3, 10):
-@@ -2027,17 +1657,6 @@
+@@ -2027,17 +1689,6 @@
      def __iter__(self) -> Self: ...
      def __next__(self) -> _T_co: ...
  
@@ -505,7 +499,7 @@ Remove unsupported top-level builtins and model the sandbox exception constructo
  if sys.version_info >= (3, 10):
      from types import EllipsisType, NotImplementedType
  
-@@ -2048,11 +1667,6 @@
+@@ -2048,11 +1699,6 @@
      Ellipsis: EllipsisType
      NotImplemented: NotImplementedType
  else:
@@ -517,7 +511,7 @@ Remove unsupported top-level builtins and model the sandbox exception constructo
  
      Ellipsis: ellipsis
  
-@@ -2082,7 +1696,6 @@
+@@ -2082,7 +1728,6 @@
          __notes__: list[str]
          def add_note(self, note: str, /) -> None: ...
  
@@ -525,7 +519,7 @@ Remove unsupported top-level builtins and model the sandbox exception constructo
  class KeyboardInterrupt(BaseException): ...
  
  @disjoint_base
-@@ -2123,17 +1736,9 @@
+@@ -2123,17 +1768,9 @@
  else:
      class AttributeError(Exception): ...
  
@@ -544,7 +538,7 @@ Remove unsupported top-level builtins and model the sandbox exception constructo
  
  class LookupError(Exception): ...
  class MemoryError(Exception): ...
-@@ -2147,9 +1752,7 @@
+@@ -2147,9 +1784,7 @@
  else:
      class NameError(Exception): ...
  
@@ -554,7 +548,7 @@ Remove unsupported top-level builtins and model the sandbox exception constructo
  
  @disjoint_base
  class SyntaxError(Exception):
-@@ -2181,10 +1784,8 @@
+@@ -2181,10 +1816,8 @@
      # If you provide more than two arguments, it still creates the SyntaxError, but
      # the arguments from the info tuple are not parsed. This form is omitted.
  
@@ -565,10 +559,7 @@ Remove unsupported top-level builtins and model the sandbox exception constructo
  class OverflowError(ArithmeticError): ...
  class ZeroDivisionError(ArithmeticError): ...
  class ModuleNotFoundError(ImportError): ...
-@@ -2192,139 +1793,28 @@
- class KeyError(LookupError): ...
- class UnboundLocalError(NameError): ...
- 
+@@ -2195,136 +1828,25 @@
  class BlockingIOError(OSError):
      characters_written: int
  

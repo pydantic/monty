@@ -1,4 +1,11 @@
 # Monty-only exclusions. Keys under `exclude` are exact unittest IDs.
+[suites."test_dictcomps.py".exclude]
+"test.test_dictcomps.DictComprehensionTest.test_exception_locations" = "Monty does not expose traceback objects."
+"test.test_dictcomps.DictComprehensionTest.test_illegal_assignment" = "Monty does not implement compile()."
+
+[suites."test_errno.py".exclude]
+"test.test_errno.ErrorcodeTests.test_attributes_in_errorcode" = "Monty modules do not expose __dict__."
+
 [suites."test_fnmatch.py".exclude]
 "test.test_fnmatch.FilterFalseTestCase.test_case" = "Monty does not implement fnmatch.filterfalse."
 "test.test_fnmatch.FilterFalseTestCase.test_filterfalse" = "Monty does not implement fnmatch.filterfalse."
@@ -8,6 +15,13 @@
 "test.test_fnmatch.FnmatchTestCase.test_range" = "Monty does not provide the string module."
 "test.test_fnmatch.FnmatchTestCase.test_warnings" = "Monty does not provide the warnings module."
 "test.test_fnmatch.TranslateTestCase.test_star_indices_locations" = "Monty does not expose the private fnmatch._translate helper."
+
+[suites."test_keywordonlyarg.py".exclude]
+"test.test_keywordonlyarg.KeywordOnlyArgTestCase.testKwDefaults" = "Monty functions do not expose __code__ or __kwdefaults__."
+"test.test_keywordonlyarg.KeywordOnlyArgTestCase.testSyntaxErrorForFunctionCall" = "Monty does not implement compile()."
+"test.test_keywordonlyarg.KeywordOnlyArgTestCase.testSyntaxErrorForFunctionDefinition" = "Monty does not implement compile()."
+"test.test_keywordonlyarg.KeywordOnlyArgTestCase.testSyntaxForManyArguments" = "Monty does not implement compile()."
+"test.test_keywordonlyarg.KeywordOnlyArgTestCase.testTooManyPositionalErrorMessage" = "Monty functions do not expose __qualname__."
 
 [suites."test_memoryio.py".exclude]
 "test.test_memoryio.CBytesIOTest.test_bytes_array" = "Monty has no array module."
@@ -141,3 +155,16 @@
 "test.test_memoryio.PyStringIOTest.test_write" = "Tests the _pyio implementation; CStringIOTest runs these tests on Monty's io."
 "test.test_memoryio.PyStringIOTest.test_writelines" = "Tests the _pyio implementation; CStringIOTest runs these tests on Monty's io."
 "test.test_memoryio.PyStringIOTest.test_writelines_error" = "Tests the _pyio implementation; CStringIOTest runs these tests on Monty's io."
+
+[suites."test_strftime.py".exclude]
+"test.test_strftime.StrftimeTest.test_strftime" = "The locale fixture and calendar module are unavailable in Monty."
+
+[suites."test_tomllib/test_error.py".exclude]
+"test.test_tomllib.test_error.TestError.test_deprecated_tomldecodeerror" = "Monty does not implement warnings."
+"test.test_tomllib.test_error.TestError.test_invalid_parse_float" = "Monty does not accept parse_float."
+"test.test_tomllib.test_error.TestError.test_module_name" = "Monty does not accept the CPython TOMLDecodeError constructor arguments."
+"test.test_tomllib.test_error.TestError.test_tomldecodeerror" = "Monty does not expose structured TOMLDecodeError attributes or accept the CPython constructor arguments."
+
+[suites."test_unicode_identifiers.py".exclude]
+"test.test_unicode_identifiers.PEP3131Test.test_invalid" = "Monty reports different syntax error messages and does not expose their position attributes."
+"test.test_unicode_identifiers.PEP3131Test.test_non_bmp_normalized" = "Monty does not implement dir()."
