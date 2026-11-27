@@ -42,7 +42,12 @@ works on classes; see [classes.md](classes.md#inheritance).
 - **Builtin methods are call-only** — reading one without calling it raises
     `AttributeError`, so `[1].append`, `'a'.upper`, `{}.get`, `dict.fromkeys`
     and `list.__class_getitem__` cannot be assigned, passed as a callback or
-    reached through `getattr`. Call them directly (`list.__class_getitem__(int)`).
+    reached through `getattr`.
+    Direct calls with an explicit first positional receiver, such as `str.upper('foo')` and `list.append(items, value)`,
+    are supported for registered builtin instance methods.
+    Date methods called directly accept datetime receivers, but only the implemented date methods are available
+    (see [datetime.md](datetime.md)).
+    Counter's Python-defined methods have additional receiver restrictions (see [collections.md](collections.md#counter)).
 - **`str.translate()`** — a table entry (from a dict or `str.maketrans()`) that maps to a surrogate code point
     (`0xD800`–`0xDFFF`) raises `ValueError: character mapping must be in range(0x110000)`, because Monty strings cannot
     hold lone surrogates.
