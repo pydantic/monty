@@ -93,7 +93,8 @@ from collections import namedtuple
 
 def build():
     values = []
-    cls = namedtuple('C', ['a'], defaults=[values])
+    name = ''.join(['Shared', 'Name'])
+    cls = namedtuple(name, [name], defaults=[values])
     # items = [0] holds no heap refs, so `contains_refs` is False
     values.append(cls(0))
 
@@ -127,7 +128,8 @@ from collections import namedtuple
 
 def build():
     holder = []
-    cls = namedtuple('C', ['a'], module=holder)
+    name = ''.join(['Shared', 'Name'])
+    cls = namedtuple(name, [name], module=holder)
     holder.append(cls)
 
 build()

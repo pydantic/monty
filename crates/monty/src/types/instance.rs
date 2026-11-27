@@ -22,7 +22,8 @@ use crate::{
         copy::{Memo, PyDeepCopy, deep_copy, deep_copy_attrs},
         dataclasses,
     },
-    value::{EitherStr, Value},
+    types::str::PyStr,
+    value::Value,
 };
 
 /// An instance of a user-defined class.
@@ -177,10 +178,7 @@ impl<'h> HeapReadMut<'h, Instance> {
     /// Whatever `set_attr` grows must stay above this line (see
     /// `limitations/classes.md`).
     pub fn set_attr_unchecked(&self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        if name
-            .as_either_str(vm.heap)
-            .is_some_and(|name| name.as_str(vm.interns) == "__class__")
-        {
+        if name.as_str(vm) == Some("__class__") {
             name.drop_with(vm);
             self.assign_class(value, vm).map(|()| None)
         } else {
@@ -408,8 +406,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
         None
     }
 
-    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
-        if let Some(member) = descriptor::data_member(self.get(vm.heap).class(), name.as_str(vm.interns), vm) {
+    fn py_set_attr(&mut self, name: &PyStr<'h>, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        if let Some(member) = descriptor::data_member(self.get(vm.heap).class(), name.as_str(vm), vm) {
             defer_drop!(member, vm);
             vm.heap.inc_ref(self.id());
             let object = Value::Ref(self.id());
@@ -419,7 +417,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
             return Ok(());
         }
         let mut value_guard = DropGuard::new(value, vm);
-        let name = name.as_value(value_guard.ctx().heap);
+        let name = name.clone_value(value_guard.ctx().heap);
         let (value, vm) = value_guard.into_parts();
         let old_value = self.set_attr(name, value, vm)?;
         old_value.drop_with(vm);
@@ -470,7 +468,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
         }
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
         instance_call_attr(self.id(), attr, args, vm)
     }
 
@@ -629,9 +627,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BoundMethod> {
     }
 
     /// Bound receivers and functions are inspectable; annotation metadata belongs to the function.
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let bound = self.get(vm.heap);
-        match attr.as_str(vm.interns) {
+        match attr.as_str(vm) {
             "__func__" => return Ok(Some(CallResult::Value(bound.func.clone_with_heap(vm.heap)))),
             "__self__" => return Ok(Some(CallResult::Value(bound.instance.clone_with_heap(vm.heap)))),
             "__annotations__" | "__annotate__" => {}
@@ -642,9 +640,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BoundMethod> {
         func.py_getattr(attr, vm).map(Some)
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
         let bound = self.get(vm.heap);
-        let callable = match attr.as_str(vm.interns) {
+        let callable = match attr.as_str(vm) {
             "__func__" => bound.func.clone_with_heap(vm.heap),
             "__self__" => bound.instance.clone_with_heap(vm.heap),
             "__annotations__" | "__annotate__" => {
@@ -654,7 +652,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BoundMethod> {
             }
             _ => {
                 args.drop_with(vm);
-                return Err(ExcType::attribute_error("function", attr.as_str(vm.interns)));
+                return Err(ExcType::attribute_error("function", attr.as_str(vm)));
             }
         };
         defer_drop!(callable, vm);
@@ -670,8 +668,8 @@ impl HeapItem for BoundMethod {
 }
 
 /// Call the selected value, binding native methods without allocating a bound method.
-fn instance_call_attr(id: HeapId, attr: &EitherStr, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
-    let name = attr.as_str(vm.interns);
+fn instance_call_attr<'h>(id: HeapId, attr: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+    let name = attr.as_str(vm);
     match descriptor::resolve_instance(id, name, vm) {
         descriptor::AttributeResolution::Getter(member) => {
             let member = member.clone_with_heap(vm.heap);
@@ -692,7 +690,7 @@ fn instance_call_attr(id: HeapId, attr: &EitherStr, args: ArgValues, vm: &mut VM
                 args.drop_with(vm);
                 Err(ExcType::attribute_error(
                     class_name(instance_class(id, vm), vm.heap, vm.interns),
-                    name,
+                    attr.as_str(vm),
                 ))
             }
         }
@@ -700,21 +698,16 @@ fn instance_call_attr(id: HeapId, attr: &EitherStr, args: ArgValues, vm: &mut VM
 }
 
 /// Read the shared resolver's selection; getters run through ordinary suspendable frames.
-pub(crate) fn instance_getattr(id: HeapId, attr: &EitherStr, vm: &mut VM<'_>) -> RunResult<CallResult> {
-    let name = attr.as_str(vm.interns);
-    resolved_instance_attr(id, name, vm)?
-        .ok_or_else(|| ExcType::attribute_error(class_name(instance_class(id, vm), vm.heap, vm.interns), name))
-}
-
-/// Complete reads for both bytecode and synchronous native consumers, preserving getter errors.
-fn resolved_instance_attr(id: HeapId, name: &str, vm: &mut VM<'_>) -> RunResult<Option<CallResult>> {
-    match descriptor::resolve_instance(id, name, vm) {
+pub(crate) fn instance_getattr<'h>(id: HeapId, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<CallResult> {
+    match descriptor::resolve_instance(id, attr.as_str(vm), vm) {
         descriptor::AttributeResolution::Getter(member) => {
             let member = member.clone_with_heap(vm.heap);
             defer_drop!(member, vm);
-            descriptor::get(member, Some(id), instance_class(id, vm), vm).map(Some)
+            descriptor::get(member, Some(id), instance_class(id, vm), vm)
         }
-        resolution => Ok(resolution.into_value(vm).map(CallResult::Value)),
+        resolution => resolution.into_value(vm).map(CallResult::Value).ok_or_else(|| {
+            ExcType::attribute_error(class_name(instance_class(id, vm), vm.heap, vm.interns), attr.as_str(vm))
+        }),
     }
 }
 
@@ -731,14 +724,14 @@ pub(crate) enum FastAttributeLookupResult {
 }
 
 /// Share read precedence with bytecode while leaving Python getters to the caller.
-pub(crate) fn lookup_attribute_fast(object: &Value, attr: &EitherStr, vm: &VM<'_>) -> FastAttributeLookupResult {
+pub(crate) fn lookup_attribute_fast<'h>(object: &Value, attr: &PyStr<'h>, vm: &VM<'h>) -> FastAttributeLookupResult {
     let Value::Ref(id) = object else {
         return FastAttributeLookupResult::Inconclusive;
     };
 
     match vm.heap.get(*id) {
         HeapData::HostClass(_) | HeapData::HostClassType(_) => FastAttributeLookupResult::HostLookup,
-        HeapData::Instance(_) => match descriptor::resolve_instance(*id, attr.as_str(vm.interns), vm) {
+        HeapData::Instance(_) => match descriptor::resolve_instance(*id, attr.as_str(vm), vm) {
             descriptor::AttributeResolution::Getter(_) => FastAttributeLookupResult::Inconclusive,
             resolution => match resolution.into_value(vm) {
                 Some(value) => FastAttributeLookupResult::Found(value),
@@ -751,9 +744,16 @@ pub(crate) fn lookup_attribute_fast(object: &Value, attr: &EitherStr, vm: &VM<'_
 
 /// Native consumers use the same resolver, requiring getters to complete synchronously.
 pub(crate) fn instance_attr(id: HeapId, name: &str, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
-    resolved_instance_attr(id, name, vm)?
-        .map(|result| result.require_synchronous(vm))
-        .transpose()
+    match descriptor::resolve_instance(id, name, vm) {
+        descriptor::AttributeResolution::Getter(member) => {
+            let member = member.clone_with_heap(vm.heap);
+            defer_drop!(member, vm);
+            descriptor::get(member, Some(id), instance_class(id, vm), vm)?
+                .require_synchronous(vm)
+                .map(Some)
+        }
+        resolution => Ok(resolution.into_value(vm)),
+    }
 }
 
 /// Produces `repr(instance)`, dispatching to a user `__repr__` if the class
@@ -1084,7 +1084,7 @@ pub(crate) fn class_member(class_id: HeapId, name: &str, vm: &VM<'_>) -> Option<
 /// programmer-error tripwire.
 pub(crate) fn class_name<'i>(class_id: HeapId, heap: &Heap, interns: &'i Interns) -> Cow<'i, str> {
     match heap.get(class_id) {
-        HeapData::Class(class) => class.name().to_cow(interns),
+        HeapData::Class(class) => class.name().to_cow(heap, interns),
         _ => unreachable!("class_name called with a non-class heap id"),
     }
 }

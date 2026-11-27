@@ -29,6 +29,12 @@ class Record:
 
 
 assert '{0.value:04d}'.format(Record(1)) == '0001'
+record = Record(3)
+record.interned_attribute_long_name = 4
+assert '{0.interned_attribute_long_name}'.format(record) == '4'
+runtime_attribute = ''.join(['runtime_', 'attribute_long_name'])
+setattr(record, runtime_attribute, 5)
+assert '{0.runtime_attribute_long_name}'.format(record) == '5'
 assert capture_error('{0.missing}', Record(2001)) == (
     'AttributeError',
     "'Record' object has no attribute 'missing'",

@@ -41,8 +41,9 @@ use crate::{
             TableWalk,
         },
         key_hash::dict_key_hash,
+        str::PyStr,
     },
-    value::{EitherStr, VALUE_SIZE, Value, eq_bigint, eq_bytes, eq_f64, eq_i64, eq_str},
+    value::{VALUE_SIZE, Value, eq_bigint, eq_bytes, eq_f64, eq_i64, eq_str},
 };
 
 /// Python dict type preserving insertion order.
@@ -1303,8 +1304,8 @@ impl<'h> HeapReadMut<'h, Dict> {
     /// previous factory for the caller to drop. Every other attribute — and any
     /// attribute on a plain dict — raises the generic no-setattr
     /// `AttributeError`. Consumes `value`.
-    fn set_default_factory_attr(&self, attr: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        if self.get(vm.heap).is_defaultdict() && attr.static_string(vm.interns) == Some(StaticStrings::DefaultFactory) {
+    fn set_default_factory_attr(&self, attr: &PyStr<'h>, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        if self.get(vm.heap).is_defaultdict() && attr.static_string(vm) == Some(StaticStrings::DefaultFactory) {
             // Deliberately unvalidated: CPython's setter is a plain member
             // assignment, so a non-callable is stored and only raises
             // `'int' object is not callable` when a missing key finally calls it.
@@ -1317,7 +1318,7 @@ impl<'h> HeapReadMut<'h, Dict> {
         } else {
             let type_name = self.get(vm.heap).kind_type().name();
             value.drop_with(vm);
-            Err(ExcType::attribute_error_no_setattr(type_name, attr.as_str(vm.interns)))
+            Err(ExcType::attribute_error_no_setattr(type_name, attr.as_str(vm)))
         }
     }
 }
@@ -1341,7 +1342,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
         self.get(vm.heap).kind_type().into()
     }
 
-    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+    fn py_set_attr(&mut self, name: &PyStr<'h>, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         let old_value = self.set_default_factory_attr(name, value, vm)?;
         old_value.drop_with(vm);
         Ok(())
@@ -1480,10 +1481,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
         self.write_map_repr(f, vm, heap_ids)
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         // A defaultdict exposes `default_factory`; every other attribute (and all
         // attributes on a plain dict) falls through to the caller's generic error.
-        if self.get(vm.heap).is_defaultdict() && attr.static_string(vm.interns) == Some(StaticStrings::DefaultFactory) {
+        if self.get(vm.heap).is_defaultdict() && attr.static_string(vm) == Some(StaticStrings::DefaultFactory) {
             let factory = self
                 .get(vm.heap)
                 .default_factory()

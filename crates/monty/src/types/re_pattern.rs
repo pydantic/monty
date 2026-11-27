@@ -31,10 +31,10 @@ use crate::{
     resource_checks::check_estimated_size,
     types::{
         LazyHeapSet, List, PyTrait, ReMatch, Type, TypeRef, allocate_tuple, re_syntax,
-        str::{allocate_string, string_repr_fmt},
+        str::{PyStr, allocate_string, string_repr_fmt},
         tuple::TupleVec,
     },
-    value::{EitherStr, VALUE_SIZE, Value},
+    value::{VALUE_SIZE, Value},
 };
 
 /// A compiled regular expression pattern.
@@ -562,14 +562,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RePattern> {
         Ok(write!(f, ")")?)
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        match attr.static_string(vm.interns) {
+    fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        match attr.static_string(vm) {
             Some(StaticStrings::PatternAttr) => {
                 let v = allocate_string(self.get(vm.heap).pattern.as_str(), vm.heap);
                 Ok(Some(CallResult::Value(v)))
             }
             Some(StaticStrings::Flags) => Ok(Some(CallResult::Value(Value::Int(i64::from(self.get(vm.heap).flags))))),
-            _ => Err(ExcType::attribute_error(Type::RePattern, attr.as_str(vm.interns))),
+            _ => Err(ExcType::attribute_error(Type::RePattern, attr.as_str(vm))),
         }
     }
 }

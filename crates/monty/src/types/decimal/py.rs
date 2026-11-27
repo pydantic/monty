@@ -36,7 +36,9 @@ use crate::{
     py_value::PyValue,
     types::{
         CmpOrder, Complex, LazyHeapSet, LongInt, NamedTuple, PyTrait, Type, TypeRef, allocate_string,
-        sequence::SequenceItems, str::allocate_string_no_interning, tuple::allocate_tuple,
+        sequence::SequenceItems,
+        str::{PyStr, allocate_string_no_interning},
+        tuple::allocate_tuple,
     },
     value::{EitherStr, Value},
 };
@@ -81,8 +83,8 @@ fn context_arg(value: &Value, vm: &mut VM<'_>) -> RunResult<HeapId> {
 /// Parses a `ROUND_*` string argument.
 pub(crate) fn rounding_arg(value: &Value, vm: &VM<'_>) -> RunResult<Rounding> {
     value
-        .as_either_str(vm.heap)
-        .and_then(|name| Rounding::from_name(name.as_str(vm.interns)))
+        .as_str(vm)
+        .and_then(Rounding::from_name)
         .ok_or_else(ExcType::decimal_invalid_rounding)
 }
 
@@ -195,8 +197,8 @@ fn construct(value: &Value, ctx_id: HeapId, vm: &mut VM<'_>) -> RunResult<Decima
     if let Some(decimal) = value.get_as::<Decimal>(vm.heap) {
         return Ok(decimal.clone());
     }
-    if let Some(text) = value.as_either_str(vm.heap) {
-        let parsed = parse::parse_str(text.as_str(vm.interns))?;
+    if let Some(text) = value.as_str(vm) {
+        let parsed = parse::parse_str(text)?;
         return match parsed {
             Ok(decimal) => Ok(decimal),
             Err(condition) => with_ctx(vm, ctx_id, |ctx, _| Ok(ctx.invalid(condition))),
@@ -243,8 +245,8 @@ fn from_tuple(value: &Value, ctx_id: HeapId, vm: &mut VM<'_>) -> RunResult<Decim
         }
     }
     parse::check_digit_count(coeff.len())?;
-    if let Some(text) = exponent.as_either_str(vm.heap) {
-        return match text.as_str(vm.interns) {
+    if let Some(text) = exponent.as_str(vm) {
+        return match text {
             "F" => Ok(Decimal::infinity(sign)),
             "n" => Ok(Decimal::special_nan(
                 sign,
@@ -660,8 +662,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Decimal> {
         self.get(vm.heap).to_f64().map(Some)
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let value = match attr.as_str(vm.interns) {
+    fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        let value = match attr.as_str(vm) {
             "real" => self.clone_value(vm.heap),
             "imag" => decimal_value(Decimal::zero(false, 0), vm),
             _ => return Ok(None),
@@ -669,9 +671,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Decimal> {
         Ok(Some(CallResult::Value(value)))
     }
 
-    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+    fn py_set_attr(&mut self, name: &PyStr<'h>, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         value.drop_with(vm);
-        let name = name.as_str(vm.interns);
+        let name = name.as_str(vm);
         Err(match name {
             "real" | "imag" => ExcType::attribute_error_not_writable(name, &self.py_type_name(vm)),
             _ => ExcType::attribute_error_no_setattr(&self.py_type_name(vm), name),
@@ -903,10 +905,10 @@ impl<'h> HeapObjectRead<'h, Decimal> {
                 {
                     return Err(ExcType::type_error("optional argument must be a dict"));
                 }
-                let Some(spec) = spec.as_either_str(vm.heap) else {
+                let Some(spec) = spec.as_str(vm) else {
                     return Err(ExcType::type_error("format arg must be str"));
                 };
-                let spec = spec.as_str(vm.interns).to_owned();
+                let spec = spec.to_owned();
                 self.format(&spec, vm)
             }
             DecimalMethod::DunderRound => {

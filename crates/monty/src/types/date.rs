@@ -35,11 +35,11 @@ use crate::{
     string_builder::StringBuilder,
     types::{
         CmpOrder, LazyHeapSet, PyTrait, TimeDelta, Type, TypeRef, datetime,
-        str::{allocate_string, allocate_string_no_interning},
+        str::{PyStr, allocate_string, allocate_string_no_interning},
         timedelta,
         timezone::{format_offset_compact, format_offset_hms, tzname_string},
     },
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 const MICROSECONDS_PER_DAY: i128 = 86_400_000_000;
@@ -357,9 +357,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
         }
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let (year, month, day) = to_ymd(*self.get(vm.heap));
-        match attr.static_string(vm.interns) {
+        match attr.static_string(vm) {
             Some(StaticStrings::Year) => Ok(Some(CallResult::Value(Value::Int(i64::from(year))))),
             Some(StaticStrings::Month) => Ok(Some(CallResult::Value(Value::Int(i64::from(month))))),
             Some(StaticStrings::Day) => Ok(Some(CallResult::Value(Value::Int(i64::from(day))))),
@@ -575,7 +575,7 @@ struct DateReplaceArgs {
 /// Adapts date descriptors to the datetime payload while preserving method-specific results.
 pub(crate) fn call_subtype_descriptor<'h>(
     receiver: &mut PyValue<'h>,
-    attr: &EitherStr,
+    attr: &PyStr<'h>,
     call: MethodCall,
     args: ArgValues,
     vm: &mut VM<'h>,
@@ -589,12 +589,12 @@ pub(crate) fn call_subtype_descriptor<'h>(
 /// `date` descriptors read the date portion of a datetime unless the method uses its time fields.
 fn call_datetime_descriptor<'h>(
     value: &mut HeapObjectRead<'h, datetime::DateTime>,
-    attr: &EitherStr,
+    attr: &PyStr<'h>,
     call: MethodCall,
     args: ArgValues,
     vm: &mut VM<'h>,
 ) -> RunResult<CallResult> {
-    let name = attr.static_string(vm.interns);
+    let name = attr.static_string(vm);
     let date = value.get(vm.heap).date();
     match name {
         Some(StaticStrings::Strftime) => {

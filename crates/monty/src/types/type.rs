@@ -18,7 +18,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropWithContext, Heap},
-    intern::{Interns, StaticStrings},
+    intern::StaticStrings,
     modules::collections,
     py_attrs::{self, AttrDef},
     py_value::PyValue,
@@ -27,9 +27,9 @@ use crate::{
         bytes::bytes_repr,
         instance::BoundMethod,
         long_int::INT_MAX_STR_DIGITS,
-        str::{StringRepr, allocate_string},
+        str::{PyStr, StringRepr, allocate_string},
     },
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 impl Type {
@@ -90,8 +90,8 @@ impl Type {
 
     /// Returns the first definition in the MRO and the native namespace that owns it.
     /// The owner validates descriptors; class methods bind to the accessing class.
-    pub(crate) fn lookup_attr(self, attr: &EitherStr, interns: &Interns) -> Option<(Self, AttrDef)> {
-        let name = attr.static_string(interns)?;
+    pub(crate) fn lookup_attr<'h>(self, attr: &PyStr<'h>, vm: &VM<'h>) -> Option<(Self, AttrDef)> {
+        let name = attr.static_string(vm)?;
         self.mro()
             .find_map(|owner| (owner.def().attrs?.lookup)(name).map(|definition| (owner, definition)))
     }
@@ -100,11 +100,11 @@ impl Type {
     pub(crate) fn call_attr<'h>(
         self,
         obj: &mut PyValue<'h>,
-        attr: &EitherStr,
+        attr: &PyStr<'h>,
         args: ArgValues,
         vm: &mut VM<'h>,
     ) -> RunResult<CallResult> {
-        match self.lookup_attr(attr, vm.interns) {
+        match self.lookup_attr(attr, vm) {
             Some((owner, AttrDef::Method(call))) => py_attrs::call_method(owner, obj, attr, call, args, vm),
             Some((_, AttrDef::ClassMethod(classmethod))) => classmethod(obj.py_type(vm), args, vm),
             _ => obj.call_dynamic_attr(vm, attr, args),
@@ -116,8 +116,13 @@ impl Type {
     /// A type's own class methods run first, then `__class_getitem__`; any
     /// other name is looked up as a plain attribute and the result called, so
     /// `list.__name__()` raises `'str' object is not callable`.
-    pub(crate) fn call_class_method(self, attr: &EitherStr, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
-        match self.lookup_attr(attr, vm.interns) {
+    pub(crate) fn call_class_method<'h>(
+        self,
+        attr: &PyStr<'h>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        match self.lookup_attr(attr, vm) {
             Some((_, AttrDef::ClassMethod(classmethod))) => {
                 return classmethod(TypeRef::Native(self), args, vm);
             }
@@ -129,7 +134,7 @@ impl Type {
             }
             _ => {}
         }
-        if self.has_class_getitem() && attr.static_string(vm.interns) == Some(StaticStrings::ClassGetitem) {
+        if self.has_class_getitem() && attr.static_string(vm) == Some(StaticStrings::ClassGetitem) {
             // `list.__class_getitem__(int)` is `list[int]`; the error names the
             // bare type as CPython does (`deque.__class_getitem__()`).
             let name = format!("{}.__class_getitem__", self.dunder_name());
@@ -147,16 +152,15 @@ impl Type {
     /// Resolves an attribute read on a type object itself — `list.__name__`,
     /// `bool.__mro__`, `date.max`, `chain.from_iterable` — returning `None` when
     /// there is no such member so the caller raises [`Self::attribute_error`].
-    pub(crate) fn class_getattr(self, attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
-        let is_dunder_name = attr.static_string(vm.interns).map_or_else(
-            || attr.as_str(vm.interns) == "__name__",
-            |ss| ss == StaticStrings::DunderName,
-        );
+    pub(crate) fn class_getattr<'h>(self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> Option<Value> {
+        let is_dunder_name = attr
+            .static_string(vm)
+            .map_or_else(|| attr.as_str(vm) == "__name__", |ss| ss == StaticStrings::DunderName);
         if is_dunder_name {
             return Some(allocate_string(self.dunder_name(), vm.heap));
         }
         let type_value = |ty: Self| Value::Builtin(Builtins::Type(ty));
-        Some(match attr.as_str(vm.interns) {
+        Some(match attr.as_str(vm) {
             "__bases__" => allocate_tuple(self.def().bases.iter().copied().map(type_value).collect(), vm.heap),
             "__mro__" => allocate_tuple(self.mro().map(type_value).collect(), vm.heap),
             // `type.mro` is the method itself; any other type's is bound to that type.
@@ -178,8 +182,8 @@ impl Type {
     ///
     /// Every lookup allocates a fresh object, so `date.min is date.min` is
     /// `False` where CPython caches (see limitations/datetime.md).
-    pub(crate) fn class_constant(self, attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
-        match self.lookup_attr(attr, vm.interns) {
+    pub(crate) fn class_constant<'h>(self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> Option<Value> {
+        match self.lookup_attr(attr, vm) {
             Some((_, AttrDef::Value(get))) => Some(get(vm)),
             _ => None,
         }
@@ -189,8 +193,8 @@ impl Type {
     ///
     /// CPython names the class rather than the metaclass here:
     /// `type object 'list' has no attribute 'nonexistent'`.
-    pub(crate) fn attribute_error(self, attr: &EitherStr, vm: &VM<'_>) -> RunError {
-        ExcType::attribute_error_type(self.name(), attr.as_str(vm.interns))
+    pub(crate) fn attribute_error<'h>(self, attr: &PyStr<'h>, vm: &VM<'h>) -> RunError {
+        ExcType::attribute_error_type(self.name(), attr.as_str(vm))
     }
 
     /// Calls this type as a constructor (e.g., `list(x)`, `int(x)`).

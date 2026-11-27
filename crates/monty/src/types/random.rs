@@ -29,8 +29,8 @@ use crate::{
     },
     py_attrs::PyAttrs,
     py_value::PyValue,
-    types::{LazyHeapSet, PyTrait, Type, TypeRef, py_trait::PyObjectIdentity},
-    value::{EitherStr, Value},
+    types::{LazyHeapSet, PyTrait, Type, TypeRef, py_trait::PyObjectIdentity, str::PyStr},
+    value::Value,
 };
 
 /// Words in the MT19937 state vector.
@@ -630,9 +630,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Random> {
     }
 
     /// `VERSION`, the state-format number `getstate()` reports.
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        Ok((attr.static_string(vm.interns) == Some(StaticStrings::RandomVersion))
-            .then_some(CallResult::Value(Value::Int(3))))
+    fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        Ok((attr.static_string(vm) == Some(StaticStrings::RandomVersion)).then_some(CallResult::Value(Value::Int(3))))
     }
 }
 

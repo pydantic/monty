@@ -27,9 +27,9 @@ use crate::{
         io::{is_memory_stream, is_native_stream},
         iter::collect_owned_iterable,
         sequence::SequenceItems,
-        str::allocate_string,
+        str::{PyStr, allocate_string},
     },
-    value::{EitherStr, VALUE_SIZE, Value},
+    value::{VALUE_SIZE, Value},
 };
 
 /// A `_csv.writer`: the target, its `write` callable and the dialect.
@@ -87,7 +87,7 @@ pub(crate) fn write_method(target: &Value, vm: &mut VM<'_>) -> RunResult<Option<
     if is_native_stream(target, vm.heap) {
         return Ok(Some(Value::None));
     }
-    let name = EitherStr::Interned(vm.interns.intern_static(StaticStrings::Write));
+    let name = PyStr::Interned(vm.interns.intern_static(StaticStrings::Write));
     match target.py_getattr(&name, vm) {
         Ok(CallResult::Value(method)) if method.is_callable(vm) => Ok(Some(method)),
         Ok(result) => {

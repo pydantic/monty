@@ -20,8 +20,8 @@ use crate::{
     intern::StaticStrings,
     py_attrs::PyAttrs,
     py_value::PyValue,
-    types::{LazyHeapSet, List, PyTrait, Type, TypeRef, bytes::allocate_bytes},
-    value::{EitherStr, VALUE_SIZE, Value},
+    types::{LazyHeapSet, List, PyTrait, Type, TypeRef, bytes::allocate_bytes, str::PyStr},
+    value::{VALUE_SIZE, Value},
 };
 
 /// The state of one `io.BytesIO`.
@@ -192,8 +192,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BytesIo> {
         Ok(CallResult::Value(Value::None))
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        Ok((attr.static_string(vm.interns) == Some(StaticStrings::Closed))
+    fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        Ok((attr.static_string(vm) == Some(StaticStrings::Closed))
             .then(|| CallResult::Value(Value::Bool(self.get(vm.heap).closed))))
     }
 }

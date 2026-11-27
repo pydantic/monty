@@ -456,7 +456,7 @@ fn install_generated_methods<'h>(
     let class_name = class
         .get(installer.heap())
         .name()
-        .as_str(installer.interns())
+        .as_str(installer.heap(), installer.interns())
         .to_owned();
     let names: Vec<StringId> = adopted_field_ids(fields_id, installer.heap())
         .into_iter()
@@ -716,11 +716,10 @@ fn annotations_dict<'a>(annotations: &Value, vm: &'a VM<'_>) -> &'a Dict {
 /// also matches by name; `None` for an evaluated object.
 fn annotation_text(annotation: &Value, vm: &VM<'_>) -> Option<String> {
     match annotation {
-        value if let Some(forward_ref) = value.get_as::<ForwardRef>(vm.heap) => forward_ref
-            .arg()
-            .as_either_str(vm.heap)
-            .map(|s| s.into_string(vm.interns)),
-        _ => annotation.as_either_str(vm.heap).map(|s| s.into_string(vm.interns)),
+        value if let Some(forward_ref) = value.get_as::<ForwardRef>(vm.heap) => {
+            forward_ref.arg().as_str(vm).map(str::to_owned)
+        }
+        _ => annotation.as_str(vm).map(str::to_owned),
     }
 }
 

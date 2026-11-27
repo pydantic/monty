@@ -232,9 +232,9 @@ fn class_like_mro(data: &HeapData) -> &[TypeRef] {
 /// The name of a class-like heap object.
 fn class_like_name<'i>(id: HeapId, heap: &Heap, interns: &'i Interns) -> Cow<'i, str> {
     match heap.get(id) {
-        HeapData::Class(class) => class.name().to_cow(interns),
-        HeapData::NamedTupleClass(class) => class.name_either().to_cow(interns),
-        HeapData::HostClassType(class) => class.name_either().to_cow(interns),
+        HeapData::Class(class) => class.name().to_cow(heap, interns),
+        HeapData::NamedTupleClass(class) => class.name_either().to_cow(heap, interns),
+        HeapData::HostClassType(class) => class.name_either().to_cow(heap, interns),
         _ => unreachable!("TypeRef::Class names a class object"),
     }
 }

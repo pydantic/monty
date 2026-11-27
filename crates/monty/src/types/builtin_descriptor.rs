@@ -2,7 +2,7 @@
 
 use std::fmt::{self, Write};
 
-use super::{LazyHeapSet, PyTrait, Type, instance::bind_method};
+use super::{LazyHeapSet, PyTrait, Type, instance::bind_method, str::PyStr};
 use crate::{
     args::{ArgValues, FromArgs},
     builtins::type_of_ref,
@@ -12,7 +12,7 @@ use crate::{
     hash::{HashValue, identity_hash},
     heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     modules::ModuleFunctions,
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// Builtin descriptor state; each wrapper stores only the values its protocol needs.
@@ -392,9 +392,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BuiltinDescriptor> {
         Ok(write!(f, "<{} object>", self.get(vm.heap).kind())?)
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let descriptor = self.get(vm.heap);
-        let name = attr.as_str(vm.interns);
+        let name = attr.as_str(vm);
         let method = match descriptor {
             BuiltinDescriptor::Property {
                 fget,
@@ -442,14 +442,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BuiltinDescriptor> {
         ))))
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
         let mut guard = DropGuard::new(args, vm);
         let (_, vm) = guard.as_parts_mut();
         let Some(CallResult::Value(callable)) = self.py_getattr(attr, vm)? else {
-            return Err(ExcType::attribute_error(
-                self.get(vm.heap).kind(),
-                attr.as_str(vm.interns),
-            ));
+            return Err(ExcType::attribute_error(self.get(vm.heap).kind(), attr.as_str(vm)));
         };
         let (args, vm) = guard.into_parts();
         defer_drop!(callable, vm);

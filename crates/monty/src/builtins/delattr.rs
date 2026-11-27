@@ -7,7 +7,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{HeapData, HeapReadOutput},
     modules::dataclasses,
-    types::{descriptor, instance::class_name},
+    types::{descriptor, instance::class_name, str::PyStr},
     value::Value,
 };
 
@@ -18,7 +18,7 @@ pub(crate) fn builtin_delattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Cal
     let [object, name] = args.as_slice() else {
         return Err(ExcType::type_error_arg_count("delattr", 2, args.len()));
     };
-    let Some(attr) = name.as_either_str(vm.heap).map(|s| s.resolve_interned(vm.interns)) else {
+    let Some(attr) = PyStr::from_value(name, vm).map(|s| s.resolve_interned(vm)) else {
         return Err(ExcType::type_error(format!(
             "attribute name must be string, not '{}'",
             name.py_type_name(vm)
@@ -30,12 +30,12 @@ pub(crate) fn builtin_delattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Cal
         return Err(error);
     }
     if let Some(class) = descriptor::descriptor_class(object, vm)
-        && let Some(member) = descriptor::data_member(class, attr.as_str(vm.interns), vm)
+        && let Some(member) = descriptor::data_member(class, attr.as_str(vm), vm)
     {
         defer_drop!(member, vm);
         return descriptor::mutate(member, object, None, vm);
     }
-    let key = attr.as_value(vm.heap);
+    let key = attr.clone_value(vm.heap);
     defer_drop!(key, vm);
     let removed = match object {
         Value::Ref(id) => match vm.heap.read(*id) {
@@ -56,12 +56,12 @@ pub(crate) fn builtin_delattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Cal
     {
         Err(deletion_error(ExcType::attribute_error_type(
             &class_name(*id, vm.heap, vm.interns),
-            attr.as_str(vm.interns),
+            attr.as_str(vm),
         )))
     } else {
         Err(deletion_error(ExcType::attribute_error(
             object.py_type_name(vm),
-            attr.as_str(vm.interns),
+            attr.as_str(vm),
         )))
     }
 }

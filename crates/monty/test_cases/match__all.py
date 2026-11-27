@@ -681,6 +681,18 @@ match 1:
         result = 'not an instance'
 assert result == 'not an instance'
 
+# a bad element after an owned name releases the partially collected names
+heap_name = ''.join(['heap_match', '_attribute_name'])
+BadElements.__match_args__ = (heap_name, 1)
+setattr(BadElements, heap_name, 0)
+try:
+    match BadElements():
+        case BadElements(q, r):
+            pass
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == '__match_args__ elements must be strings (got int)'
+
 
 # === As patterns ===
 def as_pattern(x):

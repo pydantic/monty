@@ -45,7 +45,6 @@ dq = collections.deque([1, 2, 3], maxlen=5)
 Point = collections.namedtuple('Point', ['x', 'y'])
 p = Point(1, 2)
 
-
 @dataclasses.dataclass
 class Item:
     name: str
@@ -211,6 +210,41 @@ assert add5(2) == 7
 (result, c.value)
 ";
 
+/// Retained name identities, also present in this branch's permanent v16 fixture.
+const OWNED_NAME_CHECK: &str = r"
+assert Dynamic.__name__ is shared_name
+assert Dynamic.self_ref is Dynamic
+assert Named.__name__ is shared_name
+assert named._fields[0] is shared_name
+assert getattr(named, shared_name) == 5
+";
+
+/// Retained heap names survive snapshots written by the current producer.
+#[test]
+fn owned_name_identities_survive_dump_restore() {
+    let mut repl = MontyRepl::new("names.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        r"
+import collections
+shared_name = ''.join(['Shared', 'LongIdentityName'])
+Dynamic = type(shared_name, (), {})
+Named = collections.namedtuple(shared_name, [shared_name])
+named = Named(5)
+Dynamic.self_ref = Dynamic
+",
+        vec![],
+        PrintWriter::Disabled,
+    )
+    .unwrap();
+    let bytes = dump("names.py", None, &[], SessionRef::Idle(&repl)).unwrap();
+    let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else {
+        panic!("expected an idle session");
+    };
+    restored
+        .feed_run(OWNED_NAME_CHECK, vec![], PrintWriter::Disabled)
+        .unwrap();
+}
+
 /// Checks that the current-version fixture still loads and runs.
 /// If the format changed, check both compatibility directions against published releases
 /// before updating the fixture with `UPDATE_DUMP_FIXTURE=1 cargo test -p monty --test dump_compat`.
@@ -293,11 +327,12 @@ fn check_fixture(bytes: &[u8]) {
     );
 }
 
-/// Suspended sessions from older supported versions resume their host call.
+/// Older fixtures, including the independent upstream v16, retain usable namedtuple names.
 #[test]
-fn older_version_fixtures_load_and_resume() {
-    for version in 14..DUMP_VERSION {
-        let bytes = fs::read(fixture_path_for(version)).expect("older fixture exists");
+fn upstream_fixtures_load_after_name_ownership_bump() {
+    let upstream_v16 = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dump_v16_main.bin");
+    for path in (14..DUMP_VERSION).map(fixture_path_for).chain([upstream_v16]) {
+        let bytes = fs::read(&path).expect("the permanent fixture exists");
         let loaded = Dump::load(&bytes).expect("older dumps remain supported");
         assert_eq!(loaded.script_name, "fixture.py");
         let Session::Suspended(progress) = loaded.state else {
@@ -305,8 +340,72 @@ fn older_version_fixtures_load_and_resume() {
         };
         let call = progress.into_function_call().expect("suspended on host_call");
         let progress = call.resume(MontyObject::int(41), PrintWriter::Stdout).unwrap();
-        let (_, value) = progress.into_complete().expect("host_call resumed to completion");
+        let (mut repl, value) = progress.into_complete().expect("host_call resumed to completion");
         assert_eq!(value, MontyObject::int(42));
+        if path == fixture_path_for(16) {
+            repl.feed_run(OWNED_NAME_CHECK, vec![], PrintWriter::Disabled).unwrap();
+        }
+        repl.feed_run(
+            "assert p.x == 1\nassert p._fields == ('x', 'y')\nassert p._replace(x=3).x == 3\nassert Point.__name__ == 'Point'",
+            vec![],
+            PrintWriter::Disabled,
+        )
+        .unwrap();
+    }
+}
+
+/// The state in `names_v15.bin`, written by upstream commit 7b9c5061 (version 15).
+/// Host inputs add `host_type` named `LegacyHostTypeName` and `host_tuple` equal to
+/// `LegacyHostTupleName(legacy_host_field=7)`. Never regenerate this fixture.
+#[expect(dead_code, reason = "documents what the checked-in fixture holds")]
+const LEGACY_NAME_STATE: &str = r"import collections
+name = ''.join(['Legacy', 'DynamicName'])
+Dynamic = type(name, (), {})
+Dynamic.self_ref = Dynamic
+Named = collections.namedtuple(name, [name], defaults=[5])
+named = Named()";
+
+/// Old copied names in all four owner types become owned strings, including through direct serde.
+#[test]
+fn legacy_name_text_upgrades_to_owned_strings() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/names_v15.bin");
+    let bytes = fs::read(path).unwrap();
+    for direct_serde in [true, false] {
+        let loaded = if direct_serde {
+            minicbor_serde::from_slice::<Dump>(&bytes[8..]).expect("direct serde restores legacy names too")
+        } else {
+            Dump::load(&bytes).expect("the upgraded dump loads")
+        };
+        let Session::Idle(mut repl) = loaded.state else {
+            panic!("the fixture was dumped idle");
+        };
+        repl.feed_run(
+            r"assert Dynamic.__name__ == name
+assert Dynamic.self_ref is Dynamic
+assert Named.__name__ == name
+assert named._fields == (name,)
+assert getattr(named, name) == 5
+assert named._replace(**{name: 6})[0] == 6
+assert host_type.__name__ == 'LegacyHostTypeName'
+assert host_tuple.legacy_host_field == 7
+assert repr(host_tuple) == 'LegacyHostTupleName(legacy_host_field=7)'
+saved = (Dynamic.__name__, Named.__name__, named._fields[0], host_type.__name__)
+assert Dynamic.__name__ is saved[0]
+assert Named.__name__ is saved[1]
+assert named._fields[0] is saved[2]
+assert host_type.__name__ is saved[3]",
+            vec![],
+            PrintWriter::Disabled,
+        )
+        .unwrap();
+        let roundtripped = dump("legacy_names.py", None, &[], SessionRef::Idle(&repl)).unwrap();
+        Dump::load(&roundtripped).expect("upgraded names re-encode and reload");
+        repl.feed_run(
+            "Dynamic.self_ref = None\nDynamic = Named = named = host_type = host_tuple = None\nassert saved == (name, name, name, 'LegacyHostTypeName')",
+            vec![],
+            PrintWriter::Disabled,
+        )
+        .unwrap();
     }
 }
 

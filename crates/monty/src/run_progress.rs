@@ -615,7 +615,7 @@ pub(crate) fn answer_unserved_lookups(mut result: RunResult<FrameExit>, vm: &mut
                     class_name,
                     type_object,
                 };
-                (scope, name.into_string(vm.interns), effect)
+                (scope, name, effect)
             }
             other => return Ok(other),
         };
@@ -659,6 +659,7 @@ pub struct ResolveFutures {
     /// The VM state containing stack, frames, globals, and exception state.
     vm_state: VMSnapshot,
     /// The heap containing all allocated objects.
+    #[serde(deserialize_with = "crate::dump_upgrade::names::deserialize_heap")]
     heap: Heap,
     /// The pending call_ids that this snapshot is waiting on.
     pending_call_ids: Vec<u32>,
@@ -838,6 +839,7 @@ pub(crate) struct Snapshot {
     /// The VM state containing stack, frames, globals, and exception state.
     pub(crate) vm_state: VMSnapshot,
     /// The heap containing all allocated objects.
+    #[serde(deserialize_with = "crate::dump_upgrade::names::deserialize_heap")]
     pub(crate) heap: Heap,
 }
 
@@ -1130,10 +1132,9 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
             ..
         }) => {
             let position = vm.suspension_position();
-            let name = function_name.into_string(vm.interns);
             match vm.export_on_clock(|vm| args.into_call_args(vm)) {
                 Ok(args) => ConvertedExit::FunctionCall {
-                    function_name: name,
+                    function_name,
                     args,
                     call_id: call_id.raw(),
                     object_id: None,
@@ -1169,10 +1170,9 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
             object_id,
         }) => {
             let position = vm.suspension_position();
-            let name = method_name.into_string(vm.interns);
             match vm.export_on_clock(|vm| args.into_call_args(vm)) {
                 Ok(args) => ConvertedExit::FunctionCall {
-                    function_name: name,
+                    function_name: method_name,
                     args,
                     call_id: call_id.raw(),
                     object_id: Some(object_id),
@@ -1216,7 +1216,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
             // consume the effect (or the next `convert_frame_exit` releases it).
             vm.pending_lookup_effect = effect;
             ConvertedExit::NameLookup {
-                name: name.into_string(vm.interns),
+                name,
                 scope: LookupScope::Attr {
                     object_id,
                     class_name,

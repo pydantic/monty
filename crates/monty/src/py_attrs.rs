@@ -8,8 +8,8 @@ use crate::{
     heap::{DropGuard, DropWithContext},
     intern::StaticStrings,
     py_value::PyValue,
-    types::{PyTrait, Type, TypeRef},
-    value::{EitherStr, Value},
+    types::{PyTrait, Type, TypeRef, str::PyStr},
+    value::Value,
 };
 
 /// The receiver is the bound class object, including when called through an instance.
@@ -39,12 +39,12 @@ pub(crate) enum AttrDef {
 /// Calls an instance method through a type, taking the receiver from the first positional argument.
 ///
 /// Validates the receiver against the defining type and adapts supported native subtypes.
-pub(crate) fn call_unbound(
+pub(crate) fn call_unbound<'h>(
     owner: Type,
-    attr: &EitherStr,
+    attr: &PyStr<'h>,
     call: MethodCall,
     args: ArgValues,
-    vm: &mut VM<'_>,
+    vm: &mut VM<'h>,
 ) -> RunResult<CallResult> {
     let (receiver, args) = match take_receiver(args) {
         Ok(parts) => parts,
@@ -53,7 +53,7 @@ pub(crate) fn call_unbound(
             return Err(ExcType::type_error(format!(
                 "unbound method {}.{}() needs an argument",
                 owner.dunder_name(),
-                attr.as_str(vm.interns),
+                attr.as_str(vm),
             )));
         }
     };
@@ -63,7 +63,7 @@ pub(crate) fn call_unbound(
     if !receiver_type.is_subclass_of(owner.into(), vm.heap) {
         return Err(ExcType::type_error(format!(
             "descriptor '{}' for '{}' objects doesn't apply to a '{}' object",
-            attr.as_str(vm.interns),
+            attr.as_str(vm),
             owner.name(),
             receiver.py_type_name(vm),
         )));
@@ -77,7 +77,7 @@ pub(crate) fn call_unbound(
 pub(crate) fn call_method<'h>(
     owner: Type,
     receiver: &mut PyValue<'h>,
-    attr: &EitherStr,
+    attr: &PyStr<'h>,
     call: MethodCall,
     args: ArgValues,
     vm: &mut VM<'h>,
@@ -93,7 +93,7 @@ pub(crate) fn call_method<'h>(
 
 /// Adapts a base descriptor to a native subtype with a different payload.
 pub(crate) type SubtypeCall =
-    for<'h> fn(&mut PyValue<'h>, &EitherStr, MethodCall, ArgValues, &mut VM<'h>) -> RunResult<CallResult>;
+    for<'h> fn(&mut PyValue<'h>, &PyStr<'h>, MethodCall, ArgValues, &mut VM<'h>) -> RunResult<CallResult>;
 
 /// A table adapter could not project the receiver to its declared native view.
 pub(crate) fn invalid_receiver(name: StaticStrings, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {

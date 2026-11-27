@@ -13,6 +13,7 @@ use crate::{
     types::{
         descriptor,
         instance::{FastAttributeLookupResult, lookup_attribute_fast},
+        str::PyStr,
     },
     value::Value,
 };
@@ -48,7 +49,7 @@ pub fn builtin_getattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult
         too_many => return Err(ExcType::type_error_at_most("getattr", 3, too_many.len())),
     };
 
-    let Some(attr) = name.as_either_str(vm.heap).map(|s| s.resolve_interned(vm.interns)) else {
+    let Some(attr) = PyStr::from_value(name, vm).map(|s| s.resolve_interned(vm)) else {
         let ty = name.py_type_name(vm);
         return Err(
             SimpleException::new_msg(ExcType::TypeError, format!("attribute name must be string, not '{ty}'")).into(),
@@ -60,7 +61,7 @@ pub fn builtin_getattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult
         FastAttributeLookupResult::Missing => {
             return default
                 .map(|default| CallResult::Value(default.clone_with_heap(vm.heap)))
-                .ok_or_else(|| ExcType::attribute_error(object.py_type_name(vm), attr.as_str(vm.interns)));
+                .ok_or_else(|| ExcType::attribute_error(object.py_type_name(vm), attr.as_str(vm)));
         }
         FastAttributeLookupResult::HostLookup => true,
         FastAttributeLookupResult::Inconclusive => false,
@@ -70,7 +71,7 @@ pub fn builtin_getattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult
         && !host_lookup
     {
         // Forwarding reads can reach a getter even when the object is not a sandbox instance.
-        let name = attr.as_value(vm.heap);
+        let name = attr.clone_value(vm.heap);
         return vm.call_frozen_exact(
             FrozenFunction::DescriptorGetattr,
             [

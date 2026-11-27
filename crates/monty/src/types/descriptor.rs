@@ -8,6 +8,7 @@ use super::{
     Dict, Type,
     builtin_descriptor::{self, DescriptorMethod},
     instance::{bind_method, class_defines, class_dunder, class_member, implicit_receiver, is_method_value},
+    str::PyStr,
     tuple::allocate_tuple,
 };
 use crate::{
@@ -19,7 +20,7 @@ use crate::{
     frozen::{FrozenFunction, FrozenFunctions},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId},
     modules::{ModuleFunctions, dataclasses},
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// Resolve an attribute and call it after any getter suspension.
@@ -299,18 +300,23 @@ pub(crate) fn get_attribute(args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallR
     let LookupArgs { object, name } = LookupArgs::from_args(args, vm)?;
     defer_drop!(object, vm);
     defer_drop!(name, vm);
-    let Some(name) = name.as_either_str(vm.heap) else {
+    let Some(name) = PyStr::from_value(name, vm) else {
         return Err(ExcType::type_error("attribute name must be a string"));
     };
-    let name = name.resolve_interned(vm.interns);
+    let name = name.resolve_interned(vm);
     object.py_getattr(&name, vm)
 }
 
 /// Preserve arguments while a getter runs, including across host calls and snapshots.
-pub(crate) fn call_attr(object: Value, attr: &EitherStr, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+pub(crate) fn call_attr<'h>(
+    object: Value,
+    attr: &PyStr<'h>,
+    args: ArgValues,
+    vm: &mut VM<'h>,
+) -> RunResult<CallResult> {
     let mut guard = DropGuard::new((object, args), vm);
     let (_, vm) = guard.as_parts_mut();
-    let name = attr.as_value(vm.heap);
+    let name = attr.clone_value(vm.heap);
     let ((object, args), vm) = guard.into_parts();
     let mut guard = DropGuard::new([object, name], vm);
     let (_, vm) = guard.as_parts_mut();
@@ -406,17 +412,17 @@ pub(crate) fn discard_call(function: Value, args: Vec<Value>, vm: &mut VM<'_>) -
 }
 
 /// Descriptor writes use a continuation because Python ignores a setter's return value.
-pub(crate) fn set_attr(object: &Value, name: &EitherStr, value: Value, vm: &mut VM<'_>) -> RunResult<CallResult> {
+pub(crate) fn set_attr<'h>(object: &Value, name: &PyStr<'h>, value: Value, vm: &mut VM<'h>) -> RunResult<CallResult> {
     defer_drop!(value, vm);
     if let Some(class) = descriptor_class(object, vm) {
-        let key = name.as_value(vm.heap);
+        let key = name.clone_value(vm.heap);
         defer_drop!(key, vm);
         if let Some(error) = dataclasses::frozen_assignment_error(class, key, vm) {
             return Err(error);
         }
     }
     if let Some(class) = descriptor_class(object, vm)
-        && let Some(member) = data_member(class, name.as_str(vm.interns), vm)
+        && let Some(member) = data_member(class, name.as_str(vm), vm)
     {
         defer_drop!(member, vm);
         return mutate(member, object, Some(value.clone_with_heap(vm.heap)), vm);

@@ -33,7 +33,7 @@ use crate::{
         LazyHeapSet, List, PyTrait, Type, TypeRef,
         str::{PyStr, allocate_string},
     },
-    value::{EitherStr, VALUE_SIZE, Value},
+    value::{VALUE_SIZE, Value},
 };
 
 /// The state of one `io.StringIO`.
@@ -353,9 +353,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, StringIo> {
         Ok(CallResult::Value(Value::None))
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let stream = self.get(vm.heap);
-        let value = match attr.static_string(vm.interns) {
+        let value = match attr.static_string(vm) {
             Some(StaticStrings::Closed) => Value::Bool(stream.closed),
             Some(StaticStrings::Encoding | StaticStrings::Errors) => Value::None,
             Some(StaticStrings::LineBuffering) => {

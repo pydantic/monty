@@ -8,8 +8,8 @@ use crate::{
     expressions::CmpOperator,
     intern::StaticStrings,
     modules::ModuleFunctions,
-    types::{Module, PyTrait, Range, Type},
-    value::{EitherStr, Value},
+    types::{Module, PyTrait, Range, Type, str::PyStr},
+    value::Value,
 };
 
 /// The aliases share the same callable value as their canonical function.
@@ -132,7 +132,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: BisectFunctions, args: ArgValues) 
         let argument = x.clone_with_heap(vm);
         let result = a.py_value(vm).py_call_attr(
             vm,
-            &EitherStr::Interned(vm.interns.intern_static(StaticStrings::Insert)),
+            &PyStr::Interned(vm.interns.intern_static(StaticStrings::Insert)),
             ArgValues::Two(Value::Int(index), argument),
         )?;
         let CallResult::Value(result) = result else {

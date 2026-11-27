@@ -5,10 +5,16 @@ use super::*;
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
+    defer_drop,
     heap::{Heap, HeapData, HeapReader},
     intern::{CompileInterns, Interns},
+    py_attrs::AttrDef,
     run::{Program, SessionTables},
-    types::{Bytes, List, LongInt, NamedTuple, str::allocate_string},
+    types::{
+        Bytes, List, LongInt, NamedTuple, Type,
+        str::{PyStr, allocate_string},
+    },
+    value::EitherStr,
 };
 
 fn with_test_vm<R>(f: impl for<'h> FnOnce(&mut VM<'h>) -> R) -> R {
@@ -22,10 +28,26 @@ fn with_test_vm<R>(f: impl for<'h> FnOnce(&mut VM<'h>) -> R) -> R {
 }
 
 #[test]
+fn native_attr_lookup_borrows_heap_strings() {
+    with_test_vm(|vm| {
+        let name = allocate_string("symmetric_difference", vm.heap);
+        defer_drop!(name, vm);
+        let attr = PyStr::from_value(name, vm).unwrap();
+        assert!(matches!(
+            Type::Set.lookup_attr(&attr, vm),
+            Some((Type::Set, AttrDef::Method(_)))
+        ));
+    });
+}
+
+#[test]
 fn access_allocated_payload_by_type() {
     with_test_vm(|vm| {
         let bytes = Value::allocate(Bytes::new(vec![1, 2]), vm.heap);
-        let point = Value::allocate(NamedTuple::new("Point".to_owned(), vec![], vec![]), vm.heap);
+        let point = Value::allocate(
+            NamedTuple::new(EitherStr::new("Point", vm.heap), vec![], vec![]),
+            vm.heap,
+        );
 
         assert_eq!(
             bytes.read_as::<Bytes>(vm.heap).unwrap().get(vm.heap).as_slice(),
@@ -35,7 +57,10 @@ fn access_allocated_payload_by_type() {
         assert!(Value::None.read_as::<Bytes>(vm.heap).is_none());
 
         assert_eq!(bytes.get_as::<Bytes>(vm.heap).unwrap().as_slice(), &[1, 2]);
-        assert_eq!(point.get_as::<NamedTuple>(vm.heap).unwrap().name(vm.interns), "Point");
+        assert_eq!(
+            point.get_as::<NamedTuple>(vm.heap).unwrap().name(vm.heap, vm.interns),
+            "Point"
+        );
         assert!(point.get_as::<Bytes>(vm.heap).is_none());
         assert!(Value::None.get_as::<Bytes>(vm.heap).is_none());
 

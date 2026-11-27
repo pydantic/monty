@@ -64,6 +64,30 @@ fn an_unknown_import_suspends_and_binds_the_answer() {
     assert_eq!(done.into_complete(), Some(MontyObject::int(42)));
 }
 
+/// Refreshing a host class releases its old owned name without invalidating retained strings.
+#[test]
+fn refreshed_host_class_retains_exported_names() {
+    let code = "import first\nsaved = first.__name__\nimport second\nassert first is second\n(saved, second.__name__)";
+    let id = MontyUuid::from_u128(901);
+    let progress = answer_import(
+        start(code),
+        "first",
+        MontyObject::class_type("Before", id, true, false, []),
+    );
+    let done = answer_import(
+        progress,
+        "second",
+        MontyObject::class_type("After", id, true, false, []),
+    );
+    assert_eq!(
+        done.into_complete(),
+        Some(MontyObject::tuple([
+            MontyObject::string("Before"),
+            MontyObject::string("After")
+        ]))
+    );
+}
+
 /// `stat` uses its Python implementation without asking the host for an accelerator.
 #[test]
 fn stat_import_does_not_suspend() {

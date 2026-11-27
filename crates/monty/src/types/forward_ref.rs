@@ -35,9 +35,9 @@ use crate::{
         Dict, LazyHeapSet, PyTrait, Type, TypeRef, Union,
         generic_alias::repr_type_arg,
         sequence::SequenceItems,
-        str::{StringRepr, allocate_string},
+        str::{PyStr, StringRepr, allocate_string},
     },
-    value::{EitherStr, VALUE_SIZE, Value},
+    value::{VALUE_SIZE, Value},
 };
 
 /// `ForwardRef.evaluate()`: the plain `VALUE` evaluation raises as `eval()` would;
@@ -628,9 +628,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ForwardRef> {
 
     /// The `__forward_*__` introspection attributes; any other name composes
     /// `Later.attr` on a stringifier and is an `AttributeError` otherwise.
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let this = self.get(vm.heap);
-        let value = match attr.static_string(vm.interns) {
+        let value = match attr.static_string(vm) {
             Some(StaticStrings::DunderForwardArg | StaticStrings::DunderResolvedStr) => {
                 this.arg.clone_with_heap(vm.heap)
             }
@@ -642,27 +642,27 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ForwardRef> {
                 let mut text = String::new();
                 self.write_operand(Precedence::Atom, vm, &mut text);
                 text.push('.');
-                text.push_str(attr.as_str(vm.interns));
+                text.push_str(attr.as_str(vm));
                 self.compose(text, Precedence::Atom, vm)
             }
             // Named as CPython does, not by the qualified type name.
-            _ => return Err(ExcType::attribute_error("ForwardRef", attr.as_str(vm.interns))),
+            _ => return Err(ExcType::attribute_error("ForwardRef", attr.as_str(vm))),
         };
         Ok(Some(CallResult::Value(value)))
     }
 
     /// Unknown methods compose `Later.method(...)` on a stringifier.
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
         if self.composes(vm) {
             let mut text = String::new();
             self.write_operand(Precedence::Atom, vm, &mut text);
             text.push('.');
-            text.push_str(attr.as_str(vm.interns));
+            text.push_str(attr.as_str(vm));
             write_call(&mut text, args, vm)?;
             Ok(CallResult::Value(self.compose(text, Precedence::Atom, vm)))
         } else {
             args.drop_with(vm);
-            Err(ExcType::attribute_error("ForwardRef", attr.as_str(vm.interns)))
+            Err(ExcType::attribute_error("ForwardRef", attr.as_str(vm)))
         }
     }
 

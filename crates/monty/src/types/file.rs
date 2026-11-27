@@ -97,8 +97,8 @@ use crate::{
     os_dispatch::{PostConversionEffect, stat_result_field},
     py_attrs::PyAttrs,
     py_value::PyValue,
-    types::str::StringRepr,
-    value::{EitherStr, Value},
+    types::str::{PyStr, StringRepr},
+    value::Value,
     virtual_path::posix_join,
 };
 
@@ -455,11 +455,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, OpenFile> {
         Ok(CallResult::Value(Value::None))
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let Some(method) = attr.static_string(vm.interns) else {
+    fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        let Some(method) = attr.static_string(vm) else {
             return Err(ExcType::attribute_error(
                 self.py_type(vm).name(vm.heap, vm.interns),
-                attr.as_str(vm.interns),
+                attr.as_str(vm),
             ));
         };
 
@@ -475,7 +475,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, OpenFile> {
             _ => {
                 return Err(ExcType::attribute_error(
                     self.py_type(vm).name(vm.heap, vm.interns),
-                    attr.as_str(vm.interns),
+                    attr.as_str(vm),
                 ));
             }
         };

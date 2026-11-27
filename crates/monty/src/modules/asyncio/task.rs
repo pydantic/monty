@@ -13,8 +13,11 @@ use crate::{
     heap::{HEAP_ENTRY_SIZE, HeapData, HeapId, HeapObjectRead, HeapReadOutput},
     heap_traits::{DropGuard, DropWithContext},
     intern::StaticStrings,
-    types::{PyTrait, Type, str::allocate_string},
-    value::{EitherStr, Value},
+    types::{
+        PyTrait, Type,
+        str::{PyStr, allocate_string},
+    },
+    value::Value,
 };
 
 /// Implementation of `asyncio.create_task(coro, *, name=None)`.
@@ -92,14 +95,14 @@ enum TaskStart {
 /// pending access raises CPython's `InvalidStateError`.
 pub(crate) fn task_call_method<'h>(
     task: &HeapObjectRead<'h, TaskFuture>,
-    attr: &EitherStr,
+    attr: &PyStr<'h>,
     args: ArgValues,
     vm: &mut VM<'h>,
 ) -> RunResult<CallResult> {
-    let Some(name) = attr.static_string(vm.interns) else {
+    let Some(name) = attr.static_string(vm) else {
         args.drop_with(vm);
 
-        return Err(ExcType::attribute_error(Type::Task.name(), attr.as_str(vm.interns)));
+        return Err(ExcType::attribute_error(Type::Task.name(), attr.as_str(vm)));
     };
 
     let value = match name {
@@ -182,7 +185,7 @@ pub(crate) fn task_call_method<'h>(
         }
         _ => {
             args.drop_with(vm);
-            return Err(ExcType::attribute_error(Type::Task.name(), attr.as_str(vm.interns)));
+            return Err(ExcType::attribute_error(Type::Task.name(), attr.as_str(vm)));
         }
     };
     Ok(CallResult::Value(value))

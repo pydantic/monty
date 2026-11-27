@@ -602,6 +602,75 @@ del r.prop
 }
 
 #[test]
+fn heap_attribute_names_survive_descriptor_suspension_and_restore() {
+    let code = r"
+attribute = ''.join(['dynamic_descriptor', '_attribute_name'])
+class_name = ''.join(['DynamicDescriptor', 'OwnerClass'])
+class Field:
+    def __set_name__(self, owner, name):
+        self.owner = owner
+        self.name = name
+        ext_fn()
+        assert name is attribute
+        assert owner.__name__ is class_name
+
+    def __get__(self, instance, owner):
+        if instance is None:
+            return self
+        ext_fn()
+        assert self.name is attribute
+        assert owner.__name__ is class_name
+        return instance.value
+
+    def __set__(self, instance, value):
+        ext_fn()
+        instance.value = value
+
+    def __delete__(self, instance):
+        ext_fn()
+        instance.value = None
+
+field = Field()
+C = type(class_name, (), {attribute: field})
+assert field.owner is C
+assert getattr(C, attribute) is field
+obj = C()
+setattr(obj, attribute, 41)
+assert getattr(obj, attribute, 0) == 41
+assert hasattr(obj, attribute)
+object.__setattr__(obj, attribute, 42)
+assert getattr(obj, attribute) == 42
+delattr(obj, attribute)
+assert obj.value is None
+assert C.__name__ is class_name
+assert field.name is attribute
+42
+";
+    let mut progress = repl().feed_start(code, vec![], PrintWriter::Disabled).unwrap();
+    let mut calls = 0;
+    loop {
+        progress = match restore(progress) {
+            ReplProgress::NameLookup(lookup) => {
+                let function = MontyObject::function(lookup.name.clone(), None);
+                lookup
+                    .resume(NameLookupResult::Value(function), PrintWriter::Disabled)
+                    .unwrap()
+            }
+            ReplProgress::FunctionCall(call) => {
+                calls += 1;
+                assert_eq!(call.function_name, "ext_fn");
+                call.resume(MontyObject::none(), PrintWriter::Disabled).unwrap()
+            }
+            complete => {
+                assert_eq!(complete.into_complete().unwrap().1, MontyObject::int(42));
+                break;
+            }
+        };
+    }
+    assert_eq!(calls, 7);
+}
+
+#[test]
 fn suspended_getter_errors_and_class_patterns_restore() {
     let mut repl = repl();
     repl.feed_run(

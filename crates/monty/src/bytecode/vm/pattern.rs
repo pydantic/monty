@@ -23,10 +23,11 @@ use crate::{
         Dict, PyTrait, Tuple, Type, TypeRef, descriptor,
         instance::{FastAttributeLookupResult, class_dunder, lookup_attribute_fast},
         key_hash::set_element_hash,
+        str::PyStr,
         tuple::allocate_tuple,
         type_ref::is_class_like,
     },
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// Builtin types whose class pattern with one positional sub-pattern matches
@@ -53,7 +54,7 @@ enum MatchArgs {
     /// A self-matching builtin: the single positional sub-pattern gets the subject.
     SelfMatch,
     /// The attribute name for each positional sub-pattern, in order.
-    Names(Vec<EitherStr>),
+    Names(Vec<Value>),
 }
 
 impl VM<'_> {
@@ -244,7 +245,7 @@ impl VM<'_> {
         };
         let name = names.clone_item(index, this);
         defer_drop!(name, this);
-        let Some(attr) = name.as_either_str(this.heap) else {
+        let Some(attr) = PyStr::from_value(name, this) else {
             // A self-matching builtin: the sub-pattern gets the subject itself.
             this.push(subject.clone_with_heap(this.heap));
             return Ok(CallResult::Value(Value::Bool(true)));
@@ -252,14 +253,12 @@ impl VM<'_> {
         for earlier in 0..index {
             let earlier = names.clone_item(earlier, this);
             defer_drop!(earlier, this);
-            let repeated = earlier
-                .as_either_str(this.heap)
-                .is_some_and(|e| e.as_str(this.interns) == attr.as_str(this.interns));
+            let repeated = earlier.as_str(this).is_some_and(|e| e == attr.as_str(this));
             if repeated {
                 let class = class_pattern_name(cls, this);
                 return Err(ExcType::type_error(format!(
                     "{class}() got multiple sub-patterns for attribute '{}'",
-                    attr.as_str(this.interns)
+                    attr.as_str(this)
                 )));
             }
         }
@@ -388,7 +387,7 @@ fn class_pattern_names(
         } {
             MatchArgs::SelfMatch => names.push(Value::None),
             MatchArgs::Names(positional) => {
-                names.extend(positional.iter().map(|name| name.as_value(vm.heap)));
+                names.extend(positional);
             }
         }
     }
@@ -438,7 +437,12 @@ fn class_match_args(cls: &Value, nargs: usize, vm: &mut VM<'_>) -> RunResult<Mat
         HeapData::NamedTupleClass(class) => {
             let fields = class.field_names();
             check_count(fields.len(), vm)?;
-            return Ok(MatchArgs::Names(fields[..nargs].to_vec()));
+            return Ok(MatchArgs::Names(
+                fields[..nargs]
+                    .iter()
+                    .map(|name| name.clone_with_heap(vm.heap).into_value())
+                    .collect(),
+            ));
         }
         HeapData::Class(class) => class
             .lookup("__match_args__", vm.heap, vm.interns)
@@ -466,19 +470,18 @@ fn validate_match_args(cls: &Value, nargs: usize, match_args: &Value, vm: &mut V
     if allowed < nargs {
         return Err(positional_count_error(cls, allowed, nargs, vm));
     }
-    let mut names = Vec::with_capacity(nargs);
-    for i in 0..nargs {
-        let item = tuple.clone_item(i, vm);
-        defer_drop!(item, vm);
-        let Some(name) = item.as_either_str(vm.heap) else {
+    let mut names_guard = DropGuard::new(Vec::with_capacity(nargs), vm);
+    let (names, vm) = names_guard.as_parts_mut();
+    for item in tuple.get(vm.heap).as_slice().iter().take(nargs) {
+        if !item.is_str(vm.heap) {
             let type_name = item.py_type_name(vm);
             return Err(ExcType::type_error(format!(
                 "__match_args__ elements must be strings (got {type_name})"
             )));
-        };
-        names.push(name);
+        }
+        names.push(item.clone_with_heap(vm.heap));
     }
-    Ok(MatchArgs::Names(names))
+    Ok(MatchArgs::Names(names_guard.into_inner()))
 }
 
 /// `TypeError: Foo.__match_args__ must be a tuple (got list)`.

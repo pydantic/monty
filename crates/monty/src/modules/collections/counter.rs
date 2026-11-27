@@ -26,19 +26,19 @@ use crate::{
     sorting::{py_eq_item, py_lt, sort_indices, sort_indices_by},
     types::{
         Dict, List, PyTrait, Type, allocate_tuple, dict::dict_update, iter::collect_owned_iterable,
-        key_hash::plain_hash, py_trait::CmpOrder,
+        key_hash::plain_hash, py_trait::CmpOrder, str::PyStr,
     },
-    value::{EitherStr, VALUE_SIZE, Value},
+    value::{VALUE_SIZE, Value},
 };
 
 /// Counter's Python-defined methods accept native mappings without a Counter descriptor check.
-pub(crate) fn call_unbound(
-    attr: &EitherStr,
+pub(crate) fn call_unbound<'h>(
+    attr: &PyStr<'h>,
     call: MethodCall,
     args: ArgValues,
-    vm: &mut VM<'_>,
+    vm: &mut VM<'h>,
 ) -> RunResult<CallResult> {
-    let name = attr.static_string(vm.interns);
+    let name = attr.static_string(vm);
     if !matches!(
         name,
         Some(
@@ -59,7 +59,7 @@ pub(crate) fn call_unbound(
             args.drop_with(vm);
             return Err(ExcType::type_error(format!(
                 "Counter.{}() missing 1 required positional argument: 'self'",
-                attr.as_str(vm.interns)
+                attr.as_str(vm)
             )));
         }
     };

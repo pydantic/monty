@@ -13,6 +13,7 @@ use crate::{
     types::{
         descriptor,
         instance::{FastAttributeLookupResult, lookup_attribute_fast},
+        str::PyStr,
     },
     value::Value,
 };
@@ -44,7 +45,7 @@ pub fn builtin_hasattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult
         other => return Err(ExcType::type_error_arg_count("hasattr", 2, other.len())),
     };
 
-    let Some(name) = name.as_either_str(vm.heap).map(|s| s.resolve_interned(vm.interns)) else {
+    let Some(name) = PyStr::from_value(name, vm).map(|s| s.resolve_interned(vm)) else {
         return Err(SimpleException::new_msg(
             ExcType::TypeError,
             format!("attribute name must be string, not '{}'", name.py_type_name(vm)),
@@ -60,7 +61,7 @@ pub fn builtin_hasattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult
         FastAttributeLookupResult::Missing => return Ok(CallResult::Value(Value::Bool(false))),
         FastAttributeLookupResult::HostLookup => {}
         FastAttributeLookupResult::Inconclusive => {
-            let name = name.as_value(vm.heap);
+            let name = name.clone_value(vm.heap);
             return vm.call_frozen_exact(
                 FrozenFunction::DescriptorHasattr,
                 [

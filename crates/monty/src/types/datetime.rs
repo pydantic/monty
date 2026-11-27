@@ -32,11 +32,11 @@ use crate::{
     types::{
         CmpOrder, LazyHeapSet, PyTrait, TimeDelta, TimeZone, Type, TypeRef,
         date::{self, StrftimeArgs},
-        str::{StringRepr, allocate_string, allocate_string_no_interning},
+        str::{PyStr, StringRepr, allocate_string, allocate_string_no_interning},
         time::{self, Time, TimeSpec},
         timedelta, timezone,
     },
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 pub(crate) mod strptime;
@@ -1230,11 +1230,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
         }
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         // Read only the field being asked for: cloning the whole `DateTime` would
         // copy the timezone name's `String` on every `dt.year`.
         let int_attr = |value: i64| Ok(Some(CallResult::Value(Value::Int(value))));
-        match attr.static_string(vm.interns) {
+        match attr.static_string(vm) {
             Some(StaticStrings::Year) => Ok(Some(CallResult::Value(Value::Int(i64::from(
                 self.get(vm.heap).naive.date().year(),
             ))))),

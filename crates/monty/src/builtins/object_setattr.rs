@@ -8,8 +8,8 @@ use crate::{
     defer_drop,
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     heap::DropWithContext,
-    types::{Instance, descriptor},
-    value::{EitherStr, Value},
+    types::{Instance, descriptor, str::PyStr},
+    value::Value,
 };
 
 /// `object.__setattr__(obj, name, value)` — writes an instance attribute
@@ -41,7 +41,7 @@ pub fn builtin_object_setattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Cal
         other => return Err(ExcType::type_error_arg_count("__setattr__", 2, other.len() - 1)),
     };
 
-    let Some(name) = name.as_either_str(vm.heap) else {
+    let Some(name) = PyStr::from_value(name, vm) else {
         return Err(SimpleException::new_msg(
             ExcType::TypeError,
             format!("attribute name must be string, not '{}'", name.py_type_name(vm)),
@@ -56,12 +56,12 @@ pub fn builtin_object_setattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Cal
         return Err(no_dict_error(object, &name, vm));
     };
 
-    if let Some(member) = descriptor::data_member(instance.get(vm.heap).class(), name.as_str(vm.interns), vm) {
+    if let Some(member) = descriptor::data_member(instance.get(vm.heap).class(), name.as_str(vm), vm) {
         defer_drop!(member, vm);
         return descriptor::mutate(member, object, Some(value.clone_with_heap(vm.heap)), vm);
     }
 
-    let name = name.as_value(vm.heap);
+    let name = name.clone_value(vm.heap);
     // The write path itself, bypassing whatever the class would have done.
     let replaced = instance.set_attr_unchecked(name, value.clone_with_heap(vm), vm)?;
     replaced.drop_with(vm);
@@ -69,7 +69,7 @@ pub fn builtin_object_setattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Cal
 }
 
 /// `object.__setattr__` applied to a value with no instance `__dict__`.
-fn no_dict_error(object: &Value, name: &EitherStr, vm: &VM<'_>) -> RunError {
+fn no_dict_error<'h>(object: &Value, name: &PyStr<'h>, vm: &VM<'h>) -> RunError {
     let type_name = object.py_type_name(vm);
-    ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm.interns))
+    ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm))
 }

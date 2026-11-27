@@ -25,10 +25,11 @@ use crate::{
     intern::StaticStrings,
     py_attrs::PyAttrs,
     types::{
-        CmpOrder, LazyHeapSet, PyTrait, Type, TypeRef, date, datetime, long_int, str::allocate_string,
+        CmpOrder, LazyHeapSet, PyTrait, Type, TypeRef, date, datetime, long_int,
+        str::{PyStr, allocate_string},
         tuple::allocate_tuple,
     },
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// Minimum allowed day magnitude for `timedelta`.
@@ -557,9 +558,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
         Ok(Some(allocate_tuple(smallvec![quotient, remainder], vm.heap)))
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let (days, seconds, microseconds) = components(self.get(vm.heap));
-        match attr.static_string(vm.interns) {
+        match attr.static_string(vm) {
             Some(StaticStrings::Days) => Ok(Some(CallResult::Value(Value::Int(i64::from(days))))),
             Some(StaticStrings::Seconds) => Ok(Some(CallResult::Value(Value::Int(i64::from(seconds))))),
             Some(StaticStrings::Microseconds) => Ok(Some(CallResult::Value(Value::Int(i64::from(microseconds))))),

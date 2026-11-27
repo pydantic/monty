@@ -29,9 +29,9 @@ use crate::{
     types::{
         LazyHeapSet, List, PyTrait, Type, TypeRef, allocate_tuple,
         dir_scan::{glob_call, walk_call},
-        str::{StringRepr, allocate_string},
+        str::{PyStr, StringRepr, allocate_string},
     },
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// Python `pathlib.Path` object representing a filesystem path.
@@ -643,16 +643,16 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
         Ok(f.write_str(&self.get(vm.heap).repr())?)
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         // Fast path: interned strings can be matched by ID without string comparison
-        if let Some(ss) = attr.static_string(vm.interns) {
+        if let Some(ss) = attr.static_string(vm) {
             if let Some(v) = self.get(vm.heap).getattr_by_static(ss, vm.heap) {
                 return Ok(Some(CallResult::Value(v)));
             }
-            return Err(ExcType::attribute_error(Type::Path, attr.as_str(vm.interns)));
+            return Err(ExcType::attribute_error(Type::Path, attr.as_str(vm)));
         }
         // Slow path: heap-allocated strings need string comparison
-        let attr_str = attr.as_str(vm.interns);
+        let attr_str = attr.as_str(vm);
         let ss = match attr_str {
             "anchor" => StaticStrings::Anchor,
             "drive" => StaticStrings::Drive,

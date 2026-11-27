@@ -39,8 +39,9 @@ use crate::{
     defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{ContainsHeap, DropWithContext},
-    intern::{Interns, StaticStrings},
-    value::{EitherStr, Value},
+    intern::StaticStrings,
+    types::str::PyStr,
+    value::Value,
 };
 
 /// Bind positional and keyword arguments into `bound`'s raw [`Value`] slots
@@ -174,11 +175,14 @@ fn bind_slow<const N: usize>(
     }
 
     for (key, value) in state.kwargs.by_ref() {
-        let Some(key_str) = key.as_either_str(vm.heap) else {
-            (key, value).drop_with(vm);
-            return Err(ExcType::type_error_kwargs_nonstring_key());
+        let param = {
+            let Some(key_str) = PyStr::from_value(&key, vm) else {
+                (key, value).drop_with(vm);
+                return Err(ExcType::type_error_kwargs_nonstring_key());
+            };
+            key_str.static_string(vm).and_then(|name| find_param(spec, name))
         };
-        match find_param(spec, &key_str, vm.interns) {
+        match param {
             Some((_, param)) if matches!(param.kind, ParamKind::PosOnly) => {
                 (key, value).drop_with(vm);
                 return Err(ExcType::type_error_positional_only(spec.func_name, param.name));
@@ -206,32 +210,28 @@ fn bind_slow<const N: usize>(
                 }
             }
             None if spec.varkwargs => {
-                // The key is already known to be a string (`as_either_str`
-                // succeeded above) — keep it as a `Value` so runtime-built
-                // heap strings (e.g. `dict(**{k: 1})`) work, not just
-                // interned ids.
+                // Transfer the validated string identity, including runtime-built keys.
                 bound.varkwargs.push((key, value));
             }
             None if spec.family.defers_unknown_kwarg() => {
                 // C families raise unknown-kwarg *last* (after every missing,
                 // conversion, and conflict error); stash the first for `finish`.
-                value.drop_with(vm);
                 if bound.deferred.as_ref().is_none_or(|d| d.unknown.is_none()) {
-                    let name = key_str.into_string(vm.interns);
+                    let key_str = key.as_str(vm).expect("keyword validated above");
                     let err = match spec.family {
-                        ErrorFamily::C { .. } => ExcType::type_error_c_unexpected_keyword(&name),
-                        _ => ExcType::type_error_unexpected_keyword(spec.func_name, &name),
+                        ErrorFamily::C { .. } => ExcType::type_error_c_unexpected_keyword(key_str),
+                        _ => ExcType::type_error_unexpected_keyword(spec.func_name, key_str),
                     };
                     bound.deferred_mut().unknown = Some(err);
                 }
-                key.drop_with(vm);
+                (key, value).drop_with(vm);
             }
             None => {
-                value.drop_with(vm);
-                let name = key_str.into_string(vm.interns);
-                key.drop_with(vm);
                 let err_name = spec.kwarg_error_name.unwrap_or(spec.func_name);
-                return Err(ExcType::type_error_unexpected_keyword(err_name, &name));
+                let error =
+                    ExcType::type_error_unexpected_keyword(err_name, key.as_str(vm).expect("keyword validated above"));
+                (key, value).drop_with(vm);
+                return Err(error);
             }
         }
     }
@@ -573,8 +573,7 @@ impl<C: ContainsHeap> DropWithContext<C> for IterState {
 /// Finds the parameter named by a keyword in declaration order.
 ///
 /// Plain positional-only parameters have no keyword identity and do not match.
-fn find_param<'s>(spec: &'s ParamSpec, key: &EitherStr, interns: &Interns) -> Option<(usize, &'s Param)> {
-    let name = key.static_string(interns)?;
+fn find_param(spec: &ParamSpec, name: StaticStrings) -> Option<(usize, &Param)> {
     spec.params
         .iter()
         .enumerate()

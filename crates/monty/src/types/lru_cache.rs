@@ -27,6 +27,7 @@ use crate::{
         Dict, LazyHeapSet, NamedTuple, PyTrait, Type, TypeRef,
         hash_table::{PyHashTable, Slot, TableEntry, TableProbe, TableSource},
         key_hash::plain_hash,
+        str::PyStr,
         tuple::{TupleVec, allocate_tuple},
     },
     value::{EitherStr, Value},
@@ -396,8 +397,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LruCache> {
     }
 
     /// `__wrapped__` — the callable being cached.
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        if attr.static_string(vm.interns) == Some(StaticStrings::DunderWrapped)
+    fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        if attr.static_string(vm) == Some(StaticStrings::DunderWrapped)
             && let Some(func) = self.get(vm.heap).func.as_ref()
         {
             let func = func.clone_with_heap(vm);
@@ -407,9 +408,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LruCache> {
         }
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
         // __wrapped__ is a stored callable, so it bypasses the native method table.
-        if attr.static_string(vm.interns) == Some(StaticStrings::DunderWrapped)
+        if attr.static_string(vm) == Some(StaticStrings::DunderWrapped)
             && let Some(func) = self.get(vm.heap).func.as_ref()
         {
             let func = func.clone_with_heap(vm);

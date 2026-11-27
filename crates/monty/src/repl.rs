@@ -101,6 +101,7 @@ pub struct MontyRepl {
     #[serde(default)]
     future_annotations: bool,
     /// Persistent heap across snippets.
+    #[serde(deserialize_with = "crate::dump_upgrade::names::deserialize_heap")]
     heap: Heap,
     /// Persistent global variable values across snippets.
     ///
