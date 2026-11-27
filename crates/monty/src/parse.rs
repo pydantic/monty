@@ -9,7 +9,7 @@ use ruff_python_ast::{
     InterpolatedStringElement, Keyword, Number, Operator as AstOperator, ParameterWithDefault, Pattern as AstPattern,
     Singleton, Stmt, UnaryOp,
     name::Name,
-    token::TokenKind,
+    token::{TokenKind, Tokens},
     visitor::{Visitor, walk_expr},
 };
 use ruff_python_parser::{Mode, parse_expression_range};
@@ -288,7 +288,7 @@ pub(crate) fn parse_expression_with_interner(
     }
     let parsed = parse_expression_range(code, TextRange::new(start, end))
         .map_err(|e| ParseError::syntax(e.error.to_string(), code_range(filename_id, e.range())))?;
-    if let Some(range) = trailing_indent(code) {
+    if let Some(range) = trailing_indent(code, parsed.tokens()) {
         return Err(ParseError::syntax(
             "Unexpected indentation",
             code_range(filename_id, range),
@@ -316,13 +316,13 @@ pub(crate) fn reject_leading_bom(code: &str, start: TextSize, filename_id: Strin
     }
 }
 
-/// The last line of an `eval()` source when it holds only indentation, which
-/// CPython's tokenizer rejects as an unexpected indent but ruff accepts.
+/// Finds a final indentation-only line in an `eval()` or `literal_eval()` input.
+/// CPython raises an unexpected-indentation error for that line. Ruff accepts it.
 ///
 /// A final line with no newline after it is not blank to CPython, so its
 /// indentation counts. A form feed resets the column, as in CPython, and a line
 /// continued by a backslash is not a new line at all.
-fn trailing_indent(code: &str) -> Option<TextRange> {
+pub(crate) fn trailing_indent(code: &str, tokens: &Tokens) -> Option<TextRange> {
     let line_start = code.rfind(['\n', '\r'])? + 1;
     let line = &code[line_start..];
     let column = line.chars().try_fold(0usize, |column, c| match c {
@@ -331,11 +331,14 @@ fn trailing_indent(code: &str) -> Option<TextRange> {
         '\x0c' => Some(0),
         _ => None,
     })?;
-    let continued = code[..line_start].trim_end_matches(['\n', '\r']).ends_with('\\');
-    (column > 0 && !continued).then(|| {
-        let start = TextSize::try_from(line_start).expect("eval source exceeds u32 offsets");
-        TextRange::at(start, TextSize::of(line))
-    })
+    if column == 0 {
+        return None;
+    }
+    let start = TextSize::try_from(line_start).expect("eval source exceeds u32 offsets");
+    // Ruff emits a newline token even after a comment, but skips an escaped newline.
+    let newline = tokens.before(start).last()?;
+    (newline.end() == start && matches!(newline.kind(), TokenKind::Newline | TokenKind::NonLogicalNewline))
+        .then(|| TextRange::at(start, TextSize::of(line)))
 }
 
 /// [`check_source_nesting`] for a host vetting a snippet before compiling it,
@@ -2136,7 +2139,8 @@ impl<'a, 'i> Parser<'a, 'i> {
                         } else {
                             // Integer too large for i64, parse string representation as BigInt.
                             // Handles radix prefixes (0x, 0o, 0b) and underscores.
-                            let bi = parse_int_literal(&i.to_string(), position)?;
+                            let bi =
+                                parse_int_literal(&i.to_string()).map_err(|msg| ParseError::syntax(msg, position))?;
                             let long_int_id = self.interner.intern_long_int(bi);
                             Literal::LongInt(long_int_id)
                         }
@@ -3193,8 +3197,7 @@ impl ParseError {
 /// Check digit limit before the expensive O(n^2) decimal BigInt parse.
 /// Only decimal is limited — hex/octal/binary use O(n) algorithms and are handled above.
 ///
-/// Returns `ParseError` if the string cannot be parsed.
-fn parse_int_literal(s: &str, position: CodeRange) -> Result<BigInt, ParseError> {
+pub(crate) fn parse_int_literal(s: &str) -> Result<BigInt, String> {
     // Remove underscores (Python allows them as digit separators)
     let cleaned: String = s.chars().filter(|c| *c != '_').collect();
     let cleaned = cleaned.as_str();
@@ -3204,9 +3207,8 @@ fn parse_int_literal(s: &str, position: CodeRange) -> Result<BigInt, ParseError>
         let prefix = &cleaned[..2];
         let digits = &cleaned[2..];
 
-        let from_radix = |radix: u32| -> Result<BigInt, ParseError> {
-            BigInt::from_str_radix(digits, radix)
-                .map_err(|e| ParseError::syntax(format!("invalid integer literal: {s:?}, error: {e}"), position))
+        let from_radix = |radix: u32| {
+            BigInt::from_str_radix(digits, radix).map_err(|e| format!("invalid integer literal: {s:?}, error: {e}"))
         };
 
         match prefix.to_ascii_lowercase().as_str() {
@@ -3218,19 +3220,21 @@ fn parse_int_literal(s: &str, position: CodeRange) -> Result<BigInt, ParseError>
     }
 
     // Default to decimal
-    let digit_count = cleaned.bytes().filter(u8::is_ascii_digit).count();
+    check_decimal_literal_digits(cleaned.bytes().filter(u8::is_ascii_digit).count())?;
+    cleaned
+        .parse::<BigInt>()
+        .map_err(|e| format!("invalid integer literal {s:?}, error: {e}"))
+}
+
+/// Checks the decimal limit for a Python integer literal.
+pub(crate) fn check_decimal_literal_digits(digit_count: usize) -> Result<(), String> {
     if digit_count > INT_MAX_STR_DIGITS {
-        Err(ParseError::syntax(
-            format!(
-                "Exceeds the limit ({INT_MAX_STR_DIGITS} digits) for integer string conversion: \
-                 value has {digit_count} digits; consider hexadecimal for large integer literals"
-            ),
-            position,
+        Err(format!(
+            "Exceeds the limit ({INT_MAX_STR_DIGITS} digits) for integer string conversion: \
+             value has {digit_count} digits; consider hexadecimal for large integer literals"
         ))
     } else {
-        cleaned
-            .parse::<BigInt>()
-            .map_err(|e| ParseError::syntax(format!("invalid integer literal {s:?}, error: {e}"), position))
+        Ok(())
     }
 }
 

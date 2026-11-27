@@ -2,7 +2,7 @@ Register only Monty's selected modules and their type-checking dependencies.
 
 --- a/VERSIONS
 +++ b/VERSIONS
-@@ -1,349 +1,50 @@
+@@ -1,349 +1,51 @@
 -# The structure of this file is as follows:
 -# - Blank lines and comments starting with `#` are ignored.
 -# - Lines contain the name of a module, followed by a colon,
@@ -98,6 +98,7 @@ Register only Monty's selected modules and their type-checking dependencies.
 -asynchat: 3.0-3.11
 +abc: 3.0-  # not importable at runtime, only for type checking
 +annotationlib: 3.14-  # narrowed to Monty's surface
++ast: 3.0-
  asyncio: 3.4-
 -asyncio.exceptions: 3.8-
 -asyncio.format_helpers: 3.7-

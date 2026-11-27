@@ -486,6 +486,10 @@ test('invalid modules are rejected at construction', () => {
     () => new ExternalModule({ json: new ExternalModule(tools) }),
     'ExternalModule attrs.json is provided by the sandbox and cannot be replaced',
   )
+  rejected(
+    () => new ExternalModule({ ast: new ExternalModule(tools) }),
+    'ExternalModule attrs.ast is provided by the sandbox and cannot be replaced',
+  )
   // a submodule behind a getter is made, and checked, when the getter is read
   const lazy = {
     get sub(): ExternalModule {

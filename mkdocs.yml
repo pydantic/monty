@@ -61,6 +61,7 @@ nav:
       - str.encode() / bytes.decode(): 'limitations/encoding.md'
       - typing: 'limitations/typing.md'
       - annotationlib: 'limitations/annotationlib.md'
+      - ast: 'limitations/ast.md'
       - asyncio: 'limitations/asyncio.md'
       - Standard library modules: 'limitations/modules.md'
       - base64: 'limitations/base64.md'

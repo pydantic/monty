@@ -16,6 +16,7 @@ use crate::{
 
 pub(crate) mod _io;
 pub(crate) mod annotationlib;
+pub(crate) mod ast;
 pub(crate) mod asyncio;
 pub(crate) mod base64;
 pub(crate) mod binascii;
@@ -118,6 +119,8 @@ pub(crate) enum StandardLib {
     /// The `_io` module, the native half of `io`: `StringIO`, `BytesIO`, the file classes,
     /// `open` and the io exceptions. `io` itself is CPython's vendored `io.py`.
     UnderIo,
+    /// The `ast` module providing `literal_eval()`.
+    Ast,
     /// The `gc` module exposing a single `collect()` for tests. Only present
     /// under the `test-hooks` feature so production sandboxes never see it.
     ///
@@ -159,6 +162,7 @@ impl StandardLib {
             StaticStrings::Annotationlib => Some(Self::Annotationlib),
             StaticStrings::Statistics => Some(Self::Statistics),
             StaticStrings::UnderIo => Some(Self::UnderIo),
+            StaticStrings::Ast => Some(Self::Ast),
             #[cfg(feature = "test-hooks")]
             StaticStrings::Gc => Some(Self::Gc),
             _ => None,
@@ -207,6 +211,7 @@ impl StandardLib {
             Self::Annotationlib => annotationlib::create_module(vm),
             Self::Statistics => statistics::create_module(vm),
             Self::UnderIo => _io::create_module(vm),
+            Self::Ast => ast::create_module(vm),
             #[cfg(feature = "test-hooks")]
             Self::Gc => gc::create_module(vm),
         };
@@ -221,7 +226,8 @@ impl StandardLib {
     /// when CPython defines none, so `from m import *` binds every public name.
     fn excluded_from_all(self) -> Option<&'static [StaticStrings]> {
         match self {
-            Self::Sys
+            Self::Ast
+            | Self::Sys
             | Self::Math
             | Self::Unicodedata
             | Self::Itertools
@@ -262,7 +268,7 @@ impl StandardLib {
 /// Every dump reaches these through `Value::ModuleFunction`, encoded by variant
 /// name, so renaming a variant needs `#[serde(alias)]` (see `DUMP_VERSION`).
 /// Explicit discriminants are permanent module identity codes; never change or reuse them.
-#[monty_macros::explicit_discriminants(checksum = 0xb5cd_b4d0_73ca_9edc)]
+#[monty_macros::explicit_discriminants(checksum = 0xc9a0_1fcb_bbce_55cf)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, strum::EnumDiscriminants)]
 #[repr(u8)]
 pub(crate) enum ModuleFunctions {
@@ -296,7 +302,7 @@ pub(crate) enum ModuleFunctions {
     /// `_io` module functions, which the vendored `io` re-exports.
     Io(_io::IoFunctions) = 28,
     /// `gc` module functions — only present under the `test-hooks` feature.
-    /// See [`gc`] for why it is gated; test-only variants are grouped last.
+    /// See [`gc`] for why it is gated.
     #[cfg(feature = "test-hooks")]
     Gc(gc::GcFunctions) = 26,
     /// `sys` module functions — only present under the `test-hooks` feature.
@@ -305,6 +311,7 @@ pub(crate) enum ModuleFunctions {
     /// CPython. See [`sys`] for the rationale.
     #[cfg(feature = "test-hooks")]
     Sys(sys::SysFunctions) = 27,
+    Ast(ast::AstFunctions) = 29,
 }
 
 impl fmt::Display for ModuleFunctions {
@@ -337,6 +344,7 @@ impl fmt::Display for ModuleFunctions {
             Self::Annotationlib(func) => write!(f, "{func}"),
             Self::Statistics(func) => write!(f, "{func}"),
             Self::Io(func) => write!(f, "{func}"),
+            Self::Ast(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
             Self::Gc(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
@@ -379,6 +387,7 @@ impl ModuleFunctions {
             Self::Annotationlib(functions) => annotationlib::call(vm, functions, args),
             Self::Statistics(functions) => statistics::call(vm, functions, args).map(CallResult::Value),
             Self::Io(functions) => _io::call(vm, functions, args),
+            Self::Ast(functions) => ast::call(vm, functions, args).map(CallResult::Value),
             #[cfg(feature = "test-hooks")]
             Self::Gc(functions) => gc::call(vm, functions, args).map(CallResult::Value),
             #[cfg(feature = "test-hooks")]

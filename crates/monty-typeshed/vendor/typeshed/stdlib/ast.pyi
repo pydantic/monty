@@ -1,0 +1,3 @@
+from typing import Any
+
+def literal_eval(node_or_string: str) -> Any: ...
