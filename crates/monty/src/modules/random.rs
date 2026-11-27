@@ -1620,14 +1620,20 @@ mod tests {
     use std::collections::HashSet;
 
     use super::RANDOM_FUNCTIONS;
-    use crate::{py_attrs::PyAttrs, types::random::PyRandomImpl};
+    use crate::{
+        py_attrs::{AttrDef, PyAttrs},
+        types::random::PyRandomImpl,
+    };
 
     #[test]
     fn module_and_instance_method_names_match() {
         let module_names: HashSet<_> = RANDOM_FUNCTIONS.iter().map(|(name, _)| *name).collect();
         let methods = <PyRandomImpl as PyAttrs<'static>>::TABLE.entries;
-        let method_names: HashSet<_> = methods.iter().map(|(name, _)| *name).collect();
-        assert_eq!(RANDOM_FUNCTIONS.len(), methods.len());
+        let method_names: HashSet<_> = methods
+            .iter()
+            .filter_map(|(name, attr)| matches!(attr, AttrDef::Method(_)).then_some(*name))
+            .collect();
+        assert_eq!(RANDOM_FUNCTIONS.len(), method_names.len());
         assert_eq!(module_names, method_names);
     }
 }

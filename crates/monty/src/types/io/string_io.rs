@@ -27,13 +27,12 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{DropGuard, HeapData, HeapId, HeapItem, HeapObjectRead},
-    intern::StaticStrings,
     py_attrs::PyAttrs,
     types::{
         LazyHeapSet, List, PyTrait, Type, TypeRef,
         str::{PyStr, allocate_string},
     },
-    value::{EitherStr, VALUE_SIZE, Value},
+    value::{VALUE_SIZE, Value},
 };
 
 /// The state of one `io.StringIO`.
@@ -352,28 +351,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, StringIo> {
         close(self.get_mut(vm.heap));
         Ok(CallResult::Value(Value::None))
     }
-
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let stream = self.get(vm.heap);
-        let value = match attr.static_string(vm.interns) {
-            Some(StaticStrings::Closed) => Value::Bool(stream.closed),
-            Some(StaticStrings::Encoding | StaticStrings::Errors) => Value::None,
-            Some(StaticStrings::LineBuffering) => {
-                ensure_open(stream)?;
-                Value::Bool(false)
-            }
-            Some(StaticStrings::Newlines) => {
-                ensure_open(stream)?;
-                if stream.newline.is_universal() {
-                    stream.seen.to_value(vm.heap)
-                } else {
-                    Value::None
-                }
-            }
-            _ => return Ok(None),
-        };
-        Ok(Some(CallResult::Value(value)))
-    }
 }
 
 /// `StringIO`'s methods; `closed`, `newlines` and the other data attributes stay in `py_getattr`.
@@ -382,6 +359,38 @@ pub(crate) struct PyStringIoImpl;
 #[pyattrs]
 impl<'heap> PyAttrs<'heap> for PyStringIoImpl {
     type Receiver = HeapObjectRead<'heap, StringIo>;
+
+    #[pyget(Closed)]
+    fn closed<'h>(this: &HeapObjectRead<'h, StringIo>, vm: &mut VM<'h>) -> Value {
+        Value::Bool(this.get(vm.heap).closed)
+    }
+
+    #[pyget(Encoding)]
+    fn encoding<'h>(_this: &HeapObjectRead<'h, StringIo>, _vm: &mut VM<'h>) -> Value {
+        Value::None
+    }
+
+    #[pyget(Errors)]
+    fn errors<'h>(_this: &HeapObjectRead<'h, StringIo>, _vm: &mut VM<'h>) -> Value {
+        Value::None
+    }
+
+    #[pyget(LineBuffering)]
+    fn line_buffering<'h>(this: &HeapObjectRead<'h, StringIo>, vm: &mut VM<'h>) -> RunResult<Value> {
+        ensure_open(this.get(vm.heap))?;
+        Ok(Value::Bool(false))
+    }
+
+    #[pyget(Newlines)]
+    fn newlines<'h>(this: &HeapObjectRead<'h, StringIo>, vm: &mut VM<'h>) -> RunResult<Value> {
+        let stream = this.get(vm.heap);
+        ensure_open(stream)?;
+        Ok(if stream.newline.is_universal() {
+            stream.seen.to_value(vm.heap)
+        } else {
+            Value::None
+        })
+    }
 
     /// Re-running the constructor resets the stream, reopening a closed one, as in CPython.
     #[pymethod(DunderInit)]

@@ -5,6 +5,8 @@
 
 use std::fmt::Write;
 
+use monty_macros::pyattrs;
+
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
@@ -13,6 +15,7 @@ use crate::{
     hash::{HashValue, identity_hash},
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead},
     intern::{StaticStrings, StringId},
+    py_attrs::PyAttrs,
     types::{LazyHeapSet, PyTrait, Type, TypeRef, str::allocate_string},
     value::{EitherStr, Marker, Value},
 };
@@ -325,36 +328,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DataclassField> {
         Ok(write!(f, ",doc=None,_field_type={field_type})")?)
     }
 
-    /// Everything but `name`/`type`/`default`/`default_factory` is a constant,
-    /// because the arguments that would vary them are refused by `field()`, so
-    /// every field Monty builds carries CPython's defaults.
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let attr_str = attr.as_str(vm.interns);
-        let value = match attr_str {
-            // `None` until a decorator adopts the field, as in CPython.
-            "name" => match self.get(vm.heap).name {
-                Some(name) => {
-                    let name = vm.interns.get_str(name).to_owned();
-                    allocate_string(name, vm.heap)
-                }
-                None => Value::None,
-            },
-            "type" => match self.get(vm.heap).annotation.as_ref() {
-                Some(annotation) => annotation.clone_with_heap(vm.heap),
-                None => Value::None,
-            },
-            // An unset default or factory *is* `MISSING` in CPython.
-            "default" => clone_or_missing(self.get(vm.heap).default.as_ref(), vm),
-            "default_factory" => clone_or_missing(self.get(vm.heap).default_factory.as_ref(), vm),
-            "init" | "repr" | "compare" => Value::Bool(true),
-            "kw_only" => Value::Bool(false),
-            "hash" | "doc" => Value::None,
-            _ => match UNMODELLED_ATTRS.iter().find(|&&(name, _)| name == attr_str) {
-                Some((name, missing)) => return Err(unmodelled_attr_error(name, missing)),
-                None => return Err(ExcType::attribute_error("Field", attr_str)),
-            },
-        };
-        Ok(Some(CallResult::Value(value)))
+        let attr = attr.as_str(vm.interns);
+        Err(match UNMODELLED_ATTRS.iter().find(|&&(name, _)| name == attr) {
+            Some((name, missing)) => unmodelled_attr_error(name, missing),
+            None => ExcType::attribute_error("Field", attr),
+        })
     }
 }
 
@@ -380,5 +359,67 @@ impl HeapItem for DataclassField {
         {
             value.py_dec_ref_ids(stack);
         }
+    }
+}
+
+pub(crate) struct PyDataclassFieldImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyDataclassFieldImpl {
+    type Receiver = HeapObjectRead<'heap, DataclassField>;
+
+    #[pyget(Name, member)]
+    fn name<'h>(this: &HeapObjectRead<'h, DataclassField>, vm: &mut VM<'h>) -> Value {
+        this.get(vm.heap)
+            .name
+            .map_or(Value::None, |id| allocate_string(vm.interns.get_str(id), vm.heap))
+    }
+
+    #[pyget(FieldType, member)]
+    fn annotation<'h>(this: &HeapObjectRead<'h, DataclassField>, vm: &mut VM<'h>) -> Value {
+        this.get(vm.heap)
+            .annotation
+            .as_ref()
+            .map_or(Value::None, |value| value.clone_with_heap(vm.heap))
+    }
+
+    #[pyget(Default, member)]
+    fn default_value<'h>(this: &HeapObjectRead<'h, DataclassField>, vm: &mut VM<'h>) -> Value {
+        clone_or_missing(this.get(vm.heap).default.as_ref(), vm)
+    }
+
+    #[pyget(DefaultFactory, member)]
+    fn default_factory<'h>(this: &HeapObjectRead<'h, DataclassField>, vm: &mut VM<'h>) -> Value {
+        clone_or_missing(this.get(vm.heap).default_factory.as_ref(), vm)
+    }
+
+    #[pyget(Init, member)]
+    fn init_flag<'h>(_this: &HeapObjectRead<'h, DataclassField>, _vm: &mut VM<'h>) -> Value {
+        Value::Bool(true)
+    }
+
+    #[pyget(Repr, member)]
+    fn repr_flag<'h>(_this: &HeapObjectRead<'h, DataclassField>, _vm: &mut VM<'h>) -> Value {
+        Value::Bool(true)
+    }
+
+    #[pyget(Compare, member)]
+    fn compare<'h>(_this: &HeapObjectRead<'h, DataclassField>, _vm: &mut VM<'h>) -> Value {
+        Value::Bool(true)
+    }
+
+    #[pyget(KwOnly, member)]
+    fn kw_only<'h>(_this: &HeapObjectRead<'h, DataclassField>, _vm: &mut VM<'h>) -> Value {
+        Value::Bool(false)
+    }
+
+    #[pyget(Hash, member)]
+    fn hash<'h>(_this: &HeapObjectRead<'h, DataclassField>, _vm: &mut VM<'h>) -> Value {
+        Value::None
+    }
+
+    #[pyget(Doc, member)]
+    fn doc<'h>(_this: &HeapObjectRead<'h, DataclassField>, _vm: &mut VM<'h>) -> Value {
+        Value::None
     }
 }

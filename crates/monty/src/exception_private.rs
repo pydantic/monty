@@ -5,17 +5,19 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
+use monty_macros::pyattrs;
 use monty_types::{ExcData, JsonErrorData, MontyException, StackFrame, UnicodeErrorData, UnicodeErrorObject};
 use smallvec::smallvec;
 
 use crate::{
     args::ArgValues,
-    bytecode::{CallResult, VM},
+    bytecode::VM,
     defer_drop,
     fstring::{FormatError, ascii_escape},
     heap::{DropWithContext, HeapId, HeapRead},
-    intern::{Interns, StaticStrings, StringId},
+    intern::{Interns, StringId},
     parse::CodeRange,
+    py_attrs::PyAttrs,
     py_value::PyValue,
     source_map::{SourceMap, StackFrameExt},
     types::{
@@ -3345,34 +3347,6 @@ impl<'h> HeapRead<'h, ExceptionValue> {
         Type::from(self.get(vm.heap).exc_type).into()
     }
 
-    /// Gets an attribute from this exception: `args` (a tuple of the message or
-    /// `StopIteration` value, if any), `__cause__`, `__context__`,
-    /// `__suppress_context__` and `StopIteration.value`. Returns `None` for all
-    /// other attributes.
-    pub fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> Option<CallResult> {
-        // Interned names match by ID; `args` and `value` can also arrive as dynamic strings.
-        let name = attr
-            .static_string(vm.interns)
-            .or_else(|| match attr.as_str(vm.interns) {
-                "args" => Some(StaticStrings::Args),
-                "value" => Some(StaticStrings::Value),
-                _ => None,
-            });
-        let exc = self.get(vm.heap);
-        let value = match name {
-            Some(StaticStrings::DunderCause) => chained_value(exc.cause(), vm),
-            Some(StaticStrings::DunderContext) => chained_value(exc.context(), vm),
-            Some(StaticStrings::DunderSuppressContext) => Value::Bool(exc.suppress_context()),
-            Some(StaticStrings::Args) => match &exc.value {
-                Some(value) => allocate_tuple(smallvec![value.clone_with_heap(vm.heap)], vm.heap),
-                None => args_tuple(exc.arg.as_deref(), vm),
-            },
-            Some(StaticStrings::Value) if exc.exc_type == ExcType::StopIteration => exc.stop_iteration_value(vm),
-            _ => return None,
-        };
-        Some(CallResult::Value(value))
-    }
-
     /// `repr(exc)`, formatting a `StopIteration` value with its own `repr`.
     pub(crate) fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         let Some(value) = self.stop_value(vm) else {
@@ -3415,6 +3389,49 @@ fn args_tuple(arg: Option<&str>, vm: &VM<'_>) -> Value {
 }
 
 /// A new reference to a chained exception, or `None`.
+pub(crate) struct PyExceptionImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyExceptionImpl {
+    type Receiver = HeapRead<'heap, ExceptionValue>;
+
+    #[pyget(DunderCause)]
+    fn cause<'h>(this: &HeapRead<'h, ExceptionValue>, vm: &mut VM<'h>) -> Value {
+        chained_value(this.get(vm.heap).cause(), vm)
+    }
+
+    #[pyget(DunderContext)]
+    fn context<'h>(this: &HeapRead<'h, ExceptionValue>, vm: &mut VM<'h>) -> Value {
+        chained_value(this.get(vm.heap).context(), vm)
+    }
+
+    #[pyget(DunderSuppressContext, member)]
+    fn suppress_context<'h>(this: &HeapRead<'h, ExceptionValue>, vm: &mut VM<'h>) -> Value {
+        Value::Bool(this.get(vm.heap).suppress_context())
+    }
+
+    #[pyget(Args)]
+    fn args<'h>(this: &HeapRead<'h, ExceptionValue>, vm: &mut VM<'h>) -> Value {
+        let exc = this.get(vm.heap);
+        match &exc.value {
+            Some(value) => allocate_tuple(smallvec![value.clone_with_heap(vm.heap)], vm.heap),
+            None => args_tuple(exc.arg.as_deref(), vm),
+        }
+    }
+}
+
+pub(crate) struct PyStopIterationImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyStopIterationImpl {
+    type Receiver = HeapRead<'heap, ExceptionValue>;
+
+    #[pyget(Value, member)]
+    fn value<'h>(this: &HeapRead<'h, ExceptionValue>, vm: &mut VM<'h>) -> Value {
+        this.get(vm.heap).stop_iteration_value(vm)
+    }
+}
+
 fn chained_value(id: Option<HeapId>, vm: &VM<'_>) -> Value {
     match id {
         Some(id) => {

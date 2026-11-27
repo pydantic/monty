@@ -38,7 +38,6 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, Heap, HeapId, HeapItem, HeapObjectRead, HeapRead},
-    intern::StaticStrings,
     py_attrs::PyAttrs,
     py_value::PyValue,
     types::{LazyHeapSet, PyTrait, Type, TypeRef, allocate_string, bytes::allocate_bytes, py_trait::PyObjectIdentity},
@@ -467,42 +466,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HashObject> {
         Ok(())
     }
 
-    /// `name`, `digest_size` and `block_size`, plus the size constants a
-    /// BLAKE2 instance inherits from its class.
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let Some(name) = attr.static_string(vm.interns) else {
-            return Ok(None);
-        };
-        let hash = self.get(vm.heap);
-        let value = match name {
-            StaticStrings::Name => allocate_string(hash.algorithm.name(), vm.heap),
-            StaticStrings::DigestSize => size_value(hash.digest_size()),
-            StaticStrings::BlockSize => size_value(hash.algorithm.block_size()),
-            _ => match hash.algorithm.py_type().class_constant(attr, vm) {
-                Some(constant) => constant,
-                None => return Ok(None),
-            },
-        };
-        Ok(Some(CallResult::Value(value)))
-    }
-
-    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
-        let readonly = matches!(
-            name.static_string(vm.interns),
-            Some(StaticStrings::Name | StaticStrings::DigestSize | StaticStrings::BlockSize)
-        );
-        if readonly {
-            value.drop_with(vm);
-            let type_name = self.py_type(vm).name(vm.heap, vm.interns);
-            Err(ExcType::attribute_error_not_writable(
-                name.as_str(vm.interns),
-                &type_name,
-            ))
-        } else {
-            value.drop_with(vm);
-            let type_name = self.py_type_name(vm);
-            Err(ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm.interns)))
-        }
+        let ty = self.get(vm.heap).algorithm.py_type();
+        Ok(ty.class_constant(attr, vm).map(CallResult::Value))
     }
 }
 
@@ -543,6 +509,21 @@ pub(crate) struct PyHashImpl;
 #[pyattrs]
 impl<'heap> PyAttrs<'heap> for PyHashImpl {
     type Receiver = HeapObjectRead<'heap, HashObject>;
+
+    #[pyget(Name)]
+    fn name<'h>(this: &HeapObjectRead<'h, HashObject>, vm: &mut VM<'h>) -> Value {
+        allocate_string(this.get(vm.heap).algorithm.name(), vm.heap)
+    }
+
+    #[pyget(DigestSize)]
+    fn digest_size<'h>(this: &HeapObjectRead<'h, HashObject>, vm: &mut VM<'h>) -> Value {
+        size_value(this.get(vm.heap).digest_size())
+    }
+
+    #[pyget(BlockSize)]
+    fn block_size<'h>(this: &HeapObjectRead<'h, HashObject>, vm: &mut VM<'h>) -> Value {
+        size_value(this.get(vm.heap).algorithm.block_size())
+    }
 
     #[pymethod(Update)]
     fn update<'h>(
@@ -616,6 +597,21 @@ pub(crate) struct PyHashXofImpl;
 impl<'heap> PyAttrs<'heap> for PyHashXofImpl {
     type Receiver = HeapObjectRead<'heap, HashObject>;
 
+    #[pyget(Name)]
+    fn name<'h>(this: &HeapObjectRead<'h, HashObject>, vm: &mut VM<'h>) -> Value {
+        PyHashImpl::name(this, vm)
+    }
+
+    #[pyget(DigestSize)]
+    fn digest_size<'h>(this: &HeapObjectRead<'h, HashObject>, vm: &mut VM<'h>) -> Value {
+        PyHashImpl::digest_size(this, vm)
+    }
+
+    #[pyget(BlockSize)]
+    fn block_size<'h>(this: &HeapObjectRead<'h, HashObject>, vm: &mut VM<'h>) -> Value {
+        PyHashImpl::block_size(this, vm)
+    }
+
     #[pymethod(Update)]
     fn update<'h>(
         this: &mut HeapObjectRead<'h, HashObject>,
@@ -664,8 +660,23 @@ impl<'heap> PyAttrs<'heap> for PyHashXofImpl {
 pub(crate) struct PyBlake2Impl<const MAX_SIZE: i64, const SALT_SIZE: i64>;
 
 #[pyattrs]
-impl<'h, const MAX_SIZE: i64, const SALT_SIZE: i64> PyAttrs<'h> for PyBlake2Impl<MAX_SIZE, SALT_SIZE> {
-    type Receiver = HeapObjectRead<'h, HashObject>;
+impl<'heap, const MAX_SIZE: i64, const SALT_SIZE: i64> PyAttrs<'heap> for PyBlake2Impl<MAX_SIZE, SALT_SIZE> {
+    type Receiver = HeapObjectRead<'heap, HashObject>;
+
+    #[pyget(Name)]
+    fn name<'h>(this: &HeapObjectRead<'h, HashObject>, vm: &mut VM<'h>) -> Value {
+        PyHashImpl::name(this, vm)
+    }
+
+    #[pyget(DigestSize)]
+    fn digest_size<'h>(this: &HeapObjectRead<'h, HashObject>, vm: &mut VM<'h>) -> Value {
+        PyHashImpl::digest_size(this, vm)
+    }
+
+    #[pyget(BlockSize)]
+    fn block_size<'h>(this: &HeapObjectRead<'h, HashObject>, vm: &mut VM<'h>) -> Value {
+        PyHashImpl::block_size(this, vm)
+    }
 
     #[pymethod(Update)]
     fn update<'a>(

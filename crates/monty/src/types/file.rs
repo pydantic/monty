@@ -93,12 +93,11 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropGuard, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadMut, HeapReadOutput},
-    intern::StaticStrings,
     os_dispatch::{PostConversionEffect, stat_result_field},
     py_attrs::PyAttrs,
     py_value::PyValue,
     types::str::StringRepr,
-    value::{EitherStr, Value},
+    value::Value,
     virtual_path::posix_join,
 };
 
@@ -453,33 +452,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, OpenFile> {
         // CPython.
         self.get_mut(vm.heap).closed = true;
         Ok(CallResult::Value(Value::None))
-    }
-
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let Some(method) = attr.static_string(vm.interns) else {
-            return Err(ExcType::attribute_error(
-                self.py_type(vm).name(vm.heap, vm.interns),
-                attr.as_str(vm.interns),
-            ));
-        };
-
-        let file = self.get(vm.heap);
-        let value = match method {
-            StaticStrings::Name => file.name.as_ref().map_or_else(
-                || allocate_string(file.path.as_str(), vm.heap),
-                |name| name.to_value(vm.heap),
-            ),
-            StaticStrings::Mode => allocate_string(file.mode.as_str().to_owned(), vm.heap),
-            StaticStrings::Closed => Value::Bool(file.closed),
-            StaticStrings::Encoding if !file.mode.is_binary() => allocate_string("utf-8", vm.heap),
-            _ => {
-                return Err(ExcType::attribute_error(
-                    self.py_type(vm).name(vm.heap, vm.interns),
-                    attr.as_str(vm.interns),
-                ));
-            }
-        };
-        Ok(Some(CallResult::Value(value)))
     }
 }
 
@@ -1717,87 +1689,126 @@ fn is_bytes(data: &Value, heap: &Heap) -> bool {
     }
 }
 
-pub(crate) struct PyFileImpl;
+macro_rules! file_attrs {
+    ($name:ident { $($extra:item)* }) => {
+        pub(crate) struct $name;
 
-#[pyattrs]
-impl<'heap> PyAttrs<'heap> for PyFileImpl {
-    type Receiver = HeapObjectRead<'heap, OpenFile>;
+        #[pyattrs]
+        impl<'heap> PyAttrs<'heap> for $name {
+            type Receiver = HeapObjectRead<'heap, OpenFile>;
 
-    #[pymethod(Read)]
-    fn read<'h>(this: &mut HeapObjectRead<'h, OpenFile>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
-        this.read(vm, args)
-    }
+            $($extra)*
 
-    #[pymethod(Readline)]
-    fn readline<'h>(
-        this: &mut HeapObjectRead<'h, OpenFile>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<CallResult> {
-        this.readline(vm, args)
-    }
 
-    #[pymethod(Readlines)]
-    fn readlines<'h>(
-        this: &mut HeapObjectRead<'h, OpenFile>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<CallResult> {
-        this.readlines(vm, args)
-    }
+            #[pyget(Name)]
+            fn name<'h>(this: &HeapObjectRead<'h, OpenFile>, vm: &mut VM<'h>) -> Value {
+                let file = this.get(vm.heap);
+                file.name.as_ref().map_or_else(
+                    || allocate_string(file.path.as_str(), vm.heap),
+                    |name| name.to_value(vm.heap),
+                )
+            }
 
-    #[pymethod(Tell)]
-    fn tell<'h>(this: &mut HeapObjectRead<'h, OpenFile>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
-        this.tell(vm, args)
-    }
+            #[pyget(Closed)]
+            fn closed<'h>(this: &HeapObjectRead<'h, OpenFile>, vm: &mut VM<'h>) -> Value {
+                Value::Bool(this.get(vm.heap).closed)
+            }
 
-    #[pymethod(Seek)]
-    fn seek<'h>(this: &mut HeapObjectRead<'h, OpenFile>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
-        this.seek(vm, args)
-    }
+            #[pymethod(Read)]
+            fn read<'h>(this: &mut HeapObjectRead<'h, OpenFile>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+                this.read(vm, args)
+            }
 
-    #[pymethod(Write)]
-    fn write<'h>(this: &mut HeapObjectRead<'h, OpenFile>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
-        this.write(vm, args)
-    }
+            #[pymethod(Readline)]
+            fn readline<'h>(
+                this: &mut HeapObjectRead<'h, OpenFile>,
+                args: ArgValues,
+                vm: &mut VM<'h>,
+            ) -> RunResult<CallResult> {
+                this.readline(vm, args)
+            }
 
-    #[pymethod(Close)]
-    fn close<'h>(this: &mut HeapObjectRead<'h, OpenFile>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
-        this.close(vm, args)
-    }
+            #[pymethod(Readlines)]
+            fn readlines<'h>(
+                this: &mut HeapObjectRead<'h, OpenFile>,
+                args: ArgValues,
+                vm: &mut VM<'h>,
+            ) -> RunResult<CallResult> {
+                this.readlines(vm, args)
+            }
 
-    #[pymethod(Flush)]
-    fn flush<'h>(this: &mut HeapObjectRead<'h, OpenFile>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
-        this.flush(vm, args)
-    }
+            #[pymethod(Tell)]
+            fn tell<'h>(this: &mut HeapObjectRead<'h, OpenFile>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+                this.tell(vm, args)
+            }
 
-    #[pymethod(Readable)]
-    fn readable<'h>(
-        this: &mut HeapObjectRead<'h, OpenFile>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<CallResult> {
-        this.readable(vm, args)
-    }
+            #[pymethod(Seek)]
+            fn seek<'h>(this: &mut HeapObjectRead<'h, OpenFile>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+                this.seek(vm, args)
+            }
 
-    #[pymethod(Writable)]
-    fn writable<'h>(
-        this: &mut HeapObjectRead<'h, OpenFile>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<CallResult> {
-        this.writable(vm, args)
-    }
+            #[pymethod(Write)]
+            fn write<'h>(this: &mut HeapObjectRead<'h, OpenFile>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+                this.write(vm, args)
+            }
 
-    #[pymethod(Seekable)]
-    fn seekable<'h>(
-        this: &mut HeapObjectRead<'h, OpenFile>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<CallResult> {
-        this.seekable(vm, args)
-    }
+            #[pymethod(Close)]
+            fn close<'h>(this: &mut HeapObjectRead<'h, OpenFile>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+                this.close(vm, args)
+            }
+
+            #[pymethod(Flush)]
+            fn flush<'h>(this: &mut HeapObjectRead<'h, OpenFile>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+                this.flush(vm, args)
+            }
+
+            #[pymethod(Readable)]
+            fn readable<'h>(
+                this: &mut HeapObjectRead<'h, OpenFile>,
+                args: ArgValues,
+                vm: &mut VM<'h>,
+            ) -> RunResult<CallResult> {
+                this.readable(vm, args)
+            }
+
+            #[pymethod(Writable)]
+            fn writable<'h>(
+                this: &mut HeapObjectRead<'h, OpenFile>,
+                args: ArgValues,
+                vm: &mut VM<'h>,
+            ) -> RunResult<CallResult> {
+                this.writable(vm, args)
+            }
+
+            #[pymethod(Seekable)]
+            fn seekable<'h>(
+                this: &mut HeapObjectRead<'h, OpenFile>,
+                args: ArgValues,
+                vm: &mut VM<'h>,
+            ) -> RunResult<CallResult> {
+                this.seekable(vm, args)
+            }
+        }
+    };
 }
+
+file_attrs!(PyFileImpl {
+    #[pyget(Mode)]
+    fn mode<'h>(this: &HeapObjectRead<'h, OpenFile>, vm: &mut VM<'h>) -> Value {
+        allocate_string(this.get(vm.heap).mode.as_str().to_owned(), vm.heap)
+    }
+});
+
+file_attrs!(PyTextFileImpl {
+    #[pyget(Mode, instance)]
+    fn mode<'h>(this: &HeapObjectRead<'h, OpenFile>, vm: &mut VM<'h>) -> Value {
+        allocate_string(this.get(vm.heap).mode.as_str().to_owned(), vm.heap)
+    }
+    #[pyget(Encoding, member)]
+    fn encoding<'h>(_this: &HeapObjectRead<'h, OpenFile>, vm: &mut VM<'h>) -> Value {
+        allocate_string("utf-8", vm.heap)
+    }
+});
 
 #[cfg(test)]
 #[path = "../../tests/unit/file.rs"]

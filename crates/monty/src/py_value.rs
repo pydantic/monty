@@ -550,7 +550,6 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
             else {
                 match self {
                     Self::Module(m) => Ok(m.py_getattr(attr, vm)),
-                    Self::Exception(e) => Ok(e.py_getattr(attr, vm)),
                     _ => Ok(None),
                 }
             }

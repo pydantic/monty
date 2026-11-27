@@ -23,8 +23,12 @@ use crate::{
         filter::builtin_filter, iter::builtin_iter, map::builtin_map, object::PyObjectImpl, type_::builtin_type,
     },
     bytecode::{CallResult, PyGeneratorImpl, VM},
-    exception_private::{ExcType, RunResult, exc_new},
-    modules::{collections, csv, hashlib, itertools},
+    exception_private::{ExcType, PyExceptionImpl, PyStopIterationImpl, RunResult, exc_new},
+    modules::{
+        collections, csv,
+        dataclasses::{DataclassParams, PyDataclassFieldImpl},
+        hashlib, itertools,
+    },
     py_attrs::{AttrTable, PyAttrs, SubtypeCall, SubtypeGet},
     types::{
         Bytes, Deque, Dict, ForwardRef, FrozenSet, List, Partial, Path, Random, Range, Set, Slice, TimeZone, Tuple,
@@ -732,7 +736,7 @@ native_types! {
     Module("module"),
     /// Marker types like stdout/stderr - displays as "_io.TextIOWrapper"
     TextIOWrapper("_io.TextIOWrapper")
-        .attrs(<super::file::PyFileImpl as PyAttrs<'static>>::TABLE),
+        .attrs(<super::file::PyTextFileImpl as PyAttrs<'static>>::TABLE),
     /// Binary file object returned by `open(..., "rb")`.
     BufferedReader("_io.BufferedReader")
         .attrs(<super::file::PyFileImpl as PyAttrs<'static>>::TABLE),
@@ -763,6 +767,7 @@ native_types! {
         .ctor(Constructor::Value(Path::init)),
     /// A property descriptor - displays as "property"
     Property("property")
+        .attrs(<builtin_descriptor::PyPropertyImpl as PyAttrs<'static>>::TABLE)
         .ctor(Constructor::Value(builtin_descriptor::property_init))
         .builtin()
         .basetype(),
@@ -812,7 +817,8 @@ native_types! {
         .ctor(Constructor::Typed(itertools::construct)),
     /// A `dataclasses.Field` from a class's `__dataclass_fields__` — displays
     /// as "Field", the name CPython's `Field.__name__` reports.
-    DataclassField("Field"),
+    DataclassField("Field")
+        .attrs(<PyDataclassFieldImpl as PyAttrs<'static>>::TABLE),
     /// `collections.deque` — qualified like `datetime.datetime`/`re.Pattern` so
     /// the name matches CPython's `repr` and error messages; `__name__` reports
     /// the bare `'deque'`, see `dunder_name`.
@@ -844,7 +850,8 @@ native_types! {
         .ctor(Constructor::Typed(itertools::construct)),
     /// The `__dataclass_params__` of a `@dataclass`, named as CPython's
     /// private `dataclasses._DataclassParams` reports itself.
-    DataclassParams("_DataclassParams"),
+    DataclassParams("_DataclassParams")
+        .attrs(<DataclassParams as PyAttrs<'static>>::TABLE),
     /// The type of `dataclasses.MISSING`, CPython's private `_MISSING_TYPE`.
     MissingType("dataclasses._MISSING_TYPE"),
     ItertoolsTakeWhile("itertools.takewhile")
@@ -874,6 +881,7 @@ native_types! {
     /// `functools.partial` — qualified like `collections.deque`, so
     /// `type(p)` reads `<class 'functools.partial'>`.
     Partial("functools.partial")
+        .attrs(<super::partial::PyPartialImpl as PyAttrs<'static>>::TABLE)
         .basetype()
         .class_getitem()
         .ctor(Constructor::Value(Partial::init)),
@@ -888,11 +896,13 @@ native_types! {
         .ctor(Constructor::Typed(itertools::construct)),
     /// `types.GenericAlias`, the type of `list[int]`; qualified like
     /// `functools.partial`, so `type(list[int])` reads `<class 'types.GenericAlias'>`.
-    GenericAlias("types.GenericAlias"),
+    GenericAlias("types.GenericAlias")
+        .attrs(<super::generic_alias::PyGenericAliasImpl as PyAttrs<'static>>::TABLE),
     /// `typing.Union`, the type of `int | None` — one object with
     /// `types.UnionType` since CPython 3.14, and the value bound to
     /// `typing.Union` itself.
     Union("typing.Union")
+        .attrs(<super::union::PyUnionImpl as PyAttrs<'static>>::TABLE)
         .ctor(Constructor::Value(union_init)),
     ItertoolsCombinations("itertools.combinations")
         .iterator()
@@ -993,6 +1003,7 @@ native_types! {
         .exc(ExcType::Exception),
     /// The root of every exception class.
     BaseException("BaseException", Object)
+        .attrs(<PyExceptionImpl as PyAttrs<'static>>::TABLE)
         .builtin()
         .exc(ExcType::BaseException),
     SystemExit("SystemExit", BaseException)
@@ -1118,6 +1129,7 @@ native_types! {
         .builtin()
         .exc(ExcType::MemoryError),
     StopIteration("StopIteration", Exception)
+        .attrs(<PyStopIterationImpl as PyAttrs<'static>>::TABLE)
         .builtin()
         .exc(ExcType::StopIteration),
     SyntaxError("SyntaxError", Exception)
@@ -1230,10 +1242,14 @@ native_types! {
     /// `asyncio.InvalidStateError`, raised by `Task.result()` / `Task.exception()` on a pending task.
     InvalidStateError("asyncio.exceptions.InvalidStateError", Exception)
         .exc(ExcType::InvalidStateError),
-    ClassMethod("classmethod").builtin().basetype().ctor(Constructor::Value(builtin_descriptor::classmethod_init)),
-    StaticMethod("staticmethod").builtin().basetype().ctor(Constructor::Value(builtin_descriptor::staticmethod_init)),
-    MemberDescriptor("member_descriptor"),
-    GetSetDescriptor("getset_descriptor"),
+    ClassMethod("classmethod")
+        .attrs(<builtin_descriptor::PyFunctionWrapperImpl as PyAttrs<'static>>::TABLE).builtin().basetype().ctor(Constructor::Value(builtin_descriptor::classmethod_init)),
+    StaticMethod("staticmethod")
+        .attrs(<builtin_descriptor::PyFunctionWrapperImpl as PyAttrs<'static>>::TABLE).builtin().basetype().ctor(Constructor::Value(builtin_descriptor::staticmethod_init)),
+    MemberDescriptor("member_descriptor")
+        .attrs(<builtin_descriptor::PyNativeDescriptorImpl as PyAttrs<'static>>::TABLE),
+    GetSetDescriptor("getset_descriptor")
+        .attrs(<builtin_descriptor::PyNativeDescriptorImpl as PyAttrs<'static>>::TABLE),
 }
 
 #[cfg(test)]

@@ -100,14 +100,12 @@ pub(crate) fn set_attribute<'h>(
         set(receiver, value, vm)
     } else {
         value.drop_with(vm);
-        if matches!(kind, AccessorKind::Member) {
-            Err(ExcType::attribute_error_readonly())
-        } else {
-            Err(ExcType::attribute_error_not_writable(
-                attr.as_str(vm.interns),
-                owner.name(),
-            ))
-        }
+        let name = attr.as_str(vm.interns);
+        Err(match kind {
+            AccessorKind::Member => ExcType::attribute_error_readonly(),
+            AccessorKind::GetSet => ExcType::attribute_error_not_writable(name, owner.name()),
+            AccessorKind::Instance => ExcType::attribute_error_no_setattr(owner.name(), name),
+        })
     }
 }
 

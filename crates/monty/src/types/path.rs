@@ -13,7 +13,6 @@ use std::{
 
 use monty_macros::pyattrs;
 use monty_types::{MontyPath, scan::SegmentPattern};
-use smallvec::SmallVec;
 
 use crate::{
     args::{ArgValues, FromArgs, LaxBool},
@@ -31,7 +30,7 @@ use crate::{
         dir_scan::{glob_call, walk_call},
         str::{StringRepr, allocate_string},
     },
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// Python `pathlib.Path` object representing a filesystem path.
@@ -546,53 +545,6 @@ fn normalize_path(mut path: String) -> String {
     result
 }
 
-impl Path {
-    /// Resolves a known attribute by its `StaticStrings` variant.
-    ///
-    /// Returns `Some(value)` for recognized property names (`name`, `parent`,
-    /// `stem`, `suffix`, `suffixes`, `parts`), or `None` if the variant doesn't
-    /// correspond to a Path attribute. Used by `py_getattr` to share logic between
-    /// the interned fast path and the heap string slow path.
-    pub(crate) fn getattr_by_static(&self, ss: StaticStrings, heap: &Heap) -> Option<Value> {
-        let v = match ss {
-            StaticStrings::Name => allocate_string(self.name(), heap),
-            StaticStrings::Parent => {
-                if let Some(parent) = self.parent() {
-                    let parent_path = Self::new(parent.to_owned());
-                    Value::allocate(parent_path, heap)
-                } else {
-                    // Return self when there's no parent (root or relative path)
-                    let same_path = Self::new(self.as_str().to_owned());
-                    Value::allocate(same_path, heap)
-                }
-            }
-            StaticStrings::Stem => allocate_string(self.stem(), heap),
-            StaticStrings::Suffix => allocate_string(self.suffix(), heap),
-            StaticStrings::Suffixes => {
-                let suffixes = self.suffixes();
-                let mut items = Vec::with_capacity(suffixes.len());
-                for suffix in suffixes {
-                    items.push(allocate_string(suffix, heap));
-                }
-                Value::allocate(List::new(items), heap)
-            }
-            StaticStrings::Parts => {
-                let parts = self.parts();
-                let mut items = SmallVec::with_capacity(parts.len());
-                for part in parts {
-                    items.push(allocate_string(part, heap));
-                }
-                allocate_tuple(items, heap)
-            }
-            StaticStrings::Anchor => allocate_string(self.anchor(), heap),
-            StaticStrings::Drive => allocate_string(self.drive(), heap),
-            StaticStrings::Root => allocate_string(self.root(), heap),
-            _ => return None,
-        };
-        Some(v)
-    }
-}
-
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
     fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
         Type::Path.into()
@@ -642,35 +594,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         Ok(f.write_str(&self.get(vm.heap).repr())?)
     }
-
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        // Fast path: interned strings can be matched by ID without string comparison
-        if let Some(ss) = attr.static_string(vm.interns) {
-            if let Some(v) = self.get(vm.heap).getattr_by_static(ss, vm.heap) {
-                return Ok(Some(CallResult::Value(v)));
-            }
-            return Err(ExcType::attribute_error(Type::Path, attr.as_str(vm.interns)));
-        }
-        // Slow path: heap-allocated strings need string comparison
-        let attr_str = attr.as_str(vm.interns);
-        let ss = match attr_str {
-            "anchor" => StaticStrings::Anchor,
-            "drive" => StaticStrings::Drive,
-            "name" => StaticStrings::Name,
-            "parent" => StaticStrings::Parent,
-            "parts" => StaticStrings::Parts,
-            "root" => StaticStrings::Root,
-            "stem" => StaticStrings::Stem,
-            "suffix" => StaticStrings::Suffix,
-            "suffixes" => StaticStrings::Suffixes,
-            _ => return Err(ExcType::attribute_error(Type::Path, attr_str)),
-        };
-        let v = self
-            .get(vm.heap)
-            .getattr_by_static(ss, vm.heap)
-            .expect("matched attribute must produce a value");
-        Ok(Some(CallResult::Value(v)))
-    }
 }
 
 impl HeapItem for Path {
@@ -684,6 +607,59 @@ pub(crate) struct PyPathImpl;
 #[pyattrs]
 impl<'heap> PyAttrs<'heap> for PyPathImpl {
     type Receiver = HeapObjectRead<'heap, Path>;
+
+    #[pyget(Anchor)]
+    fn anchor<'h>(this: &HeapObjectRead<'h, Path>, vm: &mut VM<'h>) -> Value {
+        allocate_string(this.get(vm.heap).anchor(), vm.heap)
+    }
+
+    #[pyget(Drive)]
+    fn drive<'h>(this: &HeapObjectRead<'h, Path>, vm: &mut VM<'h>) -> Value {
+        allocate_string(this.get(vm.heap).drive(), vm.heap)
+    }
+
+    #[pyget(Name)]
+    fn name<'h>(this: &HeapObjectRead<'h, Path>, vm: &mut VM<'h>) -> Value {
+        allocate_string(this.get(vm.heap).name(), vm.heap)
+    }
+
+    #[pyget(Root)]
+    fn root<'h>(this: &HeapObjectRead<'h, Path>, vm: &mut VM<'h>) -> Value {
+        allocate_string(this.get(vm.heap).root(), vm.heap)
+    }
+
+    #[pyget(Stem)]
+    fn stem<'h>(this: &HeapObjectRead<'h, Path>, vm: &mut VM<'h>) -> Value {
+        allocate_string(this.get(vm.heap).stem(), vm.heap)
+    }
+
+    #[pyget(Suffix)]
+    fn suffix<'h>(this: &HeapObjectRead<'h, Path>, vm: &mut VM<'h>) -> Value {
+        allocate_string(this.get(vm.heap).suffix(), vm.heap)
+    }
+
+    #[pyget(Parent)]
+    fn parent<'h>(this: &HeapObjectRead<'h, Path>, vm: &mut VM<'h>) -> Value {
+        let path = this.get(vm.heap);
+        Value::allocate(Path::new(path.parent().unwrap_or(path.as_str()).to_owned()), vm.heap)
+    }
+
+    #[pyget(Parts)]
+    fn parts<'h>(this: &HeapObjectRead<'h, Path>, vm: &mut VM<'h>) -> Value {
+        let parts = this.get(vm.heap).parts();
+        let items = parts.into_iter().map(|part| allocate_string(part, vm.heap)).collect();
+        allocate_tuple(items, vm.heap)
+    }
+
+    #[pyget(Suffixes)]
+    fn suffixes<'h>(this: &HeapObjectRead<'h, Path>, vm: &mut VM<'h>) -> Value {
+        let suffixes = this.get(vm.heap).suffixes();
+        let items = suffixes
+            .into_iter()
+            .map(|suffix| allocate_string(suffix, vm.heap))
+            .collect();
+        Value::allocate(List::new(items), vm.heap)
+    }
 
     #[pymethod(Glob)]
     fn glob<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {

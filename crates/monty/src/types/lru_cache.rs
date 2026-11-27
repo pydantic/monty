@@ -394,30 +394,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LruCache> {
             self.id().index()
         )?)
     }
-
-    /// `__wrapped__` — the callable being cached.
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        if attr.static_string(vm.interns) == Some(StaticStrings::DunderWrapped)
-            && let Some(func) = self.get(vm.heap).func.as_ref()
-        {
-            let func = func.clone_with_heap(vm);
-            Ok(Some(CallResult::Value(func)))
-        } else {
-            Ok(None)
-        }
-    }
-
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        // __wrapped__ is a stored callable, so it bypasses the native method table.
-        if attr.static_string(vm.interns) == Some(StaticStrings::DunderWrapped)
-            && let Some(func) = self.get(vm.heap).func.as_ref()
-        {
-            let func = func.clone_with_heap(vm);
-            defer_drop!(func, vm);
-            return vm.call_function(func, args);
-        }
-        Err(ExcType::attribute_error_method(Type::LruCacheWrapper, attr, args, vm))
-    }
 }
 
 impl<'h> HeapObjectRead<'h, LruCache> {
@@ -539,6 +515,15 @@ pub(crate) struct PyLruCacheImpl;
 #[pyattrs]
 impl<'heap> PyAttrs<'heap> for PyLruCacheImpl {
     type Receiver = HeapObjectRead<'heap, LruCache>;
+
+    #[pyget(DunderWrapped, instance)]
+    fn wrapped<'h>(this: &HeapObjectRead<'h, LruCache>, vm: &mut VM<'h>) -> RunResult<Value> {
+        this.get(vm.heap)
+            .func
+            .as_ref()
+            .map(|func| func.clone_with_heap(vm.heap))
+            .ok_or_else(|| ExcType::attribute_error(Type::LruCacheWrapper, "__wrapped__"))
+    }
 
     #[pymethod(CacheInfo)]
     fn cache_info<'h>(this: &mut HeapObjectRead<'h, LruCache>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {

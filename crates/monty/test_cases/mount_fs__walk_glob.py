@@ -283,6 +283,8 @@ with os.scandir(root) as it:
 assert sorted(entries) == ['data.bin', 'empty.txt', 'hello.txt', 'readonly.txt', 'subdir']
 hello = entries['hello.txt']
 assert hello.path == str(root / 'hello.txt')
+assert type(hello).name.__get__(hello) == 'hello.txt'
+assert type(hello).path.__get__(hello) == hello.path
 assert hello.is_file()
 assert not hello.is_dir()
 assert not hello.is_symlink()

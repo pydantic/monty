@@ -17,6 +17,7 @@ use std::{
 };
 
 use ahash::{AHashMap, AHasher};
+use monty_macros::pyattrs;
 use serde::{Deserialize, Serialize};
 use smallvec::{SmallVec, smallvec};
 
@@ -31,6 +32,7 @@ use crate::{
         ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput,
     },
     intern::StaticStrings,
+    py_attrs::PyAttrs,
     types::{
         LazyHeapSet, List, PyTrait, Tuple, Type, TypeRef, Union,
         instance::class_name,
@@ -382,16 +384,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
         Ok(f.write_char(']')?)
     }
 
-    /// `__origin__`, `__args__`, `__parameters__` (always `()`, Monty having
-    /// no `TypeVar`s) and, for `Annotated`, `__metadata__`; everything else
-    /// resolves on a builtin origin type, so `list[int].__name__` is `'list'`
-    /// and unknown names report `list`, and is an error on a `typing` form.
+    /// Reads Annotated metadata and forwards other attributes to the origin.
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let origin = self.get(vm.heap).origin;
         match attr.static_string(vm.interns) {
-            Some(StaticStrings::DunderOrigin) => Ok(Some(CallResult::Value(self.get(vm.heap).origin_value(vm.heap)))),
-            Some(StaticStrings::DunderArgs) => Ok(Some(CallResult::Value(self.dunder_args(vm)))),
-            Some(StaticStrings::DunderParameters) => Ok(Some(CallResult::Value(vm.heap.get_empty_tuple()))),
             Some(StaticStrings::DunderMetadata) if self.get(vm.heap).is_annotated() => {
                 let (_, args) = self.parts(vm);
                 defer_drop!(args, vm);
@@ -926,5 +922,27 @@ mod tests {
             assert_eq!(alias.origin, AliasOrigin::Builtin(origin));
             assert_eq!(minicbor_serde::to_vec(&alias).unwrap(), bytes);
         }
+    }
+}
+
+pub(crate) struct PyGenericAliasImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyGenericAliasImpl {
+    type Receiver = HeapObjectRead<'heap, GenericAlias>;
+
+    #[pyget(DunderArgs, member)]
+    fn args<'h>(this: &HeapObjectRead<'h, GenericAlias>, vm: &mut VM<'h>) -> Value {
+        this.dunder_args(vm)
+    }
+
+    #[pyget(DunderOrigin, member)]
+    fn origin<'h>(this: &HeapObjectRead<'h, GenericAlias>, vm: &mut VM<'h>) -> Value {
+        this.get(vm.heap).origin_value(vm.heap)
+    }
+
+    #[pyget(DunderParameters)]
+    fn parameters<'h>(_this: &HeapObjectRead<'h, GenericAlias>, vm: &mut VM<'h>) -> Value {
+        vm.heap.get_empty_tuple()
     }
 }

@@ -30,7 +30,6 @@ use crate::{
     hash::{HashValue, identity_hash},
     heap::{ContainsHeap, HeapData, HeapId, HeapItem, HeapObjectRead},
     identity::Identity,
-    intern::StaticStrings,
     os_dispatch::value_as_path_str,
     py_attrs::PyAttrs,
     types::{
@@ -38,7 +37,7 @@ use crate::{
         list::ListIterator,
         str::{allocate_string, string_repr_fmt},
     },
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// The heap payload for every object a directory scan produces.
@@ -267,32 +266,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DirScan> {
                 Ok(CallResult::Value(Value::None))
             }
             DirScan::Entry(_) | DirScan::Walk(_) => Err(ExcType::attribute_error(self.py_type_name(vm), "__exit__")),
-        }
-    }
-
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let value = match (self.get(vm.heap), attr.static_string(vm.interns)) {
-            (DirScan::Entry(entry), Some(StaticStrings::Name)) => allocate_string(entry.name.as_str(), vm.heap),
-            (DirScan::Entry(entry), Some(StaticStrings::Path)) => allocate_string(entry.path.as_str(), vm.heap),
-            _ => return Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns))),
-        };
-        Ok(Some(CallResult::Value(value)))
-    }
-
-    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
-        value.drop_with(vm);
-        let readonly = matches!(self.get(vm.heap), DirScan::Entry(_))
-            && matches!(
-                name.static_string(vm.interns),
-                Some(StaticStrings::Name | StaticStrings::Path)
-            );
-        if readonly {
-            Err(ExcType::attribute_error_readonly())
-        } else {
-            Err(ExcType::attribute_error_no_setattr(
-                &self.py_type_name(vm),
-                name.as_str(vm.interns),
-            ))
         }
     }
 }
@@ -991,6 +964,22 @@ pub(crate) struct PyDirEntryImpl;
 #[pyattrs]
 impl<'heap> PyAttrs<'heap> for PyDirEntryImpl {
     type Receiver = HeapObjectRead<'heap, DirScan>;
+
+    #[pyget(Name, member)]
+    fn name<'h>(this: &HeapObjectRead<'h, DirScan>, vm: &mut VM<'h>) -> Value {
+        let DirScan::Entry(entry) = this.get(vm.heap) else {
+            unreachable!("dispatched on DirScan::Entry");
+        };
+        allocate_string(entry.name.as_str(), vm.heap)
+    }
+
+    #[pyget(Path, member)]
+    fn path<'h>(this: &HeapObjectRead<'h, DirScan>, vm: &mut VM<'h>) -> Value {
+        let DirScan::Entry(entry) = this.get(vm.heap) else {
+            unreachable!("dispatched on DirScan::Entry");
+        };
+        allocate_string(entry.path.as_str(), vm.heap)
+    }
 
     #[pymethod(IsDir)]
     fn is_dir<'h>(this: &mut HeapObjectRead<'h, DirScan>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {

@@ -25,10 +25,9 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, HeapId, HeapItem, HeapObjectRead},
-    intern::StaticStrings,
     py_attrs::PyAttrs,
     types::{LazyHeapSet, PyTrait, Type, TypeRef},
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// One `csv` object, whichever constructor produced it.
@@ -153,46 +152,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, CsvObject> {
         }
         .map(|item| item.map(CallResult::Value))
     }
-
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let Some(name) = attr.static_string(vm.interns) else {
-            return Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns)));
-        };
-        let value = match (self.get(vm.heap), name) {
-            (CsvObject::DictReader(reader), StaticStrings::LineNum) => line_num_value(reader.line_num)?,
-            (CsvObject::DictReader(reader), StaticStrings::Reader) => reader.reader.clone_with_heap(vm.heap),
-            (CsvObject::DictReader(reader), StaticStrings::Restkey) => reader.restkey.clone_with_heap(vm.heap),
-            (CsvObject::DictReader(reader), StaticStrings::Restval) => reader.restval.clone_with_heap(vm.heap),
-            (CsvObject::DictReader(reader), StaticStrings::Dialect) => reader.dialect.clone_with_heap(vm.heap),
-            (CsvObject::DictWriter(writer), StaticStrings::Fieldnames) => writer.fieldnames.clone_with_heap(vm.heap),
-            (CsvObject::DictWriter(writer), StaticStrings::Restval) => writer.restval.clone_with_heap(vm.heap),
-            (CsvObject::DictWriter(writer), StaticStrings::Extrasaction) => {
-                writer.extrasaction.clone_with_heap(vm.heap)
-            }
-            (CsvObject::DictWriter(writer), StaticStrings::Writer) => writer.writer.clone_with_heap(vm.heap),
-            _ => return Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns))),
-        };
-        Ok(Some(CallResult::Value(value)))
-    }
-
-    /// Writes the mutable fields on the DictReader and DictWriter instances.
-    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
-        let slot = match (self.get_mut(vm.heap), name.static_string(vm.interns)) {
-            (CsvObject::DictReader(reader), Some(StaticStrings::Restkey)) => &mut reader.restkey,
-            (CsvObject::DictReader(reader), Some(StaticStrings::Restval)) => &mut reader.restval,
-            (CsvObject::DictReader(reader), Some(StaticStrings::Dialect)) => &mut reader.dialect,
-            (CsvObject::DictWriter(writer), Some(StaticStrings::Fieldnames)) => &mut writer.fieldnames,
-            (CsvObject::DictWriter(writer), Some(StaticStrings::Restval)) => &mut writer.restval,
-            (CsvObject::DictWriter(writer), Some(StaticStrings::Extrasaction)) => &mut writer.extrasaction,
-            _ => {
-                value.drop_with(vm);
-                let type_name = self.py_type_name(vm);
-                return Err(ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm.interns)));
-            }
-        };
-        mem::replace(slot, value).drop_with(vm);
-        Ok(())
-    }
 }
 
 /// `line_num` as a Python `int`.
@@ -230,6 +189,70 @@ pub(crate) struct PyCsvDictReaderImpl;
 #[pyattrs]
 impl<'heap> PyAttrs<'heap> for PyCsvDictReaderImpl {
     type Receiver = HeapObjectRead<'heap, CsvObject>;
+
+    #[pyget(LineNum, instance)]
+    fn line_num<'h>(this: &HeapObjectRead<'h, CsvObject>, vm: &mut VM<'h>) -> RunResult<Value> {
+        let CsvObject::DictReader(reader) = this.get(vm.heap) else {
+            unreachable!("dispatched on CsvObject::DictReader");
+        };
+        line_num_value(reader.line_num)
+    }
+
+    #[pyget(Reader, instance)]
+    fn reader<'h>(this: &HeapObjectRead<'h, CsvObject>, vm: &mut VM<'h>) -> Value {
+        let CsvObject::DictReader(reader) = this.get(vm.heap) else {
+            unreachable!("dispatched on CsvObject::DictReader");
+        };
+        reader.reader.clone_with_heap(vm.heap)
+    }
+
+    #[pyget(Restkey, instance)]
+    fn restkey<'h>(this: &HeapObjectRead<'h, CsvObject>, vm: &mut VM<'h>) -> Value {
+        let CsvObject::DictReader(reader) = this.get(vm.heap) else {
+            unreachable!("dispatched on CsvObject::DictReader");
+        };
+        reader.restkey.clone_with_heap(vm.heap)
+    }
+
+    #[pyset(Restkey)]
+    fn set_restkey<'h>(this: &HeapObjectRead<'h, CsvObject>, value: Value, vm: &mut VM<'h>) {
+        let CsvObject::DictReader(reader) = this.get_mut(vm.heap) else {
+            unreachable!("dispatched on CsvObject::DictReader");
+        };
+        mem::replace(&mut reader.restkey, value).drop_with(vm);
+    }
+
+    #[pyget(Restval, instance)]
+    fn restval<'h>(this: &HeapObjectRead<'h, CsvObject>, vm: &mut VM<'h>) -> Value {
+        let CsvObject::DictReader(reader) = this.get(vm.heap) else {
+            unreachable!("dispatched on CsvObject::DictReader");
+        };
+        reader.restval.clone_with_heap(vm.heap)
+    }
+
+    #[pyset(Restval)]
+    fn set_restval<'h>(this: &HeapObjectRead<'h, CsvObject>, value: Value, vm: &mut VM<'h>) {
+        let CsvObject::DictReader(reader) = this.get_mut(vm.heap) else {
+            unreachable!("dispatched on CsvObject::DictReader");
+        };
+        mem::replace(&mut reader.restval, value).drop_with(vm);
+    }
+
+    #[pyget(Dialect, instance)]
+    fn dialect<'h>(this: &HeapObjectRead<'h, CsvObject>, vm: &mut VM<'h>) -> Value {
+        let CsvObject::DictReader(reader) = this.get(vm.heap) else {
+            unreachable!("dispatched on CsvObject::DictReader");
+        };
+        reader.dialect.clone_with_heap(vm.heap)
+    }
+
+    #[pyset(Dialect)]
+    fn set_dialect<'h>(this: &HeapObjectRead<'h, CsvObject>, value: Value, vm: &mut VM<'h>) {
+        let CsvObject::DictReader(reader) = this.get_mut(vm.heap) else {
+            unreachable!("dispatched on CsvObject::DictReader");
+        };
+        mem::replace(&mut reader.dialect, value).drop_with(vm);
+    }
 
     #[pyget(Fieldnames)]
     fn fieldnames<'h>(this: &HeapObjectRead<'h, CsvObject>, vm: &mut VM<'h>) -> RunResult<Value> {
@@ -288,6 +311,62 @@ pub(crate) struct PyCsvDictWriterImpl;
 #[pyattrs]
 impl<'heap> PyAttrs<'heap> for PyCsvDictWriterImpl {
     type Receiver = HeapObjectRead<'heap, CsvObject>;
+
+    #[pyget(Fieldnames, instance)]
+    fn fieldnames<'h>(this: &HeapObjectRead<'h, CsvObject>, vm: &mut VM<'h>) -> Value {
+        let CsvObject::DictWriter(writer) = this.get(vm.heap) else {
+            unreachable!("dispatched on CsvObject::DictWriter");
+        };
+        writer.fieldnames.clone_with_heap(vm.heap)
+    }
+
+    #[pyset(Fieldnames)]
+    fn set_fieldnames<'h>(this: &HeapObjectRead<'h, CsvObject>, value: Value, vm: &mut VM<'h>) {
+        let CsvObject::DictWriter(writer) = this.get_mut(vm.heap) else {
+            unreachable!("dispatched on CsvObject::DictWriter");
+        };
+        mem::replace(&mut writer.fieldnames, value).drop_with(vm);
+    }
+
+    #[pyget(Restval, instance)]
+    fn restval<'h>(this: &HeapObjectRead<'h, CsvObject>, vm: &mut VM<'h>) -> Value {
+        let CsvObject::DictWriter(writer) = this.get(vm.heap) else {
+            unreachable!("dispatched on CsvObject::DictWriter");
+        };
+        writer.restval.clone_with_heap(vm.heap)
+    }
+
+    #[pyset(Restval)]
+    fn set_restval<'h>(this: &HeapObjectRead<'h, CsvObject>, value: Value, vm: &mut VM<'h>) {
+        let CsvObject::DictWriter(writer) = this.get_mut(vm.heap) else {
+            unreachable!("dispatched on CsvObject::DictWriter");
+        };
+        mem::replace(&mut writer.restval, value).drop_with(vm);
+    }
+
+    #[pyget(Extrasaction, instance)]
+    fn extrasaction<'h>(this: &HeapObjectRead<'h, CsvObject>, vm: &mut VM<'h>) -> Value {
+        let CsvObject::DictWriter(writer) = this.get(vm.heap) else {
+            unreachable!("dispatched on CsvObject::DictWriter");
+        };
+        writer.extrasaction.clone_with_heap(vm.heap)
+    }
+
+    #[pyset(Extrasaction)]
+    fn set_extrasaction<'h>(this: &HeapObjectRead<'h, CsvObject>, value: Value, vm: &mut VM<'h>) {
+        let CsvObject::DictWriter(writer) = this.get_mut(vm.heap) else {
+            unreachable!("dispatched on CsvObject::DictWriter");
+        };
+        mem::replace(&mut writer.extrasaction, value).drop_with(vm);
+    }
+
+    #[pyget(Writer, instance)]
+    fn writer<'h>(this: &HeapObjectRead<'h, CsvObject>, vm: &mut VM<'h>) -> Value {
+        let CsvObject::DictWriter(writer) = this.get(vm.heap) else {
+            unreachable!("dispatched on CsvObject::DictWriter");
+        };
+        writer.writer.clone_with_heap(vm.heap)
+    }
 
     #[pymethod(Writerow)]
     fn writerow<'h>(

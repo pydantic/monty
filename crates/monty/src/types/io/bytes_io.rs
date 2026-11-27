@@ -17,11 +17,10 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{DropGuard, HeapData, HeapId, HeapItem, HeapObjectRead},
-    intern::StaticStrings,
     py_attrs::PyAttrs,
     py_value::PyValue,
     types::{LazyHeapSet, List, PyTrait, Type, TypeRef, bytes::allocate_bytes},
-    value::{EitherStr, VALUE_SIZE, Value},
+    value::{VALUE_SIZE, Value},
 };
 
 /// The state of one `io.BytesIO`.
@@ -191,11 +190,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BytesIo> {
         close(self.get_mut(vm.heap));
         Ok(CallResult::Value(Value::None))
     }
-
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        Ok((attr.static_string(vm.interns) == Some(StaticStrings::Closed))
-            .then(|| CallResult::Value(Value::Bool(self.get(vm.heap).closed))))
-    }
 }
 
 /// `BytesIO`'s methods; the `closed` attribute stays in `py_getattr`.
@@ -204,6 +198,11 @@ pub(crate) struct PyBytesIoImpl;
 #[pyattrs]
 impl<'heap> PyAttrs<'heap> for PyBytesIoImpl {
     type Receiver = HeapObjectRead<'heap, BytesIo>;
+
+    #[pyget(Closed)]
+    fn closed<'h>(this: &HeapObjectRead<'h, BytesIo>, vm: &mut VM<'h>) -> Value {
+        Value::Bool(this.get(vm.heap).closed)
+    }
 
     /// Re-running the constructor reopens the stream and, as in CPython, empties it
     /// before checking the payload, so a rejected payload leaves it empty.
