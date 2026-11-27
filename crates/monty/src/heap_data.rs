@@ -180,6 +180,8 @@ macro_rules! heap_payloads {
             Union(inline $crate::types::Union),
             /// An `annotationlib.ForwardRef`, also the stringifier a `FORWARDREF` evaluation composes.
             ForwardRef(boxed $crate::types::ForwardRef),
+            /// Acquisition state of a threading lock.
+            Lock(inline $crate::modules::threading::Lock),
             /// A `random.Random` generator instance.
             Random(boxed $crate::types::Random),
             /// A `functools.lru_cache` / `functools.cache` wrapper.
@@ -317,6 +319,7 @@ impl HeapData {
             | Self::Time(_)
             | Self::TimeDelta(_)
             | Self::TimeZone(_)
+            | Self::Lock(_)
             | Self::Random(_)
             | Self::HashObject(_)
             // A signal dict and a `localcontext()` manager only hold contexts, which are leaves.
@@ -366,6 +369,7 @@ impl HeapData {
             Self::NamedTupleClass(_) => Type::Type,
             Self::Dict(_) => Type::Dict,
             Self::Partial(_) => Type::Partial,
+            Self::Lock(lock) => lock.lock_type(),
             Self::Random(_) => Type::Random,
             Self::HashObject(hash) => hash.algorithm().py_type(),
             Self::GenericAlias(_) => Type::GenericAlias,

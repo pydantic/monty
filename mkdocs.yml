@@ -84,6 +84,7 @@ nav:
       - re: 'limitations/re.md'
       - statistics: 'limitations/statistics.md'
       - sys: 'limitations/sys.md'
+      - threading: 'limitations/threading.md'
       - time: 'limitations/time.md'
       - tomllib: 'limitations/tomllib.md'
       - unicodedata: 'limitations/unicodedata.md'

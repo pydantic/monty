@@ -24,7 +24,7 @@ use crate::{
     },
     bytecode::{CallResult, VM},
     exception_private::{ExcType, RunResult, exc_new},
-    modules::{collections, csv, hashlib, itertools},
+    modules::{collections, csv, hashlib, itertools, threading},
     py_attrs::{AttrTable, PyAttrs, SubtypeCall},
     types::{
         Bytes, Deque, Dict, ForwardRef, FrozenSet, List, Partial, Path, Random, Range, Set, Slice, TimeZone, Tuple,
@@ -439,6 +439,8 @@ impl Type {
             Self::StringIo => 167,
             Self::BytesIo => 168,
             Self::BlockingIOError => 169,
+            Self::Lock => 170,
+            Self::RLock => 171,
         }
     }
 
@@ -1210,6 +1212,8 @@ native_types! {
     /// `asyncio.InvalidStateError`, raised by `Task.result()` / `Task.exception()` on a pending task.
     InvalidStateError("asyncio.exceptions.InvalidStateError", Exception)
         .exc(ExcType::InvalidStateError),
+    Lock("_thread.lock").ctor(Constructor::Value(threading::new_lock)),
+    RLock("_thread.RLock").ctor(Constructor::Value(threading::new_rlock)),
 }
 
 #[cfg(test)]

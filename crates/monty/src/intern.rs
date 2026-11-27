@@ -568,6 +568,8 @@ pub enum StaticStrings {
     Acos,
     /// `math.acosh()` function.
     Acosh,
+    /// Lock acquisition method.
+    Acquire,
     /// `set.add()` method.
     Add,
     /// `Decimal.adjusted()`.
@@ -747,6 +749,8 @@ pub enum StaticStrings {
     /// `io.BufferedWriter` file class.
     #[strum(serialize = "BufferedWriter")]
     BufferedWriter,
+    /// Lock acquisition mode.
+    Blocking,
     /// Kwarg name `buffering` — `open(buffering=...)`.
     Buffering,
     /// `sys.builtin_module_names` attribute.
@@ -2148,6 +2152,11 @@ pub enum StaticStrings {
     Locals,
     /// `time.localtime()` function.
     Localtime,
+    /// `threading.Lock` class.
+    #[strum(serialize = "Lock")]
+    Lock,
+    /// Lock state query.
+    Locked,
     /// `math.log()` function.
     Log,
     /// `math.log10()` function.
@@ -2601,6 +2610,9 @@ pub enum StaticStrings {
     Quotetabs,
     /// `quoting` dialect attribute and `csv` format parameter.
     Quoting,
+    /// `threading.RLock` class.
+    #[strum(serialize = "RLock")]
+    RLock,
     /// `math.radians()` function.
     Radians,
     /// `sys.float_info.radix` field.
@@ -2650,6 +2662,8 @@ pub enum StaticStrings {
     Reduce,
     /// Kwarg name `rel_tol` — `math.isclose(rel_tol=...)`.
     RelTol,
+    /// Lock release method.
+    Release,
     /// `sys.version_info.releaselevel` field.
     Releaselevel,
     /// `os.path.relpath()` function.
@@ -3039,6 +3053,8 @@ pub enum StaticStrings {
     ThreadTime,
     /// `time.thread_time_ns()` function.
     ThreadTimeNs,
+    /// Module name for `import threading`.
+    Threading,
     /// `datetime.time` class name.
     Time,
     /// `time.time_ns()` function.

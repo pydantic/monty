@@ -23,6 +23,7 @@ import random
 import re
 import statistics
 import sys
+import threading
 import time
 import tomllib
 import typing
@@ -293,6 +294,7 @@ IMPLEMENTED = [
             'variance',
         ],
     ),
+    ('threading', threading, ['Lock', 'RLock']),
     ('tomllib', tomllib, ['TOMLDecodeError', 'load', 'loads']),
     (
         'typing',

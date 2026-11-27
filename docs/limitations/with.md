@@ -1,9 +1,8 @@
 # `with` statement (context managers)
 
 Monty supports the `with` statement for built-in types that implement
-`__enter__` / `__exit__` (currently just file objects produced by `open()`,
-see [open.md](open.md)) **and for user-defined classes** that define the two
-dunders. Semantics follow CPython for the supported subset: `__enter__` runs
+`__enter__` / `__exit__` (file objects, decimal contexts and threading locks) **and for user-defined classes**
+that define the two dunders. Semantics follow CPython for the supported subset: `__enter__` runs
 before the body, `__exit__` runs on every exit path (normal completion,
 exception, `return`, `break`, `continue`), and a truthy return from
 `__exit__` suppresses an in-flight exception.
@@ -70,10 +69,11 @@ explicit `obj.__enter__()` call, which is an ordinary method call.
 
 ## Current implementers of the protocol
 
-| Type         | Notes                                                        |
-| ------------ | ------------------------------------------------------------ |
-| `open()`     | Closes the file on exit; see [open.md](open.md) for details. |
-| user classes | Class must define `__exit__` (and `__enter__`); see above.   |
+| Type            | Notes                                                              |
+| --------------- | ------------------------------------------------------------------ |
+| `open()`        | Closes the file on exit; see [open.md](open.md) for details.       |
+| threading locks | Release one acquisition on exit. See [threading.md](threading.md). |
+| user classes    | Class must define `__exit__` (and `__enter__`); see above.         |
 
 Adding a new context-manager-capable built-in takes three pieces on the
 type's `HeapRead` impl:

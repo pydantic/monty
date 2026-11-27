@@ -110,6 +110,7 @@ The following modules are present:
 | `statistics`    | [statistics.md](statistics.md)                    |
 | `sys`           | [sys.md](sys.md)                                  |
 | `textwrap`      | [modules.md](modules.md#vendored-cpython-modules) |
+| `threading`     | [threading.md](threading.md)                      |
 | `time`          | [time.md](time.md)                                |
 | `tomllib`       | [tomllib.md](tomllib.md)                          |
 | `typing`        | [typing.md](typing.md)                            |
@@ -123,7 +124,7 @@ raising `AttributeError` at runtime.
 
 Notably absent: `enum`, `contextlib`, `string`, `struct`, `operator`,
 `inspect`, `logging`, `traceback`, `uuid`, `urllib`.
-Some of those are absent by design — `socket`, `subprocess`, `multiprocessing`, `threading` and `ctypes` would breach
+Some of those are absent by design — `socket`, `subprocess`, `multiprocessing` and `ctypes` would breach
 the sandbox — and others are simply not implemented yet.
 
 The authoritative list is [modules.md](modules.md).
@@ -148,6 +149,8 @@ Each links to the page that owns it, which is where the full account lives:
     (`@=` is rejected at compile time).
     `__bool__` and the `__getattr__` family are ignored silently, so an instance is always truthy
     ([classes.md](classes.md)).
+- **Calling `acquire()` on a held `threading.Lock` raises `RuntimeError`.**
+    A finite timeout returns `False` immediately. See [threading.md](threading.md).
 - **There is no event loop inside the sandbox.** `async` / `await` work, and `asyncio` exposes `run`, `gather`,
     `create_task`, `wait`, `sleep`, `Task`, `InvalidStateError` and the three `wait` constants; everything else
     does not exist ([asyncio.md](asyncio.md)).

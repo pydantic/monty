@@ -17,7 +17,6 @@ use monty_types::{
     MontyTimeZone, OsFunctionCall, ProcessTime, ResourceTracker, SandboxTimeZone, SleepError, SleepMode, TimeCaller,
     local_wall_clock, sleep_duration, unix_seconds,
 };
-use num_traits::ToPrimitive;
 use smallvec::smallvec;
 
 use crate::{
@@ -299,7 +298,7 @@ fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let seconds = args
         .reject_kwargs("time.sleep", vm.heap)?
         .get_one_arg("time.sleep", vm.heap)?;
-    let result = sleep_seconds(&seconds, vm).and_then(|secs| {
+    let result = seconds_from_object(&seconds, vm).and_then(|secs| {
         sleep_duration(secs).map_err(|err| match err {
             SleepError::NotANumber => ExcType::invalid_nan(),
             SleepError::Negative => ExcType::value_error("sleep length must be non-negative"),
@@ -337,36 +336,14 @@ pub(crate) fn host_sleep(vm: &VM<'_>, delay: Duration) -> Option<HostSleep> {
     }
 }
 
-/// The float seconds an already-`__index__`ed value denotes; an integer too
-/// large for `f64` becomes infinity for the caller's range check to reject.
-fn index_seconds(index: &Value, vm: &VM<'_>) -> f64 {
-    match index {
-        Value::Int(n) => *n as f64,
-        Value::Bool(b) => f64::from(*b),
-        other => other
-            .as_long_int(vm)
-            .map_or(0.0, |n| n.to_f64().unwrap_or(f64::INFINITY)),
-    }
-}
-
-/// Converts a sleep length to float seconds the way CPython's
-/// `_PyTime_FromSecondsObject` does: a float passes straight through, and
-/// anything else goes through `__index__`, so a `str` — or a class with only
-/// `__float__` — is rejected as non-integral rather than as a non-number.
-///
-/// An integer too large for `f64` becomes infinity, which the caller's range
-/// check turns into the same `OverflowError` CPython raises for it.
-fn sleep_seconds(value: &Value, vm: &mut VM<'_>) -> RunResult<f64> {
-    match value {
-        Value::Float(f) => Ok(*f),
-        _ => match value.py_index_impl(vm)? {
-            Some(index) => {
-                let seconds = index_seconds(&index, vm);
-                index.drop_with(vm);
-                Ok(seconds)
-            }
-            None => Err(ExcType::type_error_not_integer_or_float(&value.py_type_name(vm))),
-        },
+/// CPython accepts floats directly and calls `__index__` for other duration arguments.
+pub(super) fn seconds_from_object(value: &Value, vm: &mut VM<'_>) -> RunResult<f64> {
+    if let Value::Float(seconds) = value {
+        Ok(*seconds)
+    } else if let Some(index) = value.py_index_impl(vm)? {
+        Value::narrow_index_to_i64(index, vm, ExcType::sleep_too_long).map(|seconds| seconds as f64)
+    } else {
+        Err(ExcType::type_error_not_integer_or_float(&value.py_type_name(vm)))
     }
 }
 

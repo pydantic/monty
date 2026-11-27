@@ -14,6 +14,7 @@ import random
 import re
 import statistics
 import sys
+import threading
 import tomllib
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -838,6 +839,16 @@ assert_type(get_type_hints(annotated, format=annotationlib.Format.FORWARDREF), d
 # === typing.cast ===
 assert_type(cast(int, 'x'), int)
 assert_type(cast('list[int]', get_type_hints(annotated)), list[int])
+
+# === threading ===
+
+with threading.Lock() as acquired:
+    check_bool(acquired)
+rlock = threading.RLock()
+check_bool(rlock.acquire(timeout=0.0))
+check_bool(rlock.locked())
+rlock.release()
+
 
 # === statistics ===
 

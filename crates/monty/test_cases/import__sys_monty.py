@@ -94,6 +94,7 @@ assert tuple(name for name in sys.builtin_module_names if name != 'gc') == (
     're',
     'statistics',
     'sys',
+    'threading',
     'time',
     'tomllib',
     'typing',
