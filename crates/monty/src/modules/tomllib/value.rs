@@ -19,7 +19,7 @@ use crate::{
     defer_drop_mut,
     exception_private::RunResult,
     heap::{ContainsHeap, DropWithContext},
-    types::{Dict, List, LongInt, TimeZone, date, datetime, str::allocate_string, time},
+    types::{Dict, List, LongInt, TimeZone, date, datetime, time},
     value::{VALUE_SIZE, Value},
 };
 
@@ -54,7 +54,7 @@ pub(super) fn table_into_value(table: TomlTable, vm: &mut VM<'_>) -> RunResult<V
                 } => match entries.next() {
                     Some((key, item)) => {
                         vm.heap.tracker.check_memory_time_every(dict.len())?;
-                        *pending_key = Some(allocate_string(key, vm.heap));
+                        *pending_key = Some(Value::from_str(key, vm.heap));
                         next = Step::Convert(item);
                         continue;
                     }
@@ -116,7 +116,7 @@ impl Frame {
                     pending_key: None,
                 }));
             }
-            TomlValue::Str(text) => allocate_string(text, vm.heap),
+            TomlValue::Str(text) => Value::from_str(text, vm.heap),
             TomlValue::Int(TomlInt::Small(value)) => Value::Int(value),
             TomlValue::Int(TomlInt::Big(value)) => LongInt::new(value).into_value(vm.heap),
             TomlValue::Float(value) => Value::Float(value),

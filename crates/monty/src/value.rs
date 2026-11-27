@@ -36,7 +36,7 @@ use crate::{
             PyInt, bigint_cmp_f64, bigint_cmp_i64, bigint_divmod_tuple, bigint_eq_f64, bigint_eq_i64, i64_cmp_f64,
         },
         namedtuple::cmp_item_seqs,
-        str::{InlineStr, PyStr, allocate_string},
+        str::{InlineStr, PyStr},
         tuple::allocate_tuple,
     },
 };
@@ -430,7 +430,7 @@ impl<'h> PyTrait<'h> for Value {
     /// values whose repr is cheap to produce:
     /// - singletons (`None`/`True`/`False`/`Ellipsis`) resolve to a pre-interned
     ///   `StringId`, so `repr`/`str`/`print`/f-strings allocate nothing at all;
-    /// - `int` formats via `itoa` straight into a right-sized `allocate_string`,
+    /// - `int` formats via `itoa` straight into a right-sized `Value::from_str`,
     ///   skipping the grow-then-shrink intermediate `String`.
     ///
     /// Every other variant takes the generic `py_repr_fmt` buffered path. `str`
@@ -447,12 +447,12 @@ impl<'h> PyTrait<'h> for Value {
             Self::NotImplemented => Ok(Self::InternString(
                 vm.interns.intern_static(StaticStrings::NotImplementedRepr),
             )),
-            Self::Int(i) => Ok(allocate_string(itoa::Buffer::new().format(*i), vm.heap)),
+            Self::Int(i) => Ok(Self::from_str(itoa::Buffer::new().format(*i), vm.heap)),
             _ => {
                 let mut s = String::new();
                 let mut heap_ids = LazyHeapSet::default();
                 self.py_repr_fmt(&mut s, vm, &mut heap_ids)?;
-                Ok(allocate_string(s, vm.heap))
+                Ok(Self::from_str(s, vm.heap))
             }
         }
     }
@@ -2075,7 +2075,7 @@ impl EitherStr {
         match self {
             Self::Interned(id) => Value::InternString(*id),
             Self::Inline(text) => Value::InlineString(*text),
-            Self::Heap(text) => allocate_string(text.as_str(), heap),
+            Self::Heap(text) => Value::from_str(text.as_str(), heap),
         }
     }
 
@@ -2384,10 +2384,7 @@ mod tests {
     use super::*;
     use crate::{
         run::{Program, SessionTables},
-        types::{
-            LongInt,
-            str::{allocate_string_no_interning, allocate_string_on_heap},
-        },
+        types::{LongInt, str::allocate_string_on_heap},
     };
 
     #[test]
@@ -2399,23 +2396,15 @@ mod tests {
     fn inline_string_capacity_is_fifteen_utf8_bytes() {
         let mut heap = Heap::new(16, ResourceTracker::default());
         for text in ["123456789012345", "ééééééabc"] {
-            for value in [
-                allocate_string(text.to_owned(), &heap),
-                allocate_string_no_interning(text.to_owned(), &heap),
-            ] {
-                assert!(matches!(value, Value::InlineString(_)));
-                assert_eq!(value.inline_str(), Some(text));
-                value.drop_with(&mut heap);
-            }
+            let value = Value::from_str(text.to_owned(), &heap);
+            assert!(matches!(value, Value::InlineString(_)));
+            assert_eq!(value.inline_str(), Some(text));
+            value.drop_with(&mut heap);
         }
         for text in ["1234567890123456", "ééééééabcd"] {
-            for value in [
-                allocate_string(text.to_owned(), &heap),
-                allocate_string_no_interning(text.to_owned(), &heap),
-            ] {
-                assert!(matches!(value, Value::Ref(_)));
-                value.drop_with(&mut heap);
-            }
+            let value = Value::from_str(text.to_owned(), &heap);
+            assert!(matches!(value, Value::Ref(_)));
+            value.drop_with(&mut heap);
         }
     }
 
@@ -2445,7 +2434,7 @@ mod tests {
     #[test]
     fn as_either_str_keeps_inline_text_inline() {
         let heap = Heap::new(16, ResourceTracker::default());
-        let value = allocate_string("abcdefghijklmno".to_owned(), &heap);
+        let value = Value::from_str("abcdefghijklmno".to_owned(), &heap);
 
         let name = value.as_either_str(&heap).unwrap();
         assert!(matches!(name, EitherStr::Inline(_)));
@@ -2457,7 +2446,7 @@ mod tests {
         let mut heap = Heap::new(16, ResourceTracker::default());
         let interns = Interns::default();
         let start = interns.intern_static(StaticStrings::Start);
-        let value = allocate_string("start".to_owned(), &heap);
+        let value = Value::from_str("start".to_owned(), &heap);
         let name = value.as_either_str(&heap).unwrap();
         assert!(name.matches(start, &interns));
         assert_eq!(name.string_id(), None);
@@ -2466,7 +2455,7 @@ mod tests {
         assert!(matches!(name.resolve_interned(&interns), EitherStr::Interned(id) if id == start));
         value.drop_with(&mut heap);
 
-        let value = allocate_string("zzq".to_owned(), &heap);
+        let value = Value::from_str("zzq".to_owned(), &heap);
         let name = value.as_either_str(&heap).unwrap().resolve_interned(&interns);
         assert!(matches!(name, EitherStr::Inline(_)));
         assert!(!name.matches(start, &interns));

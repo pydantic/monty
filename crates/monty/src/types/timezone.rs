@@ -24,7 +24,7 @@ use crate::{
     py_attrs::PyAttrs,
     types::{
         LazyHeapSet, PyTrait, Type, TypeRef,
-        str::{StringRepr, allocate_string},
+        str::StringRepr,
         timedelta,
         timedelta::{MICROSECONDS_PER_SECOND, SECONDS_PER_HOUR, SECONDS_PER_MINUTE, TimeDelta},
     },
@@ -331,7 +331,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeZone> {
     fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
         let tz = self.get(vm.heap);
         let s = tzname_string(tz.offset_seconds, tz.name.as_deref());
-        Ok(allocate_string(s, vm.heap))
+        Ok(Value::from_str(s, vm.heap))
     }
 }
 
@@ -367,7 +367,7 @@ impl<'heap> PyAttrs<'heap> for PyTimeZoneImpl {
         take_dt_arg("timezone.tzname", args, vm)?;
         let tz = value.get(vm.heap);
         let name = tzname_string(tz.offset_seconds, tz.name.as_deref());
-        Ok(allocate_string(name, vm.heap))
+        Ok(Value::from_str(name, vm.heap))
     }
 
     #[pymethod(Dst)]

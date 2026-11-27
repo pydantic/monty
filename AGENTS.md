@@ -542,7 +542,7 @@ builder.finish(vm.heap)
 
 `StringBuilder` also implements `fmt::Write`, so `write!(builder, ...)`, `format_args!`, and the existing `py_repr_fmt(f, ...)` machinery work against a tracker-protected buffer. `fmt::Error` is payload-free, so any `ResourceError` raised by a write is stashed on the builder and surfaced by `finish(heap)` — callers using `write!` don't need to thread the tracker error themselves.
 
-When the input *is* already bounded (e.g. `s.to_lowercase()`, slicing, `to_owned()` of an existing tracked string), passing a plain `String` / `&str` to `allocate_string` is fine — the result is bounded by a known multiple of an already-tracked input, so no amplification is possible.
+When the input *is* already bounded (e.g. `s.to_lowercase()`, slicing, `to_owned()` of an existing tracked string), passing a plain `String` / `&str` to `Value::from_str` is fine — the result is bounded by a known multiple of an already-tracked input, so no amplification is possible.
 
 ### Soft memory-limit checks — when and why
 

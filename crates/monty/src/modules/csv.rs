@@ -29,7 +29,6 @@ use crate::{
             write_method,
         },
         iter::collect_iterable,
-        str::allocate_string,
     },
     value::Value,
 };
@@ -86,7 +85,7 @@ pub fn create_module(vm: &mut VM<'_>) -> Module {
         Value::Builtin(Builtins::Type(Type::CsvError)),
         vm,
     );
-    module.set_attr(StaticStrings::DunderVersion, allocate_string("1.0", vm.heap), vm);
+    module.set_attr(StaticStrings::DunderVersion, Value::from_str("1.0", vm.heap), vm);
     // CPython's are classes; Monty exposes the resolved dialects, which `dialect=` accepts alike.
     for (name, dialect) in [
         (StaticStrings::Excel, Dialect::excel()),
@@ -252,7 +251,7 @@ fn call_list_dialects(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     args.check_zero_args("list_dialects", vm.heap)?;
     let names = DIALECT_NAMES
         .iter()
-        .map(|name| allocate_string(*name, vm.heap))
+        .map(|name| Value::from_str(*name, vm.heap))
         .collect();
     Ok(Value::allocate(List::new(names), vm.heap))
 }
@@ -476,7 +475,7 @@ fn check_extrasaction(extrasaction: &Value, vm: &VM<'_>) -> RunResult<Value> {
         .ok_or_else(|| ExcType::attribute_error(extrasaction.py_type_name(vm), "lower"))?;
     let lowered = text.to_lowercase();
     if lowered == "raise" || lowered == "ignore" {
-        Ok(allocate_string(lowered, vm.heap))
+        Ok(Value::from_str(lowered, vm.heap))
     } else {
         Err(ExcType::value_error(format!(
             "extrasaction ({text}) must be 'raise' or 'ignore'"

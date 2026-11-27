@@ -34,7 +34,6 @@ use crate::{
         instance::{class_defines, class_defines_not_none, class_name},
         list::List,
         set::{FrozenSet, Set},
-        str::allocate_string,
         time as time_type, timedelta as timedelta_type,
     },
     value::{EitherStr, Value},
@@ -934,7 +933,7 @@ fn import_node(
         MontyNode::BigInt(bi) => Ok(LongInt::new(bi).into_value(vm.heap)),
         MontyNode::Float(f) => Ok(Value::Float(f)),
         MontyNode::Complex(c) => Ok(Complex::new(c.real, c.imag).into_value(vm.heap)),
-        MontyNode::String(s) => Ok(allocate_string(s, vm.heap)),
+        MontyNode::String(s) => Ok(Value::from_str(s, vm.heap)),
         MontyNode::Bytes(b) => Ok(Value::allocate(Bytes::new(b), vm.heap)),
         MontyNode::List(ids) => {
             let values = clone_children(&ids, built, vm);

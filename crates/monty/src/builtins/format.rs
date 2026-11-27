@@ -5,7 +5,6 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::RunResult,
-    types::str::allocate_string,
     value::Value,
 };
 
@@ -37,5 +36,5 @@ pub fn builtin_format(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // tracked so copying it out is bounded.
     let spec = format_spec.as_ref().map(|spec| spec.as_str(vm).to_owned());
     let formatted = vm.format_runtime_value(value, 0, spec.as_deref())?;
-    Ok(allocate_string(formatted, vm.heap))
+    Ok(Value::from_str(formatted, vm.heap))
 }

@@ -6,7 +6,7 @@
 
 use std::mem;
 
-use super::{PyStr, allocate_string, copy_format_template};
+use super::{PyStr, copy_format_template};
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
     bytecode::VM,
@@ -70,7 +70,7 @@ pub(super) fn str_translate<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>)
         }
         out = builder.finish_raw()?;
     }
-    Ok(allocate_string(out, vm.heap))
+    Ok(Value::from_str(out, vm.heap))
 }
 
 /// Appends the translation of one character: nothing for `None`, a code point for an int, the text for a str.

@@ -41,7 +41,7 @@ use crate::{
     intern::StaticStrings,
     py_attrs::PyAttrs,
     py_value::PyValue,
-    types::{LazyHeapSet, PyTrait, Type, TypeRef, allocate_string, bytes::allocate_bytes, py_trait::PyObjectIdentity},
+    types::{LazyHeapSet, PyTrait, Type, TypeRef, bytes::allocate_bytes, py_trait::PyObjectIdentity},
     value::{EitherStr, Value},
 };
 
@@ -475,7 +475,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HashObject> {
         };
         let hash = self.get(vm.heap);
         let value = match name {
-            StaticStrings::Name => allocate_string(hash.algorithm.name(), vm.heap),
+            StaticStrings::Name => Value::from_str(hash.algorithm.name(), vm.heap),
             StaticStrings::DigestSize => size_value(hash.digest_size()),
             StaticStrings::BlockSize => size_value(hash.algorithm.block_size()),
             _ => match hash.algorithm.py_type().class_constant(attr, vm) {
@@ -595,7 +595,7 @@ impl<'heap> PyAttrs<'heap> for PyHashImpl {
         {
             args.check_zero_args(&method("hexdigest"), vm.heap)?;
             let digest = this.get(vm.heap).digest();
-            Ok(CallResult::Value(allocate_string(hex_string(&digest), vm.heap)))
+            Ok(CallResult::Value(Value::from_str(hex_string(&digest), vm.heap)))
         }
     }
 
@@ -650,7 +650,7 @@ impl<'heap> PyAttrs<'heap> for PyHashXofImpl {
             // The raw digest stays live while its hex is built.
             let length = xof_length(length, 3, vm)?;
             let digest = this.get(vm.heap).digest_xof(length, &vm.heap.tracker)?;
-            Ok(CallResult::Value(allocate_string(hex_string(&digest), vm.heap)))
+            Ok(CallResult::Value(Value::from_str(hex_string(&digest), vm.heap)))
         }
     }
 

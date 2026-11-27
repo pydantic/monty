@@ -10,7 +10,7 @@ use monty_types::{
     unstable::{ClassEq, ClassHash, ClassTypeNode},
 };
 
-use super::{Dict, LazyHeapSet, PyTrait, list::repr_should_truncate, str::allocate_string};
+use super::{Dict, LazyHeapSet, PyTrait, list::repr_should_truncate};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
@@ -545,7 +545,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClassType> {
         let attr_name = attr.as_str(vm.interns);
         if attr_name == "__name__" {
             let name = self.get(vm.heap).name(vm.interns).to_owned();
-            return Ok(Some(CallResult::Value(allocate_string(name, vm.heap))));
+            return Ok(Some(CallResult::Value(Value::from_str(name, vm.heap))));
         }
         match self.get(vm.heap).attrs.get_by_str(attr_name, vm.heap, vm.interns) {
             Some(value) => Ok(Some(CallResult::Value(value.clone_with_heap(vm.heap)))),

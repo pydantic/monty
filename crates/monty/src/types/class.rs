@@ -22,7 +22,7 @@ use crate::{
         HeapReader, heap_read_ref_as_field_mut,
     },
     intern::{Interns, StringId},
-    types::{Union, str::allocate_string, r#type::bind_init_subclass},
+    types::{Union, r#type::bind_init_subclass},
     value::{EitherStr, Value},
 };
 
@@ -314,7 +314,7 @@ pub(crate) fn class_getattr(class_id: HeapId, attr: &EitherStr, vm: &mut VM<'_>)
     };
     let attr_str = attr.as_str(vm.interns);
     Ok(Some(match attr_str {
-        "__name__" => allocate_string(class.name.as_str(vm.interns).to_owned(), vm.heap),
+        "__name__" => Value::from_str(class.name.as_str(vm.interns).to_owned(), vm.heap),
         "__bases__" => bases_tuple(class, vm.heap),
         "__mro__" => mro_tuple(class_id, vm.heap),
         // Annotations are per class: an inherited `__annotate__` would describe the base.

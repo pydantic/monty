@@ -14,7 +14,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, HeapId, HeapReadOutput},
     intern::StaticStrings,
-    types::{io::is_memory_stream, str::allocate_string},
+    types::io::is_memory_stream,
     value::{EitherStr, Value},
 };
 
@@ -48,7 +48,7 @@ impl FileTarget {
             }
             Self::Stream(id) => {
                 // An empty write runs the stream's type and closed checks and stores nothing.
-                let empty = allocate_string(String::new(), vm.heap);
+                let empty = Value::from_str(String::new(), vm.heap);
                 Self::call_stream(id, StaticStrings::Write, ArgValues::One(empty), vm)?.drop_with(vm);
                 Ok(Self::Stream(id))
             }
@@ -73,14 +73,14 @@ impl FileTarget {
                 file.write_text_discarding_count(vm, text)
             }
             Self::Stream(id) => {
-                let chunk = allocate_string(text, vm.heap);
+                let chunk = Value::from_str(text, vm.heap);
                 let returned = Self::call_stream(id, StaticStrings::Write, ArgValues::One(chunk), vm)?;
                 returned.drop_with(vm);
                 Ok(CallResult::Value(Value::None))
             }
             Self::Method(write) => {
                 defer_drop!(write, vm);
-                let chunk = allocate_string(text, vm.heap);
+                let chunk = Value::from_str(text, vm.heap);
                 let returned = vm.evaluate_function(write, ArgValues::One(chunk))?;
                 returned.drop_with(vm);
                 Ok(CallResult::Value(Value::None))

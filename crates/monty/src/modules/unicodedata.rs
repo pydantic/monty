@@ -36,7 +36,7 @@ use crate::{
     intern::StaticStrings,
     modules::ModuleFunctions,
     string_builder::StringBuilder,
-    types::{Module, str::allocate_string},
+    types::Module,
     value::Value,
 };
 
@@ -79,7 +79,7 @@ pub fn create_module(vm: &mut VM<'_>) -> Module {
         module.set_attr(*name, Value::ModuleFunction(ModuleFunctions::Unicodedata(*func)), vm);
     }
 
-    let version = allocate_string(UNIDATA_VERSION, vm.heap);
+    let version = Value::from_str(UNIDATA_VERSION, vm.heap);
     module.set_attr(StaticStrings::UnidataVersion, version, vm);
 
     module
@@ -107,7 +107,7 @@ fn uni_category(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("category", vm.heap)?;
     defer_drop!(value, vm);
     let c = single_char(value, "category", None, vm)?;
-    Ok(allocate_string(category_abbrev(get_general_category(c)), vm.heap))
+    Ok(Value::from_str(category_abbrev(get_general_category(c)), vm.heap))
 }
 
 /// `unicodedata.name(chr[, default])` — the Unicode name of a character.
@@ -125,7 +125,7 @@ fn uni_name(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let c = single_char(chr_val, "name", Some(1), vm)?;
 
     match unicode_names2::name(c) {
-        Some(name) => Ok(allocate_string(name.to_string(), vm.heap)),
+        Some(name) => Ok(Value::from_str(name.to_string(), vm.heap)),
         None => match default_guard.into_inner() {
             Some(default) => Ok(default),
             None => Err(SimpleException::new_msg(ExcType::ValueError, "no such name").into()),
@@ -142,7 +142,7 @@ fn uni_lookup(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(value, vm);
     let name = value.try_as_str(vm)?;
     match unicode_names2::character(name) {
-        Some(c) => Ok(allocate_string(c.to_string(), vm.heap)),
+        Some(c) => Ok(Value::from_str(c.to_string(), vm.heap)),
         None => Err(SimpleException::new_msg(ExcType::KeyError, format!("undefined character name '{name}'")).into()),
     }
 }

@@ -37,7 +37,7 @@ use crate::{
     },
     os_dispatch::PendingEffect,
     prepare::SnippetNames,
-    types::{Dict, List, Module, sequence::SequenceItems, str::allocate_string},
+    types::{Dict, List, Module, sequence::SequenceItems},
     value::Value,
     virtual_path::posix_join,
 };
@@ -337,7 +337,7 @@ impl VM<'_> {
         let Some(namespace) = namespace else {
             return Ok(());
         };
-        let key = allocate_string(leaf, self.heap);
+        let key = Value::from_str(leaf, self.heap);
         self.heap.inc_ref(module);
         let HeapReadOutput::Dict(dict) = self.heap.read(namespace) else {
             unreachable!("a file module's namespace is a dict")
@@ -404,17 +404,17 @@ impl VM<'_> {
             (None, None) => "",
         };
         let mut entries = vec![
-            ("__name__", allocate_string(name, self.heap)),
-            ("__file__", allocate_string(path, self.heap)),
-            ("__package__", allocate_string(package, self.heap)),
+            ("__name__", Value::from_str(name, self.heap)),
+            ("__file__", Value::from_str(path, self.heap)),
+            ("__package__", Value::from_str(package, self.heap)),
         ];
         if let Some(dir) = package_dir {
-            let dir = allocate_string(dir, self.heap);
+            let dir = Value::from_str(dir, self.heap);
             entries.push(("__path__", Value::allocate(List::new(vec![dir]), self.heap)));
         }
         let mut dict = Dict::new();
         for (key, value) in entries {
-            let key = allocate_string(key, self.heap);
+            let key = Value::from_str(key, self.heap);
             // Few string keys into an empty dict: hashing cannot fail and growth is negligible.
             dict.set_without_growth_check(key, value, self)
                 .expect("module dunder keys are strings, so hashing cannot fail");

@@ -87,7 +87,7 @@ pub(crate) use re_match::ReMatch;
 pub(crate) use re_pattern::{BoundedCompileError, RePattern};
 pub(crate) use set::{FrozenSet, Set, SetIterator};
 pub(crate) use slice::Slice;
-pub(crate) use str::{HeapStr, StringIterator, allocate_string};
+pub(crate) use str::{HeapStr, StringIterator};
 pub(crate) use timedelta::TimeDelta;
 pub(crate) use timezone::TimeZone;
 pub(crate) use tuple::{Tuple, TupleIterator, TupleVec, allocate_tuple};

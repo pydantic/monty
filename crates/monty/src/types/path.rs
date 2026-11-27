@@ -29,7 +29,7 @@ use crate::{
     types::{
         LazyHeapSet, List, PyTrait, Type, TypeRef, allocate_tuple,
         dir_scan::{glob_call, walk_call},
-        str::{StringRepr, allocate_string},
+        str::StringRepr,
     },
     value::{EitherStr, Value},
 };
@@ -555,7 +555,7 @@ impl Path {
     /// the interned fast path and the heap string slow path.
     pub(crate) fn getattr_by_static(&self, ss: StaticStrings, heap: &Heap) -> Option<Value> {
         let v = match ss {
-            StaticStrings::Name => allocate_string(self.name(), heap),
+            StaticStrings::Name => Value::from_str(self.name(), heap),
             StaticStrings::Parent => {
                 if let Some(parent) = self.parent() {
                     let parent_path = Self::new(parent.to_owned());
@@ -566,13 +566,13 @@ impl Path {
                     Value::allocate(same_path, heap)
                 }
             }
-            StaticStrings::Stem => allocate_string(self.stem(), heap),
-            StaticStrings::Suffix => allocate_string(self.suffix(), heap),
+            StaticStrings::Stem => Value::from_str(self.stem(), heap),
+            StaticStrings::Suffix => Value::from_str(self.suffix(), heap),
             StaticStrings::Suffixes => {
                 let suffixes = self.suffixes();
                 let mut items = Vec::with_capacity(suffixes.len());
                 for suffix in suffixes {
-                    items.push(allocate_string(suffix, heap));
+                    items.push(Value::from_str(suffix, heap));
                 }
                 Value::allocate(List::new(items), heap)
             }
@@ -580,13 +580,13 @@ impl Path {
                 let parts = self.parts();
                 let mut items = SmallVec::with_capacity(parts.len());
                 for part in parts {
-                    items.push(allocate_string(part, heap));
+                    items.push(Value::from_str(part, heap));
                 }
                 allocate_tuple(items, heap)
             }
-            StaticStrings::Anchor => allocate_string(self.anchor(), heap),
-            StaticStrings::Drive => allocate_string(self.drive(), heap),
-            StaticStrings::Root => allocate_string(self.root(), heap),
+            StaticStrings::Anchor => Value::from_str(self.anchor(), heap),
+            StaticStrings::Drive => Value::from_str(self.drive(), heap),
+            StaticStrings::Root => Value::from_str(self.root(), heap),
             _ => return None,
         };
         Some(v)
@@ -636,7 +636,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
     }
 
     fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
-        Ok(allocate_string(self.get(vm.heap).as_str(), vm.heap))
+        Ok(Value::from_str(self.get(vm.heap).as_str(), vm.heap))
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
@@ -822,7 +822,7 @@ impl<'heap> PyAttrs<'heap> for PyPathImpl {
         let method = StaticStrings::AsPosix;
         ({
             args.check_zero_args(method.into(), vm.heap)?;
-            Ok(allocate_string(this.get(vm.heap).as_posix(), vm.heap))
+            Ok(Value::from_str(this.get(vm.heap).as_posix(), vm.heap))
         })
         .map(CallResult::Value)
     }
@@ -832,7 +832,7 @@ impl<'heap> PyAttrs<'heap> for PyPathImpl {
         let method = StaticStrings::Fspath;
         ({
             args.check_zero_args(method.into(), vm.heap)?;
-            Ok(allocate_string(this.get(vm.heap).as_posix(), vm.heap))
+            Ok(Value::from_str(this.get(vm.heap).as_posix(), vm.heap))
         })
         .map(CallResult::Value)
     }

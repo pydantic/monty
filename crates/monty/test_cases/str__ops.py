@@ -104,6 +104,7 @@ assert 'x' * 0 == ''
 assert 'x' * -1 == ''
 assert '' * 5 == ''
 assert 'a' * 1 == 'a'
+assert 'aé' * 7 == 'aéaéaéaéaéaéaé'
 
 # Counts past `Py_ssize_t`, and results past it in bytes, raise rather than panic
 assert 'é' * 3 == 'ééé'

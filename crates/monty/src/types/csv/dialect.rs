@@ -12,7 +12,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{ContainsHeap, DropGuard, DropWithContext},
     intern::StaticStrings,
-    types::{CsvObject, PyTrait, Type, str::allocate_string},
+    types::{CsvObject, PyTrait, Type},
     value::{EitherStr, Value},
 };
 
@@ -241,22 +241,17 @@ impl Dialect {
     /// The value of a `_csv.Dialect` attribute, or `None` for a name that is not one.
     pub(crate) fn attr(&self, attr: StaticStrings, vm: &VM<'_>) -> Option<Value> {
         Some(match attr {
-            StaticStrings::Delimiter => char_value(self.delimiter, vm),
-            StaticStrings::Quotechar => self.quotechar.map_or(Value::None, |c| char_value(c, vm)),
-            StaticStrings::Escapechar => self.escapechar.map_or(Value::None, |c| char_value(c, vm)),
+            StaticStrings::Delimiter => Value::from_char(self.delimiter, vm.heap),
+            StaticStrings::Quotechar => self.quotechar.map_or(Value::None, |c| Value::from_char(c, vm.heap)),
+            StaticStrings::Escapechar => self.escapechar.map_or(Value::None, |c| Value::from_char(c, vm.heap)),
             StaticStrings::Doublequote => Value::Bool(self.doublequote),
             StaticStrings::Skipinitialspace => Value::Bool(self.skipinitialspace),
-            StaticStrings::Lineterminator => allocate_string(self.lineterminator.clone(), vm.heap),
+            StaticStrings::Lineterminator => Value::from_str(self.lineterminator.as_str(), vm.heap),
             StaticStrings::Quoting => Value::Int(self.quoting.as_int()),
             StaticStrings::Strict => Value::Bool(self.strict),
             _ => return None,
         })
     }
-}
-
-/// A single-character `str` value.
-fn char_value(c: char, vm: &VM<'_>) -> Value {
-    allocate_string(c.to_string(), vm.heap)
 }
 
 /// Where unset parameters come from: the defaults, a resolved dialect, or an

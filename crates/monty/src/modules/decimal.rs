@@ -12,7 +12,7 @@ use crate::{
     intern::StaticStrings,
     modules::ModuleFunctions,
     types::{
-        Module, NamedTupleClass, Type, allocate_string,
+        Module, NamedTupleClass, Type,
         decimal::{
             context::{MAX_EMAX, MAX_PREC, MIN_EMIN, MIN_ETINY, Rounding},
             py_context::{self, IEEE_CONTEXT_MAX_BITS, Template},
@@ -90,7 +90,7 @@ pub fn create_module(vm: &mut VM<'_>) -> Module {
         module.set_attr(name, Value::Builtin(Builtins::Type(Type::from(exc_type))), vm);
     }
     for (name, rounding) in ROUNDING_NAMES.into_iter().zip(Rounding::ALL) {
-        module.set_attr(name, allocate_string(rounding.name(), vm.heap), vm);
+        module.set_attr(name, Value::from_str(rounding.name(), vm.heap), vm);
     }
     for (name, template) in [
         (StaticStrings::DefaultContext, Template::Default),
@@ -112,10 +112,10 @@ pub fn create_module(vm: &mut VM<'_>) -> Module {
     }
     module.set_attr(StaticStrings::HaveThreads, Value::Bool(true), vm);
     module.set_attr(StaticStrings::HaveContextvar, Value::Bool(true), vm);
-    module.set_attr(StaticStrings::DunderVersion, allocate_string("1.70", vm.heap), vm);
+    module.set_attr(StaticStrings::DunderVersion, Value::from_str("1.70", vm.heap), vm);
     module.set_attr(
         StaticStrings::DunderLibmpdecVersion,
-        allocate_string("4.0.1", vm.heap),
+        Value::from_str("4.0.1", vm.heap),
         vm,
     );
     let decimal_tuple = decimal_tuple_class(vm);

@@ -38,7 +38,7 @@ use std::{fmt, iter, mem};
 
 use monty_types::{ResourceError, ResourceTracker};
 
-use crate::{exception_private::RunResult, heap::Heap, types::str::allocate_string, value::Value};
+use crate::{exception_private::RunResult, heap::Heap, value::Value};
 
 /// Resource-tracked builder for a `String`.
 ///
@@ -146,7 +146,7 @@ impl<'t> StringBuilder<'t> {
         if let Some(e) = self.pending_error.take() {
             return Err(e.into());
         }
-        Ok(allocate_string(mem::take(&mut self.inner), heap))
+        Ok(Value::from_str(mem::take(&mut self.inner), heap))
     }
 
     /// Consumes the builder and returns the raw `String`.

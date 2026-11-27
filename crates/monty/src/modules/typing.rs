@@ -30,8 +30,7 @@ use crate::{
     intern::{FunctionId, StaticStrings},
     modules::ModuleFunctions,
     types::{
-        LazyHeapSet, Module, PyTrait, Type, allocate_string, allocate_tuple, forward_ref::format_code,
-        generic_alias::repr_type_arg,
+        LazyHeapSet, Module, PyTrait, Type, allocate_tuple, forward_ref::format_code, generic_alias::repr_type_arg,
     },
     value::{Marker, Value},
 };
@@ -728,7 +727,7 @@ pub(crate) fn call_type_repr(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Valu
     defer_drop!(value, vm);
     let mut text = String::new();
     repr_type_arg(value, &mut text, vm, &mut LazyHeapSet::default())?;
-    Ok(allocate_string(text, vm.heap))
+    Ok(Value::from_str(text, vm.heap))
 }
 
 /// Where an object's annotations come from.

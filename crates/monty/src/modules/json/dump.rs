@@ -17,7 +17,7 @@ use crate::{
     py_value::PyValue,
     sorting::{apply_permutation, sort_indices},
     string_builder::StringBuilder,
-    types::{Dict, PyTrait, TypeRef, sequence::SequenceItems, str::allocate_string},
+    types::{Dict, PyTrait, TypeRef, sequence::SequenceItems},
     value::Value,
 };
 
@@ -198,7 +198,7 @@ pub(super) fn call_dumps(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(kwargs, vm);
     let config = JsonDumpsConfig::from_kwargs(kwargs, EncoderChecks::for_call(obj, false, vm), vm)?;
     let output = encode(obj, &config, &kwargs.default_fn, vm)?;
-    Ok(allocate_string(output, vm.heap))
+    Ok(Value::from_str(output, vm.heap))
 }
 
 /// Implements `json.dump(obj, fp, **kwargs)` with the same keyword subset as

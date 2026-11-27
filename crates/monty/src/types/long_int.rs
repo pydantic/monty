@@ -38,7 +38,6 @@ use crate::{
         LazyHeapSet, PyTrait, Type, TypeRef,
         numeric::{round_bigint, round_digits, round_int},
         py_trait::PyObjectIdentity,
-        str::allocate_string,
         tuple::allocate_tuple,
     },
     value::{EitherStr, Value, eq_bigint, float_pow_value},
@@ -865,7 +864,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
     fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
         let value = self.get(vm.heap);
         value.check_str_digits_limit()?;
-        Ok(allocate_string(value.to_string(), vm.heap))
+        Ok(Value::from_str(value.to_string(), vm.heap))
     }
 
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {

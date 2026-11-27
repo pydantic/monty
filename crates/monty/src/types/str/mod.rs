@@ -37,7 +37,7 @@ use crate::{
     intern::{Interns, StaticStrings, StringId},
     percent_format::percent_format,
     py_attrs::PyAttrs,
-    resource_checks::{check_repeat_size, check_replace_size, collect_checked, push_checked, repeated_len},
+    resource_checks::{check_estimated_size, check_replace_size, collect_checked, push_checked, repeated_len},
     str_format::str_format,
     string_builder::StringBuilder,
     types::{
@@ -97,7 +97,7 @@ impl<'h> PyStr<'h> {
         let errors = ctor_str_arg(errors.as_ref(), "strict", vm)?;
         let codec = Codec::find(encoding).ok_or_else(|| ExcType::lookup_error_unknown_encoding(encoding))?;
         let s = codec.decode(bytes, errors)?;
-        Ok(allocate_string(s, vm.heap))
+        Ok(Value::from_str(s, vm.heap))
     }
 
     /// Extracts a string without copying its contents.
@@ -326,7 +326,7 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
         let Some(count) = other.py_value(vm).repeat_count(vm)? else {
             return Ok(None);
         };
-        repeat_str(self, count, vm)
+        repeat_str(self, count, vm).map(Some)
     }
 
     fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -392,40 +392,83 @@ fn ctor_str_arg<'a>(arg: Option<&'a Value>, default: &'a str, vm: &'a VM<'_>) ->
     }
 }
 
-/// Creates a string value, reusing reserved IDs for empty strings and ASCII characters.
-/// Moves owned text into storage when possible.
-pub fn allocate_string(s: impl AsRef<str> + Into<Box<str>>, heap: &Heap) -> Value {
-    allocate_string_with_ascii(s, None, heap)
-}
+impl Value {
+    /// Creates a Python string from Rust text.
+    ///
+    /// Zero- and one-byte inputs use reserved `InternString` IDs directly, with no interner access.
+    /// Inputs of 2–15 bytes use `InlineString`.
+    /// Longer inputs use `HeapStr`, moving owned text into storage when possible.
+    pub(crate) fn from_str(text: impl AsRef<str> + Into<Box<str>>, heap: &Heap) -> Self {
+        Self::from_str_with_ascii(text, None, heap)
+    }
 
-/// `Some` supplies exact ASCII status; `None` derives it from the resulting text.
-fn allocate_string_with_ascii(s: impl AsRef<str> + Into<Box<str>>, ascii: Option<bool>, heap: &Heap) -> Value {
-    let bytes = s.as_ref().as_bytes();
-    match bytes.len() {
-        0 => Value::InternString(StringId::EMPTY),
-        1 => Value::InternString(StringId::from_ascii(bytes[0])),
-        2..=InlineStr::CAPACITY => {
-            let text = s.as_ref();
-            let inline = match ascii {
-                Some(ascii) => InlineStr::with_ascii(text, ascii),
-                None => InlineStr::new(text),
-            };
-            Value::InlineString(inline.expect("length checked above"))
+    /// Uses the caller's ASCII status when known.
+    fn from_str_with_ascii(text: impl AsRef<str> + Into<Box<str>>, ascii: Option<bool>, heap: &Heap) -> Self {
+        let bytes = text.as_ref().as_bytes();
+        match bytes.len() {
+            0 => Self::InternString(StringId::EMPTY),
+            1 => Self::InternString(StringId::from_ascii(bytes[0])),
+            2..=InlineStr::CAPACITY => {
+                let text = text.as_ref();
+                let inline = InlineStr::with_ascii(text, ascii).expect("length checked above");
+                Self::InlineString(inline)
+            }
+            _ => match ascii {
+                Some(ascii) => Self::allocate(HeapStr::with_ascii(ascii, text.into()), heap),
+                None => allocate_string_on_heap(text, heap),
+            },
         }
-        _ => match ascii {
-            Some(ascii) => Value::allocate(HeapStr::with_ascii(ascii, s.into()), heap),
-            None => allocate_string_on_heap(s, heap),
-        },
     }
-}
 
-/// Creates a string value without checking for reserved string IDs.
-/// The caller must know the text is longer than one byte; otherwise use [`allocate_string`].
-pub fn allocate_string_no_interning(s: impl AsRef<str> + Into<Box<str>>, heap: &Heap) -> Value {
-    if (2..=InlineStr::CAPACITY).contains(&s.as_ref().len()) {
-        return Value::InlineString(InlineStr::new(s.as_ref()).expect("length checked above"));
+    /// Encodes one Unicode scalar on the stack and creates a Python string.
+    pub(crate) fn from_char(character: char, heap: &Heap) -> Self {
+        let mut utf8 = [0; 4];
+        let text: &str = character.encode_utf8(&mut utf8);
+        Self::from_str(text, heap)
     }
-    allocate_string_on_heap(s, heap)
+
+    /// Concatenates fragments into a stack buffer and grows on the heap if needed.
+    fn from_str_fragments<'a>(
+        fragments: impl IntoIterator<Item = &'a str>,
+        ascii: Option<bool>,
+        heap: &Heap,
+    ) -> RunResult<Self> {
+        let mut fragments = fragments.into_iter().fuse();
+        let mut bytes = [0; InlineStr::CAPACITY];
+        let mut len = 0;
+        let mut spill = None;
+        for fragment in fragments.by_ref() {
+            let end = len + fragment.len();
+            let Some(target) = bytes.get_mut(len..end) else {
+                spill = Some(fragment);
+                break;
+            };
+            target.copy_from_slice(fragment.as_bytes());
+            len = end;
+        }
+
+        let prefix = str::from_utf8(&bytes[..len]).expect("copied whole UTF-8 fragments");
+        let Some(fragment) = spill else {
+            return Ok(Self::from_str_with_ascii(prefix, ascii, heap));
+        };
+
+        // Reserve room for both operands in a two-string concatenation.
+        let next = fragments.next().unwrap_or_default();
+        let capacity = len.saturating_add(fragment.len()).saturating_add(next.len());
+        check_estimated_size(capacity, &heap.tracker)?;
+        let mut text = String::new();
+        text.try_reserve_exact(capacity)
+            .map_err(|_| ExcType::allocation_too_large())?;
+        text.push_str(prefix);
+        text.push_str(fragment);
+        text.push_str(next);
+
+        let mut builder = StringBuilder::from_existing(text, &heap.tracker);
+        for fragment in fragments {
+            builder.push_str(fragment)?;
+        }
+        Ok(Self::from_str_with_ascii(builder.finish_raw()?, ascii, heap))
+    }
 }
 
 /// Forces heap storage even for short strings.
@@ -433,63 +476,31 @@ pub fn allocate_string_on_heap(s: impl Into<Box<str>>, heap: &Heap) -> Value {
     Value::allocate(HeapStr::new(s.into()), heap)
 }
 
-/// Preflights the repeated string allocation.
-///
-/// Raises CPython's `OverflowError` past `isize::MAX` bytes and `MemoryError` when the
-/// allocator refuses, where `str::repeat` would panic or abort with no memory limit set.
-fn repeat_str<'h>(value: &PyStr<'h>, count: usize, vm: &VM<'h>) -> RunResult<Option<Value>> {
+/// Repeats a string after checking its total length and allocation size.
+fn repeat_str<'h>(value: &PyStr<'h>, count: usize, vm: &VM<'h>) -> RunResult<Value> {
     let text = value.as_str(vm);
     let total = repeated_len(text.len(), count, 1).map_err(|_| ExcType::repeated_string_too_long())?;
     if total == 0 {
-        return Ok(Some(Value::InternString(StringId::EMPTY)));
+        return Ok(Value::InternString(StringId::EMPTY));
     }
     if total <= InlineStr::CAPACITY {
-        let ascii = value.is_ascii(vm);
-        return Ok(Some(InlineStr::allocate_fragments(iter::repeat_n(text, count), ascii)));
+        return Value::from_str_fragments(iter::repeat_n(text, count), None, vm.heap);
     }
 
-    check_repeat_size(text.len(), count, &vm.heap.tracker)?;
+    check_estimated_size(total, &vm.heap.tracker)?;
     let mut repeated = String::new();
     repeated
         .try_reserve_exact(total)
         .map_err(|_| ExcType::allocation_too_large())?;
-    // Each pass appends whole copies, so every cut is a char boundary.
     repeated.push_str(text);
+    // Each pass copies whole repetitions, so every cut is a UTF-8 boundary.
     while repeated.len() < total {
         repeated.extend_from_within(..repeated.len().min(total - repeated.len()));
     }
-    let ascii = value.is_ascii(vm);
-    Ok(Some(Value::allocate(
-        HeapStr::with_ascii(ascii, repeated.into_boxed_str()),
-        vm.heap,
-    )))
-}
 
-/// Creates a single-character string without allocating.
-pub fn allocate_char(c: char) -> Value {
-    if c.is_ascii() {
-        Value::InternString(StringId::from_ascii(c as u8))
-    } else {
-        let mut bytes = [0; 4];
-        let text = c.encode_utf8(&mut bytes);
-        Value::InlineString(InlineStr::with_ascii(text, false).expect("a UTF-8 character fits inline"))
-    }
-}
-
-/// Concatenates two strings inline or allocates a buffer sized for both inputs.
-fn concat_allocate_str(a: &str, b: &str, ascii: bool, heap: &Heap) -> Result<Value, ResourceError> {
-    let result_len = a.len().saturating_add(b.len());
-    if result_len <= InlineStr::CAPACITY {
-        return Ok(InlineStr::allocate_fragments([a, b], ascii));
-    }
-
-    check_repeat_size(result_len, 1, &heap.tracker)?;
-    let mut concat = String::with_capacity(result_len);
-    concat.push_str(a);
-    concat.push_str(b);
     Ok(Value::allocate(
-        HeapStr::with_ascii(ascii, concat.into_boxed_str()),
-        heap,
+        HeapStr::with_ascii(value.is_ascii(vm), repeated.into_boxed_str()),
+        vm.heap,
     ))
 }
 
@@ -499,7 +510,7 @@ fn str_add(s: &str, ascii: bool, other: &Value, vm: &VM<'_>) -> RunResult<Option
         Some(other) => {
             let text = other.as_str(vm);
             let ascii = ascii && other.is_ascii(vm);
-            Ok(Some(concat_allocate_str(s, text, ascii, vm.heap)?))
+            Value::from_str_fragments([s, text], Some(ascii), vm.heap).map(Some)
         }
         None => Ok(None),
     }
@@ -515,7 +526,7 @@ fn str_getitem<'h>(s: &PyStr<'h>, key: &Value, vm: &mut VM<'h>) -> RunResult<Val
         if slice.step.unwrap_or(1) == 1 {
             let (start, stop, _) = slice.indices(length)?;
             if start >= stop {
-                return Ok(allocate_string("", vm.heap));
+                return Ok(Value::from_str("", vm.heap));
             }
             let start = usize::try_from(start).expect("normalized slice start");
             let stop = usize::try_from(stop).expect("normalized slice stop");
@@ -523,7 +534,7 @@ fn str_getitem<'h>(s: &PyStr<'h>, key: &Value, vm: &mut VM<'h>) -> RunResult<Val
             let result = &text[start.byte..stop];
             // Contiguous slices copy UTF-8 directly, without collecting characters.
             let result_ascii = (ascii || result.len() == text.len()).then_some(ascii);
-            return Ok(allocate_string_with_ascii(result, result_ascii, vm.heap));
+            return Ok(Value::from_str_with_ascii(result, result_ascii, vm.heap));
         }
         let result: Box<str> = if ascii {
             // Byte iterators count and skip in O(1), unlike `chars()`.
@@ -532,11 +543,11 @@ fn str_getitem<'h>(s: &PyStr<'h>, key: &Value, vm: &mut VM<'h>) -> RunResult<Val
             slice_collect_iterator(vm, slice, text.chars(), |c| c)?
         };
         let result_ascii = (ascii || result.len() == text.len()).then_some(ascii);
-        Ok(allocate_string_with_ascii(result, result_ascii, vm.heap))
+        Ok(Value::from_str_with_ascii(result, result_ascii, vm.heap))
     } else {
         let index = key.as_index(vm, Type::Str)?;
-        let c = s.character_at(index, vm)?.ok_or_else(ExcType::str_index_error)?;
-        Ok(allocate_char(c))
+        let character = s.character_at(index, vm)?.ok_or_else(ExcType::str_index_error)?;
+        Ok(Value::from_char(character, vm.heap))
     }
 }
 
@@ -816,7 +827,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
             Some(c) => s.trim_matches(|ch| c.contains(ch)).to_owned(),
             None => s.trim_matches(is_space).to_owned(),
         };
-        Ok(allocate_string(result, vm.heap))
+        Ok(Value::from_str(result, vm.heap))
     }
 
     /// Implements Python's `str.lstrip(chars?)` method.
@@ -830,7 +841,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
             Some(c) => s.trim_start_matches(|ch| c.contains(ch)).to_owned(),
             None => s.trim_start_matches(is_space).to_owned(),
         };
-        Ok(allocate_string(result, vm.heap))
+        Ok(Value::from_str(result, vm.heap))
     }
 
     /// Implements Python's `str.rstrip(chars?)` method.
@@ -844,7 +855,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
             Some(c) => s.trim_end_matches(|ch| c.contains(ch)).to_owned(),
             None => s.trim_end_matches(is_space).to_owned(),
         };
-        Ok(allocate_string(result, vm.heap))
+        Ok(Value::from_str(result, vm.heap))
     }
 
     /// Implements Python's `str.removeprefix(prefix)` method.
@@ -859,7 +870,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
 
         let s = s.as_str(vm);
         let result = s.strip_prefix(&prefix).unwrap_or(s).to_owned();
-        Ok(allocate_string(result, vm.heap))
+        Ok(Value::from_str(result, vm.heap))
     }
 
     /// Implements Python's `str.removesuffix(suffix)` method.
@@ -874,7 +885,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
 
         let s = s.as_str(vm);
         let result = s.strip_suffix(&suffix).unwrap_or(s).to_owned();
-        Ok(allocate_string(result, vm.heap))
+        Ok(Value::from_str(result, vm.heap))
     }
 
     /// Implements Python's `str.split(sep?, maxsplit?)` method.
@@ -923,7 +934,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
         *list_items = Vec::with_capacity(parts.len());
         for (i, part) in parts.into_iter().enumerate() {
             vm.heap.tracker.check_memory_time_every(i)?;
-            list_items.push(allocate_string(part, vm.heap));
+            list_items.push(Value::from_str(part, vm.heap));
         }
 
         let (list_items, vm) = items_guard.into_parts();
@@ -982,7 +993,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
         *list_items = Vec::with_capacity(parts.len());
         for (i, part) in parts.into_iter().enumerate() {
             vm.heap.tracker.check_memory_time_every(i)?;
-            list_items.push(allocate_string(part, vm.heap));
+            list_items.push(Value::from_str(part, vm.heap));
         }
 
         let (list_items, vm) = items_guard.into_parts();
@@ -1058,7 +1069,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
             vm.heap
                 .tracker
                 .check_growth(lines.len(), lines.capacity(), VALUE_SIZE)?;
-            lines.push(allocate_string(line, vm.heap));
+            lines.push(Value::from_str(line, vm.heap));
 
             start = end;
         }
@@ -1088,9 +1099,9 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
             None => (s, "", ""),
         };
 
-        let before_val = allocate_string(before, vm.heap);
-        let sep_val = allocate_string(sep_found, vm.heap);
-        let after_val = allocate_string(after, vm.heap);
+        let before_val = Value::from_str(before, vm.heap);
+        let sep_val = Value::from_str(sep_found, vm.heap);
+        let after_val = Value::from_str(after, vm.heap);
 
         Ok(super::allocate_tuple(
             smallvec![before_val, sep_val, after_val],
@@ -1118,9 +1129,9 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
             None => ("", "", s),
         };
 
-        let before_val = allocate_string(before, vm.heap);
-        let sep_val = allocate_string(sep_found, vm.heap);
-        let after_val = allocate_string(after, vm.heap);
+        let before_val = Value::from_str(before, vm.heap);
+        let sep_val = Value::from_str(sep_found, vm.heap);
+        let after_val = Value::from_str(after, vm.heap);
 
         Ok(super::allocate_tuple(
             smallvec![before_val, sep_val, after_val],
@@ -1152,7 +1163,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
             s.replacen(old, new, n)
         };
 
-        Ok(allocate_string(result, vm.heap))
+        Ok(Value::from_str(result, vm.heap))
     }
 
     /// Implements Python's `str.center(width, fillchar?)` method.
@@ -1166,7 +1177,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
         let len = bytecount::num_chars(s.as_bytes());
 
         if width <= len {
-            Ok(allocate_string(s, vm.heap))
+            Ok(Value::from_str(s, vm.heap))
         } else {
             // Exact byte capacity: the original string (`s.len()` bytes, possibly
             // multibyte) plus `pad` fillchars of `fillchar.len_utf8()` bytes each.
@@ -1198,7 +1209,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
         let len = bytecount::num_chars(s.as_bytes());
 
         if width <= len {
-            Ok(allocate_string(s, vm.heap))
+            Ok(Value::from_str(s, vm.heap))
         } else {
             let pad = width - len;
             let capacity = s.len().saturating_add(pad.saturating_mul(fillchar.len_utf8()));
@@ -1221,7 +1232,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
         let len = bytecount::num_chars(s.as_bytes());
 
         if width <= len {
-            Ok(allocate_string(s, vm.heap))
+            Ok(Value::from_str(s, vm.heap))
         } else {
             let pad = width - len;
             let capacity = s.len().saturating_add(pad.saturating_mul(fillchar.len_utf8()));
@@ -1254,7 +1265,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
         let len = bytecount::num_chars(s.as_bytes());
 
         if width <= len {
-            Ok(allocate_string(s, vm.heap))
+            Ok(Value::from_str(s, vm.heap))
         } else {
             // Exact byte capacity: zfill pads with ASCII '0' (1 byte each), so the
             // result is `s.len() + pad` bytes — `s.len()` (possibly multibyte)
@@ -1432,7 +1443,7 @@ fn str_join<'h>(separator: &PyStr<'h>, iterable: Value, vm: &mut VM<'h>) -> RunR
             HeapStr::with_char_len(result.into_boxed_str(), char_len),
             vm.heap,
         )),
-        _ => Ok(allocate_string(result, vm.heap)),
+        _ => Ok(Value::from_str(result, vm.heap)),
     }
 }
 
@@ -1442,12 +1453,12 @@ fn str_join<'h>(separator: &PyStr<'h>, iterable: Value, vm: &mut VM<'h>) -> RunR
 
 /// Implements Python's `str.lower()` method.
 fn str_lower(s: &str, vm: &VM<'_>) -> RunResult<Value> {
-    Ok(allocate_string(lowercase(s, &vm.heap.tracker)?, vm.heap))
+    Ok(Value::from_str(lowercase(s, &vm.heap.tracker)?, vm.heap))
 }
 
 /// Implements Python's `str.upper()` method.
 fn str_upper(s: &str, vm: &VM<'_>) -> RunResult<Value> {
-    Ok(allocate_string(uppercase(s, &vm.heap.tracker)?, vm.heap))
+    Ok(Value::from_str(uppercase(s, &vm.heap.tracker)?, vm.heap))
 }
 
 /// Implements Python's `str.capitalize()` method.
@@ -1461,7 +1472,7 @@ fn str_capitalize(s: &str, vm: &VM<'_>) -> RunResult<Value> {
             type_record(c).push_lower(out, s, i, c);
         }
     })?;
-    Ok(allocate_string(result, vm.heap))
+    Ok(Value::from_str(result, vm.heap))
 }
 
 /// Implements Python's `str.title()` method.
@@ -1478,7 +1489,7 @@ fn str_title(s: &str, vm: &VM<'_>) -> RunResult<Value> {
         }
         prev_is_cased = record.is_cased();
     })?;
-    Ok(allocate_string(result, vm.heap))
+    Ok(Value::from_str(result, vm.heap))
 }
 
 /// Implements Python's `str.swapcase()` method.
@@ -1495,14 +1506,14 @@ fn str_swapcase(s: &str, vm: &VM<'_>) -> RunResult<Value> {
             out.push(c);
         }
     })?;
-    Ok(allocate_string(result, vm.heap))
+    Ok(Value::from_str(result, vm.heap))
 }
 
 /// Implements Python's `str.casefold()` method.
 ///
 /// Uses full default Unicode folding without normalization or locale tailoring.
 fn str_casefold(s: &str, vm: &VM<'_>) -> RunResult<Value> {
-    Ok(allocate_string(casefold(s, &vm.heap.tracker)?, vm.heap))
+    Ok(Value::from_str(casefold(s, &vm.heap.tracker)?, vm.heap))
 }
 
 // =============================================================================
@@ -2142,6 +2153,26 @@ mod tests {
     }
 
     #[test]
+    fn string_fragments_across_storage_boundary() {
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        let interns = Interns::default();
+        for (fragments, expected) in [
+            (["abcdefghijklm", "é", "", ""], "abcdefghijklmé"),
+            (["abcdefghijklm", "é", "x", ""], "abcdefghijklméx"),
+            (["abcdefghijklmnop", "é", "x", "y"], "abcdefghijklmnopéxy"),
+        ] {
+            let mut fragments = fragments.into_iter();
+            let value = Value::from_str_fragments(&mut fragments, None, &heap).unwrap();
+            assert_eq!(
+                matches!(value, Value::InlineString(_)),
+                expected.len() <= InlineStr::CAPACITY
+            );
+            assert_eq!(value.as_either_str(&heap).unwrap().as_str(&interns), expected);
+            value.drop_with(&mut heap);
+        }
+    }
+
+    #[test]
     fn heap_addition_preserves_metadata_across_storage_kinds() {
         let mut heap = Heap::new(16, ResourceTracker::default());
         let mut tables = SessionTables::default();
@@ -2157,7 +2188,7 @@ mod tests {
             ] {
                 let left = allocate_string_on_heap(left, vm.heap);
                 defer_drop!(left, vm);
-                let right = allocate_string(right, vm.heap);
+                let right = Value::from_str(right, vm.heap);
                 defer_drop!(right, vm);
                 let left = PyStr::from_value(left, vm).unwrap();
                 let result = left.py_add_impl(right, vm).unwrap().unwrap();
@@ -2310,16 +2341,17 @@ mod tests {
 
     #[test]
     fn characters_use_reserved_or_inline_storage() {
+        let heap = Heap::new(16, ResourceTracker::default());
         for character in ['\0', 'a', '\x7f'] {
             assert!(
-                matches!(allocate_char(character), Value::InternString(id) if id == StringId::from_ascii(character as u8))
+                matches!(Value::from_char(character, &heap), Value::InternString(id) if id == StringId::from_ascii(character as u8))
             );
         }
         for character in ['é', '中', '🐍'] {
-            let Value::InlineString(text) = allocate_char(character) else {
+            let Value::InlineString(value) = Value::from_char(character, &heap) else {
                 unreachable!("non-ASCII characters fit inline")
             };
-            assert_eq!(text.as_str(), character.to_string());
+            assert_eq!(value.as_str(), character.to_string());
         }
     }
 
@@ -2395,7 +2427,7 @@ mod tests {
             let vm = &mut VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
             let values = vec![
                 Value::InternString(StringId::from_ascii(b'a')),
-                allocate_string("abcdefghijklmno", vm.heap),
+                Value::from_str("abcdefghijklmno", vm.heap),
                 allocate_string_on_heap("abcdefghijklmno", vm.heap),
             ];
             defer_drop!(values, vm);

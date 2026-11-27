@@ -30,8 +30,7 @@ use crate::{
     py_attrs::PyAttrs,
     resource_checks::check_estimated_size,
     types::{
-        LazyHeapSet, List, PyTrait, ReMatch, Type, TypeRef, allocate_tuple, re_syntax,
-        str::{allocate_string, string_repr_fmt},
+        LazyHeapSet, List, PyTrait, ReMatch, Type, TypeRef, allocate_tuple, re_syntax, str::string_repr_fmt,
         tuple::TupleVec,
     },
     value::{EitherStr, VALUE_SIZE, Value},
@@ -342,7 +341,7 @@ impl RePattern {
         }
 
         result.push_str(&text[last_end..]);
-        Ok(allocate_string(result, heap))
+        Ok(Value::from_str(result, heap))
     }
 
     /// `pattern.split(string, maxsplit=0)` — split string by pattern occurrences.
@@ -487,7 +486,7 @@ fn collect_slices<'t>(
 /// values can be stranded by a refused one.
 fn allocate_str_list(slices: &[&str], heap: &Heap) -> RunResult<Value> {
     heap.tracker.check_allocation(slices.len().saturating_mul(VALUE_SIZE))?;
-    let results = slices.iter().map(|s| allocate_string(*s, heap)).collect();
+    let results = slices.iter().map(|s| Value::from_str(*s, heap)).collect();
     Ok(Value::allocate(List::new(results), heap))
 }
 
@@ -496,7 +495,7 @@ fn allocate_optional_str_list(pieces: &[Option<&str>], heap: &Heap) -> RunResult
     heap.tracker.check_allocation(pieces.len().saturating_mul(VALUE_SIZE))?;
     let results = pieces
         .iter()
-        .map(|piece| piece.map_or(Value::None, |s| allocate_string(s, heap)))
+        .map(|piece| piece.map_or(Value::None, |s| Value::from_str(s, heap)))
         .collect();
     Ok(Value::allocate(List::new(results), heap))
 }
@@ -508,7 +507,7 @@ fn allocate_tuple_list(flat: &[&str], groups: usize, heap: &Heap) -> RunResult<V
     let results = flat
         .chunks_exact(groups)
         .map(|row| {
-            let elements: TupleVec = row.iter().map(|s| allocate_string(*s, heap)).collect();
+            let elements: TupleVec = row.iter().map(|s| Value::from_str(*s, heap)).collect();
             allocate_tuple(elements, heap)
         })
         .collect();
@@ -565,7 +564,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RePattern> {
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         match attr.static_string(vm.interns) {
             Some(StaticStrings::PatternAttr) => {
-                let v = allocate_string(self.get(vm.heap).pattern.as_str(), vm.heap);
+                let v = Value::from_str(self.get(vm.heap).pattern.as_str(), vm.heap);
                 Ok(Some(CallResult::Value(v)))
             }
             Some(StaticStrings::Flags) => Ok(Some(CallResult::Value(Value::Int(i64::from(self.get(vm.heap).flags))))),

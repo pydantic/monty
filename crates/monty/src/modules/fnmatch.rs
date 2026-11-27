@@ -20,7 +20,7 @@ use crate::{
     intern::StaticStrings,
     modules::ModuleFunctions,
     os_dispatch::value_as_path_str,
-    types::{List, Module, str::allocate_string},
+    types::{List, Module},
     value::Value,
 };
 
@@ -78,7 +78,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: FnmatchFunctions, args: ArgValues)
             let TranslateArgs { pat } = TranslateArgs::from_args(args, vm)?;
             defer_drop!(pat, vm);
             let pat = Text::from_pattern_str(pat, vm)?;
-            Ok(allocate_string(translate(&compile(&pat)), vm.heap))
+            Ok(Value::from_str(translate(&compile(&pat)), vm.heap))
         }
     }
 }

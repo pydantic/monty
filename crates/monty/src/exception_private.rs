@@ -20,7 +20,7 @@ use crate::{
     types::{
         PyTrait, Type, TypeRef, allocate_tuple,
         long_int::INT_MAX_STR_DIGITS,
-        str::{StringRepr, allocate_string, string_repr_fmt},
+        str::{StringRepr, string_repr_fmt},
     },
     value::{EitherStr, Value},
 };
@@ -3264,7 +3264,7 @@ impl<'h> HeapRead<'h, SimpleException> {
 /// `exc.args`: a tuple holding the message, or empty.
 fn args_tuple(arg: Option<&str>, vm: &VM<'_>) -> Value {
     let elements = match arg {
-        Some(arg) => smallvec![allocate_string(arg, vm.heap)],
+        Some(arg) => smallvec![Value::from_str(arg, vm.heap)],
         None => smallvec![],
     };
     allocate_tuple(elements, vm.heap)

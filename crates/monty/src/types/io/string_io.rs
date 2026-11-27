@@ -29,10 +29,7 @@ use crate::{
     heap::{DropGuard, HeapData, HeapId, HeapItem, HeapObjectRead},
     intern::StaticStrings,
     py_attrs::PyAttrs,
-    types::{
-        LazyHeapSet, List, PyTrait, Type, TypeRef,
-        str::{PyStr, allocate_string},
-    },
+    types::{LazyHeapSet, List, PyTrait, Type, TypeRef, str::PyStr},
     value::{EitherStr, VALUE_SIZE, Value},
 };
 
@@ -508,7 +505,7 @@ impl<'h> HeapObjectRead<'h, StringIo> {
     /// A new `str` of the buffer's byte `range`, preflighted since the stream can be most of the budget.
     fn copy_out(&self, range: Range<usize>, vm: &VM<'h>) -> RunResult<Value> {
         vm.heap.tracker.check_allocation(range.len())?;
-        Ok(allocate_string(self.get(vm.heap).buf[range].to_owned(), vm.heap))
+        Ok(Value::from_str(self.get(vm.heap).buf[range].to_owned(), vm.heap))
     }
 
     /// `read(size=-1, /)`: a negative or `None` size reads to the end.

@@ -9,7 +9,7 @@ use crate::{
     exception_private::{ExcType, RunResult, SimpleException},
     intern::StaticStrings,
     py_value::PyValue,
-    types::{PyTrait, io::is_memory_stream, str::allocate_string},
+    types::{PyTrait, io::is_memory_stream},
     value::{Marker, Value},
 };
 
@@ -80,9 +80,9 @@ impl PrintTarget<'_> {
         match (self, text) {
             (Self::Output(stream), Some(text)) => Ok(vm.print_writer.write(*stream, text.into())?),
             (Self::Output(stream), None) => Ok(vm.print_writer.push(*stream, default)?),
-            (Self::Stream(stream), Some(text)) => write_to_stream(stream, allocate_string(text, vm.heap), vm),
+            (Self::Stream(stream), Some(text)) => write_to_stream(stream, Value::from_str(text, vm.heap), vm),
             (Self::Stream(stream), None) => {
-                write_to_stream(stream, allocate_string(default.encode_utf8(&mut [0; 4]), vm.heap), vm)
+                write_to_stream(stream, Value::from_str(&*default.encode_utf8(&mut [0; 4]), vm.heap), vm)
             }
         }
     }

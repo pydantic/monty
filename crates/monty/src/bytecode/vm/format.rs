@@ -19,7 +19,6 @@ use crate::{
         date::format_date_strftime,
         datetime::format_datetime_strftime,
         decimal,
-        str::allocate_string,
         time::{attached_timezone, format_time_strftime},
     },
     value::Value,
@@ -58,7 +57,7 @@ impl VM<'_> {
             result.push_str(s);
         }
 
-        let value = allocate_string(result, this.heap);
+        let value = Value::from_str(result, this.heap);
         this.push(value);
         Ok(())
     }
@@ -97,7 +96,7 @@ impl VM<'_> {
             None => this.format_runtime_value(value, conversion, None)?,
         };
 
-        let result = allocate_string(formatted, this.heap);
+        let result = Value::from_str(formatted, this.heap);
         this.push(result);
         Ok(())
     }

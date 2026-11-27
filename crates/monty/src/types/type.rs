@@ -23,11 +23,8 @@ use crate::{
     py_attrs::{self, AttrDef},
     py_value::PyValue,
     types::{
-        GenericAlias, LongInt, PyTrait, TypeRef, allocate_tuple,
-        bytes::bytes_repr,
-        instance::BoundMethod,
-        long_int::INT_MAX_STR_DIGITS,
-        str::{StringRepr, allocate_string},
+        GenericAlias, LongInt, PyTrait, TypeRef, allocate_tuple, bytes::bytes_repr, instance::BoundMethod,
+        long_int::INT_MAX_STR_DIGITS, str::StringRepr,
     },
     value::{EitherStr, Value},
 };
@@ -153,7 +150,7 @@ impl Type {
             |ss| ss == StaticStrings::DunderName,
         );
         if is_dunder_name {
-            return Some(allocate_string(self.dunder_name(), vm.heap));
+            return Some(Value::from_str(self.dunder_name(), vm.heap));
         }
         let type_value = |ty: Self| Value::Builtin(Builtins::Type(ty));
         Some(match attr.as_str(vm.interns) {

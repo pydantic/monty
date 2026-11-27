@@ -20,7 +20,6 @@ use ahash::RandomState;
 
 use crate::{
     heap::{ContainsHeap, HeapReader},
-    types::str::{allocate_string, allocate_string_no_interning},
     value::Value,
 };
 
@@ -31,8 +30,7 @@ const CAPACITY: usize = 16_384;
 
 /// Minimum string length eligible for caching.
 ///
-/// Strings up to 15 UTF-8 bytes are interned or stored inline, so caching them
-/// would be redundant.
+/// Shorter strings use reserved IDs or inline storage.
 const MIN_LEN: usize = 16;
 
 /// Maximum string length eligible for caching.
@@ -81,7 +79,7 @@ impl JsonStringCache {
     pub fn get_or_allocate(&mut self, s: String, heap: &HeapReader<'_>) -> Value {
         let len = s.len();
         if !(MIN_LEN..=MAX_LEN).contains(&len) {
-            return allocate_string(s, heap.heap());
+            return Value::from_str(s, heap.heap());
         }
 
         let inner = self.inner.get_or_insert_with(CacheInner::new);
@@ -144,16 +142,14 @@ impl CacheInner {
             }
         }
         // All 5 probe slots occupied — allocate without caching.
-        // Length is in [MIN_LEN..=MAX_LEN] here so interning would never apply.
-        allocate_string_no_interning(s, heap.heap())
+        Value::from_str(s, heap.heap())
     }
 
     /// Allocates `s` on the heap, stores a clone in `entries[index]`, and
     /// returns the original `Value`.
     fn insert_at(&mut self, index: usize, hash: u64, s: String, heap: &HeapReader<'_>) -> Value {
         let key = s.clone().into_boxed_str();
-        // Length is in [MIN_LEN..=MAX_LEN] here so interning would never apply.
-        let value = allocate_string_no_interning(s, heap.heap());
+        let value = Value::from_str(s, heap.heap());
         let cached = value.clone_with_heap(heap);
         self.entries[index] = Some((hash, key, cached));
         value
@@ -165,7 +161,7 @@ mod tests {
     use monty_types::ResourceTracker;
 
     use super::*;
-    use crate::{heap::Heap, value::Value};
+    use crate::{heap::Heap, types::HeapStr, value::Value};
 
     #[test]
     fn inline_strings_bypass_the_cache() {
@@ -193,6 +189,36 @@ mod tests {
             second.drop_with(reader);
         });
         assert!(cache.inner.is_some());
+        cache.drop_all(&mut heap);
+    }
+
+    #[test]
+    fn full_probe_window_allocates_without_caching() {
+        let mut cache = JsonStringCache {
+            inner: Some(CacheInner::new()),
+        };
+        let mut heap = Heap::new(16, ResourceTracker::default());
+
+        HeapReader::with(&mut heap, &mut (), |reader, ()| {
+            let key = "cache probe overflow";
+            let inner = cache.inner.as_mut().unwrap();
+            let hash = inner.hash_builder.hash_one(key);
+            let primary = usize::try_from(hash % u64::try_from(CAPACITY).unwrap()).unwrap();
+            for offset in 0..5 {
+                let occupied = format!("occupied probe slot {offset}");
+                let hash = inner.hash_builder.hash_one(occupied.as_str());
+                let index = (primary + offset) & (CAPACITY - 1);
+                inner.insert_at(index, hash, occupied, reader).drop_with(reader);
+            }
+
+            let first = cache.get_or_allocate(key.to_owned(), reader);
+            let second = cache.get_or_allocate(key.to_owned(), reader);
+            let id = first.ref_id().unwrap();
+            assert_ne!(id, second.ref_id().unwrap());
+            assert_eq!(reader.read_as::<HeapStr>(id).unwrap().get(reader).as_str(), key);
+            first.drop_with(reader);
+            second.drop_with(reader);
+        });
         cache.drop_all(&mut heap);
     }
 }

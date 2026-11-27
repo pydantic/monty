@@ -27,9 +27,7 @@ use crate::{
     resource_checks::check_repeat_size,
     str_format::value_error,
     string_builder::{BytesBuilder, StringBuilder},
-    types::{
-        LongInt, PyTrait, Type, bytes::allocate_bytes, long_int::check_bits_str_digits_limit, str::allocate_string,
-    },
+    types::{LongInt, PyTrait, Type, bytes::allocate_bytes, long_int::check_bits_str_digits_limit},
     value::{VALUE_SIZE, Value},
 };
 
@@ -147,7 +145,7 @@ impl Target for StrTarget {
     }
 
     fn key_value(template: &str, range: Range<usize>, heap: &Heap) -> Value {
-        allocate_string(&template[range], heap)
+        Value::from_str(&template[range], heap)
     }
 
     fn from_ascii(text: String) -> String {
@@ -209,7 +207,7 @@ impl Target for StrTarget {
     }
 
     fn allocate(output: String, heap: &Heap) -> Value {
-        allocate_string(output, heap)
+        Value::from_str(output, heap)
     }
 }
 

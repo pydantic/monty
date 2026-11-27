@@ -30,7 +30,6 @@ use crate::{
         instance::{class_dunder, class_name, instance_attr},
         key_hash::plain_hash,
         py_trait::PyObjectIdentity,
-        str::allocate_string,
     },
     value::Value,
 };
@@ -320,7 +319,7 @@ fn call_method(method_id: HeapId, args: ArgValues, vm: &mut VM<'_>) -> RunResult
             let mut repr = String::new();
             let names = field_names(method_id, vm);
             dataclass_repr_fmt(self_id, &names, &mut repr, vm, &mut LazyHeapSet::default())?;
-            Ok(allocate_string(repr, vm.heap))
+            Ok(Value::from_str(repr, vm.heap))
         }
         StaticStrings::DunderEq => {
             let names = field_names(method_id, vm);

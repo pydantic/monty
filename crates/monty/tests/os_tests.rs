@@ -409,6 +409,33 @@ fn os_chdir_normalizes_cwd_after_host_acceptance() {
     assert_eq!(result, MontyObject::string("/data/sub".to_owned()));
 }
 
+#[test]
+fn host_file_handle_exposes_path_and_encoding() {
+    let path = "/data/host-file.txt";
+    let mut runner = MontyRun::new(
+        "(file.name, getattr(file, 'encoding', None))".to_owned(),
+        "test.py",
+        vec!["file".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+
+    for (mode, encoding) in [
+        ("r", MontyObject::string("utf-8".to_owned())),
+        ("rb", MontyObject::none()),
+    ] {
+        let file = MontyObject::file_handle(MontyFileHandle {
+            path: path.to_owned(),
+            mode: mode.parse().unwrap(),
+            position: 0,
+        });
+        assert_eq!(
+            runner.run_no_limits(vec![file]).unwrap(),
+            MontyObject::tuple([MontyObject::string(path.to_owned()), encoding])
+        );
+    }
+}
+
 /// Rejected file operations must release their effect's heap reference before raising.
 #[test]
 fn nul_file_paths_release_pending_effects() {

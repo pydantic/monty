@@ -32,7 +32,7 @@ use crate::{
     types::{
         CmpOrder, LazyHeapSet, PyTrait, TimeDelta, TimeZone, Type, TypeRef,
         date::{self, StrftimeArgs},
-        str::{StringRepr, allocate_string, allocate_string_no_interning},
+        str::StringRepr,
         time::{self, Time, TimeSpec},
         timedelta, timezone,
     },
@@ -1193,7 +1193,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
     fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
         let dt = self.get(vm.heap);
         let Some((year, month, day, hour, minute, second, microsecond)) = to_components(dt) else {
-            return Ok(allocate_string("<out of range>", vm.heap));
+            return Ok(Value::from_str("<out of range>", vm.heap));
         };
         let mut s = format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}");
         if microsecond != 0 {
@@ -1202,7 +1202,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
         if let Some(offset) = offset_seconds(dt) {
             s.push_str(&timezone::format_offset_hms(offset));
         }
-        Ok(allocate_string(s, vm.heap))
+        Ok(Value::from_str(s, vm.heap))
     }
 
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -1374,7 +1374,7 @@ impl<'heap> PyAttrs<'heap> for PyDateTimeImpl {
         };
         let dt = this.get(vm.heap);
         let s = format_isoformat(dt, separator, spec);
-        Ok(allocate_string_no_interning(s, vm.heap))
+        Ok(Value::from_str(s, vm.heap))
     }
 
     pub(crate) fn strftime<'h>(
@@ -1386,7 +1386,7 @@ impl<'heap> PyAttrs<'heap> for PyDateTimeImpl {
         defer_drop!(format, vm);
         let dt = this.get(vm.heap);
         let formatted = format_datetime_strftime(dt, format.as_str(vm), &vm.heap.tracker)?;
-        Ok(allocate_string(formatted, vm.heap))
+        Ok(Value::from_str(formatted, vm.heap))
     }
 
     #[pymethod(Replace)]
@@ -1444,7 +1444,7 @@ impl<'heap> PyAttrs<'heap> for PyDateTimeImpl {
             return Ok(Value::None);
         };
         let name = timezone::tzname_string(offset_seconds, dt.timezone_name.as_deref());
-        Ok(allocate_string(name, vm.heap))
+        Ok(Value::from_str(name, vm.heap))
     }
 
     #[pymethod(Dst)]

@@ -158,6 +158,7 @@ assert '{0!r}'.format(y) == "Decimal('1234.5')"
 assert '{:^12}'.format(y) == '   1234.5   '
 assert format(y) == '1234.5'
 assert y.__format__('.1f') == '1234.5'
+assert Decimal(1).__format__('.0f') is chr(49)
 try:
     y.__format__('.1f', Context())
     assert False, 'expected TypeError'

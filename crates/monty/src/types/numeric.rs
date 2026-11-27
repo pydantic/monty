@@ -14,7 +14,7 @@ use crate::{
     heap::Heap,
     intern::StaticStrings,
     py_attrs::PyAttrs,
-    types::{LongInt, TypeRef, allocate_string, allocate_tuple, long_int::bigint_true_divide},
+    types::{LongInt, TypeRef, allocate_tuple, long_int::bigint_true_divide},
     value::Value,
 };
 
@@ -266,7 +266,7 @@ impl<'heap> PyAttrs<'heap> for PyFloatImpl {
     #[pymethod(Hex)]
     fn hex(value: f64, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
         args.check_zero_args("float.hex", vm.heap)?;
-        Ok(allocate_string(float_hex(value), vm.heap))
+        Ok(Value::from_str(float_hex(value), vm.heap))
     }
 
     #[pyclassmethod(Fromhex)]

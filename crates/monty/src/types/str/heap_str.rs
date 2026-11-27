@@ -48,7 +48,7 @@ impl HeapStr {
 
     /// Creates a heap string from owned text.
     ///
-    /// Use [`super::allocate_string`] or [`super::allocate_string_no_interning`] for values.
+    /// Use [`Value::from_str`](crate::value::Value::from_str) for values.
     #[must_use]
     pub(super) fn new(text: Box<str>) -> Self {
         Self {

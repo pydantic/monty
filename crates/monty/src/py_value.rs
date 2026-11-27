@@ -27,7 +27,7 @@ use crate::{
     intern::{FunctionId, StaticStrings},
     modules::{ModuleFunctions, asyncio::task_call_method, collections::defaultdict::defaultdict_missing},
     types::{
-        GenericAlias, LazyHeapSet, LongInt, Property, PyTrait, Type, TypeRef, Union, allocate_string, allocate_tuple,
+        GenericAlias, LazyHeapSet, LongInt, Property, PyTrait, Type, TypeRef, Union, allocate_tuple,
         bytes::PyBytes,
         file::unloaded_iteration_error,
         long_int::{PyInt, arithmetic::float_binary},
@@ -654,7 +654,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
 
     fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
         forward_py_value!(self, |value| value.py_str(vm), {
-            Self::Exception(value) => Ok(allocate_string(value.get(vm.heap).py_str(), vm.heap)),
+            Self::Exception(value) => Ok(Value::from_str(value.get(vm.heap).py_str(), vm.heap)),
             _ => self.py_repr(vm),
         })
     }
