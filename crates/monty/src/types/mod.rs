@@ -1,5 +1,6 @@
 //! Runtime value types and their Python operations.
 
+pub(crate) mod builtin_descriptor;
 pub mod bytes;
 pub mod callable_iterator;
 pub mod class;
@@ -9,6 +10,7 @@ pub mod date;
 pub mod datetime;
 pub mod decimal;
 pub mod deque;
+pub(crate) mod descriptor;
 pub mod dict;
 pub mod dict_view;
 pub mod dir_scan;
@@ -56,6 +58,7 @@ mod unicode_type;
 mod unicode_type_data;
 pub mod union;
 
+pub(crate) use builtin_descriptor::BuiltinDescriptor;
 pub(crate) use bytes::{Bytes, BytesIterator};
 pub(crate) use class::Class;
 pub(crate) use complex::Complex;
