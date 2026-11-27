@@ -297,6 +297,7 @@ ExcType = Literal[
     'StopIteration',
     'SyntaxError',
     'TimeoutError',
+    'BlockingIOError',
     'TypeError',
     're.PatternError',
     'binascii.Error',

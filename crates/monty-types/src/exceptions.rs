@@ -244,7 +244,7 @@ fn frames_are_identical(a: &StackFrame, b: &StackFrame) -> bool {
 /// `pydantic_monty/__init__.py`. Both are hand-written, so `monty-proto`'s `exc_type_bridges` test
 /// reads them and pins them here — adding a variant without wiring the bridges fails that test.
 /// Explicit discriminants are permanent exception-class identity codes; never change or reuse them.
-#[monty_macros::explicit_discriminants(checksum = 0xd26e_f8bf_1120_6b3d)]
+#[monty_macros::explicit_discriminants(checksum = 0x1e4e_16e0_f0a7_88c2)]
 #[derive(
     Debug,
     Clone,
@@ -348,6 +348,9 @@ pub enum ExcType {
     UnsupportedOperation = 30,
     /// Subclass of OSError since Python 3.3 (PEP 3151).
     TimeoutError = 31,
+    /// Subclass of OSError for an operation that would block a non-blocking
+    /// stream; `io.BlockingIOError` is the same class. Nothing in Monty raises it.
+    BlockingIOError = 57,
 
     // --- Standalone exception types ---
     AssertionError = 32,

@@ -9,8 +9,10 @@
 use std::{env, fs, path::PathBuf, thread, time::Duration};
 
 use insta::assert_snapshot;
-use monty::{DUMP_VERSION, Dump, MontyRepl, ReplProgress, Session, SessionRef, dump};
-use monty_types::{CompileOptions, ExecutionClock, MontyObject, NameLookupResult, PrintWriter, ResourceTracker};
+use monty::{DUMP_VERSION, Dump, MontyRepl, MontyRun, ReplProgress, Session, SessionRef, dump};
+use monty_types::{
+    CompileOptions, ExecutionClock, MontyObject, MontyType, NameLookupResult, PrintWriter, ResourceTracker,
+};
 use serde::{Deserialize, Serialize};
 
 /// Environment variable that rewrites the fixture instead of checking it.
@@ -136,6 +138,8 @@ next(counter)
 alias = list[int]
 opt = int | None
 where = pathlib.Path('/data') / 'file.txt'
+relative_globals = {'__package__': 'os'}
+exec('def leaf(path):\n    from .path import basename\n    return basename(path)', relative_globals)
 
 
 def with_default(x, y=[1]):
@@ -201,6 +205,7 @@ assert joined == 'x-y' and list(str_it) == ['b', 'c'] and list(range_it) == [1, 
 assert list(dk_it) == ['b', 3] and list(dv_it) == [[2, 3], 'int key'] and next(counter) == 6
 assert alias == list[int] and opt == (int | None) and str(where) == '/data/file.txt'
 assert with_default(1) == 2
+assert relative_globals['leaf']('/data/file.txt') == 'file.txt'
 assert functools.reduce(lambda a, b: a + b, [1, 2, 3]) == 6
 assert add5(2) == 7
 (result, c.value)
@@ -242,7 +247,11 @@ fn fixture_dump_loads_and_resumes() {
             path.display()
         )
     });
-    let loaded = Dump::load(&bytes).expect("a fixture at the current DUMP_VERSION loads");
+    check_fixture(&bytes);
+}
+
+fn check_fixture(bytes: &[u8]) {
+    let loaded = Dump::load(bytes).expect("a supported fixture loads");
     assert_eq!(loaded.script_name, "fixture.py");
     assert!(loaded.type_check.is_none());
     let Session::Suspended(progress) = loaded.state else {
@@ -284,10 +293,10 @@ fn fixture_dump_loads_and_resumes() {
     );
 }
 
-/// Older fixtures remain readable after adding inline strings and the star-import opcode.
+/// Suspended sessions from older supported versions resume their host call.
 #[test]
 fn older_version_fixtures_load_and_resume() {
-    for version in [14, 15, 16] {
+    for version in 14..DUMP_VERSION {
         let bytes = fs::read(fixture_path_for(version)).expect("older fixture exists");
         let loaded = Dump::load(&bytes).expect("older dumps remain supported");
         assert_eq!(loaded.script_name, "fixture.py");
@@ -1010,4 +1019,56 @@ fn fresh_location_tracebacks() -> Vec<String> {
                 .to_string()
         })
         .collect()
+}
+
+#[test]
+fn table_forward_ref_evaluation_can_suspend_and_restore() {
+    let run = MontyRun::new(
+        "from annotationlib import ForwardRef\nForwardRef.evaluate(ForwardRef('f()'), globals={'f': f})".to_owned(),
+        "test.py",
+        vec!["f".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let progress = run
+        .start(
+            vec![MontyObject::function("fetch", None)],
+            ResourceTracker::default(),
+            PrintWriter::Disabled,
+        )
+        .unwrap();
+    let bytes = dump("test.py", None, &[], SessionRef::Running(&progress)).unwrap();
+    let Session::Running(restored) = Dump::load(&bytes).unwrap().state else {
+        panic!("expected a running session")
+    };
+    for progress in [progress, *restored] {
+        let call = progress.into_function_call().expect("expected the fetch call");
+        assert_eq!(call.function_name, "fetch");
+        let result = call
+            .resume(MontyObject::type_object(MontyType::Int), PrintWriter::Disabled)
+            .unwrap()
+            .into_complete()
+            .unwrap();
+        assert_eq!(result, MontyObject::type_object(MontyType::Int));
+    }
+}
+
+/// Classes written before descriptor hints existed still apply data-getter precedence.
+#[test]
+fn legacy_classes_default_to_descriptor_lookup() {
+    let loaded = Dump::load(&fs::read(fixture_path_for(14)).unwrap()).unwrap();
+    let Session::Suspended(progress) = loaded.state else {
+        panic!("legacy fixture was suspended")
+    };
+    let progress = progress
+        .into_function_call()
+        .unwrap()
+        .resume(MontyObject::int(41), PrintWriter::Disabled)
+        .unwrap();
+    let (mut repl, _) = progress.into_complete().unwrap();
+    repl.feed_run(
+        "assert c.value == 11\nCounter.value = property(lambda self: 42)\nassert c.value == 42\nassert getattr(c, 'value') == 42",
+        vec![],
+        PrintWriter::Disabled,
+    ).unwrap();
 }

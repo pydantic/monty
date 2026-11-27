@@ -28,7 +28,10 @@ impl VM<'_> {
         let mut guard = DropGuard::new(call, self);
         let (call, vm) = guard.as_parts();
         let pushed = matches!(call, CallResult::FramePushed);
-        let id = match FrozenFunction::ForIter.resolve(vm.interns) {
+        let id = match FrozenFunction::ForIter.resolve(vm.interns).and_then(|id| {
+            vm.enter_frozen_frame()?;
+            Ok(id)
+        }) {
             Ok(id) => id,
             Err(error) => {
                 if pushed {

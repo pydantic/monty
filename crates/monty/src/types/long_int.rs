@@ -18,6 +18,7 @@ use std::{
     sync::OnceLock,
 };
 
+use monty_macros::pyattrs;
 use monty_types::ResourceTracker;
 use num_bigint::{BigInt, BigUint};
 use num_integer::Integer;
@@ -31,9 +32,11 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_python_long_int},
-    heap::{DropWithContext, Heap, HeapData, HeapObjectRead},
+    heap::{DropWithContext, Heap, HeapObjectRead},
+    heap_data::HeapData,
     identity::Identity,
     intern::{LongIntId, StaticStrings},
+    py_attrs::{MethodCall, PyAttrs},
     py_value::PyValue,
     resource_checks::{
         check_div_size, check_lshift_size, check_mult_size, check_pow_size, check_repeat_size, try_vec_with_capacity,
@@ -795,27 +798,37 @@ pub(crate) fn int_from_bytes(args: ArgValues, as_bool: bool, vm: &mut VM<'_>) ->
     Ok(LongInt::new(big).into_value(vm.heap))
 }
 
-/// Class methods on `int` (`from_bytes`).
-pub(crate) fn int_class_method(
-    attr: &EitherStr,
-    args: ArgValues,
-    vm: &mut VM<'_>,
-) -> Result<RunResult<CallResult>, ArgValues> {
-    match attr.static_string(vm.interns) {
-        Some(StaticStrings::FromBytes) => Ok(int_from_bytes(args, false, vm).map(CallResult::Value)),
-        _ => Err(args),
+pub(crate) struct PyIntImpl;
+
+#[pyattrs]
+impl<'h> PyAttrs<'h> for PyIntImpl {
+    type Receiver = PyInt<'h>;
+
+    #[pymethod(ToBytes)]
+    fn to_bytes<'a>(integer: &PyInt<'a>, args: ArgValues, vm: &mut VM<'a>) -> RunResult<Value> {
+        integer.to_bytes(args, vm)
+    }
+
+    #[pyclassmethod(FromBytes)]
+    fn from_bytes(_: StaticStrings, class: TypeRef, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+        let is_bool = class == TypeRef::Native(Type::Bool);
+        int_from_bytes(args, is_bool, vm).map(CallResult::Value)
     }
 }
 
-/// Class methods on `bool` (`from_bytes`).
-pub(crate) fn bool_class_method(
-    attr: &EitherStr,
+pub(crate) fn call_subtype_descriptor<'h>(
+    receiver: &mut PyValue<'h>,
+    _attr: &EitherStr,
+    call: MethodCall,
     args: ArgValues,
-    vm: &mut VM<'_>,
-) -> Result<RunResult<CallResult>, ArgValues> {
-    match attr.static_string(vm.interns) {
-        Some(StaticStrings::FromBytes) => Ok(int_from_bytes(args, true, vm).map(CallResult::Value)),
-        _ => Err(args),
+    vm: &mut VM<'h>,
+) -> RunResult<CallResult> {
+    match receiver {
+        PyValue::Bool(b) => {
+            let mut int_val = PyValue::Int(PyInt::Small(i64::from(*b)));
+            call(&mut int_val, args, vm)
+        }
+        _ => call(receiver, args, vm),
     }
 }
 
@@ -838,14 +851,9 @@ fn multiply_bigint(lhs: &BigInt, other: &Value, vm: &VM<'_>) -> RunResult<Option
             Value::Int(0)
         }),
         Value::Float(rhs) => Some(Value::Float(bigint_to_f64_checked(lhs)? * rhs)),
-        Value::InternLongInt(id) => {
-            let rhs = vm.interns.get_long_int(*id);
+        _ if let Some(rhs) = other.as_long_int(vm) => {
             check_mult_size(lhs.bits(), rhs.bits(), &vm.heap.tracker)?;
             Some(LongInt::new(lhs * rhs).into_value(vm.heap))
-        }
-        Value::Ref(id) if let HeapData::LongInt(rhs) = vm.heap.get(*id) => {
-            check_mult_size(lhs.bits(), rhs.bits(), &vm.heap.tracker)?;
-            Some(LongInt::new(lhs * rhs.inner()).into_value(vm.heap))
         }
         _ => None,
     };
@@ -858,8 +866,7 @@ fn add_bigint(lhs: &BigInt, other: &Value, vm: &VM<'_>) -> RunResult<Option<Valu
         Value::Int(rhs) => lhs + rhs,
         Value::Bool(rhs) => lhs + i64::from(*rhs),
         Value::Float(rhs) => return Ok(Some(Value::Float(bigint_to_f64_checked(lhs)? + rhs))),
-        Value::InternLongInt(id) => lhs + vm.interns.get_long_int(*id),
-        Value::Ref(id) if let HeapData::LongInt(rhs) = vm.heap.get(*id) => lhs + rhs.inner(),
+        _ if let Some(rhs) = other.as_long_int(vm) => lhs + rhs,
         _ => return Ok(None),
     };
     Ok(Some(LongInt::new(result).into_value(vm.heap)))
@@ -945,31 +952,11 @@ impl LongInt {
         self.0.is_zero()
     }
 
-    /// Checks if the value is negative.
-    pub fn is_negative(&self) -> bool {
-        self.0.is_negative()
-    }
-
-    /// Tries to convert to i64.
-    ///
-    /// Returns `Some(i64)` if the value fits, `None` otherwise.
-    pub fn to_i64(&self) -> Option<i64> {
-        self.0.to_i64()
-    }
-
     /// Converts to `f64`, raising `OverflowError` when the magnitude exceeds the float range.
     ///
     /// Mirrors CPython's `PyLong_AsDouble`, which every mixed int/float operation goes through.
     pub fn to_f64_checked(&self) -> RunResult<f64> {
         bigint_to_f64_checked(&self.0)
-    }
-
-    /// Compares this integer against an `f64` *exactly* (no precision loss).
-    ///
-    /// Thin wrapper around [`bigint_cmp_f64`]; see it for the semantics. The
-    /// result is the ordering of `self` relative to `f`.
-    pub fn partial_cmp_f64(&self, f: f64) -> Option<Ordering> {
-        bigint_cmp_f64(&self.0, f)
     }
 
     /// Returns the number of significant bits in this LongInt.
@@ -1492,9 +1479,7 @@ fn integer_value<'a>(value: &Value, vm: &'a VM<'_>) -> Option<Cow<'a, BigInt>> {
     match value {
         Value::Int(value) => Some(Cow::Owned(BigInt::from(*value))),
         Value::Bool(value) => Some(Cow::Owned(BigInt::from(*value))),
-        Value::InternLongInt(id) => Some(Cow::Borrowed(vm.interns.get_long_int(*id))),
-        Value::Ref(id) if let HeapData::LongInt(value) = vm.heap.get(*id) => Some(Cow::Borrowed(value.inner())),
-        _ => None,
+        _ => value.as_long_int(vm).map(Cow::Borrowed),
     }
 }
 

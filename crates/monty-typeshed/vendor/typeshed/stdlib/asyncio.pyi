@@ -1,142 +1,46 @@
-from collections.abc import Awaitable, Generator
-from typing import Any, Literal, TypeAlias, TypeVar, overload
+from collections.abc import Awaitable, Coroutine, Generator, Iterable
+from typing import Any, Final, Literal, Never, Self, TypeAlias, TypeVar, final, overload
 
 _T = TypeVar('_T')
-_T1 = TypeVar('_T1')
-_T2 = TypeVar('_T2')
-_T3 = TypeVar('_T3')
-_T4 = TypeVar('_T4')
-_T5 = TypeVar('_T5')
-_T6 = TypeVar('_T6')
+_T_co = TypeVar('_T_co', covariant=True)
 
-class _Future(Awaitable[_T]):
-    """
-    Minimal copy of Future from _typeshed/stdlib/_asyncio.pyi
-    """
-    def __iter__(self) -> Generator[Any, None, _T]: ...
-    def __await__(self) -> Generator[Any, None, _T]: ...
+class _Future(Awaitable[_T_co]):
+    def __await__(self) -> Generator[Any, None, _T_co]: ...
 
-_FutureLike: TypeAlias = _Future[_T] | Awaitable[_T]
+class _HostFuture(_Future[_T_co]): ...
+class _WaitFuture(_Future[_T_co]): ...
 
-def run(main: Awaitable[_T], *, debug: bool | None = None, loop_factory: Any = None) -> _T: ...
-@overload
-def sleep(delay: float) -> _Future[None]: ...
-@overload
-def sleep(delay: float, result: _T) -> _Future[_T]: ...
-@overload
-def gather(
-    coro_or_future1: _FutureLike[_T1], /, *, return_exceptions: Literal[False] = False
-) -> _Future[tuple[_T1]]: ...
-@overload
-def gather(
-    coro_or_future1: _FutureLike[_T1],
-    coro_or_future2: _FutureLike[_T2],
-    /,
+@final
+class Task(_Future[_T_co]):
+    def __new__(cls, _unavailable: Never, /) -> Self: ...
+    def get_name(self) -> str: ...
+    def set_name(self, value: object, /) -> None: ...
+    def get_coro(self) -> Coroutine[Any, Any, _T_co] | _HostFuture[_T_co] | _WaitFuture[_T_co]: ...
+    def done(self) -> bool: ...
+    def result(self) -> _T_co: ...
+    def exception(self) -> BaseException | None: ...
+    def cancelled(self) -> Literal[False]: ...
+    def cancel(self, msg: object = None, /) -> Literal[False]: ...
+
+class InvalidStateError(Exception): ...
+
+FIRST_COMPLETED: Final = 'FIRST_COMPLETED'
+FIRST_EXCEPTION: Final = 'FIRST_EXCEPTION'
+ALL_COMPLETED: Final = 'ALL_COMPLETED'
+
+_FutureLike: TypeAlias = _Future[_T] | Coroutine[Any, Any, _T]
+_Waitable = TypeVar('_Waitable', bound=Task[Any] | _HostFuture[Any])
+
+def run(main: _FutureLike[_T], /) -> _T: ...
+def create_task(coro: Coroutine[Any, Any, _T] | _HostFuture[_T] | _WaitFuture[_T], *, name: object = None) -> Task[_T]: ...
+def gather(*awaitables: _FutureLike[_T]) -> _Future[list[_T]]: ...
+def wait(
+    fs: Iterable[_Waitable],
     *,
-    return_exceptions: Literal[False] = False,
-) -> _Future[tuple[_T1, _T2]]: ...
+    timeout: float | None = None,
+    return_when: Literal['FIRST_COMPLETED', 'FIRST_EXCEPTION', 'ALL_COMPLETED'] = ALL_COMPLETED,
+) -> _WaitFuture[tuple[set[_Waitable], set[_Waitable]]]: ...
 @overload
-def gather(
-    coro_or_future1: _FutureLike[_T1],
-    coro_or_future2: _FutureLike[_T2],
-    coro_or_future3: _FutureLike[_T3],
-    /,
-    *,
-    return_exceptions: Literal[False] = False,
-) -> _Future[tuple[_T1, _T2, _T3]]: ...
+def sleep(delay: float) -> _HostFuture[None]: ...
 @overload
-def gather(
-    coro_or_future1: _FutureLike[_T1],
-    coro_or_future2: _FutureLike[_T2],
-    coro_or_future3: _FutureLike[_T3],
-    coro_or_future4: _FutureLike[_T4],
-    /,
-    *,
-    return_exceptions: Literal[False] = False,
-) -> _Future[tuple[_T1, _T2, _T3, _T4]]: ...
-@overload
-def gather(
-    coro_or_future1: _FutureLike[_T1],
-    coro_or_future2: _FutureLike[_T2],
-    coro_or_future3: _FutureLike[_T3],
-    coro_or_future4: _FutureLike[_T4],
-    coro_or_future5: _FutureLike[_T5],
-    /,
-    *,
-    return_exceptions: Literal[False] = False,
-) -> _Future[tuple[_T1, _T2, _T3, _T4, _T5]]: ...
-@overload
-def gather(
-    coro_or_future1: _FutureLike[_T1],
-    coro_or_future2: _FutureLike[_T2],
-    coro_or_future3: _FutureLike[_T3],
-    coro_or_future4: _FutureLike[_T4],
-    coro_or_future5: _FutureLike[_T5],
-    coro_or_future6: _FutureLike[_T6],
-    /,
-    *,
-    return_exceptions: Literal[False] = False,
-) -> _Future[tuple[_T1, _T2, _T3, _T4, _T5, _T6]]: ...
-@overload
-def gather(*coros_or_futures: _FutureLike[_T], return_exceptions: Literal[False] = False) -> _Future[list[_T]]: ...
-@overload
-def gather(coro_or_future1: _FutureLike[_T1], /, *, return_exceptions: bool) -> _Future[tuple[_T1 | BaseException]]: ...
-@overload
-def gather(
-    coro_or_future1: _FutureLike[_T1], coro_or_future2: _FutureLike[_T2], /, *, return_exceptions: bool
-) -> _Future[tuple[_T1 | BaseException, _T2 | BaseException]]: ...
-@overload
-def gather(
-    coro_or_future1: _FutureLike[_T1],
-    coro_or_future2: _FutureLike[_T2],
-    coro_or_future3: _FutureLike[_T3],
-    /,
-    *,
-    return_exceptions: bool,
-) -> _Future[tuple[_T1 | BaseException, _T2 | BaseException, _T3 | BaseException]]: ...
-@overload
-def gather(
-    coro_or_future1: _FutureLike[_T1],
-    coro_or_future2: _FutureLike[_T2],
-    coro_or_future3: _FutureLike[_T3],
-    coro_or_future4: _FutureLike[_T4],
-    /,
-    *,
-    return_exceptions: bool,
-) -> _Future[tuple[_T1 | BaseException, _T2 | BaseException, _T3 | BaseException, _T4 | BaseException]]: ...
-@overload
-def gather(
-    coro_or_future1: _FutureLike[_T1],
-    coro_or_future2: _FutureLike[_T2],
-    coro_or_future3: _FutureLike[_T3],
-    coro_or_future4: _FutureLike[_T4],
-    coro_or_future5: _FutureLike[_T5],
-    /,
-    *,
-    return_exceptions: bool,
-) -> _Future[
-    tuple[_T1 | BaseException, _T2 | BaseException, _T3 | BaseException, _T4 | BaseException, _T5 | BaseException]
-]: ...
-@overload
-def gather(
-    coro_or_future1: _FutureLike[_T1],
-    coro_or_future2: _FutureLike[_T2],
-    coro_or_future3: _FutureLike[_T3],
-    coro_or_future4: _FutureLike[_T4],
-    coro_or_future5: _FutureLike[_T5],
-    coro_or_future6: _FutureLike[_T6],
-    /,
-    *,
-    return_exceptions: bool,
-) -> _Future[
-    tuple[
-        _T1 | BaseException,
-        _T2 | BaseException,
-        _T3 | BaseException,
-        _T4 | BaseException,
-        _T5 | BaseException,
-        _T6 | BaseException,
-    ]
-]: ...
-@overload
-def gather(*coros_or_futures: _FutureLike[_T], return_exceptions: bool) -> _Future[list[_T | BaseException]]: ...
+def sleep(delay: float, result: _T) -> _HostFuture[_T]: ...

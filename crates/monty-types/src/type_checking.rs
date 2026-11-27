@@ -116,19 +116,25 @@ impl ModuleStub {
     /// by [`validate_module_name`] or [`CHECKER_MODULE_NAMES`].
     pub fn new(module: impl Into<String>, source: impl Into<String>) -> Result<Self, ModuleStubError> {
         let module = module.into();
-        let mut parts = module.split('.');
-        let top = parts.next().unwrap_or_default();
-        validate_module_name(top).map_err(|_| invalid_path(&module, top))?;
-        if CHECKER_MODULE_NAMES.contains(&top) {
-            return Err(ModuleStubError::ReservedName(top.to_owned()));
-        }
-        if let Some(part) = parts.find(|part| !is_identifier(part)) {
-            return Err(invalid_path(&module, part));
-        }
+        Self::validate_module(&module)?;
         Ok(Self {
             module,
             source: source.into(),
         })
+    }
+
+    /// Validates a borrowed dotted path before constructing a stub.
+    pub fn validate_module(module: &str) -> Result<(), ModuleStubError> {
+        let mut parts = module.split('.');
+        let top = parts.next().unwrap_or_default();
+        validate_module_name(top).map_err(|_| invalid_path(module, top))?;
+        if CHECKER_MODULE_NAMES.contains(&top) {
+            return Err(ModuleStubError::ReservedName(top.to_owned()));
+        }
+        if let Some(part) = parts.find(|part| !is_identifier(part)) {
+            return Err(invalid_path(module, part));
+        }
+        Ok(())
     }
 
     /// The dotted module path.
@@ -192,6 +198,7 @@ impl Error for ModuleStubError {}
 /// Imports of these names never reach the host, even when the runtime does not provide the module.
 /// Keep in sync with the runtime's `StandardLib` and the vendored modules in `crates/monty/stdlib/vendor.toml`.
 pub const SANDBOX_MODULE_NAMES: &[&str] = &[
+    "_io",
     "_stat",
     "annotationlib",
     "asyncio",
@@ -205,10 +212,12 @@ pub const SANDBOX_MODULE_NAMES: &[&str] = &[
     "dataclasses",
     "datetime",
     "decimal",
+    "errno",
     "fnmatch",
     "functools",
     "gc",
     "hashlib",
+    "io",
     "itertools",
     "json",
     "keyword",
@@ -221,6 +230,7 @@ pub const SANDBOX_MODULE_NAMES: &[&str] = &[
     "stat",
     "statistics",
     "sys",
+    "textwrap",
     "time",
     "tomllib",
     "typing",
@@ -234,13 +244,11 @@ pub const CHECKER_MODULE_NAMES: &[&str] = &[
     "__future__",
     "__main__",
     "_collections_abc",
-    "_io",
     "_typeshed",
     "abc",
     "builtins",
     "enum",
     "genericpath",
-    "io",
     "ty_extensions",
     "types",
     "typing_extensions",

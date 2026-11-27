@@ -1,0 +1,26 @@
+Describe Monty's fnmatch functions without upstream-only types and signatures.
+
+--- a/fnmatch.pyi
++++ b/fnmatch.pyi
+@@ -1,15 +1,11 @@
+-import sys
++"""Monty's `fnmatch`: the four functions, without 3.14's `filterfalse` or `__all__`.
++`fnmatch()` converts both arguments with `os.fspath`, and `filter()` converts its pattern."""
++
+ from collections.abc import Iterable
++from os import PathLike
+ from typing import AnyStr
+ 
+-__all__ = ["filter", "fnmatch", "fnmatchcase", "translate"]
+-if sys.version_info >= (3, 14):
+-    __all__ += ["filterfalse"]
+-
+-def fnmatch(name: AnyStr, pat: AnyStr) -> bool: ...
++def fnmatch(name: AnyStr | PathLike[AnyStr], pat: AnyStr | PathLike[AnyStr]) -> bool: ...
+ def fnmatchcase(name: AnyStr, pat: AnyStr) -> bool: ...
+-def filter(names: Iterable[AnyStr], pat: AnyStr) -> list[AnyStr]: ...
++def filter(names: Iterable[AnyStr], pat: AnyStr | PathLike[AnyStr]) -> list[AnyStr]: ...
+ def translate(pat: str) -> str: ...
+-
+-if sys.version_info >= (3, 14):
+-    def filterfalse(names: Iterable[AnyStr], pat: AnyStr) -> list[AnyStr]: ...

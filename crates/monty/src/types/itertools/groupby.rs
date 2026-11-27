@@ -14,7 +14,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::RunResult,
-    heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapObjectRead, HeapRead, HeapReadMut, HeapReadOutput},
+    heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapObjectRead, HeapRead, HeapReadMut},
     types::{
         allocate_tuple,
         itertools::{ItertoolsIter, step::next_item},
@@ -195,10 +195,7 @@ pub(super) fn grouper_next<'h>(
     let target = grouper.target_key.clone_with_heap(vm.heap);
     defer_drop!(parent, vm);
     defer_drop!(target, vm);
-    let Value::Ref(parent_id) = parent else {
-        unreachable!("a grouper's parent is always a heap groupby")
-    };
-    let HeapReadOutput::Itertools(parent) = vm.heap.read(*parent_id) else {
+    let Some(parent) = parent.read_as::<ItertoolsIter>(vm.heap) else {
         unreachable!("a grouper's parent is always a groupby")
     };
 

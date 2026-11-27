@@ -2,8 +2,7 @@
 
 `deque`, `namedtuple`, `defaultdict`, and `Counter` are implemented and
 feature-complete against CPython 3.14 apart from the divergences below. The
-exact supported surface is pinned by the custom typeshed stub
-(`crates/monty-typeshed/custom/collections/__init__.pyi`) and
+exact supported surface is pinned by the narrowed typeshed stub and
 `crates/monty/tests/collections.rs`. `defaultdict` and `Counter` are exposed as
 the type objects themselves (like `deque`), so `type(d) is defaultdict` and
 `isinstance(c, Counter)` hold.
@@ -63,12 +62,18 @@ divergences. `repr(Point)` is `<class 'Point'>` where CPython gives
 
 ## `Counter`
 
+- **Unbound Python-defined methods use native receiver representations.**
+    `Counter.most_common(mapping)`, `Counter.total(mapping)`, `Counter.elements(mapping)`,
+    `Counter.update(mapping, ...)` and `Counter.subtract(mapping, ...)` accept native dictionaries,
+    including defaultdicts, but do not invoke a custom receiver's `items`, `values`, or `get` methods.
+    Their argument parsing also follows Monty's native method conventions: `self` must be positional,
+    and keyword acceptance and argument-count messages can differ from CPython's Python-defined methods.
+    `Counter.copy(value)` supports native constructors; custom receiver classes are not supported.
+
 - **`elements()` returns a list**, not CPython's lazy iterator. The values and
     order match, but the whole sequence is built up front, so a very large count
     can hit the memory limit where CPython would stream.
-- **Counting from a mapping into an empty `Counter` hashes each key.** `Counter(mapping)`, and `update(mapping)` on an
-    empty `Counter`, call each key's `__hash__` once more than CPython, whose `dict.update` reuses the hashes the
-    mapping already stores.
+
 - **Crosses the host boundary as a plain `dict`.**
 
 ## Qualified vs bare type names

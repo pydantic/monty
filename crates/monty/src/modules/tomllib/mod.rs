@@ -27,10 +27,9 @@ use crate::{
     codecs::Codec,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{HeapData, HeapReadOutput},
     intern::StaticStrings,
     os_dispatch::PostConversionEffect,
-    types::{Module, Type},
+    types::{Module, OpenFile, Type},
     value::Value,
 };
 
@@ -127,10 +126,7 @@ struct TomlLoadArgs {
 fn call_load(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let TomlLoadArgs { fp } = TomlLoadArgs::from_args(args, vm)?;
     defer_drop!(fp, vm);
-    let Value::Ref(file_id) = fp else {
-        return Err(ExcType::attribute_error(fp.py_type_name(vm), "read"));
-    };
-    let HeapReadOutput::OpenFile(mut file) = vm.heap.read(*file_id) else {
+    let Some(mut file) = fp.read_as::<OpenFile>(vm.heap) else {
         return Err(ExcType::attribute_error(fp.py_type_name(vm), "read"));
     };
     file.check_readable(vm)?;
@@ -139,7 +135,7 @@ fn call_load(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     }
     if file.needs_buffer_load(vm) {
         let effect = PostConversionEffect::LoadThenCall {
-            file_id: *file_id,
+            file_id: file.id(),
             callable: Value::ModuleFunction(ModuleFunctions::Tomllib(TomllibFunctions::Load)),
             args: ArgValues::One(fp.clone_with_heap(vm.heap)),
         };
@@ -154,16 +150,12 @@ fn call_load(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// `b.decode()`) and parses the text.
 fn parse_file_content(content: Value, vm: &mut VM<'_>) -> RunResult<Value> {
     defer_drop!(content, vm);
-    let bytes = match content {
-        Value::InternBytes(bytes_id) => vm.interns.get_bytes(*bytes_id),
-        Value::Ref(heap_id) if let HeapData::Bytes(bytes) = vm.heap.get(*heap_id) => bytes.as_slice(),
-        other => {
-            return Err(RunError::internal(format!(
-                "tomllib.load: binary read returned {}",
-                other.py_type_name(vm)
-            )));
-        }
-    };
+    let bytes = content.as_bytes(vm).ok_or_else(|| {
+        RunError::internal(format!(
+            "tomllib.load: binary read returned {}",
+            content.py_type_name(vm)
+        ))
+    })?;
     let source = Codec::Utf8.decode(bytes, "strict")?;
     let table = parse_document(&source, &vm.heap.tracker)?;
     value::table_into_value(table, vm)

@@ -431,6 +431,7 @@ export const PYTHON_EXC_NAMES: ReadonlySet<string> = new Set([
   'StopIteration',
   'SyntaxError',
   'TimeoutError',
+  'BlockingIOError',
   'TypeError',
   're.PatternError',
   'binascii.Error',

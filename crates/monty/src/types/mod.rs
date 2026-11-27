@@ -1,10 +1,6 @@
-/// Type definitions for Python runtime values.
-///
-/// This module contains structured types that wrap heap-allocated data
-/// and provide Python-like semantics for operations like append, insert, etc.
-///
-/// The `AbstractValue` trait provides a common interface for all heap-allocated
-/// types, enabling efficient dispatch via `enum_dispatch`.
+//! Runtime value types and their Python operations.
+
+pub(crate) mod builtin_descriptor;
 pub mod bytes;
 pub mod callable_iterator;
 pub mod class;
@@ -14,6 +10,7 @@ pub mod date;
 pub mod datetime;
 pub mod decimal;
 pub mod deque;
+pub(crate) mod descriptor;
 pub mod dict;
 pub mod dict_view;
 pub mod dir_scan;
@@ -25,6 +22,7 @@ pub mod hash_table;
 pub mod hashlib;
 pub mod host_class;
 pub mod instance;
+pub mod io;
 pub mod iter;
 pub mod itertools;
 pub(crate) mod key_hash;
@@ -59,6 +57,7 @@ mod unicode_type;
 mod unicode_type_data;
 pub mod union;
 
+pub(crate) use builtin_descriptor::BuiltinDescriptor;
 pub(crate) use bytes::{Bytes, BytesIterator};
 pub(crate) use class::Class;
 pub(crate) use complex::Complex;

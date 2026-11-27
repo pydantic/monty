@@ -28,14 +28,13 @@ use self::counter::counter_update;
 use crate::{
     args::{ArgValues, FromArgs},
     builtins::Builtins,
-    bytecode::{CallResult, VM},
+    bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropWithContext, HeapReadOutput},
+    heap::{DropGuard, DropWithContext},
     intern::StaticStrings,
     types::{
         Dict, Module, NamedTupleClass, PyTrait, Type,
-        dict::{DictKind, dict_fromkeys},
         iter::collect_owned_iterable,
         str::{StringRepr, str_isidentifier},
     },
@@ -84,37 +83,6 @@ pub(super) fn call(vm: &mut VM<'_>, function: CollectionsFunctions, args: ArgVal
     }
 }
 
-/// `Counter.fromkeys`, which CPython deliberately disables.
-pub(crate) fn counter_class_method(
-    attr: &EitherStr,
-    args: ArgValues,
-    vm: &mut VM<'_>,
-) -> Result<RunResult<CallResult>, ArgValues> {
-    if attr.static_string(vm.interns) == Some(StaticStrings::Fromkeys) {
-        args.drop_with(vm);
-        Ok(Err(ExcType::not_implemented(
-            "Counter.fromkeys() is undefined.  Use Counter(iterable) instead.",
-        )
-        .into()))
-    } else {
-        Err(args)
-    }
-}
-
-/// `defaultdict.fromkeys(...)` builds `cls()`, a defaultdict with no factory,
-/// matching CPython's inherited `dict.fromkeys` classmethod.
-pub(crate) fn defaultdict_class_method(
-    attr: &EitherStr,
-    args: ArgValues,
-    vm: &mut VM<'_>,
-) -> Result<RunResult<CallResult>, ArgValues> {
-    if attr.static_string(vm.interns) == Some(StaticStrings::Fromkeys) {
-        Ok(dict_fromkeys(args, DictKind::defaultdict(None), vm).map(CallResult::Value))
-    } else {
-        Err(args)
-    }
-}
-
 /// The `collections.Counter(iterable_or_mapping=None, /, **kwargs)` constructor.
 /// Construction is `Counter().update(...)`: a mapping adds its counts, any
 /// other iterable counts occurrences, and keyword arguments add counts.
@@ -142,21 +110,10 @@ pub(crate) fn counter_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>
 
     let mut dict = Dict::new();
     dict.make_counter();
-    let value = Value::allocate(dict, vm.heap);
-    let Value::Ref(dict_id) = value else {
-        unreachable!("just allocated a ref");
-    };
-    let result = {
-        let HeapReadOutput::Dict(mut counter) = vm.heap.read(dict_id) else {
-            unreachable!("just allocated a Counter dict");
-        };
-        counter_update(&mut counter, source, kwargs, false, vm)
-    };
-    if let Err(e) = result {
-        value.drop_with(vm);
-        return Err(e);
-    }
-    Ok(value)
+    let mut counter = DropGuard::new(vm.heap.allocate_as(dict), vm);
+    let (allocation, vm) = counter.as_parts_mut();
+    counter_update(allocation.read(vm.heap), source, kwargs, false, vm)?;
+    Ok(counter.into_inner().into_value())
 }
 
 /// The `collections.defaultdict(default_factory=None, /, *args, **kwargs)`
@@ -199,10 +156,7 @@ pub(crate) fn defaultdict_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Va
         }
     };
 
-    let Value::Ref(dict_id) = dict_value else {
-        unreachable!("Dict::init returns a dict ref");
-    };
-    let HeapReadOutput::Dict(dict) = vm.heap.read(dict_id) else {
+    let Some(dict) = dict_value.read_as::<Dict>(vm.heap) else {
         unreachable!("Dict::init returns a dict");
     };
     dict.get_mut(vm.heap).make_defaultdict(factory);
@@ -255,7 +209,7 @@ fn namedtuple(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         name
     } else {
         let as_str = typename.py_str(vm)?;
-        let owned = as_str.try_to_str(vm).map(str::to_owned);
+        let owned = as_str.try_as_str(vm).map(str::to_owned);
         as_str.drop_with(vm);
         EitherStr::from(owned?)
     };

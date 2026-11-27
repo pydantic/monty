@@ -18,12 +18,12 @@ use num_bigint::Sign;
 use num_traits::ToPrimitive;
 
 use crate::{
-    args::{ArgValues, FromArgs, KwargsValues, LaxBool, StrArg, long_int},
+    args::{ArgValues, FromArgs, KwargsValues, LaxBool, StrArg},
     builtins::Builtins,
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{ContainsHeap, DropWithContext, HeapData},
+    heap::{ContainsHeap, DropWithContext},
     intern::StaticStrings,
     modules::ModuleFunctions,
     types::{
@@ -31,7 +31,7 @@ use crate::{
         bytes::allocate_bytes,
         hashlib::{Blake2Params, Blake2b, Blake2s, DigestBytes, HashAlgorithm, HashObject, hash_input},
     },
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// `hashlib` module functions, one variant per Python-visible function.
@@ -480,24 +480,6 @@ pub(crate) fn blake2s_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>
     blake2_init(Blake2Kind::Blake2s, vm, args)
 }
 
-/// `blake2b`'s size limits, on the class and so on its instances.
-pub(crate) fn blake2b_class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
-    match attr.static_string(vm.interns)? {
-        StaticStrings::MaxDigestSize | StaticStrings::MaxKeySize => Some(Value::Int(64)),
-        StaticStrings::SaltSize | StaticStrings::PersonSize => Some(Value::Int(16)),
-        _ => None,
-    }
-}
-
-/// `blake2s`'s size limits, on the class and so on its instances.
-pub(crate) fn blake2s_class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
-    match attr.static_string(vm.interns)? {
-        StaticStrings::MaxDigestSize | StaticStrings::MaxKeySize => Some(Value::Int(32)),
-        StaticStrings::SaltSize | StaticStrings::PersonSize => Some(Value::Int(8)),
-        _ => None,
-    }
-}
-
 /// `blake2b(...)` / `blake2s(...)`, also reached through `hashlib.new()`.
 ///
 /// Conversions run in signature order, then the parameter checks in the
@@ -513,9 +495,9 @@ pub(crate) fn blake2_init(kind: Blake2Kind, vm: &mut VM<'_>, args: ArgValues) ->
         .digest_size
         .as_ref()
         .map_or(Ok(i32::from(max_digest)), |v| c_int(v, vm))?;
-    let key = args.key.as_ref().map_or(Ok(&[][..]), |v| buffer(v, vm))?;
-    let salt = args.salt.as_ref().map_or(Ok(&[][..]), |v| buffer(v, vm))?;
-    let person = args.person.as_ref().map_or(Ok(&[][..]), |v| buffer(v, vm))?;
+    let key = args.key.as_ref().map_or(Ok(&[][..]), |v| v.try_as_bytes(vm))?;
+    let salt = args.salt.as_ref().map_or(Ok(&[][..]), |v| v.try_as_bytes(vm))?;
+    let person = args.person.as_ref().map_or(Ok(&[][..]), |v| v.try_as_bytes(vm))?;
     let fanout = args.fanout.as_ref().map_or(Ok(1), |v| c_int(v, vm))?;
     let depth = args.depth.as_ref().map_or(Ok(1), |v| c_int(v, vm))?;
     let leaf_size = args
@@ -596,34 +578,13 @@ pub(crate) fn blake2_init(kind: Blake2Kind, vm: &mut VM<'_>, args: ArgValues) ->
     Ok(hash.allocate(vm.heap))
 }
 
-/// Borrows a `bytes` argument with the `Py_buffer` converter's message, which
-/// differs from the data argument's (see [`hash_input`]).
-fn buffer<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<&'a [u8]> {
-    match value {
-        Value::InternBytes(id) => Ok(vm.interns.get_bytes(*id)),
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Bytes(bytes) => Ok(bytes.as_slice()),
-            _ => Err(not_bytes_like(value, vm)),
-        },
-        _ => Err(not_bytes_like(value, vm)),
-    }
-}
-
-/// `TypeError: a bytes-like object is required, not 'X'`.
-fn not_bytes_like(value: &Value, vm: &VM<'_>) -> RunError {
-    ExcType::type_error(format!(
-        "a bytes-like object is required, not '{}'",
-        value.py_type_name(vm)
-    ))
-}
-
 /// Argument Clinic's `int` converter: a C `int`, overflowing with
 /// `PyLong_AsInt`'s message.
 fn c_int(value: &Value, vm: &VM<'_>) -> RunResult<i32> {
     match value {
         Value::Bool(b) => Ok(i32::from(*b)),
         Value::Int(i) => i32::try_from(*i).map_err(|_| overflow_error("Python int too large to convert to C int")),
-        _ if long_int(value, vm).is_some() => Err(overflow_error("Python int too large to convert to C int")),
+        _ if value.as_long_int(vm).is_some() => Err(overflow_error("Python int too large to convert to C int")),
         _ => Err(ExcType::type_error_not_integer(&value.py_type_name(vm))),
     }
 }
@@ -634,7 +595,7 @@ fn c_long(value: &Value, vm: &VM<'_>) -> RunResult<i64> {
     match value {
         Value::Bool(b) => Ok(i64::from(*b)),
         Value::Int(i) => Ok(*i),
-        _ if long_int(value, vm).is_some() => Err(ExcType::overflow_c_long()),
+        _ if value.as_long_int(vm).is_some() => Err(ExcType::overflow_c_long()),
         _ => Err(ExcType::type_error_not_integer(&value.py_type_name(vm))),
     }
 }
@@ -645,7 +606,7 @@ fn c_unsigned(value: &Value, c_type: &str, vm: &VM<'_>) -> RunResult<u64> {
     match value {
         Value::Bool(b) => Ok(u64::from(*b)),
         Value::Int(i) => u64::try_from(*i).map_err(|_| ExcType::value_error_negative_int()),
-        _ => match long_int(value, vm) {
+        _ => match value.as_long_int(vm) {
             Some(big) if big.sign() == Sign::Minus => Err(ExcType::value_error_negative_int()),
             Some(big) => big
                 .to_u64()
@@ -694,8 +655,8 @@ fn call_pbkdf2_hmac(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(salt, vm);
     defer_drop!(iterations, vm);
     defer_drop!(dklen, vm);
-    let password = buffer(password, vm)?;
-    let salt = buffer(salt, vm)?;
+    let password = password.try_as_bytes(vm)?;
+    let salt = salt.try_as_bytes(vm)?;
     let iterations = c_long(iterations, vm)?;
     let name = hash_name.as_str(vm);
     let algorithm = HashAlgorithm::from_name(name).ok_or_else(|| unsupported_hash_type(name))?;

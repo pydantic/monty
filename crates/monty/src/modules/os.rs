@@ -20,6 +20,7 @@
 //! as one would there (see [`PathArgError`]).
 
 use monty_types::{GetenvArgs, MkdirCallArgs, MontyObject, MontyPath, OsFunctionCall, RenameCallArgs, UrandomArgs};
+use num_traits::Signed;
 
 use crate::{
     args::{ArgValues, FromArgs, LaxBool},
@@ -700,8 +701,8 @@ fn fd_argument(value: &Value, vm: &VM<'_>) -> Option<PathArgError> {
             Err(_) => PathArgError::FdOverflow { above: *fd > 0 },
         }),
         // Big ints (`LongInt`) are outside i64, so far outside C int.
-        _ => (value.py_type_heap(vm.heap) == Type::Int).then(|| PathArgError::FdOverflow {
-            above: !value.long_int_is_negative(vm),
+        _ => value.as_long_int(vm).map(|n| PathArgError::FdOverflow {
+            above: !n.is_negative(),
         }),
     }
 }

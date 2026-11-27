@@ -10,10 +10,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{
-        ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapObjectRead, HeapRead, HeapReadMut,
-        HeapReadOutput,
-    },
+    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapObjectRead, HeapRead, HeapReadMut},
     string_builder::StringBuilder,
     types::{
         CsvObject, Dict, List, PyTrait, Set,
@@ -323,9 +320,10 @@ pub(super) fn writer_writerows<'h>(
     defer_drop!(rowdicts, vm);
     let writer = dict_writer_part(obj, vm, |writer| writer.writer.clone_with_heap(vm.heap));
     defer_drop!(writer, vm);
-    let Some((targets_file, write, dialect)) = writer_parts(writer, vm) else {
+    let Some((targets_file, target, write, dialect)) = writer_parts(writer, vm) else {
         return Err(RunError::internal("DictWriter: writer is not a _csv.writer"));
     };
+    defer_drop!(target, vm);
     defer_drop!(write, vm);
     // Filled by the first row and refreshed whenever an attribute changes between rows.
     let spec: Option<RowSpec> = None;
@@ -357,7 +355,7 @@ pub(super) fn writer_writerows<'h>(
             defer_drop!(rowdict, vm);
             let items = dict_to_list(obj, spec, rowdict, vm)?;
             defer_drop!(items, vm);
-            writerow_now(write, &dialect, &terminator_chars, items, &mut line, vm)?;
+            writerow_now(target, write, &dialect, &terminator_chars, items, &mut line, vm)?;
         }
         Ok(CallResult::Value(Value::None))
     }
@@ -511,13 +509,7 @@ fn dict_to_list<'h>(
 
 /// The row as a dict, or `None` when it is anything else (see [`dict_method_missing`]).
 fn row_dict<'h>(rowdict: &Value, vm: &VM<'h>) -> Option<HeapObjectRead<'h, Dict>> {
-    match rowdict {
-        Value::Ref(id) => match vm.heap.read(*id) {
-            HeapReadOutput::Dict(dict) => Some(dict),
-            _ => None,
-        },
-        _ => None,
-    }
+    rowdict.read_as::<Dict>(vm.heap)
 }
 
 /// The `AttributeError` CPython raises for a row that is not a mapping: `.keys()` is
@@ -530,10 +522,7 @@ fn dict_method_missing(rowdict: &Value, raise_on_extra: bool, vm: &VM<'_>) -> Ru
 /// `rowdict.keys() - self.fieldnames`: the `ValueError` for keys outside `known`, the set
 /// [`known_names`] built.
 fn check_extra_keys<'h>(dict: &HeapRead<'h, Dict>, known: &Value, vm: &mut VM<'h>) -> RunResult<()> {
-    let Value::Ref(known_id) = known else {
-        unreachable!("known_names allocates a set")
-    };
-    let HeapReadOutput::Set(known) = vm.heap.read(*known_id) else {
+    let Some(known) = known.read_as::<Set>(vm.heap) else {
         unreachable!("known_names allocates a set")
     };
     let keys = dict_keys(dict, vm)?;
@@ -591,32 +580,20 @@ fn with_writer<'h, T>(
     vm: &mut VM<'h>,
     call: impl FnOnce(&HeapRead<'h, CsvObject>, &mut VM<'h>) -> RunResult<T>,
 ) -> RunResult<T> {
-    let Value::Ref(writer_id) = writer else {
-        return Err(RunError::internal("DictWriter: writer is not a _csv.writer"));
-    };
-    let HeapReadOutput::Csv(mut writer_obj) = vm.heap.read(*writer_id) else {
+    let Some(mut writer_obj) = writer.read_as::<CsvObject>(vm.heap) else {
         return Err(RunError::internal("DictWriter: writer is not a _csv.writer"));
     };
     call(&mut writer_obj, vm)
 }
 
-/// Whether the wrapped `_csv.writer` targets a file, with its bound `write` and dialect;
-/// `None` if `writer` is not one.
-fn writer_parts(writer: &Value, vm: &VM<'_>) -> Option<(bool, Value, Arc<Dialect>)> {
-    match writer {
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Csv(csv) => match &**csv {
-                CsvObject::Writer(writer) => Some((
-                    writer.targets_file(vm),
-                    writer.write_method(vm.heap),
-                    Arc::clone(&writer.dialect),
-                )),
-                _ => None,
-            },
-            _ => None,
-        },
-        _ => None,
-    }
+/// Whether the wrapped `_csv.writer` targets a file, with its target, bound `write` and
+/// dialect; `None` if `writer` is not one.
+fn writer_parts(writer: &Value, vm: &VM<'_>) -> Option<(bool, Value, Value, Arc<Dialect>)> {
+    let CsvObject::Writer(writer) = writer.get_as::<CsvObject>(vm.heap)? else {
+        return None;
+    };
+    let (target, write) = writer.target_and_write(vm.heap);
+    Some((writer.targets_file(vm), target, write, Arc::clone(&writer.dialect)))
 }
 
 /// Reads one field of the `DictWriter` under a short borrow.
@@ -630,10 +607,7 @@ fn dict_writer_part<'h, T>(obj: &HeapRead<'h, CsvObject>, vm: &VM<'h>, part: imp
 /// The next record's fields from the wrapped `_csv.reader`, taken as a vector rather than
 /// through `next()` so no list is built and discarded per row.
 fn next_row(reader: &Value, vm: &mut VM<'_>) -> RunResult<Option<Vec<Value>>> {
-    let Value::Ref(reader_id) = reader else {
-        return Err(RunError::internal("DictReader: reader is not a _csv.reader"));
-    };
-    let HeapReadOutput::Csv(reader_obj) = vm.heap.read(*reader_id) else {
+    let Some(reader_obj) = reader.read_as::<CsvObject>(vm.heap) else {
         return Err(RunError::internal("DictReader: reader is not a _csv.reader"));
     };
     super::reader::next_fields(&reader_obj, vm)
@@ -642,7 +616,7 @@ fn next_row(reader: &Value, vm: &mut VM<'_>) -> RunResult<Option<Vec<Value>>> {
 /// `fieldnames` as owned values: a `list` (what a header read produces) is copied directly,
 /// preflighted as a bulk copy; any other iterable is iterated as `zip` or `list()` would.
 fn fieldnames_items(fieldnames: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
-    if let Some(HeapData::List(list)) = fieldnames.ref_id().map(|id| vm.heap.get(id)) {
+    if let Some(list) = fieldnames.get_as::<List>(vm.heap) {
         return list.items().to_vec(vm.heap);
     }
     collect_iterable(fieldnames, vm)
@@ -650,14 +624,8 @@ fn fieldnames_items(fieldnames: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>
 
 /// The wrapped reader's `line_num`.
 fn reader_line_num(reader: &Value, vm: &VM<'_>) -> u64 {
-    match reader {
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Csv(csv) => match &**csv {
-                CsvObject::Reader(reader) => reader.line_num,
-                _ => 0,
-            },
-            _ => 0,
-        },
+    match reader.get_as::<CsvObject>(vm.heap) {
+        Some(CsvObject::Reader(reader)) => reader.line_num,
         _ => 0,
     }
 }

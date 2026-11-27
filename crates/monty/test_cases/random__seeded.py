@@ -147,6 +147,17 @@ assert random.Random(x=5).random() == random.Random(5).random()
 random.seed(7)
 assert random.random() == 0.32383276483316237
 
+# Each instance method must advance its own generator independently of the module generator.
+r = random.Random(42)
+random.seed(42)
+assert r.randbytes(7) == random.randbytes(7)
+assert r.choices('abc', weights=[1, 2, 3], k=6) == random.choices('abc', weights=[1, 2, 3], k=6)
+assert r.triangular(0, 10, 3) == random.triangular(0, 10, 3)
+assert r.expovariate(2) == random.expovariate(2)
+assert r.paretovariate(2) == random.paretovariate(2)
+assert r.weibullvariate(1, 2) == random.weibullvariate(1, 2)
+assert r.getstate() == random.getstate()
+
 # === getstate() / setstate() ===
 r2 = random.Random(7)
 state = r2.getstate()

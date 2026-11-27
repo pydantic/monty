@@ -32,6 +32,7 @@ For compilation and runtime limits, see [resource limits](resource_limits.md).
 - List, dict and set comprehensions
 - `try` / `except` / `else` / `finally`, `raise ... from ...`
 - `for`, `while`, `if` / `elif` / `else`, `break`, `continue`, `pass`, `assert`, `global`, `nonlocal`, `return`
+- Descriptors, `property`, `classmethod`, `staticmethod`, and decorators on methods
 - `with` statements, for files and for classes implementing `__enter__` / `__exit__`
 - Binary write/update files (`open(path, 'w+b')`); other update modes remain unsupported.
     See [open.md](open.md) for file buffering and method limitations.
@@ -43,17 +44,17 @@ For compilation and runtime limits, see [resource limits](resource_limits.md).
 - `import x`, `import x.y`, `from x import y, z as w`, `from x import *` (see
     [modules.md](modules.md#star-imports)); a module the sandbox does not have is requested from the host,
     see [modules.md](modules.md#host-modules), which may answer with the module's `.py` file from the working
-    directory instead, see [modules from files](modules.md#modules-from-files)
+    directory instead, see [modules from files](modules.md#modules-from-files).
+    Modules in a file package can use [relative imports](language.md#imports), such as `from . import sibling`.
 - Starred unpacking everywhere CPython allows it
 - Runtime generic aliases (`list[int]`) and `|` unions (`int | None`), see [typing.md](typing.md)
 
 **Rejected at parse time**, with `NotImplementedError` before any code runs:
 
 - Metaclasses (`class Foo(metaclass=M):`)
-- Decorators on methods — so no `@classmethod`, `@staticmethod`, `@property`
 - `yield` / `yield from` — there are no generator functions.
     Generator *expressions* parse, but currently materialise to a `list`
-- `del`, both `del x` and `del d[k]`
+- `del x`, `del d[k]`, and multiple deletion targets; single attribute deletion is supported
 - `try*` / `except*` exception groups
 - PEP 695 `type` aliases
 - `async with`, `async for` and async comprehensions
@@ -77,6 +78,7 @@ The following modules are present:
 
 | Module          | Divergences                                       |
 | --------------- | ------------------------------------------------- |
+| `_io`           | [io.md](io.md)                                    |
 | `annotationlib` | [annotationlib.md](annotationlib.md)              |
 | `asyncio`       | [asyncio.md](asyncio.md)                          |
 | `base64`        | [base64.md](base64.md)                            |
@@ -89,9 +91,11 @@ The following modules are present:
 | `dataclasses`   | [dataclasses.md](dataclasses.md)                  |
 | `datetime`      | [datetime.md](datetime.md)                        |
 | `decimal`       | [decimal.md](decimal.md)                          |
+| `errno`         | [errno.md](errno.md)                              |
 | `fnmatch`       | [fnmatch.md](fnmatch.md)                          |
 | `functools`     | [functools.md](functools.md)                      |
 | `hashlib`       | [hashlib.md](hashlib.md)                          |
+| `io`            | [io.md](io.md)                                    |
 | `itertools`     | [itertools.md](itertools.md)                      |
 | `json`          | [json.md](json.md)                                |
 | `keyword`       | [modules.md](modules.md#vendored-cpython-modules) |
@@ -105,18 +109,19 @@ The following modules are present:
 | `stat`          | [modules.md](modules.md#vendored-cpython-modules) |
 | `statistics`    | [statistics.md](statistics.md)                    |
 | `sys`           | [sys.md](sys.md)                                  |
+| `textwrap`      | [modules.md](modules.md#vendored-cpython-modules) |
 | `time`          | [time.md](time.md)                                |
 | `tomllib`       | [tomllib.md](tomllib.md)                          |
 | `typing`        | [typing.md](typing.md)                            |
 | `unicodedata`   | [unicodedata.md](unicodedata.md)                  |
 
-Each covers only part of its CPython surface — often a small part. `colorsys`, `keyword` and `stat` run CPython's own source.
+Each covers only part of its CPython surface — often a small part. `colorsys`, `keyword`, `stat` and `textwrap` run CPython's own source, and `io` a patched copy of it.
 `itertools`, `hashlib`, `tomllib` and `fnmatch` are the other exceptions: `itertools` implements every name it exports, `hashlib` every
 guaranteed algorithm, and `tomllib` and `fnmatch` their whole three- and four-name surfaces.
 The absent names are missing from the module namespace rather than stubbed, so they fail type checking as well as
 raising `AttributeError` at runtime.
 
-Notably absent: `enum`, `contextlib`, `io`, `string`, `struct`, `operator`,
+Notably absent: `enum`, `contextlib`, `string`, `struct`, `operator`,
 `inspect`, `logging`, `traceback`, `uuid`, `urllib`.
 Some of those are absent by design — `socket`, `subprocess`, `multiprocessing`, `threading` and `ctypes` would breach
 the sandbox — and others are simply not implemented yet.
@@ -136,8 +141,8 @@ Each links to the page that owns it, which is where the full account lives:
     So `enumerate(itertools.count())` runs until a resource limit trips ([builtins.md](builtins.md)).
     `map` and `filter` are lazy, but synchronous consumers such as `list()` cannot suspend in their callbacks
     ([iter.md](iter.md)).
-- **`re` is backed by Rust's `fancy-regex`**, not CPython's engine: no `bytes` patterns, no `re.VERBOSE` constant, and some
-    error messages differ ([re.md](re.md)).
+- **`re` is backed by Rust's `fancy-regex`**, not CPython's engine: no `bytes` patterns, and some error messages
+    differ ([re.md](re.md)).
 - **Only the class dunders listed above are dispatched.** `__lt__` and `__len__` raise
     `TypeError` as if undefined, while in-place arithmetic dunders are skipped in favor of binary arithmetic
     (`@=` is rejected at compile time).
