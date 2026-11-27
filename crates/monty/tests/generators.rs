@@ -117,6 +117,8 @@ namespace = {'token': []}
 exec('def scoped():\n    yield token\n    yield token', namespace)
 s = namespace['scoped']()
 assert next(s) is namespace['token']
+expr = (x * 2 for x in range(5))
+assert next(expr) == 0
 ",
         vec![],
         PrintWriter::Stdout,
@@ -140,6 +142,7 @@ assert next(o) == 'outer'
 assert next(delegate, None) is None
 assert next(s) is namespace['token']
 assert next(s, None) is None
+assert list(expr) == [2, 4, 6, 8]
 ",
             vec![],
             PrintWriter::Stdout,

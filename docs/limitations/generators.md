@@ -1,7 +1,7 @@
 # Generators
 
-Generator functions, `yield`, `yield from`, `send()` and `StopIteration.value` are supported.
-Generator *expressions* still evaluate to a `list`; see [comprehensions.md](comprehensions.md).
+Generator functions and expressions, `yield`, `yield from`, `send()` and `StopIteration.value` are supported.
+See [comprehensions.md](comprehensions.md) for restrictions on generator expression targets and clauses.
 
 ## Missing methods and attributes
 
@@ -24,7 +24,7 @@ Generator *expressions* still evaluate to a `list`; see [comprehensions.md](comp
     without returning to the host, so a host call in its body raises
     `NotImplementedError: external function 'name' cannot suspend in this synchronous context` inside the generator,
     where it can be caught.
-    `for`, comprehensions, `next()`, `send()` and `yield from` suspend normally.
+    Advance the generator with `for`, a list, set or dict comprehension, `next()`, `send()` or `yield from` to allow suspension.
     The same restriction applies to user `__next__` methods; see [iter.md](iter.md).
 - **`yield from` cannot advance a delegate that would suspend outside a Python frame.**
     A class whose `__next__` is a host function, or a file that has not been read yet, raises
@@ -48,7 +48,8 @@ Generator *expressions* still evaluate to a `list`; see [comprehensions.md](comp
 
 ## Rejected at parse time
 
-- Async generators (`async def` containing `yield`) raise `NotImplementedError`.
+- Async generator functions (`async def` containing `yield`) raise `NotImplementedError`.
+    Async generator expressions (`async for` or `await` in the deferred body) also raise `NotImplementedError`.
     `yield from` inside `async def` raises CPython's `SyntaxError: 'yield from' inside async function`.
 
 ## Tracebacks

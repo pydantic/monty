@@ -392,6 +392,14 @@ pub enum Expr {
         target: Identifier,
         value: Box<ExprLoc>,
     },
+    /// A generator expression before its synthetic function scope is prepared.
+    GeneratorRaw {
+        name_id: StringId,
+        elt: Box<ExprLoc>,
+        generators: Vec<Comprehension>,
+    },
+    /// A generator expression with a prepared child scope.
+    Generator(Box<PreparedGeneratorExpression>),
 }
 
 /// Target for tuple unpacking - a name, attribute, subscript, nested tuple or
@@ -602,6 +610,17 @@ pub struct Comprehension {
     pub iter: ExprLoc,
     /// Zero or more filter conditions (all must be truthy for the element to be included).
     pub ifs: Vec<ExprLoc>,
+}
+
+/// A generator expression's synthetic function and comprehension clauses.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PreparedGeneratorExpression {
+    /// Scope and closure layout; the compiler builds the body from the clauses below.
+    pub func_def: PreparedFunctionDef,
+    pub elt: ExprLoc,
+    /// Only the first `iter` is evaluated in the enclosing scope.
+    pub generators: Vec<Comprehension>,
+    pub captured_slots: Vec<u16>,
 }
 
 impl Expr {

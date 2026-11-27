@@ -27,8 +27,8 @@ use crate::{
     exception_private::{ExcType, ExceptionRaise, RunError, SimpleException},
     expressions::{
         AssignTarget, Callable, CaptureSource, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier,
-        ImportName, Literal, NameScope, Node, Operator, PreparedFunctionDef, PreparedNode, SequenceItem, Submodule,
-        UnpackTarget,
+        ImportName, Literal, NameScope, Node, Operator, PreparedFunctionDef, PreparedGeneratorExpression, PreparedNode,
+        SequenceItem, Submodule, UnpackTarget,
     },
     fstring::{ConversionFlag, FStringPart, FormatSpec},
     function::Function,
@@ -1587,6 +1587,8 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 self.compile_dict_comp(key, value, generators, captured_slots)?;
             }
 
+            Expr::Generator(generator) => self.compile_generator_expression(generator)?,
+            Expr::GeneratorRaw { .. } => unreachable!("unprepared generator expression"),
             Expr::Lambda { func_def } => {
                 self.compile_lambda(func_def)?;
             }
@@ -3114,6 +3116,48 @@ impl<'a, 'i> Compiler<'a, 'i> {
     // Comprehension Compilation
     // ========================================================================
 
+    /// Creates a generator function and calls it with the enclosing scope's first iterator.
+    fn compile_generator_expression(&mut self, generator: &PreparedGeneratorExpression) -> Result<(), CompileError> {
+        let PreparedGeneratorExpression {
+            func_def,
+            elt,
+            generators,
+            captured_slots,
+        } = generator;
+        check_comp_generators(generators.len(), elt.position)?;
+        let flags = ScopeFlags {
+            await_scope: AwaitScope::OutsideAsyncFunction,
+            ..self.flags
+        };
+        self.emit_make_callable(func_def, "generator expression", |interns, namespace_size| {
+            let mut body = Compiler::new(interns, false, namespace_size, flags);
+            body.code.set_location(generators[0].iter.position, None);
+            let iterator = func_def
+                .signature
+                .param_names()
+                .next()
+                .expect("generator iterator parameter");
+            body.code.register_local_name(0, iterator);
+            for (slot, name) in func_def.free_var_slots.iter().zip(&func_def.free_var_names) {
+                body.code.register_local_name(slot.as_u16(), *name);
+            }
+            body.enter_captured_comp_cells(captured_slots, elt.position)?;
+            body.code.emit_load_local(0)?;
+            body.compile_comprehension_generators(generators, 0, true, |body| {
+                body.compile_expr(elt)?;
+                body.code.emit_u8(Opcode::Yield, YIELD_VALUE)?;
+                body.code.emit(Opcode::Pop)
+            })?;
+            body.exit_captured_comp_cells(captured_slots)?;
+            body.code.emit(Opcode::LoadNone)?;
+            body.code.emit(Opcode::ReturnValue)?;
+            Ok(body.finish())
+        })?;
+        self.compile_expr(&generators[0].iter)?;
+        self.code.emit(Opcode::GetIter)?;
+        self.code.emit_u8(Opcode::CallFunction, 1)
+    }
+
     /// Compiles a list comprehension: `[elt for target in iter if cond...]`
     ///
     /// Bytecode structure:
@@ -3155,7 +3199,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             .expect("list comp: BuildList kept us live, stack_depth must be Some");
         self.enter_captured_comp_cells(captured_slots, elt.position)?;
 
-        self.compile_comprehension_generators(generators, 0, |compiler| {
+        self.compile_comprehension_generators(generators, 0, false, |compiler| {
             compiler.compile_expr(elt)?;
             if compiler.code.is_dead() {
                 return Ok(());
@@ -3186,7 +3230,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             .expect("set comp: BuildSet kept us live, stack_depth must be Some");
         self.enter_captured_comp_cells(captured_slots, elt.position)?;
 
-        self.compile_comprehension_generators(generators, 0, |compiler| {
+        self.compile_comprehension_generators(generators, 0, false, |compiler| {
             compiler.compile_expr(elt)?;
             if compiler.code.is_dead() {
                 return Ok(());
@@ -3218,7 +3262,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             .expect("dict comp: BuildDict kept us live, stack_depth must be Some");
         self.enter_captured_comp_cells(captured_slots, key.position)?;
 
-        self.compile_comprehension_generators(generators, 0, |compiler| {
+        self.compile_comprehension_generators(generators, 0, false, |compiler| {
             compiler.compile_expr(key)?;
             compiler.compile_expr(value)?;
             if compiler.code.is_dead() {
@@ -3305,7 +3349,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
     ///    did with the dedicated-region scheme).
     /// 5. Either recurse for the next generator, or call `body_fn` at the
     ///    innermost level (which emits the element expression and
-    ///    `LIST_APPEND` / `SET_ADD` / `DICT_SET_ITEM`).
+    ///    `LIST_APPEND` / `SET_ADD` / `DICT_SET_ITEM` / `YIELD`).
     /// 6. Per-iteration `POP` for each comp-var leaf produced by this
     ///    generator's target, restoring the loop-start stack shape.
     /// 7. Jump back to loop start.
@@ -3313,13 +3357,15 @@ impl<'a, 'i> Compiler<'a, 'i> {
         &mut self,
         generators: &[Comprehension],
         index: usize,
+        iterator_ready: bool,
         body_fn: impl FnOnce(&mut Self) -> Result<(), CompileError>,
     ) -> Result<(), CompileError> {
         let generator = &generators[index];
 
-        // Compile iterator expression
-        self.compile_expr(&generator.iter)?;
-        self.code.emit(Opcode::GetIter)?;
+        if !iterator_ready {
+            self.compile_expr(&generator.iter)?;
+            self.code.emit(Opcode::GetIter)?;
+        }
 
         // Loop start
         let loop_start = self.code.current_jump_target();
@@ -3343,7 +3389,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
 
         // Recurse or emit body.
         if index + 1 < generators.len() {
-            self.compile_comprehension_generators(generators, index + 1, body_fn)?;
+            self.compile_comprehension_generators(generators, index + 1, false, body_fn)?;
         } else {
             body_fn(self)?;
         }

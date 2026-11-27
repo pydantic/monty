@@ -1453,7 +1453,7 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         ("s = 'x' * 200\ng = list[(s,) * 5_000]\nlen(repr(g))", 1_174_036),
         (
             "import typing\ns = 'x' * 600\nu = typing.Union[tuple(list[i, s] for i in range(2_000))]\nlen(repr(u))",
-            1_529_645,
+            1_532_827,
         ),
         // `dict | dict` snapshots the left pairs and builds the merged dict
         // while that snapshot is live, so both are preflighted together.

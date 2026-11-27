@@ -91,7 +91,7 @@ assert all_hints == [
 ]
 by_name = {name: get_type_hints(f)['return'] for name, f in [('add', add_ints), ('concat', concat_strings)]}
 assert by_name == {'add': int, 'concat': str}
-assert list(get_type_hints(f) for f in [add_ints]) == [{'a': int, 'b': int, 'return': int}]
+assert next(get_type_hints(f) for f in [add_ints]) == {'a': int, 'b': int, 'return': int}
 assert (lambda f: get_type_hints(f))(raise_error)['message'] is str
 
 # === Mixed with other host calls ===

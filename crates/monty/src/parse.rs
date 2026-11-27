@@ -439,6 +439,16 @@ pub struct Parser<'a, 'i> {
     future_allowed: bool,
     /// Where a `yield` parsed now would bind; see [`YieldScope`].
     yield_scope: YieldScope,
+    comprehension: ComprehensionContext,
+}
+
+/// Syntax restrictions inherited through nested comprehensions.
+#[derive(Default)]
+struct ComprehensionContext {
+    /// Assignment expressions are forbidden here, even in nested scopes.
+    in_iterable: bool,
+    /// An `await` here would make a generator expression asynchronous.
+    in_generator: bool,
 }
 
 /// The scope a `yield` would belong to, tracked so the enclosing `def` or `lambda`
@@ -449,10 +459,14 @@ enum YieldScope {
     Outside,
     /// A `def` or `lambda` body; `yields` records whether one has been seen, and
     /// `is_async` rejects `yield from`.
-    Function { yields: bool, is_async: bool },
+    Function {
+        yields: bool,
+        is_async: bool,
+    },
     /// A comprehension's own scope, named for the error message. Its first
     /// iterable is evaluated in the enclosing scope, so it is not in here.
     Comprehension(&'static str),
+    GeneratorExpression,
 }
 
 impl<'a, 'i> Parser<'a, 'i> {
@@ -472,6 +486,7 @@ impl<'a, 'i> Parser<'a, 'i> {
             future_annotations,
             future_allowed: true,
             yield_scope: YieldScope::Outside,
+            comprehension: ComprehensionContext::default(),
         }
     }
 
@@ -1848,6 +1863,12 @@ impl<'a, 'i> Parser<'a, 'i> {
             AstExpr::Named(ast::ExprNamed {
                 target, value, range, ..
             }) => {
+                if self.comprehension.in_iterable {
+                    return Err(ParseError::syntax(
+                        "assignment expression cannot be used in a comprehension iterable expression",
+                        self.convert_range(range),
+                    ));
+                }
                 let target_ident = self.parse_identifier(*target)?;
                 let value_expr = self.parse_expression(*value)?;
                 Ok(ExprLoc::new(
@@ -2048,21 +2069,27 @@ impl<'a, 'i> Parser<'a, 'i> {
             AstExpr::Generator(ast::ExprGenerator {
                 elt, generators, range, ..
             }) => {
-                // TODO: Generator expressions still evaluate eagerly, as list comprehensions;
-                // making them lazy means compiling the body as a generator function.
-                let scope = YieldScope::Comprehension("generator expression");
+                let name_id = self.interner.intern("<genexpr>");
+                self.interner.intern(".0");
+                let scope = YieldScope::GeneratorExpression;
                 let elt = Box::new(self.in_yield_scope(scope, |parser| parser.parse_expression(*elt))?);
                 let generators = self.parse_comprehension_generators(generators, scope)?;
                 Ok(ExprLoc::new(
                     self.convert_range(range),
-                    Expr::ListComp {
+                    Expr::GeneratorRaw {
+                        name_id,
                         elt,
                         generators,
-                        captured_slots: Vec::new(),
                     },
                 ))
             }
             AstExpr::Await(a) => {
+                if self.comprehension.in_generator {
+                    return Err(ParseError::not_implemented(
+                        "async generator expressions",
+                        self.convert_range(a.range),
+                    ));
+                }
                 let value = self.parse_expression(*a.value)?;
                 Ok(ExprLoc::new(self.convert_range(a.range), Expr::Await(Box::new(value))))
             }
@@ -2601,12 +2628,15 @@ impl<'a, 'i> Parser<'a, 'i> {
                     ));
                 }
                 let target = self.parse_unpack_target_root(comp.target)?;
-                // The first iterable is evaluated in the enclosing scope (PEP 709).
+                // The first iterable is evaluated in the enclosing scope.
+                let was_in_iterable = mem::replace(&mut self.comprehension.in_iterable, true);
                 let iter = if index == 0 {
-                    self.parse_expression(comp.iter)?
+                    self.parse_expression(comp.iter)
                 } else {
-                    self.in_yield_scope(scope, |parser| parser.parse_expression(comp.iter))?
+                    self.in_yield_scope(scope, |parser| parser.parse_expression(comp.iter))
                 };
+                self.comprehension.in_iterable = was_in_iterable;
+                let iter = iter?;
                 let ifs = self.in_yield_scope(scope, |parser| {
                     comp.ifs
                         .into_iter()
@@ -2862,7 +2892,9 @@ impl<'a, 'i> Parser<'a, 'i> {
             is_async,
         };
         let outer = mem::replace(&mut self.yield_scope, scope);
+        let was_in_generator = mem::take(&mut self.comprehension.in_generator);
         let result = parse(self);
+        self.comprehension.in_generator = was_in_generator;
         let inner = mem::replace(&mut self.yield_scope, outer);
         result.map(|parsed| (parsed, matches!(inner, YieldScope::Function { yields: true, .. })))
     }
@@ -2874,7 +2906,10 @@ impl<'a, 'i> Parser<'a, 'i> {
         parse: impl FnOnce(&mut Self) -> Result<T, ParseError>,
     ) -> Result<T, ParseError> {
         let outer = mem::replace(&mut self.yield_scope, scope);
+        let was_in_generator = self.comprehension.in_generator;
+        self.comprehension.in_generator |= scope == YieldScope::GeneratorExpression;
         let result = parse(self);
+        self.comprehension.in_generator = was_in_generator;
         self.yield_scope = outer;
         result
     }
@@ -2893,6 +2928,7 @@ impl<'a, 'i> Parser<'a, 'i> {
             }
             YieldScope::Outside => Err(ParseError::syntax(format!("'{keyword}' outside function"), position)),
             YieldScope::Comprehension(kind) => Err(ParseError::syntax(format!("'yield' inside {kind}"), position)),
+            YieldScope::GeneratorExpression => Err(ParseError::syntax("'yield' inside generator expression", position)),
         }
     }
 

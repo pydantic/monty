@@ -15,11 +15,8 @@ any code runs.
     from other classes and `object` but not from native types, and there is no
     general dunder protocol. See [classes.md](classes.md).
 - **`async with` statements** — not yet supported.
-- **Async generators** (`async def` containing `yield`) — rejected with
-    `NotImplementedError`. Generator functions are supported; see
-    [generators.md](generators.md). Generator *expressions* (`(x for x in ...)`)
-    parse but currently materialize to a `list` rather than a lazy iterator; see
-    [comprehensions.md](comprehensions.md).
+- **Async generator functions and expressions** — rejected with `NotImplementedError`.
+    See [generators.md](generators.md).
 - **Unsupported `del` forms** — `del x`, `del d[k]`, and multiple targets.
 - **`try*` / `except*` exception groups** — PEP 654 syntax rejected.
 - **`type` aliases** (PEP 695 `type Foo = int`).
@@ -273,8 +270,7 @@ another order (`Counter(a=x, b=x, c=x).most_common(2)` is
 ## What *does* work
 
 - Functions (`def`, `async def`), nested functions, closures, and decorators on functions and methods.
-- List / dict / set comprehensions; generator comprehensions degrade to
-    lists (see above).
+- List, dict and set comprehensions and generator expressions.
 - `try` / `except` / `else` / `finally`, `raise ... from ...`.
 - `for` / `while` / `if` / `elif` / `else`, `break`, `continue`, `pass`,
     `assert`, `global`, `nonlocal`, `return`.

@@ -62,7 +62,9 @@ def outer():
     yield 'after'
 
 
-assert list(o for o in outer()) == [42, 'after']
+values = (o for o in outer())
+assert next(values) == 42
+assert [value for value in values] == ['after']
 
 
 class HostIterator:
@@ -124,6 +126,14 @@ async def consume():
 
 
 assert await consume() == [14, 16]  # pyright: ignore
+
+
+async def await_first_iterable():
+    values = (x * 2 for x in await async_call([3, 4]))
+    return list(values)
+
+
+assert await await_first_iterable() == [6, 8]  # pyright: ignore
 
 # === StopIteration escaping a coroutine becomes RuntimeError (PEP 479) ===
 

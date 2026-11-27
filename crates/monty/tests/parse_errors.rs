@@ -74,6 +74,32 @@ fn async_generators_return_not_implemented_error() {
 }
 
 #[test]
+fn async_generator_expression_body_is_rejected() {
+    insta::allow_duplicates! {
+        for code in [
+            "async def f():\n    return (await g(x) for x in [1])",
+            "async def f():\n    return (f'{x:{await width()}}' for x in [1])",
+            "async def f():\n    return ([await g(x) for x in [1]] for _ in [0])",
+        ] {
+            let err = get_parse_err(code);
+            assert_eq!(err.exc_type(), ExcType::NotImplementedError);
+            assert_snapshot!(err.message().unwrap(), @"The monty syntax parser does not yet support async generator expressions");
+        }
+    }
+}
+
+#[test]
+fn comprehension_walrus_checks() {
+    let rebind = get_parse_err("((x := 1) for x in [0])");
+    assert_eq!(rebind.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(rebind.message().unwrap(), @"assignment expression cannot rebind comprehension iteration variable 'x'");
+
+    let in_iterable = get_parse_err("(x for x in (lambda: (items := [1]))())");
+    assert_eq!(in_iterable.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(in_iterable.message().unwrap(), @"assignment expression cannot be used in a comprehension iterable expression");
+}
+
+#[test]
 fn repeated_class_keyword_returns_syntax_error() {
     // CPython reports the repeat before considering the metaclass.
     let err = get_parse_err("class C(metaclass=type, metaclass=type):\n    pass");
