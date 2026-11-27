@@ -257,6 +257,9 @@ pub(crate) trait HeapPayload: Sized {
     /// Wraps this payload in its corresponding `HeapData` variant.
     fn into_heap_data(self) -> HeapData;
 
+    /// Borrows this payload from its matching heap variant.
+    fn from_heap_data(data: &HeapData) -> Option<&Self>;
+
     /// Extracts this payload's typed handle from a dynamic heap read.
     fn try_from_read(read: HeapReadOutput<'_>) -> Result<HeapObjectRead<'_, Self>, HeapReadOutput<'_>>;
 }
@@ -289,6 +292,11 @@ macro_rules! define_heap_read_support {
                 #[inline]
                 fn into_heap_data(self) -> HeapData {
                     HeapData::$variant(heap_storage_value!($storage self))
+                }
+
+                #[inline]
+                fn from_heap_data(data: &HeapData) -> Option<&Self> {
+                    if let HeapData::$variant(payload) = data { Some(payload) } else { None }
                 }
 
                 #[inline]

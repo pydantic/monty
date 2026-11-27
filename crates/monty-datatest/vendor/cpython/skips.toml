@@ -1,0 +1,24 @@
+# Monty-only exclusions. Keys under `exclude` are exact unittest IDs.
+[suites."test_fnmatch.py".exclude]
+"test.test_fnmatch.FilterFalseTestCase.test_case" = "Monty does not implement fnmatch.filterfalse."
+"test.test_fnmatch.FilterFalseTestCase.test_filterfalse" = "Monty does not implement fnmatch.filterfalse."
+"test.test_fnmatch.FilterFalseTestCase.test_mix_bytes_str" = "Monty does not implement fnmatch.filterfalse."
+"test.test_fnmatch.FilterFalseTestCase.test_sep" = "Monty does not implement fnmatch.filterfalse."
+"test.test_fnmatch.FnmatchTestCase.test_char_set" = "Monty does not provide the string module."
+"test.test_fnmatch.FnmatchTestCase.test_range" = "Monty does not provide the string module."
+"test.test_fnmatch.FnmatchTestCase.test_warnings" = "Monty does not provide the warnings module."
+"test.test_fnmatch.TranslateTestCase.test_star_indices_locations" = "Monty does not expose the private fnmatch._translate helper."
+
+[suites."test_super.py".exclude]
+"test.test_super.TestSuper.test___class___modification_multithreaded" = "Monty does not provide threading."
+"test.test_super.TestSuper.test_cell_as_self" = "Monty does not expose function closure cells."
+"test.test_super.TestSuper.test_class_methods_still_working" = "Monty does not implement classmethod."
+"test.test_super.TestSuper.test_deep_copying" = "Monty cannot copy super proxies."
+"test.test_super.TestSuper.test_pickling" = "Monty does not provide pickle."
+"test.test_super.TestSuper.test_reassigned_new" = "This test uses CPython's internal specialization threshold."
+"test.test_super.TestSuper.test_shallow_copying" = "Monty cannot copy super proxies."
+"test.test_super.TestSuper.test_special_methods" = "Monty does not implement the pickle protocol."
+"test.test_super.TestSuper.test_super_in_class_methods_working" = "Monty does not implement classmethod."
+"test.test_super.TestSuper.test_super_init_leaks" = "Monty does not expose super.__init__."
+"test.test_super.TestSuper.test_super_subclass___class__" = "Monty does not support subclassing super."
+"test.test_super.TestSuper.test_unusual_getattro" = "Monty does not support metaclasses or CPython's internal specialization threshold."

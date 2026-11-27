@@ -41,7 +41,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{ContainsHeap, DropWithContext, Heap, HeapData},
+    heap::{ContainsHeap, DropWithContext, Heap},
     intern::StaticStrings,
     modules::ModuleFunctions,
     resource_checks::check_estimated_size,
@@ -572,15 +572,9 @@ impl ResolvedPattern {
     fn get<'a>(&'a self, heap: &'a Heap) -> &'a RePattern {
         match self {
             Self::Cached(pattern) => pattern,
-            Self::Heap(value) => {
-                let Value::Ref(heap_id) = value else {
-                    unreachable!("ResolvedPattern::Heap always holds a heap ref")
-                };
-                match heap.get(*heap_id) {
-                    HeapData::RePattern(pattern) => pattern,
-                    _ => unreachable!("ResolvedPattern::Heap always points at a re.Pattern"),
-                }
-            }
+            Self::Heap(value) => value
+                .get_as::<RePattern>(heap)
+                .expect("ResolvedPattern::Heap always points at a re.Pattern"),
         }
     }
 }

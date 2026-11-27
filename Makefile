@@ -179,8 +179,16 @@ test-ref-count-return: ## Run rust tests with ref-count-return enabled
 	cargo run -p monty-datatest --features ref-count-return
 
 .PHONY: test-cases
-test-cases: ## Run tests cases only
+test-cases: ## Run Monty's test cases on both interpreters
 	cargo run -p monty-datatest
+
+.PHONY: test-cpython
+test-cpython: prepare-cpython-tests ## Type-check and run the enabled upstream CPython suites
+	cargo run -p monty-datatest --features cpython-tests -- _stdlib --nocapture
+
+.PHONY: prepare-cpython-tests
+prepare-cpython-tests: ## Fetch the pinned CPython archive if needed and prepare the upstream test tree
+	uv run --no-project scripts/vendor_stdlib.py --prepare-tests
 
 .PHONY: miri
 miri: ## Run library inline tests under miri (particularly relevant for heap.rs)

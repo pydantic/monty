@@ -19,7 +19,7 @@ use crate::{
     heap::DropGuard,
     intern::StaticStrings,
     modules::ModuleFunctions,
-    os_dispatch::{value_as_bytes, value_as_path_str},
+    os_dispatch::value_as_path_str,
     types::{List, Module, str::allocate_string},
     value::Value,
 };
@@ -215,7 +215,7 @@ impl Text {
     fn extract(value: &Value, vm: &VM<'_>) -> Option<Self> {
         value_as_path_str(value, vm.heap, vm.interns)
             .map(Self::str)
-            .or_else(|| value_as_bytes(value, vm.heap, vm.interns).map(Self::bytes))
+            .or_else(|| value.as_bytes(vm).map(Self::bytes))
     }
 
     /// `str` or `bytes` text only, else `None`.
@@ -223,7 +223,7 @@ impl Text {
         if value.is_str(vm.heap) {
             value_as_path_str(value, vm.heap, vm.interns).map(Self::str)
         } else {
-            value_as_bytes(value, vm.heap, vm.interns).map(Self::bytes)
+            value.as_bytes(vm).map(Self::bytes)
         }
     }
 

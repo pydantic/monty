@@ -482,7 +482,7 @@ fn suspend_or_apply(vm: &mut VM<'_>, caller: TimeCaller, reading: ClockReading) 
 /// The `str` at position `position` of a `time` function's arguments,
 /// with `_PyArg_BadArgument`'s positional wording.
 fn string_arg(value: &Value, name: &str, position: usize, vm: &VM<'_>) -> RunResult<String> {
-    match value.try_to_str(vm) {
+    match value.try_as_str(vm) {
         Ok(text) => Ok(text.to_owned()),
         Err(_) => Err(ExcType::type_error(format!(
             "{name}() argument {position} must be str, not {}",

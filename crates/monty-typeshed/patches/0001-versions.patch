@@ -2,7 +2,7 @@ Register only Monty's selected modules and their type-checking dependencies.
 
 --- a/VERSIONS
 +++ b/VERSIONS
-@@ -1,349 +1,49 @@
+@@ -1,349 +1,50 @@
 -# The structure of this file is as follows:
 -# - Blank lines and comments starting with `#` are ignored.
 -# - Lines contain the name of a module, followed by a colon,
@@ -167,7 +167,7 @@ Register only Monty's selected modules and their type-checking dependencies.
 -encodings.kz1048: 3.5-
 -ensurepip: 3.0-
 -enum: 3.4-
--errno: 3.0-
+ errno: 3.0-
 -faulthandler: 3.3-
 -fcntl: 3.0-
 -filecmp: 3.0-

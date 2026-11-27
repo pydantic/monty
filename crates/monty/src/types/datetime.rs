@@ -777,13 +777,9 @@ fn combine_date_part(date: &Value, vm: &mut VM<'_>) -> RunResult<(i32, i32, i32)
 /// it, so it is only safe while the caller's guard keeps the source `time`
 /// alive — which is exactly how long [`class_combine`] uses it.
 fn combine_time_part(time: &Value, vm: &mut VM<'_>) -> RunResult<Time> {
-    match time {
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Time(t) => Ok(t.clone()),
-            _ => Err(combine_bad_time_arg(time, vm)),
-        },
-        _ => Err(combine_bad_time_arg(time, vm)),
-    }
+    time.get_as::<Time>(vm.heap)
+        .cloned()
+        .ok_or_else(|| combine_bad_time_arg(time, vm))
 }
 
 /// The `combine() argument 2 must be datetime.time, not X` error.
@@ -1071,9 +1067,9 @@ struct IsoformatArgs {
 /// with the argument's length rather than its type.
 fn isoformat_separator(sep: Option<&Value>, vm: &VM<'_>) -> RunResult<char> {
     let Some(sep) = sep else { return Ok('T') };
-    // `try_to_str_heap`'s own message is the generic `expected string, not X`, so
+    // `try_as_str_heap`'s own message is the generic `expected string, not X`, so
     // only its success is used and the rejection is reworded here.
-    match sep.try_to_str_heap(vm.heap, vm.interns).ok() {
+    match sep.try_as_str_heap(vm.heap, vm.interns).ok() {
         Some(s) if s.chars().count() == 1 => Ok(s.chars().next().expect("just counted one char")),
         Some(s) => Err(ExcType::type_error_bad_arg_pos(
             "isoformat",

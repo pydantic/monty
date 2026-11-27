@@ -1,18 +1,19 @@
-Run 18 upstream super tests with the harness TestCase and an explicit test list.
-Remove syntax Monty rejects: method decorators, metaclasses, del, and class-body global/nonlocal statements.
-Leave parseable tests for unsupported introspection, descriptors, native subclassing, copying, pickling, threading, and CPython test internals out of the runner.
-Use a separate exec namespace instead of a temporary module and save and restore the global super instead of unittest.mock.patch. Preserve the tested calls and expectations.
+Adapt test_super to load under Monty while keeping native unittest discovery.
+Remove the cases that require syntax Monty cannot parse: metaclasses, decorated methods, del, and class-body global/nonlocal.
+Restore the shared classmethod fixtures and the threading guard on CPython.
+Use exec for an isolated global shadow and for temporary rebinding in the suite module, without unittest.mock or test.support on Monty.
 
 --- a/test/test_super.py
 +++ b/test/test_super.py
-@@ -1,34 +1,20 @@
+@@ -1,34 +1,32 @@
  """Unit tests for zero-argument super() & related machinery."""
  
  import copy
 -import pickle
++import sys
  import textwrap
 -import threading
--import unittest
+ import unittest
 -from unittest.mock import patch
 -from test.support import import_helper, threading_helper
  
@@ -21,40 +22,47 @@ Use a separate exec namespace instead of a temporary module and save and restore
      def f(self):
          return 'A'
 -    @classmethod
--    def cm(cls):
--        return (cls, 'A')
+     def cm(cls):
+         return (cls, 'A')
  
  class B(A):
      def f(self):
          return super().f() + 'B'
 -    @classmethod
--    def cm(cls):
--        return (cls, super().cm(), 'B')
+     def cm(cls):
+         return (cls, super().cm(), 'B')
  
  class C(A):
      def f(self):
          return super().f() + 'C'
 -    @classmethod
--    def cm(cls):
--        return (cls, super().cm(), 'C')
+     def cm(cls):
+         return (cls, super().cm(), 'C')
++
++if sys.platform != 'monty':
++    for cls in (A, B, C):
++        setattr(cls, 'cm', classmethod(cls.cm))
  
  class D(C, B):
      def f(self):
-@@ -46,12 +32,7 @@
+@@ -46,12 +44,11 @@
      pass
  
  
--class TestSuper(unittest.TestCase):
++def replace_super(replacement):
++    exec("global super; super = replacement", None, {"replacement": replacement})
++
++
+ class TestSuper(unittest.TestCase):
 -
 -    def tearDown(self):
 -        # This fixes the damage that test_various___class___pathologies does.
 -        nonlocal __class__
 -        __class__ = TestSuper
-+class TestSuper(TestCase):
  
      def test_basics_working(self):
          self.assertEqual(D().f(), 'ABCD')
-@@ -104,26 +85,6 @@
+@@ -104,26 +101,6 @@
              def f():
                  __class__
          self.assertIs(X.x, type(self))
@@ -81,7 +89,7 @@ Use a separate exec namespace instead of a temporary module and save and restore
  
      def test___class___instancemethod(self):
          # See issue #14857
-@@ -132,160 +93,6 @@
+@@ -132,160 +109,6 @@
                  return __class__
          self.assertIs(X().f(), X)
  
@@ -242,7 +250,7 @@ Use a separate exec namespace instead of a temporary module and save and restore
      def test_obscure_super_errors(self):
          def f():
              super()
-@@ -297,20 +104,6 @@
+@@ -297,20 +120,6 @@
                  super()
          with self.assertRaisesRegex(RuntimeError, r"no arguments"):
              C.f()
@@ -263,7 +271,7 @@ Use a separate exec namespace instead of a temporary module and save and restore
  
      def test_cell_as_self(self):
          class X:
-@@ -353,10 +146,9 @@
+@@ -353,10 +162,9 @@
                      return super().msg
              """,
          )
@@ -277,38 +285,36 @@ Use a separate exec namespace instead of a temporary module and save and restore
  
      def test_shadowed_local(self):
          class super:
-@@ -376,8 +168,13 @@
+@@ -376,8 +184,12 @@
              def method(self):
                  return super().msg
  
 -        with patch(f"{__name__}.super", MySuper) as m:
-+        global super
 +        original = super
-+        super = MySuper
++        replace_super(MySuper)
 +        try:
              self.assertEqual(C().method(), "super super")
 +        finally:
-+            super = original
++            replace_super(original)
  
      def test_shadowed_dynamic_two_arg(self):
          call_args = []
-@@ -390,9 +187,14 @@
+@@ -390,9 +202,13 @@
              def method(self):
                  return super(1, 2).msg
  
 -        with patch(f"{__name__}.super", MySuper) as m:
-+        global super
 +        original = super
-+        super = MySuper
++        replace_super(MySuper)
 +        try:
              self.assertEqual(C().method(), "super super")
              self.assertEqual(call_args, [(1, 2)])
 +        finally:
-+            super = original
++            replace_super(original)
  
      def test_attribute_error(self):
          class C:
-@@ -455,6 +257,8 @@
+@@ -455,6 +271,8 @@
          self.assertEqual(C().method(), mysuper)
  
      def test_unusual_getattro(self):
@@ -317,7 +323,7 @@ Use a separate exec namespace instead of a temporary module and save and restore
          class MyType(type):
              pass
  
-@@ -468,6 +272,8 @@
+@@ -468,6 +286,8 @@
              test("foo1")
  
      def test_reassigned_new(self):
@@ -326,7 +332,7 @@ Use a separate exec namespace instead of a temporary module and save and restore
          class A:
              def __new__(cls):
                  pass
-@@ -487,34 +293,13 @@
+@@ -487,34 +307,13 @@
          for _ in range(_testinternalcapi.SPECIALIZATION_THRESHOLD):
              C()
  
@@ -362,7 +368,7 @@ Use a separate exec namespace instead of a temporary module and save and restore
  
          class Foo:
              pass
-@@ -554,6 +339,8 @@
+@@ -554,6 +353,8 @@
              self.assertNotHasAttr(s, '__deepcopy__')
  
      def test_pickling(self):
@@ -371,30 +377,18 @@ Use a separate exec namespace instead of a temporary module and save and restore
          e = E()
          e.x = 1
          s = super(C, e)
-@@ -610,5 +397,24 @@
+@@ -610,5 +411,14 @@
          self.assertIs(u.__self_class__, E)
  
  
--if __name__ == "__main__":
--    unittest.main()
-+for name in (
-+    'test_basics_working',
-+    'test_class_getattr_working',
-+    'test_subclass_no_override_working',
-+    'test_unbound_method_transfer_working',
-+    'test_super_with_closure',
-+    'test_various___class___pathologies',
-+    'test___class___instancemethod',
-+    'test_obscure_super_errors',
-+    'test_super_argcount',
-+    'test_super_argtype',
-+    'test_shadowed_global',
-+    'test_shadowed_local',
-+    'test_shadowed_dynamic',
-+    'test_shadowed_dynamic_two_arg',
-+    'test_attribute_error',
-+    'test_bad_first_arg',
-+    'test_supercheck_fail',
-+    'test_super___class__',
-+):
-+    getattr(TestSuper(), name)()
++if sys.platform != 'monty':
++    from test.support import threading_helper
++
++    setattr(
++        TestSuper,
++        'test___class___modification_multithreaded',
++        threading_helper.requires_working_threading()(TestSuper.test___class___modification_multithreaded),
++    )
++
+ if __name__ == "__main__":
+     unittest.main()
