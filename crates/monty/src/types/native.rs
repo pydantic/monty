@@ -614,6 +614,7 @@ native_types! {
         .basetype()
         .ctor(Constructor::Value(complex::init)),
     Range("range")
+        .attrs(<super::range::PyRangeImpl as PyAttrs<'static>>::TABLE)
         .builtin()
         .ctor(Constructor::Value(Range::init)),
     Slice("slice")
