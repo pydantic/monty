@@ -57,6 +57,17 @@ pub(crate) enum ModuleName {
 }
 
 impl Module {
+    /// A module's attribute dict: a file module's namespace, else its `attrs`.
+    pub(crate) fn members<'a>(&'a self, vm: &'a VM<'_>) -> RunResult<&'a Dict> {
+        match self.namespace() {
+            Some(namespace) => match vm.heap.get(namespace) {
+                HeapData::Dict(dict) => Ok(dict),
+                _ => Err(RunError::internal("module namespace is not a dict")),
+            },
+            None => Ok(self.attrs()),
+        }
+    }
+
     /// Creates a new bundled module with an empty attributes dictionary.
     ///
     /// Attribute names are interned lazily when the module materializes them.
@@ -268,13 +279,7 @@ impl<'h> HeapRead<'h, Module> {
     /// An owned copy of the attribute `name`, from the file namespace or `attrs`.
     fn attr_value(&self, name: &str, vm: &VM<'h>) -> Option<Value> {
         let module = self.get(vm.heap);
-        let attrs = match module.namespace() {
-            Some(namespace) => match vm.heap.get(namespace) {
-                HeapData::Dict(dict) => dict,
-                _ => return None,
-            },
-            None => &module.attrs,
-        };
+        let attrs = module.members(vm).ok()?;
         attrs
             .get_by_str(name, vm.heap, vm.interns)
             .map(|value| value.clone_with_heap(vm.heap))

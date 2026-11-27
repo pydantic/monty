@@ -45,6 +45,7 @@ object.__init__: 2098410
 type.mro: 2098474
 delattr: 2098506
 vars: 2098538
+dir: 2098570
 Exception: 2105354
 BaseException: 2105386
 SystemExit: 2105418

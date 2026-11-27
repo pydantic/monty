@@ -12,7 +12,7 @@ use strum::{Display, EnumString, FromRepr, IntoStaticStr, VariantNames};
 /// Uses strum derives for automatic `Display`, `FromStr`, and `IntoStaticStr` implementations.
 /// All variants serialize to lowercase (e.g., `Print` -> "print").
 /// Explicit discriminants are bytecode operands and identity codes; never change or reuse them.
-#[monty_macros::explicit_discriminants(checksum = 0xd787_c30c_5835_b00c)]
+#[monty_macros::explicit_discriminants(checksum = 0xc8ec_5130_65c1_2cd5)]
 #[derive(
     Debug,
     Clone,
@@ -143,4 +143,6 @@ pub enum BuiltinsFunctions {
     Delattr = 42,
     /// The local namespace or an object's attribute dictionary.
     Vars = 43,
+    /// List names in the current scope or on an object.
+    Dir = 44,
 }

@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     annotations,
     args::ArgValues,
-    builtins::{next, vars},
+    builtins::{dir, next, vars},
     bytecode::{CallResult, Compiler, VM, compile_iteration_catcher},
     exception_private::RunResult,
     intern::{CompileInterns, FunctionId, Interns},
@@ -84,6 +84,10 @@ pub(crate) enum FrozenFunction {
     DescriptorHasattr,
     #[serde(rename = "builtins.vars")]
     Vars,
+    #[serde(rename = "builtins.dir_hook")]
+    DirHook,
+    #[serde(rename = "builtins.dir_class")]
+    DirClass,
     /// Return an attribute value and its pattern-match flag.
     #[serde(rename = "descriptors.match")]
     DescriptorMatch,
@@ -130,6 +134,8 @@ impl FrozenFunction {
             Self::DescriptorGetattr => descriptor::GETATTR_SOURCE,
             Self::DescriptorMatch => descriptor::MATCH_SOURCE,
             Self::DescriptorMatchClass => descriptor::MATCH_CLASS_SOURCE,
+            Self::DirClass => dir::CLASS_SOURCE,
+            Self::DirHook => dir::HOOK_SOURCE,
             Self::Vars => vars::SOURCE,
             Self::DescriptorHasattr => descriptor::HASATTR_SOURCE,
             Self::MapInit => map_filter::MAP_INIT_SOURCE,

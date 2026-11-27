@@ -884,3 +884,15 @@ fn live_namespaces_survive_restore() {
     )
     .unwrap();
 }
+
+#[test]
+fn dir_sorts_a_hook_result_after_restore() {
+    let code = "import os\nclass C:\n    def __dir__(self): return os.getenv('NAMES')\n''.join(dir(C()))";
+    let progress = repl().feed_start(code, vec![], PrintWriter::Disabled).unwrap();
+    let ReplProgress::OsCall(call) = restore(progress) else {
+        panic!("expected __dir__ to suspend")
+    };
+    assert_eq!(call.function_call.name(), "os.getenv");
+    let result = call.resume(MontyObject::string("baa"), PrintWriter::Disabled).unwrap();
+    assert_eq!(result.into_complete().unwrap().1, MontyObject::string("aab"));
+}
