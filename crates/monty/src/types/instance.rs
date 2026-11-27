@@ -2,7 +2,7 @@ use std::{borrow::Cow, fmt::Write, mem};
 
 use monty_types::MontyUuid;
 
-use super::{Dict, LazyHeapSet, PyTrait, Type, TypeRef, descriptor};
+use super::{Dict, LazyHeapSet, PyTrait, Type, TypeRef, class::Namespace, descriptor};
 use crate::{
     args::{ArgValues, KwargsValues},
     boundary_uuid::create_uuid,
@@ -13,8 +13,8 @@ use crate::{
     frozen::{FrozenFunction, FrozenFunctions},
     hash::{HashValue, hash_one, identity_hash},
     heap::{
-        BorrowedHeapReadMut, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead,
-        HeapReadMut, HeapReadOutput, heap_read_ref_as_field_mut,
+        DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadMut,
+        HeapReadOutput, HeapReader,
     },
     identity::Identity,
     intern::Interns,
@@ -23,7 +23,6 @@ use crate::{
         copy::{Memo, PyDeepCopy, deep_copy, deep_copy_attrs},
         dataclasses,
     },
-    py_attrs::AttrDef,
     value::{EitherStr, Value},
 };
 
@@ -40,7 +39,7 @@ pub(crate) struct Instance {
     class: HeapId,
     /// Instance attributes (`__dict__`).
     #[serde(rename = "A")]
-    attrs: Dict,
+    pub(crate) attrs: Namespace,
     /// Boundary identity, generated lazily the first time the instance crosses
     /// to the host; dumped with the heap so it stays stable across restores.
     #[serde(rename = "U")]
@@ -50,10 +49,10 @@ pub(crate) struct Instance {
 impl Instance {
     /// Creates a new instance of `class` with the given initial attributes.
     #[must_use]
-    pub fn new(class: HeapId, attrs: Dict) -> Self {
+    pub fn new(class: HeapId, attrs: Dict, heap: &Heap) -> Self {
         Self {
             class,
-            attrs,
+            attrs: Namespace::Shared(heap.allocate(HeapData::Dict(attrs))),
             uuid: None,
         }
     }
@@ -79,8 +78,8 @@ impl Instance {
 
     /// Returns a reference to the instance's attribute dict (`__dict__`).
     #[must_use]
-    pub fn attrs(&self) -> &Dict {
-        &self.attrs
+    pub fn attrs<'a>(&self, heap: &'a Heap) -> &'a Dict {
+        self.attrs.dict(heap)
     }
 }
 
@@ -149,15 +148,18 @@ impl<'h> HeapRead<'h, Instance> {
     pub(crate) fn allocate_empty_like(&self, vm: &mut VM<'h>) -> HeapId {
         let class_id = self.get(vm.heap).class();
         vm.heap.inc_ref(class_id);
-        vm.heap
-            .allocate(HeapData::Instance(Box::new(Instance::new(class_id, Dict::new()))))
+        vm.heap.allocate(HeapData::Instance(Box::new(Instance::new(
+            class_id,
+            Dict::new(),
+            vm.heap,
+        ))))
     }
 }
 
 impl<'h> HeapReadMut<'h, Instance> {
-    /// Borrows the inline attribute dictionary without exposing a replaceable handle.
-    pub(crate) fn attrs_mut(&self) -> BorrowedHeapReadMut<'_, 'h, Dict> {
-        heap_read_ref_as_field_mut!(self, Instance, attrs)
+    /// Returns the live attribute dictionary for mutation.
+    pub(crate) fn attrs_mut(&self, heap: &HeapReader<'h>) -> HeapObjectRead<'h, Dict> {
+        heap.read_as(self.get(heap).attrs.id()).expect("namespace is a dict")
     }
 
     /// Sets an instance attribute, returning the previous value (if any) for the
@@ -189,12 +191,33 @@ impl<'h> HeapReadMut<'h, Instance> {
     pub fn set_attr_unchecked(&self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         if name
             .as_either_str(vm.heap)
+            .is_some_and(|name| name.as_str(vm.interns) == "__dict__")
+            && class_dunder(self.get(vm.heap).class(), "__dict__", vm).is_none()
+        {
+            name.drop_with(vm);
+            if let Value::Ref(id) = value
+                && matches!(vm.heap.get(id), HeapData::Dict(_))
+            {
+                let id = value.into_ref_id().expect("matched a dictionary reference");
+                let old = self.get(vm.heap).attrs.id();
+                self.get_mut(vm.heap).attrs = Namespace::Shared(id);
+                return Ok(Some(Value::Ref(old)));
+            }
+            let error = ExcType::type_error(format!(
+                "__dict__ must be set to a dictionary, not a '{}'",
+                value.py_type_name(vm)
+            ));
+            value.drop_with(vm);
+            return Err(error);
+        }
+        if name
+            .as_either_str(vm.heap)
             .is_some_and(|name| name.as_str(vm.interns) == "__class__")
         {
             name.drop_with(vm);
             self.assign_class(value, vm).map(|()| None)
         } else {
-            self.attrs_mut().set(name, value, vm)
+            self.attrs_mut(vm.heap).set(name, value, vm)
         }
     }
 
@@ -580,7 +603,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
 impl HeapItem for Instance {
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         stack.push(self.class);
-        self.attrs.py_dec_ref_ids(stack);
+        stack.push(self.attrs.id());
     }
 }
 
@@ -609,13 +632,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BoundMethod> {
         let vm = &mut *guard;
 
         let bound = self.get(vm.heap);
-        if let Value::NativeMethod(method) = bound.func
-            && let Some(class) = TypeRef::from_value(&bound.instance, vm.heap)
-            && let Some((_, AttrDef::ClassMethod(call))) =
-                method.owner.lookup_attr(&EitherStr::Interned(method.name), vm.interns)
-        {
-            return call(class, args, vm);
-        }
         let instance = bound.instance.clone_with_heap(vm);
         let func = bound.func.clone_with_heap(vm);
         defer_drop!(func, vm);
@@ -1020,7 +1036,7 @@ pub(crate) fn namespace_member<'v>(
     interns: &Interns,
 ) -> Option<&'v Value> {
     match heap.get(class_id) {
-        HeapData::Class(class) => class.namespace().get_by_str(name, heap, interns),
+        HeapData::Class(class) => class.namespace(heap).get_by_str(name, heap, interns),
         _ => None,
     }
 }

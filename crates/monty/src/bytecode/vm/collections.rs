@@ -8,7 +8,7 @@ use crate::{
     intern::StringId,
     resource_checks::check_estimated_size,
     types::{
-        Dict, List, PyTrait, Set, Slice, allocate_tuple, collect_iterable, collect_iterable_bounded,
+        Dict, List, MappingProxy, PyTrait, Set, Slice, allocate_tuple, collect_iterable, collect_iterable_bounded,
         instance::instance_defines_iter, sequence::SequenceItems, slice::value_to_option_i64,
     },
     value::{VALUE_SIZE, Value},
@@ -235,8 +235,9 @@ impl VM<'_> {
         let (dict_ref, this) = dict_ref_guard.as_parts();
 
         // Check that mapping is a dict (Ref pointing to Dict) and clone key-value pairs
-        let copied_items: Vec<(Value, Value)> = if let Some(dict) = mapping.get_as::<Dict>(this.heap) {
-            dict.iter()
+        let copied_items: Vec<(Value, Value)> = if let Some(dict) = MappingProxy::source(mapping, this.heap) {
+            dict.get(this.heap)
+                .iter()
                 .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
                 .collect()
         } else {
@@ -304,8 +305,9 @@ impl VM<'_> {
         defer_drop!(mapping, this);
 
         // Clone all key/value pairs out of the mapping before mutating the target dict
-        let copied_items: Vec<(Value, Value)> = if let Some(dict) = mapping.get_as::<Dict>(this.heap) {
-            dict.iter()
+        let copied_items: Vec<(Value, Value)> = if let Some(dict) = MappingProxy::source(mapping, this.heap) {
+            dict.get(this.heap)
+                .iter()
                 .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
                 .collect()
         } else {

@@ -208,6 +208,12 @@ impl<'h> HeapRead<'h, Module> {
     /// For `Property` values, invokes the property getter rather than returning
     /// the Property itself - this implements Python's descriptor protocol.
     pub fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> Option<CallResult> {
+        if attr.as_str(vm.interns) == "__dict__"
+            && let Some(id) = self.get(vm.heap).namespace()
+        {
+            vm.heap.inc_ref(id);
+            return Some(CallResult::Value(Value::Ref(id)));
+        }
         let value = self.attr_value(attr.as_str(vm.interns), vm)?;
         // If the value is a Property, invoke its getter to compute the actual value
         if let Value::Property(prop) = value {

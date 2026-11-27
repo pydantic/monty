@@ -5,7 +5,7 @@
 //! writing to the owning class. Class hints must therefore account for possible future hooks.
 
 use super::{
-    Dict, Type,
+    Dict, Type, TypeRef,
     builtin_descriptor::{self, DescriptorMethod},
     instance::{bind_method, class_defines, class_dunder, class_member, implicit_receiver, is_method_value},
     tuple::allocate_tuple,
@@ -137,8 +137,8 @@ pub(crate) enum AttributeResolution<'a> {
     ObjectMethod(BuiltinsFunctions, Option<HeapId>),
     /// A descriptor whose getter may suspend.
     Getter(&'a Value),
-    /// The synthesized instance __class__ attribute.
-    Class(HeapId),
+    /// The instance's class or live attribute dictionary.
+    Reference(HeapId),
     /// Neither storage nor the class provides this name.
     Missing,
 }
@@ -156,7 +156,7 @@ impl AttributeResolution<'_> {
                     None => method,
                 })
             }
-            Self::Class(class) => {
+            Self::Reference(class) => {
                 vm.heap.inc_ref(class);
                 Some(Value::Ref(class))
             }
@@ -174,7 +174,10 @@ pub(crate) fn resolve_instance<'a>(id: HeapId, name: &str, vm: &'a VM<'_>) -> At
     let HeapData::Class(class) = vm.heap.get(class_id) else {
         unreachable!("instance owns its class")
     };
-    let stored = instance.attrs().get_by_str(name, vm.heap, vm.interns);
+    if name == "__dict__" && class.lookup(name, vm.heap, vm.interns).is_none() {
+        return AttributeResolution::Reference(instance.attrs.id());
+    }
+    let stored = instance.attrs(vm.heap).get_by_str(name, vm.heap, vm.interns);
     if (class.descriptor_free() || class.data_descriptor_free())
         && let Some(value) = stored
     {
@@ -199,7 +202,7 @@ pub(crate) fn resolve_instance<'a>(id: HeapId, name: &str, vm: &'a VM<'_>) -> At
                 None => AttributeResolution::Value(member),
             },
             Some(member) => AttributeResolution::Value(member),
-            None if name == "__class__" => AttributeResolution::Class(class_id),
+            None if name == "__class__" => AttributeResolution::Reference(class_id),
             None => object_method(name).map_or(AttributeResolution::Missing, |f| {
                 AttributeResolution::ObjectMethod(f, implicit_receiver(name, id, class_id))
             }),
@@ -261,13 +264,14 @@ pub(crate) fn has_get(value: &Value, vm: &VM<'_>) -> bool {
 /// A plain function binds an instance; arbitrary descriptors may install a Python frame.
 pub(crate) fn get(value: &Value, instance: Option<HeapId>, owner: HeapId, vm: &mut VM<'_>) -> RunResult<CallResult> {
     if let Value::NativeMethod(method) = value {
-        let Some(id) = instance else {
-            return Ok(CallResult::Value(Value::NativeMethod(*method)));
-        };
-        vm.heap.inc_ref(id);
-        let receiver = Value::Ref(id);
+        let receiver = instance.map(|id| {
+            vm.heap.inc_ref(id);
+            Value::Ref(id)
+        });
         defer_drop!(receiver, vm);
-        return method.bind(receiver, vm).map(CallResult::Value);
+        let owner = TypeRef::Class(owner).to_value(vm.heap);
+        defer_drop!(owner, vm);
+        return method.bind(receiver.as_ref(), Some(owner), vm).map(CallResult::Value);
     }
     if let Value::Ref(id) = value
         && matches!(vm.heap.get(*id), HeapData::BuiltinDescriptor(_))
@@ -485,7 +489,7 @@ pub(crate) fn finish_class(class: Value, kwargs: KwargsValues, vm: &mut VM<'_>) 
         unreachable!()
     };
     let members = cls
-        .namespace()
+        .namespace(vm.heap)
         .iter()
         .filter(|(_, member)| may_have_name_hook(member, vm))
         .map(|(name, member)| {

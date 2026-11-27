@@ -9,7 +9,7 @@ Python.
 `abs`, `all`, `any`, `bin`, `chr`, `delattr`, `divmod`, `enumerate`, `eval`, `exec`, `filter`,
 `format`, `getattr`, `hasattr`, `hash`, `hex`, `id`, `isinstance`, `iter`, `len`,
 `locals`, `map`, `max`, `min`, `next`, `oct`, `open`, `ord`, `pow`, `print`, `repr`,
-`reversed`, `round`, `setattr`, `sorted`, `sum`, `type`, `zip`.
+`reversed`, `round`, `setattr`, `sorted`, `sum`, `type`, `vars`, `zip`.
 `eval`, `exec` and `locals` are described in [eval_exec.md](eval_exec.md).
 
 ## Implemented type constructors (also builtins)
@@ -23,7 +23,7 @@ Python.
 These raise `NameError`:
 
 - **Code objects and imports**: `compile`, `__import__`.
-- **Namespace introspection**: `globals`, `vars`, `dir`.
+- **Namespace introspection**: `globals`, `dir`.
 - **Interactive**: `input`, `breakpoint`, `help`.
 - **Construction / coercion**: `bytearray`, `memoryview`, `object`, `ascii`.
 - **Inheritance**: `super`; call the base explicitly (`Base.__init__(self, ...)`).
@@ -37,9 +37,9 @@ works on classes; see [classes.md](classes.md#inheritance).
 - **No `__class__` on builtin values** — `[].__class__`, `list.__class__` and
     `list[int].__class__` raise `AttributeError`; only instances of Monty classes
     carry it (see [classes.md](classes.md)). Use `type(x)`.
-- **Call-only builtin methods.** Reading `list.__class_getitem__` or `int.bit_length` raises `AttributeError`,
-    even though `list.__class_getitem__(int)` and `(3).bit_length()` work.
-    Counter's Python-defined methods have additional receiver restrictions (see [collections.md](collections.md#counter)).
+- Native class dictionaries list the methods and constants in Monty's native attribute tables. CPython
+    also lists interpreter-provided slots such as `list.__dict__['__len__']`.
+- `vars()` follows Monty's `locals()` semantics. Bundled modules and functions do not expose an attribute dictionary.
 - **`str.translate()`** — a table entry (from a dict or `str.maketrans()`) that maps to a surrogate code point
     (`0xD800`–`0xDFFF`) raises `ValueError: character mapping must be in range(0x110000)`, because Monty strings cannot
     hold lone surrogates.

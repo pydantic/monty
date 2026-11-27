@@ -40,7 +40,7 @@ use crate::{
     heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
     modules::copy::{Memo, PyDeepCopy, deep_copy_slots},
-    py_attrs::{MethodCall, PyAttrs, native_method_value},
+    py_attrs::{MethodCall, PyAttrs},
     py_value::PyValue,
     resource_checks::{check_repeat_size, repeated_len},
     types::{
@@ -914,12 +914,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTupleClass> {
                 fields_tuple_from(&names, vm)
             }
             Some(StaticStrings::UnderFieldDefaults) => self.field_defaults_dict(vm)?,
-            Some(StaticStrings::UnderMake) => native_method_value(
-                Type::NamedTuple,
-                StaticStrings::UnderMake,
-                Some(self.clone_value(vm.heap)),
-                vm,
-            ),
+            Some(StaticStrings::UnderMake) => {
+                let key = StaticStrings::UnderMake;
+                let (owner, def) = Type::NamedTuple.lookup_static_attr(key).expect("registered _make");
+                let method = def.namespace_value(owner, key, vm);
+                BoundMethod::allocate(self.clone_value(vm.heap), method, vm.heap)
+            }
             Some(StaticStrings::DunderDoc) => {
                 let doc = synthesise_doc(self.get(vm.heap), vm.interns);
                 allocate_string(doc, vm.heap)

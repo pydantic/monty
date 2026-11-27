@@ -267,7 +267,7 @@ impl<'h> PyTrait<'h> for Value {
             Self::InlineString(_) => Type::Str.into(),
             Self::InternBytes(_) => Type::Bytes.into(),
             Self::Builtin(c) => c.py_type().into(),
-            Self::NativeMethod(_) => Type::MethodDescriptor.into(),
+            Self::NativeMethod(method) => method.kind().into(),
             Self::ModuleFunction(_) => Type::BuiltinFunction.into(),
             Self::DefFunction(_) => Type::Function.into(),
             Self::Marker(m) => m.py_type().into(),
@@ -1032,7 +1032,7 @@ impl Value {
             Self::InlineString(_) => Type::Str,
             Self::InternBytes(_) => Type::Bytes,
             Self::Builtin(_) => Type::BuiltinFunction,
-            Self::NativeMethod(_) => Type::MethodDescriptor,
+            Self::NativeMethod(method) => method.kind(),
             Self::ModuleFunction(_) | Self::DefFunction(_) => Type::Function,
             Self::Marker(m) => m.py_type(),
             Self::Property(_) => Type::Property,
@@ -1326,10 +1326,7 @@ impl Value {
             // `__name__`, class constants and the members handed out as values
             // all live with the type, including the `AttributeError`.
             Self::Builtin(Builtins::Type(t)) => {
-                return t
-                    .class_getattr(attr, vm)
-                    .map(CallResult::Value)
-                    .ok_or_else(|| t.attribute_error(attr, vm));
+                return t.class_getattr(attr, vm).map(CallResult::Value);
             }
             Self::NativeMethod(method) => {
                 if let Some(value) = method.attr(attr.as_str(vm.interns), vm) {

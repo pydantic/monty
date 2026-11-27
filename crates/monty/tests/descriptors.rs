@@ -866,3 +866,21 @@ assert p.__get__([1, 2]) == 2
     )
     .unwrap();
 }
+
+#[test]
+fn live_namespaces_survive_restore() {
+    let mut repl = repl();
+    repl.feed_run(
+        "class C: pass\no = C()\nd = vars(o)\nd['owner'] = o\np = vars(C)\nC.proxy = p",
+        vec![],
+        PrintWriter::Disabled,
+    )
+    .unwrap();
+    let mut repl = restore_idle(repl);
+    repl.feed_run(
+        "assert vars(o) is d and d['owner'] is o\nC.x = 3\nassert p['x'] == 3 and p['proxy'] is p",
+        vec![],
+        PrintWriter::Disabled,
+    )
+    .unwrap();
+}

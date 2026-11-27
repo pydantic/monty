@@ -5,7 +5,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropGuard, DropWithContext},
+    heap::{DropGuard, DropWithContext, HeapData},
     intern::{StaticStrings, StringId},
     py_value::PyValue,
     types::{BoundMethod, PyTrait, Type, TypeRef, str::allocate_string},
@@ -41,16 +41,89 @@ pub(crate) enum AttrDef {
 pub(crate) struct NativeMethod {
     pub owner: Type,
     pub name: StringId,
+    #[serde(default)]
+    class_method: bool,
 }
 
 impl NativeMethod {
-    pub(crate) fn bind(self, receiver: &Value, vm: &VM<'_>) -> RunResult<Value> {
-        check_receiver(self.owner, &EitherStr::Interned(self.name), receiver, vm)?;
-        Ok(BoundMethod::allocate(
-            receiver.clone_with_heap(vm),
-            Value::NativeMethod(self),
-            vm.heap,
-        ))
+    pub(crate) fn kind(self) -> Type {
+        if self.class_method {
+            Type::ClassMethodDescriptor
+        } else {
+            Type::MethodDescriptor
+        }
+    }
+
+    pub(crate) fn call(self, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+        let attr = EitherStr::Interned(self.name);
+        if self.class_method {
+            let (receiver, args) = take_receiver(args).map_err(|args| {
+                args.drop_with(vm);
+                ExcType::type_error(format!(
+                    "descriptor '{}' of '{}' object needs an argument",
+                    attr.as_str(vm.interns),
+                    self.owner.dunder_name()
+                ))
+            })?;
+            defer_drop!(receiver, vm);
+            let class = match self.descriptor_class(receiver, vm) {
+                Ok(class) => class,
+                Err(error) => {
+                    args.drop_with(vm);
+                    return Err(error);
+                }
+            };
+            let Some((_, AttrDef::ClassMethod(call))) = self.owner.lookup_attr(&attr, vm.interns) else {
+                args.drop_with(vm);
+                return Err(self.owner.attribute_error(&attr, vm));
+            };
+            return call(class, args, vm);
+        }
+        self.owner.call_class_method(&attr, args, vm)
+    }
+
+    fn validate_class(self, class: TypeRef, vm: &VM<'_>) -> RunResult<TypeRef> {
+        if class.is_subclass_of(self.owner.into(), vm.heap)
+            || (self.owner == Type::NamedTuple
+                && matches!(class, TypeRef::Class(id) if matches!(vm.heap.get(id), HeapData::NamedTupleClass(_))))
+        {
+            Ok(class)
+        } else {
+            Err(ExcType::type_error(format!(
+                "descriptor '{}' requires a subtype of '{}' but received '{}'",
+                vm.interns.get_str(self.name),
+                self.owner.dunder_name(),
+                class.name(vm.heap, vm.interns)
+            )))
+        }
+    }
+
+    fn descriptor_class(self, value: &Value, vm: &VM<'_>) -> RunResult<TypeRef> {
+        let class = TypeRef::from_value(value, vm.heap).ok_or_else(|| {
+            ExcType::type_error(format!(
+                "descriptor '{}' for type '{}' needs a type, not a '{}' as arg 2",
+                vm.interns.get_str(self.name),
+                self.owner.dunder_name(),
+                value.py_type_name(vm)
+            ))
+        })?;
+        self.validate_class(class, vm)
+    }
+
+    pub(crate) fn bind(self, instance: Option<&Value>, owner: Option<&Value>, vm: &VM<'_>) -> RunResult<Value> {
+        let receiver = match (instance, owner) {
+            (None, None) => return Err(ExcType::type_error("__get__(None, None) is invalid")),
+            (_, Some(owner)) if self.class_method => self.descriptor_class(owner, vm)?.to_value(vm.heap),
+            (Some(instance), None) if self.class_method => {
+                self.validate_class(instance.py_type(vm), vm)?.to_value(vm.heap)
+            }
+            (None, Some(_)) => return Ok(Value::NativeMethod(self)),
+            (Some(instance), _) => {
+                check_receiver(self.owner, &EitherStr::Interned(self.name), instance, vm)?;
+                instance.clone_with_heap(vm)
+            }
+        };
+        Ok(BoundMethod::allocate(receiver, Value::NativeMethod(self), vm.heap))
     }
 
     pub(crate) fn bound_attr(self, receiver: &Value, name: &str, vm: &VM<'_>) -> Option<Value> {
@@ -88,11 +161,12 @@ impl PyAttrs<'_> for NativeMethod {
     fn __get__(method: NativeMethod, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
         let pair = args.get_one_two_args("__get__", vm.heap)?;
         defer_drop!(pair, vm);
-        match pair {
-            (Value::None, None | Some(Value::None)) => Err(ExcType::type_error("__get__(None, None) is invalid")),
-            (Value::None, _) => Ok(Value::NativeMethod(method)),
-            (instance, _) => method.bind(instance, vm),
-        }
+        let (instance, owner) = pair;
+        method.bind(
+            (!matches!(instance, Value::None)).then_some(instance),
+            owner.as_ref().filter(|v| !matches!(v, Value::None)),
+            vm,
+        )
     }
 }
 
@@ -100,27 +174,36 @@ impl PyAttrs<'_> for NativeMethod {
 pub(crate) fn read_member(ty: Type, attr: &EitherStr, instance: Option<&Value>, vm: &mut VM<'_>) -> Option<Value> {
     let key = attr.static_string(vm.interns)?;
     let (owner, definition) = ty.lookup_static_attr(key)?;
-    let receiver = match definition {
-        AttrDef::Value(get) => return instance.is_none().then(|| get(vm)),
-        AttrDef::ClassMethod(_) => Some(
+    if matches!(definition, AttrDef::Value(_)) && instance.is_some() {
+        return None;
+    }
+    let member = definition.namespace_value(owner, key, vm);
+    Some(match definition {
+        AttrDef::ClassMethod(_) => BoundMethod::allocate(
             instance
                 .map_or(TypeRef::Native(ty), |value| value.py_class(vm))
                 .to_value(vm.heap),
+            member,
+            vm.heap,
         ),
-        AttrDef::Method(_) => instance.map(|value| value.clone_with_heap(vm)),
-    };
-    Some(native_method_value(owner, key, receiver, vm))
+        AttrDef::Method(_) => match instance {
+            Some(receiver) => BoundMethod::allocate(receiver.clone_with_heap(vm.heap), member, vm.heap),
+            None => member,
+        },
+        AttrDef::Value(_) => member,
+    })
 }
 
-/// Takes an owned receiver when lookup binds the descriptor.
-pub(crate) fn native_method_value(owner: Type, key: StaticStrings, receiver: Option<Value>, vm: &VM<'_>) -> Value {
-    let method = Value::NativeMethod(NativeMethod {
-        owner,
-        name: vm.interns.intern_static(key),
-    });
-    match receiver {
-        Some(receiver) => BoundMethod::allocate(receiver, method, vm.heap),
-        None => method,
+impl AttrDef {
+    pub(crate) fn namespace_value(self, owner: Type, key: StaticStrings, vm: &mut VM<'_>) -> Value {
+        match self {
+            Self::Value(get) => get(vm),
+            Self::Method(_) | Self::ClassMethod(_) => Value::NativeMethod(NativeMethod {
+                owner,
+                name: vm.interns.intern_static(key),
+                class_method: matches!(self, Self::ClassMethod(_)),
+            }),
+        }
     }
 }
 

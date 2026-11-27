@@ -13,6 +13,8 @@ pub mod deque;
 pub(crate) mod descriptor;
 pub mod dict;
 pub mod dict_view;
+mod mapping_proxy;
+pub(crate) use mapping_proxy::MappingProxy;
 pub mod dir_scan;
 pub mod ext_function;
 pub mod file;

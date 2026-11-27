@@ -17,13 +17,13 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{DropWithContext, Heap},
+    heap::{DropGuard, DropWithContext, Heap},
     intern::{Interns, StaticStrings},
     modules::collections,
     py_attrs::{self, AttrDef},
     py_value::PyValue,
     types::{
-        GenericAlias, LongInt, PyTrait, TypeRef, allocate_tuple,
+        GenericAlias, LongInt, MappingProxy, PyTrait, TypeRef, allocate_tuple,
         bytes::bytes_repr,
         instance::BoundMethod,
         long_int::INT_MAX_STR_DIGITS,
@@ -152,28 +152,28 @@ impl Type {
             let name = format!("{}.__class_getitem__", self.dunder_name());
             let key = args.get_one_arg(&name, vm.heap)?;
             Ok(CallResult::Value(GenericAlias::subscript(self, key, vm)))
-        } else if let Some(value) = self.class_getattr(attr, vm) {
+        } else {
+            let mut pending = DropGuard::new(args, vm);
+            let value = self.class_getattr(attr, pending.ctx())?;
+            let (args, vm) = pending.into_parts();
             defer_drop!(value, vm);
             vm.call_function(value, args)
-        } else {
-            args.drop_with(vm.heap);
-            Err(self.attribute_error(attr, vm))
         }
     }
 
     /// Resolves an attribute read on a type object itself — `list.__name__`,
-    /// `bool.__mro__`, `date.max`, `chain.from_iterable` — returning `None` when
-    /// there is no such member so the caller raises [`Self::attribute_error`].
-    pub(crate) fn class_getattr(self, attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
+    /// `bool.__mro__`, `date.max` or `chain.from_iterable`.
+    pub(crate) fn class_getattr(self, attr: &EitherStr, vm: &mut VM<'_>) -> RunResult<Value> {
         let is_dunder_name = attr.static_string(vm.interns).map_or_else(
             || attr.as_str(vm.interns) == "__name__",
             |ss| ss == StaticStrings::DunderName,
         );
         if is_dunder_name {
-            return Some(allocate_string(self.dunder_name(), vm.heap));
+            return Ok(allocate_string(self.dunder_name(), vm.heap));
         }
         let type_value = |ty: Self| Value::Builtin(Builtins::Type(ty));
-        Some(match attr.as_str(vm.interns) {
+        Ok(match attr.as_str(vm.interns) {
+            "__dict__" => MappingProxy::class_namespace(self, vm)?,
             "__bases__" => allocate_tuple(self.def().bases.iter().copied().map(type_value).collect(), vm.heap),
             "__mro__" => allocate_tuple(self.mro().map(type_value).collect(), vm.heap),
             // `type.mro` is the method itself; any other type's is bound to that type.
@@ -184,8 +184,13 @@ impl Type {
                 Value::Builtin(Builtins::Function(BuiltinsFunctions::TypeMro)),
                 vm.heap,
             ),
-            "__init_subclass__" => bind_init_subclass(type_value(self), self.class_constant(attr, vm)?, vm.heap),
-            _ => py_attrs::read_member(self, attr, None, vm)?,
+            "__init_subclass__" => bind_init_subclass(
+                type_value(self),
+                self.class_constant(attr, vm)
+                    .ok_or_else(|| self.attribute_error(attr, vm))?,
+                vm.heap,
+            ),
+            _ => py_attrs::read_member(self, attr, None, vm).ok_or_else(|| self.attribute_error(attr, vm))?,
         })
     }
 
