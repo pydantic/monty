@@ -686,39 +686,48 @@ impl<'heap> PyAttrs<'heap> for PyPathImpl {
     type Receiver = HeapObjectRead<'heap, Path>;
 
     #[pymethod(Glob)]
-    fn glob<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+    fn glob<'h>(
+        this: &mut HeapObjectRead<'h, Path>,
+        PathGlobArgs {
+            pattern,
+            case_sensitive,
+            recurse_symlinks,
+        }: PathGlobArgs,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
         {
-            let PathGlobArgs {
-                pattern,
-                case_sensitive,
-                recurse_symlinks,
-            } = PathGlobArgs::from_args(args, vm)?;
             let base = this.get(vm.heap).as_str().to_owned();
             path_glob(&base, pattern, false, case_sensitive, recurse_symlinks, vm)
         }
     }
 
     #[pymethod(Rglob)]
-    fn rglob<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+    fn rglob<'h>(
+        this: &mut HeapObjectRead<'h, Path>,
+        PathRglobArgs {
+            pattern,
+            case_sensitive,
+            recurse_symlinks,
+        }: PathRglobArgs,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
         {
-            let PathRglobArgs {
-                pattern,
-                case_sensitive,
-                recurse_symlinks,
-            } = PathRglobArgs::from_args(args, vm)?;
             let base = this.get(vm.heap).as_str().to_owned();
             path_glob(&base, pattern, true, case_sensitive, recurse_symlinks, vm)
         }
     }
 
     #[pymethod(Walk)]
-    fn walk<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+    fn walk<'h>(
+        this: &mut HeapObjectRead<'h, Path>,
+        PathWalkArgs {
+            top_down,
+            on_error,
+            follow_symlinks,
+        }: PathWalkArgs,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
         {
-            let PathWalkArgs {
-                top_down,
-                on_error,
-                follow_symlinks,
-            } = PathWalkArgs::from_args(args, vm)?;
             let top = this.get(vm.heap).as_str().to_owned();
             walk_call(top, true, top_down.bool(), on_error, follow_symlinks.bool(), vm)
         }
@@ -734,11 +743,14 @@ impl<'heap> PyAttrs<'heap> for PyPathImpl {
     }
 
     #[pymethod(Match)]
-    fn matches<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let PathMatchArgs {
+    fn matches<'h>(
+        this: &mut HeapObjectRead<'h, Path>,
+        PathMatchArgs {
             path_pattern,
             case_sensitive,
-        } = PathMatchArgs::from_args(args, vm)?;
+        }: PathMatchArgs,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Value> {
         defer_drop!(path_pattern, vm);
         defer_drop!(case_sensitive, vm);
         let case_sensitive = match case_sensitive {

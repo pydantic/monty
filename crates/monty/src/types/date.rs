@@ -632,9 +632,12 @@ impl<'heap> PyAttrs<'heap> for PyDateImpl {
     }
 
     #[pymethod(Strftime)]
-    fn strftime<'h>(value: &mut HeapObjectRead<'h, Date>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn strftime<'h>(
+        value: &mut HeapObjectRead<'h, Date>,
+        StrftimeArgs { format }: StrftimeArgs,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Value> {
         let date = *value.get(vm.heap);
-        let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm)?;
         defer_drop!(format, vm);
         let formatted = format_date_strftime(date, format.as_str(vm), &vm.heap.tracker)?;
         Ok(allocate_string(formatted, vm.heap))

@@ -208,8 +208,11 @@ impl<'heap> PyAttrs<'heap> for PyBytesIoImpl {
     /// Re-running the constructor reopens the stream and, as in CPython, empties it
     /// before checking the payload, so a rejected payload leaves it empty.
     #[pymethod(DunderInit)]
-    fn __init__<'h>(this: &mut HeapObjectRead<'h, BytesIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let BytesIoArgs { initial_bytes } = BytesIoArgs::from_args(args, vm)?;
+    fn __init__<'h>(
+        this: &mut HeapObjectRead<'h, BytesIo>,
+        BytesIoArgs { initial_bytes }: BytesIoArgs,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Value> {
         defer_drop!(initial_bytes, vm);
         *this.get_mut(vm.heap) = BytesIo::default();
         this.get_mut(vm.heap).buf = initial_payload(initial_bytes, vm)?;

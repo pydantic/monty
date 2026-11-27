@@ -243,6 +243,7 @@ impl Signature {
 
         let fast_paths = self.render_positional_fast_paths();
         let spec = self.render_spec(&named);
+        let method_name = self.func_name.is_none().then(|| quote! { name.into(), });
         let name_arg = self.func_name.is_none().then(|| quote! { __name: &'static str, });
         let func_name = self.callable_name();
         let conversions = named.iter().map(|f| self.render_conversion(f));
@@ -267,6 +268,17 @@ impl Signature {
                             <#slot_tys as crate::args::FromValue>::drop_extracted(__v, heap);
                         }
                     )*
+                }
+            }
+
+            #[automatically_derived]
+            impl crate::args::FromArgs for #struct_ident {
+                fn bind_method_args(
+                    name: crate::intern::StaticStrings,
+                    args: crate::args::ArgValues,
+                    vm: &mut crate::bytecode::VM<'_>,
+                ) -> crate::exception_private::RunResult<Self> {
+                    Self::from_args(#method_name args, vm)
                 }
             }
 

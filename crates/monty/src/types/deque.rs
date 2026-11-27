@@ -1049,8 +1049,7 @@ impl<'heap> PyAttrs<'heap> for PyDequeImpl {
 
     #[pymethod(Rotate)]
     /// `deque.rotate([n=1])` — rotates right by `n` (left if negative), wrapping.
-    fn rotate<'h>(deque: &HeapReadMut<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let RotateArgs { n } = RotateArgs::from_args(args, vm)?;
+    fn rotate<'h>(deque: &HeapReadMut<'h, Deque>, RotateArgs { n }: RotateArgs, vm: &mut VM<'h>) -> RunResult<Value> {
         defer_drop!(n, vm);
         // A big int is a valid rotation count; only one out of `i64` range is an
         // `OverflowError`, matching CPython's `PyNumber_AsSsize_t`.
@@ -1076,11 +1075,14 @@ impl<'heap> PyAttrs<'heap> for PyDequeImpl {
 
     #[pymethod(Insert)]
     /// `deque.insert(i, x)` — raises if the deque is already at `maxlen`.
-    fn insert<'h>(deque: &HeapReadMut<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let InsertArgs {
+    fn insert<'h>(
+        deque: &HeapReadMut<'h, Deque>,
+        InsertArgs {
             index: index_value,
             item,
-        } = InsertArgs::from_args(args, vm)?;
+        }: InsertArgs,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Value> {
         defer_drop!(index_value, vm);
         // Every failing branch below releases `item` through the guard. The insert
         // at the end takes it back out.
@@ -1152,12 +1154,15 @@ impl<'heap> PyAttrs<'heap> for PyDequeImpl {
 
     #[pymethod(Index)]
     /// `deque.index(x[, start[, stop]])` — index of the first item equal to `x`.
-    fn index<'h>(deque: &HeapRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let IndexArgs {
+    fn index<'h>(
+        deque: &HeapRead<'h, Deque>,
+        IndexArgs {
             value: target,
             start,
             stop,
-        } = IndexArgs::from_args(args, vm)?;
+        }: IndexArgs,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Value> {
         defer_drop!(target, vm);
         defer_drop!(start, vm);
         defer_drop!(stop, vm);

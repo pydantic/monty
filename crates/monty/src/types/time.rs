@@ -647,8 +647,11 @@ impl<'heap> PyAttrs<'heap> for PyTimeImpl {
     type Receiver = HeapObjectRead<'heap, Time>;
 
     #[pymethod(Isoformat)]
-    fn isoformat<'h>(value: &mut HeapObjectRead<'h, Time>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let IsoformatArgs { timespec } = IsoformatArgs::from_args(args, vm)?;
+    fn isoformat<'h>(
+        value: &mut HeapObjectRead<'h, Time>,
+        IsoformatArgs { timespec }: IsoformatArgs,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Value> {
         defer_drop!(timespec, vm);
         let spec = match timespec {
             Some(timespec) => TimeSpec::parse(timespec.as_str(vm))?,
@@ -660,8 +663,11 @@ impl<'heap> PyAttrs<'heap> for PyTimeImpl {
     }
 
     #[pymethod(Strftime)]
-    fn strftime<'h>(value: &mut HeapObjectRead<'h, Time>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm)?;
+    fn strftime<'h>(
+        value: &mut HeapObjectRead<'h, Time>,
+        StrftimeArgs { format }: StrftimeArgs,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Value> {
         defer_drop!(format, vm);
         let time = value.get(vm.heap).clone();
         let tz = attached_timezone(&time, vm.heap);

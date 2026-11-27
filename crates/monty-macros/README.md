@@ -102,7 +102,9 @@ Bases with different native payloads register a `TypeDef::subtype_call` adapter 
 
 Each annotation names its `StaticStrings` key explicitly:
 
-- `#[pymethod(Sort)]` registers an instance method with a native receiver, `ArgValues`, and `&mut VM`.
+- `#[pymethod(Sort)]` registers an instance method with a native receiver, its argument type, and `&mut VM`.
+  For example, `date.strftime` takes `StrftimeArgs { format }: StrftimeArgs`. The adapter validates the receiver,
+  then calls the derived `FromArgs` binder. Handlers that unpack their own arguments can take `ArgValues`.
   Methods return `RunResult<Value>` or `RunResult<CallResult>`; the adapter converts values and preserves suspension.
   Inherited methods are registered only on their defining base; MRO lookup supplies the owner for receiver validation.
 - `#[pyclassmethod(Fromkeys)]` registers `(StaticStrings, TypeRef, ArgValues, &mut VM) -> RunResult<CallResult>`.

@@ -1341,8 +1341,11 @@ impl<'heap> PyAttrs<'heap> for PyDateTimeImpl {
     type Receiver = HeapObjectRead<'heap, DateTime>;
 
     #[pymethod(Isoformat)]
-    fn isoformat<'h>(this: &mut HeapObjectRead<'h, DateTime>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let IsoformatArgs { sep, timespec } = IsoformatArgs::from_args(args, vm)?;
+    fn isoformat<'h>(
+        this: &mut HeapObjectRead<'h, DateTime>,
+        IsoformatArgs { sep, timespec }: IsoformatArgs,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Value> {
         defer_drop!(sep, vm);
         defer_drop!(timespec, vm);
         let separator = isoformat_separator(sep.as_ref(), vm)?;

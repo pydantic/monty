@@ -875,8 +875,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
     ///
     /// Returns a list of the words in the string, using sep as the delimiter string.
     #[pymethod(Split)]
-    fn split(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let SplitArgs { sep, maxsplit } = SplitArgs::from_args(args, vm)?;
+    fn split(s: &PyStr<'h>, SplitArgs { sep, maxsplit }: SplitArgs, vm: &mut VM<'h>) -> RunResult<Value> {
         let (sep, maxsplit) = coerce_split_args(sep, maxsplit, vm)?;
         // Guarded before the subject borrow, so a limit error mid-loop releases the pieces built so far.
         let mut items_guard = DropGuard::new(Vec::new(), vm);
@@ -930,8 +929,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
     /// Returns a list of the words in the string, using sep as the delimiter string,
     /// splitting from the right.
     #[pymethod(Rsplit)]
-    fn rsplit(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let RsplitArgs { sep, maxsplit } = RsplitArgs::from_args(args, vm)?;
+    fn rsplit(s: &PyStr<'h>, RsplitArgs { sep, maxsplit }: RsplitArgs, vm: &mut VM<'h>) -> RunResult<Value> {
         let (sep, maxsplit) = coerce_split_args(sep, maxsplit, vm)?;
         // Guarded before the subject borrow, so a limit error mid-loop releases the pieces built so far.
         let mut items_guard = DropGuard::new(Vec::new(), vm);
@@ -1127,8 +1125,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
     /// Returns a copy with all occurrences of substring old replaced by new.
     /// If count is given, only the first count occurrences are replaced.
     #[pymethod(Replace)]
-    fn replace(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let ReplaceArgs { old, new, count } = ReplaceArgs::from_args(args, vm)?;
+    fn replace(s: &PyStr<'h>, ReplaceArgs { old, new, count }: ReplaceArgs, vm: &mut VM<'h>) -> RunResult<Value> {
         defer_drop!(old, vm);
         defer_drop!(new, vm);
         let old = old.as_str(vm);
@@ -1282,9 +1279,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
     /// Returns a copy of the string where all tab characters are replaced by one or
     /// more spaces, depending on the current column and the given tab size.
     #[pymethod(Expandtabs)]
-    fn expandtabs(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let ExpandtabsArgs { tabsize } = ExpandtabsArgs::from_args(args, vm)?;
-
+    fn expandtabs(s: &PyStr<'h>, ExpandtabsArgs { tabsize }: ExpandtabsArgs, vm: &mut VM<'h>) -> RunResult<Value> {
         let tabsize = match tabsize {
             None => 8,
             Some(val) => {
@@ -1349,8 +1344,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
     /// `'hello'.encode('ascii', 'bogus')` succeeds because there's nothing for
     /// the handler to do.
     #[pymethod(Encode)]
-    fn encode(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let EncodeArgs { encoding, errors } = EncodeArgs::from_args(args, vm)?;
+    fn encode(s: &PyStr<'h>, EncodeArgs { encoding, errors }: EncodeArgs, vm: &mut VM<'h>) -> RunResult<Value> {
         defer_drop!(encoding, vm);
         defer_drop!(errors, vm);
         let encoding = encoding.as_ref().map_or("utf-8", |e| e.as_str(vm));

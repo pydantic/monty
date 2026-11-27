@@ -24,7 +24,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     expressions::{ExprLoc, Identifier},
     heap::{ContainsHeap, DropWithContext, Heap},
-    intern::{Interns, StringId},
+    intern::{Interns, StaticStrings, StringId},
     object_bridge::{CallArgsExt, GraphExporter},
     parse::ParseError,
     types::{Dict, dict::DictIntoIter},
@@ -41,6 +41,17 @@ pub(crate) enum ArgValues {
     Two(Value, Value),
     Kwargs(KwargsValues),
     ArgsKargs { args: Vec<Value>, kwargs: KwargsValues },
+}
+
+/// Binds arguments after a native method adapter has validated its receiver.
+pub(crate) trait FromArgs: Sized {
+    fn bind_method_args(name: StaticStrings, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Self>;
+}
+
+impl FromArgs for ArgValues {
+    fn bind_method_args(_: StaticStrings, args: Self, _: &mut VM<'_>) -> RunResult<Self> {
+        Ok(args)
+    }
 }
 
 impl ArgValues {

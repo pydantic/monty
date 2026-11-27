@@ -76,13 +76,13 @@ impl StringIo {
     /// then writes the initial text through the same translation as `write()`
     /// and rewinds to the start.
     pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+        let args = StringIoArgs::from_args(args, vm)?;
         let stream = Self::from_init_args(vm, args)?;
         Ok(Value::Ref(vm.heap.allocate(HeapData::StringIo(Box::new(stream)))))
     }
 
     /// A fresh, open stream from the constructor's arguments, shared with `__init__`.
-    fn from_init_args(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Self> {
-        let StringIoArgs { initial_value, newline } = StringIoArgs::from_args(args, vm)?;
+    fn from_init_args(vm: &mut VM<'_>, StringIoArgs { initial_value, newline }: StringIoArgs) -> RunResult<Self> {
         defer_drop!(initial_value, vm);
         let newline = parse_newline(newline, vm)?;
         let mut stream = Self {
@@ -385,7 +385,7 @@ impl<'heap> PyAttrs<'heap> for PyStringIoImpl {
 
     /// Re-running the constructor resets the stream, reopening a closed one, as in CPython.
     #[pymethod(DunderInit)]
-    fn __init__<'h>(this: &mut HeapObjectRead<'h, StringIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn __init__<'h>(this: &mut HeapObjectRead<'h, StringIo>, args: StringIoArgs, vm: &mut VM<'h>) -> RunResult<Value> {
         let stream = StringIo::from_init_args(vm, args)?;
         *this.get_mut(vm.heap) = stream;
         Ok(Value::None)

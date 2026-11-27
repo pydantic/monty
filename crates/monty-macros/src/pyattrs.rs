@@ -85,6 +85,7 @@ pub(crate) fn expand(mut input: ItemImpl) -> syn::Result<TokenStream> {
                                 let Some(receiver) = (#projection) else {
                                     return crate::py_attrs::invalid_receiver(#key, args, vm);
                                 };
+                                let args = crate::args::FromArgs::bind_method_args(#key, args, vm)?;
                                 <#owner>::#handler(receiver, args, vm).map(Into::into)
                             })
                         }
