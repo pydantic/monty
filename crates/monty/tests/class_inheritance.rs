@@ -379,7 +379,28 @@ class Child(Parent):
     def __init__(self):
         self.proxy = super()
 
-Child()
+def make_cycle():
+    Child()
+
+make_cycle()
+";
+    let output = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default())
+        .unwrap()
+        .run_ref_counts(vec![])
+        .unwrap();
+    assert!(output.unreachable.is_empty(), "{:?}", output.unreachable);
+}
+
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn implicit_super_class_cell_cycles_are_collected() {
+    let code = r"
+def make_cycle():
+    class Child:
+        def parent(self):
+            return super()
+
+make_cycle()
 ";
     let output = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default())
         .unwrap()

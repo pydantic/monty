@@ -190,6 +190,22 @@ class Invalid:
         assert __class__ is Invalid
         return super()
 
+    def cleared_receiver(self):
+        try:
+            raise ValueError
+        except ValueError as self:
+            pass
+        return super()
+
+
+def call_with_class_cell(initialize):
+    def make_proxy(receiver):
+        return super()
+
+    if initialize:
+        __class__ = 42
+    return make_proxy(Invalid)
+
 
 def no_args():
     return super()
@@ -200,6 +216,9 @@ for call, message in (
     (Invalid().only_varargs, 'super(): no arguments'),
     (lambda: no_class(instance), 'super(): __class__ cell not found'),
     (Invalid().local_class, 'super(): __class__ cell not found'),
+    (Invalid().cleared_receiver, 'super(): arg[0] deleted'),
+    (lambda: call_with_class_cell(False), 'super(): empty __class__ cell'),
+    (lambda: call_with_class_cell(True), 'super(): __class__ is not a type (int)'),
 ):
     try:
         call()
