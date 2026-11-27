@@ -2029,7 +2029,7 @@ impl Checkout {
             .map_or_else(Vec::new, TelemetryContext::propagation_headers);
         #[cfg(not(feature = "telemetry"))]
         let trace = Vec::new();
-        let worker = self.pool.acquire_worker(&trace, &redial.metadata).await?;
+        let worker = self.pool.acquire_worker(&trace, &redial.metadata, false).await?;
         #[cfg(feature = "telemetry")]
         let worker = worker.with_adapter_context(redial.telemetry.clone());
         self.worker = Some(worker);

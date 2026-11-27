@@ -111,6 +111,7 @@ impl Worker {
         remote: Option<&Remote>,
         metadata: &[(String, String)],
         checkout_deadline: Option<Instant>,
+        retry_unhinted_admission: bool,
     ) -> Result<Self, PoolError> {
         let worker = match &config.transport {
             MontyTransport::Subprocess(binary_path) => {
@@ -119,7 +120,12 @@ impl Worker {
             MontyTransport::Remote(_) => {
                 let remote = remote.expect("a remote pool holds its channel");
                 remote
-                    .open(metadata, config.max_decode_bytes, checkout_deadline)
+                    .open(
+                        metadata,
+                        config.max_decode_bytes,
+                        checkout_deadline,
+                        retry_unhinted_admission,
+                    )
                     .await
                     .map(|worker| Self::from_kind(WorkerKind::Remote(Box::new(worker))))
             }

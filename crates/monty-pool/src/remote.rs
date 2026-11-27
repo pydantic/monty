@@ -151,6 +151,7 @@ impl Remote {
         metadata: &[(String, String)],
         max_decode_bytes: usize,
         checkout_deadline: Option<Instant>,
+        retry_unhinted_admission: bool,
     ) -> Result<RemoteWorker, PoolError> {
         let url = &self.url;
         let mut map = MetadataMap::new();
@@ -228,7 +229,8 @@ impl Remote {
                 Ok(Err(status)) if Error::source(&status).is_none() && refuses_admission(status.code()) => {
                     let refusal = RemoteDisconnect::from_refusal(&status);
                     if retry.is_none()
-                        && let Some(delay) = admission_retry_delay(refusal.retry_after, admission_retry_jitter)
+                        && let Some(delay) =
+                            admission_retry_delay(&status, &refusal, retry_unhinted_admission, admission_retry_jitter)
                     {
                         let now = Instant::now();
                         let retry_deadline = dial_deadline
@@ -326,9 +328,25 @@ fn admission_retry_jitter() -> Duration {
     Duration::from_millis(RandomState::new().hash_one(0_u8) % (MAX_ADMISSION_RETRY_JITTER_MS + 1))
 }
 
-fn admission_retry_delay(retry_after: Option<Duration>, jitter: impl FnOnce() -> Duration) -> Option<Duration> {
-    let delay = retry_after.filter(|&delay| delay <= MAX_ADMISSION_RETRY_AFTER)?;
-    Some(delay.max(MIN_ADMISSION_RETRY_WAIT) + jitter())
+fn admission_retry_delay(
+    status: &Status,
+    refusal: &RemoteDisconnect,
+    retry_unhinted_admission: bool,
+    jitter: impl FnOnce() -> Duration,
+) -> Option<Duration> {
+    if status.metadata().contains_key("retry-after") {
+        let delay = refusal
+            .retry_after
+            .filter(|&delay| delay <= MAX_ADMISSION_RETRY_AFTER)?;
+        return Some(delay.max(MIN_ADMISSION_RETRY_WAIT) + jitter());
+    }
+    (retry_unhinted_admission
+        && !matches!(status.code(), Code::Unauthenticated | Code::PermissionDenied)
+        && matches!(
+            refusal.cause,
+            Some(Cause::CallerCap | Cause::Capacity | Cause::WorkerUnavailable)
+        ))
+    .then_some(MIN_ADMISSION_RETRY_WAIT)
 }
 
 /// Whether a response's headers are a gRPC server's: the protocol requires a

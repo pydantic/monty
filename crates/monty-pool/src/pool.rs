@@ -205,7 +205,7 @@ impl Pool {
             .map_or_else(Vec::new, TelemetryContext::propagation_headers);
         #[cfg(not(feature = "telemetry"))]
         let trace = Vec::new();
-        let worker = self.inner.acquire_worker(&trace, &options.metadata).await?;
+        let worker = self.inner.acquire_worker(&trace, &options.metadata, true).await?;
         let config = &self.inner.config;
         let redial = (config.auto_resume && config.transport.is_remote()).then(|| Redial {
             repl: repl.clone(),
@@ -314,13 +314,16 @@ impl PoolInner {
         &self,
         trace: &[(String, String)],
         metadata: &[(String, String)],
+        retry_unhinted_admission: bool,
     ) -> Result<Worker, PoolError> {
         #[cfg(feature = "telemetry")]
         let started = Instant::now();
         // set by the acquisition itself: only it can tell an idle reuse from a
         // spawn, or either from a wait for capacity
         let mut outcome = "idle";
-        let worker = self.acquire_worker_inner(trace, metadata, &mut outcome).await;
+        let worker = self
+            .acquire_worker_inner(trace, metadata, retry_unhinted_admission, &mut outcome)
+            .await;
         #[cfg(feature = "telemetry")]
         if let Some(metrics) = &self.config.metrics {
             let outcome = match &worker {
@@ -340,6 +343,7 @@ impl PoolInner {
         &self,
         trace: &[(String, String)],
         metadata: &[(String, String)],
+        retry_unhinted_admission: bool,
         outcome: &mut &'static str,
     ) -> Result<Worker, PoolError> {
         let remote = self.config.transport.is_remote();
@@ -445,7 +449,14 @@ impl PoolInner {
                 // remote dial — spawn must release it or the pool shrinks
                 let capacity = CapacityGuard::new(self);
                 let dial = [trace, metadata].concat();
-                let mut worker = Worker::new(&self.config, self.remote.as_deref(), &dial, deadline).await?;
+                let mut worker = Worker::new(
+                    &self.config,
+                    self.remote.as_deref(),
+                    &dial,
+                    deadline,
+                    retry_unhinted_admission,
+                )
+                .await?;
                 worker.id = id;
                 capacity.disarm();
                 return Ok(worker);
@@ -724,7 +735,7 @@ async fn new_idle_worker(config: &PoolConfig, remote: Option<&Remote>) -> Result
         }
         _ => Vec::new(),
     };
-    let mut worker = Worker::new(config, remote, &metadata, None).await?;
+    let mut worker = Worker::new(config, remote, &metadata, None, false).await?;
     worker.dial_metadata = metadata;
     Ok(worker)
 }
