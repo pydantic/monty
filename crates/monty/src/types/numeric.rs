@@ -269,6 +269,12 @@ impl<'heap> PyAttrs<'heap> for PyFloatImpl {
         Ok(allocate_string(float_hex(value), vm.heap))
     }
 
+    #[pymethod(Conjugate)]
+    fn conjugate(value: f64, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
+        args.check_zero_args("float.conjugate", vm.heap)?;
+        Ok(Value::Float(value))
+    }
+
     #[pyclassmethod(Fromhex)]
     fn fromhex(_: StaticStrings, _: TypeRef, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         float_fromhex(args, vm).map(CallResult::Value)

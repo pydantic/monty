@@ -1288,6 +1288,35 @@ impl Value {
     /// Returns `AttributeError` for other types or unknown attributes.
     pub fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'_>) -> RunResult<CallResult> {
         match self {
+            Self::Int(i) => match attr.static_string(vm.interns) {
+                Some(StaticStrings::Real | StaticStrings::Numerator) => {
+                    return Ok(CallResult::Value(Self::Int(*i)));
+                }
+                Some(StaticStrings::Imag) => return Ok(CallResult::Value(Self::Int(0))),
+                Some(StaticStrings::Denominator) => return Ok(CallResult::Value(Self::Int(1))),
+                _ => {}
+            },
+            Self::InternLongInt(id) => match attr.static_string(vm.interns) {
+                Some(StaticStrings::Real | StaticStrings::Numerator) => {
+                    return Ok(CallResult::Value(Self::InternLongInt(*id)));
+                }
+                Some(StaticStrings::Imag) => return Ok(CallResult::Value(Self::Int(0))),
+                Some(StaticStrings::Denominator) => return Ok(CallResult::Value(Self::Int(1))),
+                _ => {}
+            },
+            Self::Bool(b) => match attr.static_string(vm.interns) {
+                Some(StaticStrings::Real | StaticStrings::Numerator) => {
+                    return Ok(CallResult::Value(Self::Int(i64::from(*b))));
+                }
+                Some(StaticStrings::Imag) => return Ok(CallResult::Value(Self::Int(0))),
+                Some(StaticStrings::Denominator) => return Ok(CallResult::Value(Self::Int(1))),
+                _ => {}
+            },
+            Self::Float(f) => match attr.static_string(vm.interns) {
+                Some(StaticStrings::Real) => return Ok(CallResult::Value(Self::Float(*f))),
+                Some(StaticStrings::Imag) => return Ok(CallResult::Value(Self::Float(0.0))),
+                _ => {}
+            },
             // Instances resolve attributes (instance dict → class methods/vars,
             // binding methods) in a dedicated path that has the heap id needed to
             // build bound methods.
@@ -1333,8 +1362,32 @@ impl Value {
             PyValue::from_heap(*heap_id, vm.heap).py_set_attr(name, value, vm)
         } else {
             value.drop_with(vm);
-            let type_name = self.py_type_name(vm);
-            Err(ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm.interns)))
+            let is_readonly = match self {
+                Self::Int(_) | Self::InternLongInt(_) | Self::Bool(_) => matches!(
+                    name.static_string(vm.interns),
+                    Some(
+                        StaticStrings::Real
+                            | StaticStrings::Imag
+                            | StaticStrings::Numerator
+                            | StaticStrings::Denominator
+                    )
+                ),
+                Self::Float(_) => matches!(
+                    name.static_string(vm.interns),
+                    Some(StaticStrings::Real | StaticStrings::Imag)
+                ),
+                _ => false,
+            };
+            if is_readonly {
+                let owner_type = if matches!(self, Self::Float(_)) { "float" } else { "int" };
+                Err(ExcType::attribute_error_not_writable(
+                    name.as_str(vm.interns),
+                    owner_type,
+                ))
+            } else {
+                let type_name = self.py_type_name(vm);
+                Err(ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm.interns)))
+            }
         }
     }
 

@@ -347,6 +347,10 @@ impl<'h> PyValue<'h> {
                         args.check_zero_args("int.is_integer", vm.heap)?;
                         Ok(CallResult::Value(Value::Bool(true)))
                     }
+                    Some(StaticStrings::Conjugate) => {
+                        args.check_zero_args("int.conjugate", vm.heap)?;
+                        Ok(CallResult::Value(Value::Int(i64::from(*value))))
+                    }
                     _ => {
                         args.drop_with(vm);
                         Err(ExcType::attribute_error("bool", attr.as_str(vm.interns)))

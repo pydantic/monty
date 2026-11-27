@@ -30,7 +30,7 @@ use crate::{
     bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_python_long_int},
-    heap::{DropWithContext, Heap, HeapObjectRead},
+    heap::{DropWithContext, Heap, HeapObjectRead, HeapReader},
     identity::Identity,
     intern::{LongIntId, StaticStrings},
     resource_checks::{check_div_size, check_lshift_size, check_mult_size, check_pow_size},
@@ -221,14 +221,18 @@ impl<'h> PyInt<'h> {
         )
     }
 
-    /// Computes `int.as_integer_ratio()`, returning `(self, 1)`.
-    pub(crate) fn as_integer_ratio(&self, vm: &VM<'h>) -> Value {
-        let num = match self {
+    /// Converts this integer view into an owned Value.
+    pub(crate) fn to_value(&self, heap: &HeapReader<'h>) -> Value {
+        match self {
             Self::Small(value) => Value::Int(*value),
             Self::Interned(id) => Value::InternLongInt(*id),
-            Self::Heap(value) => value.clone_value(vm.heap),
-        };
-        allocate_tuple(smallvec![num, Value::Int(1)], vm.heap)
+            Self::Heap(value) => value.clone_value(heap),
+        }
+    }
+
+    /// Computes `int.as_integer_ratio()`, returning `(self, 1)`.
+    pub(crate) fn as_integer_ratio(&self, vm: &VM<'h>) -> Value {
+        allocate_tuple(smallvec![self.to_value(vm.heap), Value::Int(1)], vm.heap)
     }
 }
 
@@ -502,11 +506,34 @@ impl<'h> PyTrait<'h> for PyInt<'h> {
                 args.check_zero_args("int.is_integer", vm.heap)?;
                 Ok(CallResult::Value(Value::Bool(true)))
             }
+            Some(StaticStrings::Conjugate) => {
+                args.check_zero_args("int.conjugate", vm.heap)?;
+                Ok(CallResult::Value(self.to_value(vm.heap)))
+            }
             _ => {
                 args.drop_with(vm.heap);
                 Err(ExcType::attribute_error("int", attr.as_str(vm.interns)))
             }
         }
+    }
+
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        Ok(match attr.static_string(vm.interns) {
+            Some(StaticStrings::Real | StaticStrings::Numerator) => Some(CallResult::Value(self.to_value(vm.heap))),
+            Some(StaticStrings::Imag) => Some(CallResult::Value(Value::Int(0))),
+            Some(StaticStrings::Denominator) => Some(CallResult::Value(Value::Int(1))),
+            _ => None,
+        })
+    }
+
+    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        value.drop_with(vm);
+        Err(match name.static_string(vm.interns) {
+            Some(StaticStrings::Real | StaticStrings::Imag | StaticStrings::Numerator | StaticStrings::Denominator) => {
+                ExcType::attribute_error_not_writable(name.as_str(vm.interns), "int")
+            }
+            _ => ExcType::attribute_error_no_setattr("int", name.as_str(vm.interns)),
+        })
     }
 }
 
@@ -1051,11 +1078,34 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
                 };
                 Ok(CallResult::Value(result))
             }
+            Some(StaticStrings::Conjugate) => {
+                args.check_zero_args("int.conjugate", vm.heap)?;
+                Ok(CallResult::Value(self.clone_value(vm.heap)))
+            }
             _ => {
                 args.drop_with(vm.heap);
                 Err(ExcType::attribute_error("int", attr.as_str(vm.interns)))
             }
         }
+    }
+
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        Ok(match attr.static_string(vm.interns) {
+            Some(StaticStrings::Real | StaticStrings::Numerator) => Some(CallResult::Value(self.clone_value(vm.heap))),
+            Some(StaticStrings::Imag) => Some(CallResult::Value(Value::Int(0))),
+            Some(StaticStrings::Denominator) => Some(CallResult::Value(Value::Int(1))),
+            _ => None,
+        })
+    }
+
+    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        value.drop_with(vm);
+        Err(match name.static_string(vm.interns) {
+            Some(StaticStrings::Real | StaticStrings::Imag | StaticStrings::Numerator | StaticStrings::Denominator) => {
+                ExcType::attribute_error_not_writable(name.as_str(vm.interns), "int")
+            }
+            _ => ExcType::attribute_error_no_setattr("int", name.as_str(vm.interns)),
+        })
     }
 }
 
