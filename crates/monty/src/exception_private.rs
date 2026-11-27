@@ -2475,6 +2475,18 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::ValueError, "tuple.index(x): x not in tuple").into()
     }
 
+    /// Creates a ValueError for range.index() when an integer is not found.
+    #[must_use]
+    fn value_error_not_in_range() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "range.index(x): x not in range").into()
+    }
+
+    /// Creates a ValueError for sequence.index() when generic equality finds no match.
+    #[must_use]
+    fn value_error_not_in_sequence() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "sequence.index(x): x not in sequence").into()
+    }
+
     /// Creates a ValueError for list.remove() when item is not found.
     ///
     /// Matches CPython's format: `ValueError: list.remove(x): x not in list`

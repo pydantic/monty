@@ -290,3 +290,53 @@ assert True not in range(2, 5)
 assert None not in range(5)
 assert (1,) not in range(5)
 assert [1] not in range(5)
+
+# === range attributes and count/index ===
+r = range(1, 10, 3)
+assert (r.start, r.stop, r.step) == (1, 10, 3)
+assert (range(5).start, range(5).step) == (0, 1)
+assert range(5)[1:3].start == 1
+
+for name in ('start', 'stop', 'step'):
+    try:
+        setattr(r, name, 3)
+        assert False, 'expected AttributeError'
+    except AttributeError as exc:
+        assert str(exc) == 'readonly attribute'
+
+assert r.count(1) == 1
+assert r.count(2) == 0
+assert range(2).count(True) == 1
+assert r.count(4.0) == 1
+assert r.count('a') == 0
+assert r.count(10**100) == 0
+assert range.count(r, 4) == 1
+
+assert r.index(7) == 2
+assert range.index(r, 7) == 2
+assert range(10, 0, -2).index(4) == 3
+assert range(-5, 5).index(-3) == 2
+assert r.index(7.0) == 2
+assert range(2**62, 2**63 - 1, 2**61).index(2**62 + 2**61) == 1
+
+
+def check_error(call, error_type, message):
+    try:
+        call()
+        assert False, f'expected {error_type.__name__}'
+    except error_type as exc:
+        assert str(exc) == message
+
+
+check_error(lambda: range(0).index(0), ValueError, 'range.index(x): x not in range')
+check_error(lambda: r.index(10**100), ValueError, 'range.index(x): x not in range')
+check_error(lambda: r.index('a'), ValueError, 'sequence.index(x): x not in sequence')
+check_error(lambda: r.index(None), ValueError, 'sequence.index(x): x not in sequence')
+check_error(lambda: r.index(2.0), ValueError, 'sequence.index(x): x not in sequence')
+
+check_error(lambda: r.count(), TypeError, 'range.count() takes exactly one argument (0 given)')
+check_error(lambda: r.count(1, 2), TypeError, 'range.count() takes exactly one argument (2 given)')
+check_error(lambda: r.count(x=1), TypeError, 'range.count() takes no keyword arguments')
+check_error(lambda: r.index(), TypeError, 'range.index() takes exactly one argument (0 given)')
+check_error(lambda: r.index(1, 2), TypeError, 'range.index() takes exactly one argument (2 given)')
+check_error(lambda: r.index(x=1), TypeError, 'range.index() takes no keyword arguments')

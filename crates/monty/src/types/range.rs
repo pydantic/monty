@@ -9,6 +9,7 @@ use std::{
     hash::{Hash, Hasher},
 };
 
+use monty_macros::pyattrs;
 use num_integer::div_ceil;
 
 use crate::{
@@ -18,8 +19,10 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
     heap::{Heap, HeapId, HeapItem, HeapObjectRead},
-    types::{LazyHeapSet, PyTrait, Slice, Type, TypeRef},
-    value::Value,
+    intern::StaticStrings,
+    py_attrs::PyAttrs,
+    types::{LazyHeapSet, PyTrait, Slice, Type, TypeRef, long_int::wide_i128_into_value},
+    value::{EitherStr, Value},
 };
 
 /// Python range object representing an immutable sequence of integers.
@@ -319,11 +322,117 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Range> {
             Ok(write!(f, "range({}, {}, {})", this.start, this.stop, this.step)?)
         }
     }
+
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        let range = self.get(vm.heap);
+        match attr.static_string(vm.interns) {
+            Some(StaticStrings::Start) => Ok(Some(CallResult::Value(Value::Int(range.start)))),
+            Some(StaticStrings::Stop) => Ok(Some(CallResult::Value(Value::Int(range.stop)))),
+            Some(StaticStrings::Step) => Ok(Some(CallResult::Value(Value::Int(range.step)))),
+            _ => Ok(None),
+        }
+    }
+
+    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        value.drop_with(vm);
+        Err(match name.static_string(vm.interns) {
+            Some(StaticStrings::Start | StaticStrings::Stop | StaticStrings::Step) => {
+                ExcType::attribute_error_readonly()
+            }
+            _ => ExcType::attribute_error_no_setattr(&self.py_type_name(vm), name.as_str(vm.interns)),
+        })
+    }
 }
 
 impl HeapItem for Range {
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
         // Range doesn't contain heap references, nothing to do
+    }
+}
+
+pub(crate) struct PyRangeImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyRangeImpl {
+    type Receiver = HeapObjectRead<'heap, Range>;
+
+    /// Counts with O(1) int/bool lookup, rejects out-of-span big ints early,
+    /// and otherwise falls back to generic Python equality over the range.
+    #[pymethod(Count)]
+    fn count<'h>(range: &HeapObjectRead<'h, Range>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let args = args.reject_kwargs("range.count", vm.heap)?;
+        let value = args.get_one_arg("range.count", vm.heap)?;
+        defer_drop!(value, vm);
+
+        let range = *range.get(vm.heap);
+        match value {
+            Value::Int(value) => Ok(Value::Int(i64::from(range.contains(*value)))),
+            Value::Bool(value) => Ok(Value::Int(i64::from(range.contains(i64::from(*value))))),
+            _ if value.as_long_int(vm).is_some() => Ok(Value::Int(0)),
+            _ => {
+                let mut count = 0_i128;
+                // Nested `__eq__` callbacks restart dispatch, so short loops need a check before periodic polling.
+                vm.heap.tracker.check_time()?;
+                for index in 0..range.len_i128() {
+                    let check_index = usize::try_from(index).unwrap_or(usize::MAX);
+                    vm.heap.tracker.check_time_every(check_index)?;
+                    let item = i128::from(range.start) + index * i128::from(range.step);
+                    let item = Value::Int(i64::try_from(item).expect("range element must fit in i64"));
+                    if value.py_eq(&item, vm)? {
+                        count += 1;
+                    }
+                }
+                Ok(i64::try_from(count).map_or_else(|_| wide_i128_into_value(count, vm.heap), Value::Int))
+            }
+        }
+    }
+
+    /// Finds ints/bools in O(1), rejects out-of-span big ints early, and uses
+    /// generic Python equality as the fallback for all other values.
+    #[pymethod(Index)]
+    fn index<'h>(range: &HeapObjectRead<'h, Range>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let args = args.reject_kwargs("range.index", vm.heap)?;
+        let value = args.get_one_arg("range.index", vm.heap)?;
+        defer_drop!(value, vm);
+
+        let range = *range.get(vm.heap);
+        let int_value = match value {
+            Value::Int(value) => Some(*value),
+            Value::Bool(value) => Some(i64::from(*value)),
+            _ => None,
+        };
+        match int_value {
+            Some(value) if range.contains(value) => {
+                let index = (i128::from(value) - i128::from(range.start)) / i128::from(range.step);
+                Ok(i64::try_from(index).map_or_else(|_| wide_i128_into_value(index, vm.heap), Value::Int))
+            }
+            Some(_) => Err(ExcType::value_error_not_in_range()),
+            None if value.as_long_int(vm).is_some() => Err(ExcType::value_error_not_in_range()),
+            None => {
+                let mut index = 0_i128;
+                // Nested `__eq__` callbacks restart dispatch, so short loops need a check before periodic polling.
+                vm.heap.tracker.check_time()?;
+                let found = loop {
+                    if index == range.len_i128() {
+                        break None;
+                    }
+                    let check_index = usize::try_from(index).unwrap_or(usize::MAX);
+                    vm.heap.tracker.check_time_every(check_index)?;
+                    let item = i128::from(range.start) + index * i128::from(range.step);
+                    let item = Value::Int(i64::try_from(item).expect("range element must fit in i64"));
+                    if value.py_eq(&item, vm)? {
+                        break Some(index);
+                    }
+                    index += 1;
+                };
+                match found {
+                    Some(index) => {
+                        Ok(i64::try_from(index).map_or_else(|_| wide_i128_into_value(index, vm.heap), Value::Int))
+                    }
+                    None => Err(ExcType::value_error_not_in_sequence()),
+                }
+            }
+        }
     }
 }
 
