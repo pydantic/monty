@@ -38,6 +38,8 @@ pub enum Cause {
     SessionTimeout,
     /// One turn exceeded the server's wall-clock cap.
     TurnTimeout,
+    /// The worker's watchdog deadline expired and the service ended the session.
+    WorkerWatchdog,
     /// The worker exceeded its memory limit; the server ended the session.
     OutOfMemory,
     /// The server is draining and the idle session had nothing to hand back.
@@ -61,7 +63,9 @@ impl Cause {
     #[must_use]
     pub fn code(self) -> Code {
         match self {
-            Self::IdleTimeout | Self::SessionTimeout | Self::TurnTimeout => Code::DeadlineExceeded,
+            Self::IdleTimeout | Self::SessionTimeout | Self::TurnTimeout | Self::WorkerWatchdog => {
+                Code::DeadlineExceeded
+            }
             Self::OutOfMemory | Self::Capacity | Self::CallerCap => Code::ResourceExhausted,
             Self::ServerShutdown | Self::WorkerUnavailable => Code::Unavailable,
             Self::Unauthenticated => Code::Unauthenticated,
