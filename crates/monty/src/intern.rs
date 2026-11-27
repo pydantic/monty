@@ -2610,7 +2610,7 @@ pub enum StaticStrings {
     Quotetabs,
     /// `quoting` dialect attribute and `csv` format parameter.
     Quoting,
-    /// `threading.RLock` factory.
+    /// `threading.RLock` class.
     #[strum(serialize = "RLock")]
     RLock,
     /// `math.radians()` function.

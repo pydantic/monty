@@ -149,6 +149,8 @@ Each links to the page that owns it, which is where the full account lives:
     (`@=` is rejected at compile time).
     `__bool__` and the `__getattr__` family are ignored silently, so an instance is always truthy
     ([classes.md](classes.md)).
+- **Calling `acquire()` on a held `threading.Lock` raises `RuntimeError`.**
+    A finite timeout returns `False` immediately. See [threading.md](threading.md).
 - **There is no event loop inside the sandbox.** `async` / `await` work, and `asyncio` exposes `run`, `gather`,
     `create_task`, `wait`, `sleep`, `Task`, `InvalidStateError` and the three `wait` constants; everything else
     does not exist ([asyncio.md](asyncio.md)).

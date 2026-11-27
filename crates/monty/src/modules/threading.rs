@@ -17,11 +17,11 @@ use crate::{
     value::{EitherStr, Value},
 };
 
-/// Exposes the primitive lock class and the reentrant lock factory.
+/// Exposes the primitive and reentrant lock classes.
 pub(super) fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Threading, vm.interns);
     module.set_attr(StaticStrings::Lock, Value::Builtin(Builtins::Type(Type::Lock)), vm);
-    module.set_attr(StaticStrings::RLock, ThreadingFunction::RLock.value(), vm);
+    module.set_attr(StaticStrings::RLock, Value::Builtin(Builtins::Type(Type::RLock)), vm);
     module
 }
 
@@ -93,20 +93,18 @@ pub(crate) fn new_lock(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     Ok(Value::Ref(vm.heap.allocate(HeapData::Lock(Lock::Plain(false)))))
 }
 
-/// Constructs a reentrant lock for the public factory and the native type.
+/// Constructs the reentrant lock exposed as `threading.RLock`.
 pub(crate) fn new_rlock(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     args.check_zero_args("RLock", vm.heap)?;
     Ok(Value::Ref(vm.heap.allocate(HeapData::Lock(Lock::Reentrant(0)))))
 }
 
-/// Callable stored in the module or captured by a bound lock method.
-#[monty_macros::explicit_discriminants(checksum = 0x2ece_d551_4e5a_063b)]
+/// Instance methods shared by both lock classes.
+#[monty_macros::explicit_discriminants(checksum = 0xcf05_f315_9ebf_f042)]
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, Serialize, Deserialize)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum ThreadingFunction {
-    #[strum(serialize = "RLock")]
-    RLock = 0,
     Acquire = 1,
     Release = 2,
     Locked = 3,
@@ -123,7 +121,7 @@ impl ThreadingFunction {
         }
     }
 
-    /// Materializes the callable used by module and instance attribute lookup.
+    /// Returns the callable captured by a bound lock method.
     fn value(self) -> Value {
         Value::ModuleFunction(ModuleFunctions::Threading(self))
     }
@@ -162,7 +160,6 @@ fn wait_forever(blocking: LaxBool, timeout: &Value, vm: &mut VM<'_>) -> RunResul
 /// Dispatches both immediate method calls and calls through a saved bound method.
 pub(super) fn call(vm: &mut VM<'_>, function: ThreadingFunction, args: ArgValues) -> RunResult<Value> {
     match function {
-        ThreadingFunction::RLock => new_rlock(vm, args),
         ThreadingFunction::Acquire => {
             let AcquireArgs {
                 lock,

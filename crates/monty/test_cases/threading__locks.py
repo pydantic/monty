@@ -19,8 +19,12 @@ class FloatOnlyTimeout:
         return 0.25
 
 
-assert repr(RLock) == f'<function RLock at {id(RLock):#x}>'
-assert isinstance(Lock(), threading.Lock)
+assert type(Lock()) is threading.Lock
+if sys.platform == 'monty':
+    assert type(RLock()) is threading.RLock
+    assert isinstance(RLock(), RLock)
+    assert not isinstance(Lock(), RLock)
+    assert not isinstance(RLock(), Lock)
 for factory in (Lock, RLock):
     lock = factory()
     other = factory()
