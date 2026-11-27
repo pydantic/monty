@@ -98,17 +98,9 @@ impl TimeZone {
     }
 }
 
-/// Argument shape for `timezone(offset, name=None)`.
-///
-/// `timezone` is a C-implemented constructor that emits its function name in
-/// error messages (unlike `datetime`, which uses the bare `"function"`
-/// label). Hence `style = c_named`.
-///
-/// Both `offset` and `name` are held as `Value` so the inner code can do its
-/// own custom validation (`offset` must be a `timedelta`; `name` must be a
-/// `str`). The macro only handles arg-count/keyword dispatch.
+/// `timezone(offset, name=None)`.
 #[derive(FromArgs)]
-#[from_args(name = "timezone", style = c_named, at_most_total)]
+#[from_args(name = "timezone")]
 struct TimezoneInitArgs {
     offset: Value,
     // `Option<Value>` (with `default`) preserves the distinction between

@@ -79,7 +79,7 @@ fn format_class(vm: &mut VM<'_>) -> Value {
 
 /// Arguments of `get_annotations(obj, *, globals=None, locals=None, eval_str=False, format=Format.VALUE)`.
 #[derive(FromArgs)]
-#[from_args(name = "get_annotations", style = def)]
+#[from_args(name = "get_annotations")]
 struct GetAnnotationsArgs {
     obj: Value,
     #[from_args(kw_only, default = Value::None)]

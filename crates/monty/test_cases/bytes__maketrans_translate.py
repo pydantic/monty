@@ -1,3 +1,10 @@
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
+
 # === bytes.maketrans() ===
 ident = bytes.maketrans(b'', b'')
 assert len(ident) == 256
@@ -35,31 +42,41 @@ try:
     bytes.maketrans()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'maketrans expected 2 arguments, got 0'
+    assert str(e) == _error_message(
+        monty='maketrans() takes exactly 2 arguments (0 given)', cpython='maketrans expected 2 arguments, got 0'
+    )
 
 try:
     bytes.maketrans(b'a')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'maketrans expected 2 arguments, got 1'
+    assert str(e) == _error_message(
+        monty='maketrans() takes exactly 2 arguments (1 given)', cpython='maketrans expected 2 arguments, got 1'
+    )
 
 try:
     bytes.maketrans(b'a', b'b', b'c')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'maketrans expected 2 arguments, got 3'
+    assert str(e) == _error_message(
+        monty='maketrans() takes exactly 2 arguments (3 given)', cpython='maketrans expected 2 arguments, got 3'
+    )
 
 try:
     bytes.maketrans(frm=b'a', to=b'b')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'bytes.maketrans() takes no keyword arguments'
+    assert str(e) == _error_message(
+        monty='maketrans() takes no keyword arguments', cpython='bytes.maketrans() takes no keyword arguments'
+    )
 
 try:
     b''.maketrans(frm=b'a', to=b'b')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'bytes.maketrans() takes no keyword arguments'
+    assert str(e) == _error_message(
+        monty='maketrans() takes no keyword arguments', cpython='bytes.maketrans() takes no keyword arguments'
+    )
 
 try:
     bytes.maketrans('a', b'b')
@@ -83,13 +100,19 @@ try:
     b'abc'.translate()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'translate() takes at least 1 positional argument (0 given)'
+    assert str(e) == _error_message(
+        monty="translate() missing 1 required positional argument: 'table'",
+        cpython='translate() takes at least 1 positional argument (0 given)',
+    )
 
 try:
     b'abc'.translate(table=None)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'translate() takes at least 1 positional argument (0 given)'
+    assert str(e) == _error_message(
+        monty="translate() got some positional-only arguments passed as keyword arguments: 'table'",
+        cpython='translate() takes at least 1 positional argument (0 given)',
+    )
 
 try:
     b'abc'.translate(None, b'a', b'b')

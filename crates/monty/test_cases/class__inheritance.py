@@ -1,4 +1,11 @@
 # Test deep inheritance
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
+
 class Grandparent:
     x = 1
 
@@ -932,9 +939,27 @@ check_error(
 check_error(lambda: issubclass(int, list[int]), 'issubclass() argument 2 cannot be a parameterized generic')
 check_error(lambda: issubclass(int, str | list[int]), 'issubclass() argument 2 cannot be a parameterized generic')
 assert issubclass(int, int | list[int])
-check_error(lambda: issubclass(), 'issubclass expected 2 arguments, got 0')
-check_error(lambda: issubclass(int), 'issubclass expected 2 arguments, got 1')
-check_error(lambda: issubclass(int, str, object), 'issubclass expected 2 arguments, got 3')
+check_error(
+    lambda: issubclass(),
+    _error_message(
+        monty='issubclass() takes exactly 2 arguments (0 given)',
+        cpython='issubclass expected 2 arguments, got 0',
+    ),
+)
+check_error(
+    lambda: issubclass(int),
+    _error_message(
+        monty='issubclass() takes exactly 2 arguments (1 given)',
+        cpython='issubclass expected 2 arguments, got 1',
+    ),
+)
+check_error(
+    lambda: issubclass(int, str, object),
+    _error_message(
+        monty='issubclass() takes exactly 2 arguments (3 given)',
+        cpython='issubclass expected 2 arguments, got 3',
+    ),
+)
 check_error(lambda: issubclass(int, classinfo=int), 'issubclass() takes no keyword arguments')
 
 # === Stage 1.3: inherited __init_subclass__, __mro__ write guard, dynamic __annotations__, frozen dataclass ===

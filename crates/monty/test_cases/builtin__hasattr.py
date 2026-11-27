@@ -1,5 +1,12 @@
 # Test hasattr() builtin function
 
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
+
 s = slice(1, 10, 2)
 
 assert hasattr(s, 'start') == True
@@ -23,19 +30,28 @@ try:
     hasattr()
     assert False, 'hasattr() with no args should raise TypeError'
 except TypeError as e:
-    assert str(e) == 'hasattr expected 2 arguments, got 0', str(e)
+    assert str(e) == _error_message(
+        monty='hasattr() takes exactly 2 arguments (0 given)',
+        cpython='hasattr expected 2 arguments, got 0',
+    ), str(e)
 
 try:
     hasattr(s)
     assert False, 'hasattr() with 1 arg should raise TypeError'
 except TypeError as e:
-    assert str(e) == 'hasattr expected 2 arguments, got 1', str(e)
+    assert str(e) == _error_message(
+        monty='hasattr() takes exactly 2 arguments (1 given)',
+        cpython='hasattr expected 2 arguments, got 1',
+    ), str(e)
 
 try:
     hasattr(s, 'start', 'extra')
     assert False, 'hasattr() with 3 args should raise TypeError'
 except TypeError as e:
-    assert str(e) == 'hasattr expected 2 arguments, got 3', str(e)
+    assert str(e) == _error_message(
+        monty='hasattr() takes exactly 2 arguments (3 given)',
+        cpython='hasattr expected 2 arguments, got 3',
+    ), str(e)
 
 try:
     hasattr(s, 123)

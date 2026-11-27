@@ -5,6 +5,11 @@ import os
 import sys
 from pathlib import Path
 
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
+
 is_windows = sys.platform == 'win32'
 
 # root is injected by the test runner:
@@ -76,10 +81,31 @@ try:
 
     # === chdir errors ===
     for args, kwargs, message in [
-        ((), {}, "chdir() missing required argument 'path' (pos 1)"),
+        (
+            (),
+            {},
+            _error_message(
+                monty="chdir() missing 1 required positional argument: 'path'",
+                cpython="chdir() missing required argument 'path' (pos 1)",
+            ),
+        ),
         (('.', '.'), {}, 'chdir() takes at most 1 argument (2 given)'),
-        (('.',), {'path': '.'}, 'chdir() takes at most 1 argument (2 given)'),
-        ((), {'other': '.'}, "chdir() missing required argument 'path' (pos 1)"),
+        (
+            ('.',),
+            {'path': '.'},
+            _error_message(
+                monty="chdir() got multiple values for argument 'path'",
+                cpython='chdir() takes at most 1 argument (2 given)',
+            ),
+        ),
+        (
+            (),
+            {'other': '.'},
+            _error_message(
+                monty="chdir() got an unexpected keyword argument 'other'",
+                cpython="chdir() missing required argument 'path' (pos 1)",
+            ),
+        ),
     ]:
         try:
             os.chdir(*args, **kwargs)

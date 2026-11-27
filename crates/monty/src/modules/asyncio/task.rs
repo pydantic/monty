@@ -250,7 +250,7 @@ enum ExternalStart {
 /// `asyncio.create_task(coro, *, name=None)` — a Python `def`, so `coro`
 /// binds positionally or by keyword and `name` is keyword-only.
 #[derive(FromArgs)]
-#[from_args(name = "create_task", style = def)]
+#[from_args(name = "create_task")]
 struct CreateTaskArgs {
     coro: Value,
     #[from_args(kw_only, default)]

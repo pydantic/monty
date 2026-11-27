@@ -2779,7 +2779,7 @@ fn translate_checks_args_before_copying_receiver() {
         MontyObject::int(600_000)
     );
     for (code, message) in [
-        ("s.translate()", "str.translate() takes exactly one argument (0 given)"),
+        ("s.translate()", "str.translate() takes exactly 1 argument (0 given)"),
         ("s.translate(table={})", "str.translate() takes no keyword arguments"),
     ] {
         let (_, event) = child.feed(code);

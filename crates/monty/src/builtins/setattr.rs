@@ -6,7 +6,7 @@ use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcTypeExt, RunResult, SimpleException},
+    exception_private::{RunResult, SimpleException},
     types::descriptor,
 };
 
@@ -21,13 +21,9 @@ use crate::{
 /// setattr(obj, 'name', 'foo') # Set obj.name = 'foo'
 /// ```
 pub fn builtin_setattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    let positional = args.into_pos_only("setattr", vm.heap)?;
-    defer_drop!(positional, vm);
-
-    let (object, name, value) = match positional.as_slice() {
-        [object, name, value] => (object, name, value),
-        other => return Err(ExcType::type_error_arg_count("setattr", 3, other.len())),
-    };
+    let values = args.get_args::<3>("setattr", vm.heap)?;
+    defer_drop!(values, vm);
+    let [object, name, value] = values;
 
     let Some(name) = name.as_either_str(vm.heap).map(|s| s.resolve_interned(vm.interns)) else {
         return Err(SimpleException::new_msg(

@@ -35,11 +35,6 @@ objects except `tee`, which is a plain function — so `isinstance(x, count)`,
     The traceback identifies the consuming expression and any Python callback frames.
     CPython would simply call it.
     See [classes.md](classes.md) and [iter.md](iter.md) for related special-method restrictions.
-- **`zip_longest` names the rejected keyword.** A bad keyword raises
-    `zip_longest() got an unexpected keyword argument 'bogus'`, where CPython
-    raises `zip_longest() got an unexpected keyword argument` with no name —
-    CPython hand-rolls that check rather than going through a parser family, and
-    is alone in omitting it. Every other adaptor's wording matches.
 - **A re-entrant `zip_longest` stops instead of padding forever.** A source
     that steps the same `zip_longest` from inside its own `__next__` can exhaust
     the remaining slots before the outer round reaches them. Both agree on the
@@ -109,11 +104,6 @@ objects except `tee`, which is a plain function — so `isinstance(x, count)`,
     worker's pointer width, so the wasm worker raises
     `OverflowError: Python int too large to convert to C ssize_t` for anything
     at or above `2**31` before reaching any of it.
-- **`product` names a rejected keyword instead of counting keywords.** Two
-    keywords where one is unknown (`product([1], repeat=2, bogus=1)`) raise
-    `product() got an unexpected keyword argument 'bogus'`, where CPython
-    raises `product() takes at most 1 keyword argument (2 given)`. A single
-    unknown keyword reads the same on both.
 - **A `groupby` key comparison that re-enters its own `groupby` keeps going.**
     A user `__eq__` that steps the same `groupby` and consumes the pair being
     compared leaves CPython reading through freed state, where it segfaults.

@@ -1,6 +1,11 @@
 import sys
 import tomllib
 
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
+
 # === TOMLDecodeError messages and positions ===
 # Each case is (source, str(exc)); the suffix locates the error the way
 # CPython's TOMLDecodeError.__init__ does from `doc` and `pos`.
@@ -150,19 +155,28 @@ try:
     tomllib.loads()
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == "loads() missing 1 required positional argument: 's'"
+    assert str(exc) == _error_message(
+        monty='loads() takes exactly 1 argument (0 given)',
+        cpython="loads() missing 1 required positional argument: 's'",
+    )
 try:
     tomllib.loads('a = 1', 'extra')
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == 'loads() takes 1 positional argument but 2 were given'
+    assert str(exc) == _error_message(
+        monty='loads() takes exactly 1 argument (2 given)',
+        cpython='loads() takes 1 positional argument but 2 were given',
+    )
 # `parse_float` is not implemented; CPython accepts it
 if sys.platform == 'monty':
     try:
         tomllib.loads('a = 1', parse_float=float)
         assert False, 'expected TypeError'
     except TypeError as exc:
-        assert str(exc) == "loads() got an unexpected keyword argument 'parse_float'"
+        assert str(exc) == _error_message(
+            monty='loads() takes no keyword arguments',
+            cpython="loads() got an unexpected keyword argument 'parse_float'",
+        )
 
 # === integer digit limit (ValueError from int(), not TOMLDecodeError) ===
 try:

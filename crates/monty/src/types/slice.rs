@@ -288,7 +288,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Slice> {
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         match attr.static_string(vm.interns) {
             Some(StaticStrings::Indices) => {
-                let args = args.reject_kwargs("slice.indices", vm.heap)?;
                 let len_val = args.get_one_arg("slice.indices", vm.heap)?;
                 defer_drop!(len_val, vm);
                 let index = len_val.saturating_index(vm)?;

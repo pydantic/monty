@@ -9,14 +9,9 @@ use crate::{
     value::Value,
 };
 
-/// Argument shape for `format(value, format_spec='', /)`.
-///
-/// CPython parses it with `PyArg_ParseTuple`, so `style = unpack` gives the
-/// `format expected at most 2 arguments` arity wording and the blanket
-/// `format() takes no keyword arguments` rejection; `bad_arg` supplies
-/// `format() argument 2 must be str, not int`.
+/// `format(value, format_spec='', /)`.
 #[derive(FromArgs)]
-#[from_args(name = "format", style = unpack, bad_arg)]
+#[from_args(name = "format", bad_arg)]
 struct FormatArgs {
     #[from_args(pos_only)]
     value: Value,

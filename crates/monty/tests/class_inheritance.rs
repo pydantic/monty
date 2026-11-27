@@ -694,20 +694,20 @@ try:
     type.mro()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert 'unbound method type.mro() needs an argument' in str(e)
+    assert str(e) == "type.mro() takes exactly 1 argument (0 given)"
 
 # Calling mro with arguments raises TypeError
 try:
     D.mro(1)
     assert False, "expected TypeError"
 except TypeError as e:
-    assert "D.mro() takes no arguments (1 given)" in str(e)
+    assert str(e) == "type.mro() takes exactly 1 argument (2 given)"
 
 try:
     bool.mro(1)
     assert False, "expected TypeError"
 except TypeError as e:
-    assert "bool.mro() takes no arguments (1 given)" in str(e)
+    assert str(e) == "type.mro() takes exactly 1 argument (2 given)"
 
 try:
     type.mro(1)
@@ -1081,7 +1081,7 @@ assert issubclass(Counter, dict)
 
 #[test]
 fn builtins_type_and_exception_introspection_coverage() {
-    run(r"
+    run(r#"
 assert ValueError.__name__ == 'ValueError'
 assert ValueError.__class__ == type
 assert ValueError.__bases__ == (Exception,)
@@ -1098,7 +1098,7 @@ try:
     type.mro()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert 'unbound method type.mro() needs an argument' in str(e)
+    assert str(e) == "type.mro() takes exactly 1 argument (0 given)"
 
 assert type(type) == type
 assert type(ValueError) == type
@@ -1124,7 +1124,7 @@ assert issubclass(PermissionError, OSError)
 class MyCustom: pass
 assert not issubclass(int, MyCustom)
 assert not issubclass(MyCustom, int)
-");
+"#);
 
     run_err(
         "ValueError.nonexistent_attr",
@@ -1729,8 +1729,11 @@ m = type.mro
 assert m(A) == [A, object]
 assert m(int) == [int, object]
 ");
-    run_err("type.mro()", "unbound method type.mro() needs an argument");
-    run_err("getattr(type, 'mro')()", "unbound method type.mro() needs an argument");
+    run_err("type.mro()", "type.mro() takes exactly 1 argument (0 given)");
+    run_err(
+        "getattr(type, 'mro')()",
+        "type.mro() takes exactly 1 argument (0 given)",
+    );
 }
 
 #[test]

@@ -1,6 +1,13 @@
 # Tests for class introspection: __bases__, __mro__, and mro()
 
 
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
+
 class A:
     pass
 
@@ -80,13 +87,19 @@ try:
     A.mro(1)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'A.mro() takes no arguments (1 given)'
+    assert str(e) == _error_message(
+        monty='type.mro() takes exactly 1 argument (2 given)',
+        cpython='A.mro() takes no arguments (1 given)',
+    )
 
 try:
     int.mro(1, 2)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'int.mro() takes no arguments (2 given)'
+    assert str(e) == _error_message(
+        monty='type.mro() takes exactly 1 argument (3 given)',
+        cpython='int.mro() takes no arguments (2 given)',
+    )
 
 # Extended introspection: type, namedtuple, builtin subtypes, and stdlib exceptions
 from collections import Counter, defaultdict, namedtuple
@@ -102,13 +115,19 @@ try:
     type.mro()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'unbound method type.mro() needs an argument'
+    assert str(e) == _error_message(
+        monty='type.mro() takes exactly 1 argument (0 given)',
+        cpython='unbound method type.mro() needs an argument',
+    )
 
 try:
     getattr(type, 'mro')()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'unbound method type.mro() needs an argument'
+    assert str(e) == _error_message(
+        monty='type.mro() takes exactly 1 argument (0 given)',
+        cpython='unbound method type.mro() needs an argument',
+    )
 
 m = type.mro
 assert m(A) == [A, object]
@@ -154,12 +173,27 @@ for bad_mro, expected_msg in [
         lambda: type.mro(42),
         "descriptor 'mro' for 'type' objects doesn't apply to a 'int' object",
     ),
-    (lambda: ValueError.mro(1), 'ValueError.mro() takes no arguments (1 given)'),
+    (
+        lambda: ValueError.mro(1),
+        _error_message(
+            monty='type.mro() takes exactly 1 argument (2 given)',
+            cpython='ValueError.mro() takes no arguments (1 given)',
+        ),
+    ),
     (
         lambda: decimal.DivisionByZero.mro(1),
-        'DivisionByZero.mro() takes no arguments (1 given)',
+        _error_message(
+            monty='type.mro() takes exactly 1 argument (2 given)',
+            cpython='DivisionByZero.mro() takes no arguments (1 given)',
+        ),
     ),
-    (lambda: Point.mro(1), 'Point.mro() takes no arguments (1 given)'),
+    (
+        lambda: Point.mro(1),
+        _error_message(
+            monty='type.mro() takes exactly 1 argument (2 given)',
+            cpython='Point.mro() takes no arguments (1 given)',
+        ),
+    ),
 ]:
     try:
         bad_mro()

@@ -1,13 +1,19 @@
 # Tests for `collections.deque`.
 #
 # Every expectation here is derived from CPython 3.14 (see playground/deque-spec.md).
-# This file is dual-run against CPython and Monty, so both must agree exactly.
+# The fixtures check exact messages for both CPython and Monty.
 #
 # NOT tested here, and why:
 # - `del d[i]`: CPython supports it, but the `del` statement is unimplemented
 #   Monty-wide (a parse error), so including it would fail to parse the file.
 
 from collections import deque
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
 
 # === Type name ===
 # The dotted `tp_name` shows in reprs and error messages, the bare one in
@@ -595,19 +601,28 @@ try:
     deque().append()
     assert False, 'expected append() with no args to fail'
 except TypeError as exc:
-    assert str(exc) == 'deque.append() takes exactly one argument (0 given)', str(exc)
+    assert str(exc) == _error_message(
+        monty='deque.append() takes exactly 1 argument (0 given)',
+        cpython='deque.append() takes exactly one argument (0 given)',
+    ), str(exc)
 
 try:
     deque().append(1, 2)
     assert False, 'expected append() with two args to fail'
 except TypeError as exc:
-    assert str(exc) == 'deque.append() takes exactly one argument (2 given)', str(exc)
+    assert str(exc) == _error_message(
+        monty='deque.append() takes exactly 1 argument (2 given)',
+        cpython='deque.append() takes exactly one argument (2 given)',
+    ), str(exc)
 
 try:
     deque().count()
     assert False, 'expected count() with no args to fail'
 except TypeError as exc:
-    assert str(exc) == 'deque.count() takes exactly one argument (0 given)', str(exc)
+    assert str(exc) == _error_message(
+        monty='deque.count() takes exactly 1 argument (0 given)',
+        cpython='deque.count() takes exactly one argument (0 given)',
+    ), str(exc)
 
 try:
     deque().copy(1)
@@ -619,19 +634,28 @@ try:
     deque().index()
     assert False, 'expected index() with no args to fail'
 except TypeError as exc:
-    assert str(exc) == 'index expected at least 1 argument, got 0', str(exc)
+    assert str(exc) == _error_message(
+        monty='index() takes at least 1 argument (0 given)',
+        cpython='index expected at least 1 argument, got 0',
+    ), str(exc)
 
 try:
     deque().insert(1)
     assert False, 'expected insert() with one arg to fail'
 except TypeError as exc:
-    assert str(exc) == 'insert expected 2 arguments, got 1', str(exc)
+    assert str(exc) == _error_message(
+        monty='insert() takes exactly 2 arguments (1 given)',
+        cpython='insert expected 2 arguments, got 1',
+    ), str(exc)
 
 try:
     deque().rotate(1, 2)
     assert False, 'expected rotate() with two args to fail'
 except TypeError as exc:
-    assert str(exc) == 'rotate expected at most 1 argument, got 2', str(exc)
+    assert str(exc) == _error_message(
+        monty='rotate() takes at most 1 argument (2 given)',
+        cpython='rotate expected at most 1 argument, got 2',
+    ), str(exc)
 
 # === str(type()) is qualified ===
 assert str(type(deque())) == "<class 'collections.deque'>", 'qualified class repr'

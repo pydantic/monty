@@ -9,12 +9,9 @@ use crate::{
     value::Value,
 };
 
-/// Argument shape for `reversed(sequence, /)` — positional-only, so
-/// `style = unpack` gives CPython's exact-arity wording
-/// (`reversed expected 1 argument, got 2`) and the blanket
-/// `reversed() takes no keyword arguments` rejection.
+/// `reversed(sequence, /)`.
 #[derive(FromArgs)]
-#[from_args(name = "reversed", style = unpack)]
+#[from_args(name = "reversed")]
 struct ReversedArgs {
     #[from_args(pos_only)]
     sequence: Value,

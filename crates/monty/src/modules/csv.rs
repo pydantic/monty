@@ -18,7 +18,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropGuard, DropWithContext},
+    heap::DropGuard,
     intern::StaticStrings,
     modules::ModuleFunctions,
     os_dispatch::PostConversionEffect,
@@ -153,24 +153,8 @@ fn load_then_call(
     Ok(file.buffer_load_call(vm, effect))
 }
 
-/// The positional shape of `reader()` / `writer()`: CPython unpacks them with
-/// `PyArg_UnpackTuple(args, "", 1, 2)` before the dialect kwargs are parsed.
-/// Hands `args` back on success and releases them on failure.
-fn check_positional_shape(name: &str, args: ArgValues, vm: &mut VM<'_>) -> RunResult<ArgValues> {
-    let error = match args.count() {
-        0 => ExcType::type_error_at_least(name, 1, 0),
-        n if n > 2 => ExcType::type_error_at_most(name, 2, n),
-        _ => return Ok(args),
-    };
-    args.drop_with(vm);
-    Err(error)
-}
-
-/// `reader(csvfile, dialect='excel', **fmtparams)` and `writer(...)`, as CPython parses them:
-/// the positionals by `PyArg_UnpackTuple` (checked first by `check_positional_shape`), the
-/// format parameters by `Dialect`'s anonymous `PyArg_ParseTupleAndKeywords`.
+/// Dialect options shared by `csv.reader` and `csv.writer`.
 #[derive(FromArgs)]
-#[from_args(name = "reader", style = c)]
 struct FmtParamArgs {
     #[from_args(pos_only)]
     f: Value,
@@ -213,8 +197,7 @@ impl FmtParamArgs {
 
 /// Builds a `_csv.reader` from already-loaded (or non-file) input.
 fn reader_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let args = check_positional_shape("reader", args, vm)?;
-    let (csvfile, dialect, params) = FmtParamArgs::from_args(args, vm)?.into_parts();
+    let (csvfile, dialect, params) = FmtParamArgs::from_args("reader", args, vm)?.into_parts();
     defer_drop!(csvfile, vm);
     defer_drop!(dialect, vm);
     let dialect = Dialect::resolve(dialect.as_ref(), params, vm)?;
@@ -224,8 +207,7 @@ fn reader_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `csv.writer(csvfile, dialect='excel', **fmtparams)`.
 fn call_writer(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let args = check_positional_shape("writer", args, vm)?;
-    let (target, dialect, params) = FmtParamArgs::from_args(args, vm)?.into_parts();
+    let (target, dialect, params) = FmtParamArgs::from_args("writer", args, vm)?.into_parts();
     defer_drop!(dialect, vm);
     let mut target_guard = DropGuard::new(target, vm);
     let (target, vm) = target_guard.as_parts_mut();
@@ -259,7 +241,7 @@ fn call_list_dialects(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `get_dialect(name)`: Argument Clinic, so `name` may be a keyword.
 #[derive(FromArgs)]
-#[from_args(name = "get_dialect", style = c_named, at_most_total)]
+#[from_args(name = "get_dialect")]
 struct GetDialectArgs {
     name: Value,
 }
@@ -281,7 +263,7 @@ fn call_field_size_limit(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `field_size_limit(new_limit=<unrepresentable>)`: Argument Clinic, so the keyword form works.
 #[derive(FromArgs)]
-#[from_args(name = "field_size_limit", style = c_named, at_most_total)]
+#[from_args(name = "field_size_limit")]
 struct FieldSizeLimitArgs {
     #[from_args(default)]
     new_limit: Option<Value>,
@@ -317,7 +299,7 @@ pub(crate) fn dialect_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>
 
 /// `Dialect(dialect=None, delimiter=..., ...)`: every parameter optional, `dialect` positional too.
 #[derive(FromArgs)]
-#[from_args(name = "Dialect", style = c)]
+#[from_args(name = "Dialect")]
 struct DialectArgs {
     #[from_args(default = None)]
     dialect: Option<Value>,
@@ -341,7 +323,7 @@ struct DialectArgs {
 
 /// `DictReader(f, fieldnames=None, restkey=None, restval=None, dialect='excel', *args, **kwds)`.
 #[derive(FromArgs)]
-#[from_args(name = "DictReader.__init__", style = def)]
+#[from_args(name = "DictReader.__init__")]
 struct DictReaderArgs {
     f: Value,
     #[from_args(default = Value::None)]
@@ -401,7 +383,7 @@ fn forwarded_args(f: Value, dialect: Value, args: Vec<Value>, kwds: KwargsValues
 
 /// `DictWriter(f, fieldnames, restval='', extrasaction='raise', dialect='excel', *args, **kwds)`.
 #[derive(FromArgs)]
-#[from_args(name = "DictWriter.__init__", style = def)]
+#[from_args(name = "DictWriter.__init__")]
 struct DictWriterArgs {
     f: Value,
     fieldnames: Value,

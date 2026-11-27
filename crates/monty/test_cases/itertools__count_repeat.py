@@ -1,4 +1,10 @@
 import itertools
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
 
 # === count: basic progression ===
 c = itertools.count()
@@ -66,12 +72,15 @@ try:
 except TypeError as exc:
     assert str(exc) == 'count() takes at most 2 arguments (3 given)'
 
-# arity is counted over positionals AND keywords together
+# CPython reports the argument count. Monty reports that `step` was supplied twice.
 try:
     itertools.count(1, 2, step=3)
     assert False, 'expected TypeError for count arity over the total'
 except TypeError as exc:
-    assert str(exc) == 'count() takes at most 2 arguments (3 given)'
+    assert str(exc) == _error_message(
+        monty="count() got multiple values for argument 'step'",
+        cpython='count() takes at most 2 arguments (3 given)',
+    )
 
 try:
     itertools.count(bad=1)
@@ -141,14 +150,20 @@ try:
     itertools.repeat()
     assert False, 'expected TypeError for missing repeat object'
 except TypeError as exc:
-    assert str(exc) == "repeat() missing required argument 'object' (pos 1)"
+    assert str(exc) == _error_message(
+        monty="repeat() missing 1 required positional argument: 'object'",
+        cpython="repeat() missing required argument 'object' (pos 1)",
+    )
 
-# a missing required argument is reported before an unexpected keyword
+# CPython reports the missing argument first. Monty checks the keyword first.
 try:
     itertools.repeat(bad=1)
     assert False, 'expected TypeError for missing repeat object'
 except TypeError as exc:
-    assert str(exc) == "repeat() missing required argument 'object' (pos 1)"
+    assert str(exc) == _error_message(
+        monty="repeat() got an unexpected keyword argument 'bad'",
+        cpython="repeat() missing required argument 'object' (pos 1)",
+    )
 
 try:
     itertools.repeat(1, 2, 3)
@@ -160,4 +175,7 @@ try:
     itertools.repeat(9, 'z', times=1)
     assert False, 'expected TypeError for repeat arity over the total'
 except TypeError as exc:
-    assert str(exc) == 'repeat() takes at most 2 arguments (3 given)'
+    assert str(exc) == _error_message(
+        monty="repeat() got multiple values for argument 'times'",
+        cpython='repeat() takes at most 2 arguments (3 given)',
+    )

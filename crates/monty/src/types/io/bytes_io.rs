@@ -41,7 +41,7 @@ pub(crate) struct BytesIo {
 
 /// `BytesIO(initial_bytes=b'')`.
 #[derive(FromArgs)]
-#[from_args(name = "BytesIO", style = c_named, at_most_total)]
+#[from_args(name = "BytesIO")]
 struct BytesIoArgs {
     #[from_args(default = Value::None)]
     initial_bytes: Value,
@@ -208,8 +208,11 @@ impl<'heap> PyAttrs<'heap> for PyBytesIoImpl {
     /// Re-running the constructor reopens the stream and, as in CPython, empties it
     /// before checking the payload, so a rejected payload leaves it empty.
     #[pymethod(DunderInit)]
-    fn __init__<'h>(this: &mut HeapObjectRead<'h, BytesIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let BytesIoArgs { initial_bytes } = BytesIoArgs::from_args(args, vm)?;
+    fn __init__<'h>(
+        this: &mut HeapObjectRead<'h, BytesIo>,
+        BytesIoArgs { initial_bytes }: BytesIoArgs,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Value> {
         defer_drop!(initial_bytes, vm);
         *this.get_mut(vm.heap) = BytesIo::default();
         this.get_mut(vm.heap).buf = initial_payload(initial_bytes, vm)?;
@@ -218,18 +221,17 @@ impl<'heap> PyAttrs<'heap> for PyBytesIoImpl {
 
     #[pymethod(Read)]
     fn read<'h>(this: &mut HeapObjectRead<'h, BytesIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        this.read(args, "BytesIO.read", "read", vm)
+        this.read(args, "BytesIO.read", vm)
     }
 
     #[pymethod(Read1)]
     fn read1<'h>(this: &mut HeapObjectRead<'h, BytesIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        this.read(args, "BytesIO.read1", "read1", vm)
+        this.read(args, "BytesIO.read1", vm)
     }
 
     #[pymethod(Readline)]
     fn readline<'h>(this: &mut HeapObjectRead<'h, BytesIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let size = args.reject_kwargs("BytesIO.readline", vm.heap)?;
-        let size = optional_size(size.get_zero_one_arg("readline", vm.heap)?, vm)?;
+        let size = optional_size(args.get_zero_one_arg("BytesIO.readline", vm.heap)?, vm)?;
         let stream = this.get_mut(vm.heap);
         ensure_open(stream)?;
         let line = stream.readline(non_negative(size));
@@ -243,9 +245,7 @@ impl<'heap> PyAttrs<'heap> for PyBytesIoImpl {
 
     #[pymethod(Write)]
     fn write<'h>(this: &mut HeapObjectRead<'h, BytesIo>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let data = args
-            .reject_kwargs("BytesIO.write", vm.heap)?
-            .get_one_arg("BytesIO.write", vm.heap)?;
+        let data = args.get_one_arg("BytesIO.write", vm.heap)?;
         defer_drop!(data, vm);
         this.write_value(data, vm)
     }
@@ -338,9 +338,8 @@ impl<'h> HeapObjectRead<'h, BytesIo> {
     }
 
     /// `read(size=-1, /)` and `read1(size=-1, /)`: a negative or `None` size reads to the end.
-    fn read(&self, args: ArgValues, kw_name: &str, name: &str, vm: &mut VM<'h>) -> RunResult<Value> {
-        let size = args.reject_kwargs(kw_name, vm.heap)?;
-        let size = optional_size(size.get_zero_one_arg(name, vm.heap)?, vm)?;
+    fn read(&self, args: ArgValues, name: &str, vm: &mut VM<'h>) -> RunResult<Value> {
+        let size = optional_size(args.get_zero_one_arg(name, vm.heap)?, vm)?;
         let stream = self.get_mut(vm.heap);
         ensure_open(stream)?;
         let data = stream.read(non_negative(size));
@@ -351,8 +350,7 @@ impl<'h> HeapObjectRead<'h, BytesIo> {
     /// `hint`. CPython checks for closure before converting the hint, and
     /// accepts only real `int`s, not `__index__` objects.
     fn readlines(&self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let hint = args.reject_kwargs("BytesIO.readlines", vm.heap)?;
-        let hint = hint.get_zero_one_arg("readlines", vm.heap)?;
+        let hint = args.get_zero_one_arg("BytesIO.readlines", vm.heap)?;
         defer_drop!(hint, vm);
         ensure_open(self.get(vm.heap))?;
         let hint = match hint {
@@ -400,9 +398,7 @@ impl<'h> HeapObjectRead<'h, BytesIo> {
 
     /// `writelines(lines, /)`: `write()` for each item, refused once closed.
     fn writelines(&self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let lines = args
-            .reject_kwargs("BytesIO.writelines", vm.heap)?
-            .get_one_arg("BytesIO.writelines", vm.heap)?;
+        let lines = args.get_one_arg("BytesIO.writelines", vm.heap)?;
         if let Err(err) = ensure_open(self.get(vm.heap)) {
             lines.drop_with(vm);
             return Err(err);
@@ -444,8 +440,7 @@ impl<'h> HeapObjectRead<'h, BytesIo> {
 
     /// `truncate(size=None, /)`: `None` truncates at the position, which is unchanged.
     fn truncate(&self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let size = args.reject_kwargs("BytesIO.truncate", vm.heap)?;
-        let size = size.get_zero_one_arg("truncate", vm.heap)?;
+        let size = args.get_zero_one_arg("BytesIO.truncate", vm.heap)?;
         defer_drop!(size, vm);
         ensure_open(self.get(vm.heap))?;
         let size = match size {

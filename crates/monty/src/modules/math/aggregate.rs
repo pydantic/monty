@@ -21,7 +21,7 @@ use crate::{
 
 /// Coordinates remain owned until all conversions have succeeded.
 #[derive(FromArgs)]
-#[from_args(name = "hypot")]
+#[from_args(name = "math.hypot")]
 struct HypotArgs {
     #[from_args(varargs)]
     coordinates: Vec<Value>,
@@ -29,7 +29,6 @@ struct HypotArgs {
 
 /// Computes a norm without overflowing intermediate squares.
 pub(super) fn hypot(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let args = args.reject_kwargs("math.hypot", vm.heap)?;
     let HypotArgs { coordinates } = HypotArgs::from_args(args, vm)?;
     defer_drop!(coordinates, vm);
     let mut values = coordinates
@@ -39,9 +38,9 @@ pub(super) fn hypot(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     Ok(Value::Float(vector_norm(&mut values)))
 }
 
-/// Positional-only points; CPython qualifies only the keyword error.
+/// Two positional-only points. Monty's arity message uses `math.dist` where CPython uses `dist`.
 #[derive(FromArgs)]
-#[from_args(name = "dist", style = unpack, kwarg_error_name = "math.dist")]
+#[from_args(name = "math.dist")]
 struct DistArgs {
     #[from_args(pos_only)]
     p: Value,
@@ -137,7 +136,6 @@ fn two_product(a: f64, b: f64) -> (f64, f64) {
 
 /// Sums non-overlapping partials, preserving cancellation and half-even rounding.
 pub(crate) fn fsum(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let args = args.reject_kwargs("math.fsum", vm.heap)?;
     let iterable = args.get_one_arg("math.fsum", vm.heap)?;
     let iterator = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(iterator, vm);
@@ -220,7 +218,7 @@ fn round_partials(partials: &mut SmallVec<[f64; 32]>) -> f64 {
 
 /// `start` is keyword-only and is returned unchanged for an empty iterable.
 #[derive(FromArgs)]
-#[from_args(name = "prod", style = c_named, at_most_total)]
+#[from_args(name = "math.prod")]
 struct ProdArgs {
     #[from_args(pos_only)]
     iterable: Value,
@@ -280,7 +278,7 @@ impl Triple {
 
 /// Dot-product inputs are advanced in pairs, with strict length checking.
 #[derive(FromArgs)]
-#[from_args(name = "sumprod", style = unpack, kwarg_error_name = "math.sumprod")]
+#[from_args(name = "math.sumprod")]
 struct SumprodArgs {
     #[from_args(pos_only)]
     p: Value,
@@ -385,7 +383,7 @@ fn add(a: &Value, b: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
 
 /// Three positional real numbers, converted in declaration order.
 #[derive(FromArgs)]
-#[from_args(name = "fma", style = unpack, kwarg_error_name = "math.fma")]
+#[from_args(name = "math.fma")]
 struct FmaArgs {
     #[from_args(pos_only)]
     x: Value,

@@ -294,7 +294,7 @@ fn collect_bytes_from_iterator(iterator: Value, vm: &mut VM<'_>) -> RunResult<Ve
 /// `encoding`/`errors` with `_PyArg_BadArgument`'s wording (`must be str, not
 /// None` for `None`), which is exactly the macro's `bad_arg_named` form.
 #[derive(FromArgs)]
-#[from_args(name = "bytes", at_most_total, bad_arg_named)]
+#[from_args(name = "bytes", bad_arg_named)]
 struct BytesInitArgs {
     #[from_args(default)]
     source: Option<Value>,
@@ -589,7 +589,7 @@ fn bytes_decode<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut V
 /// out naturally because `Option<StrArg>::from_value` delegates to
 /// `StrArg::from_value` and rejects `Value::None`.
 #[derive(FromArgs)]
-#[from_args(name = "decode", at_most_total, bad_arg_named)]
+#[from_args(name = "decode", bad_arg_named)]
 struct BytesDecodeArgs {
     #[from_args(default)]
     encoding: Option<StrArg>,
@@ -2235,20 +2235,9 @@ fn parse_bytes_hex_args(args: ArgValues, vm: &mut VM<'_>) -> RunResult<(Option<c
     Ok((Some(sep_char), bytes_per_sep))
 }
 
-/// `bytes.hex([sep[, bytes_per_sep]])` — CPython accepts `sep` and
-/// `bytes_per_sep` as positional-or-keyword, but Monty has not threaded
-/// kwarg dispatch through to the type-checking body yet.
-/// `kwargs_not_supported_yet` rejects any kwarg with
-/// `NotImplementedError: bytes.hex() does not yet support keyword
-/// arguments` (replacing the previous `TypeError: bytes.hex() takes no
-/// keyword arguments` from `into_pos_only`) while the macro takes over
-/// arity validation, upgrading the too-many-args wording from
-/// `bytes.hex expected at most 2 arguments, got N` to CPython's
-/// `bytes.hex() takes at most 2 arguments (N given)`. Fields become real
-/// kwargs and the flag goes away when the kwarg dispatch is plumbed
-/// through.
+/// `bytes.hex` currently accepts only positional arguments.
 #[derive(FromArgs)]
-#[from_args(name = "bytes.hex", style = c_named, at_most_total, kwargs_not_supported_yet)]
+#[from_args(name = "bytes.hex", kwargs_not_supported_yet)]
 struct BytesHexArgs {
     #[from_args(default = Value::None)]
     sep: Value,
@@ -2847,7 +2836,6 @@ impl<'h> PyAttrs<'h> for PyBytes<'h> {
 
 /// Implements Python's `bytes.maketrans(frm, to)` staticmethod.
 fn bytes_maketrans(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let args = args.reject_kwargs("bytes.maketrans", vm.heap)?;
     let (frm_val, to_val) = args.get_two_args("maketrans", vm.heap)?;
     defer_drop!(frm_val, vm);
     defer_drop!(to_val, vm);
@@ -2870,7 +2858,7 @@ fn bytes_maketrans(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
 
 /// Argument shape for `bytes.translate(table, /, delete=b'')`.
 #[derive(FromArgs)]
-#[from_args(name = "translate", at_most_total)]
+#[from_args(name = "translate")]
 struct BytesTranslateArgs {
     #[from_args(pos_only)]
     table: Value,

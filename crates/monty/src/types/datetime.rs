@@ -263,21 +263,9 @@ pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     Ok(Value::allocate(dt, vm.heap))
 }
 
-/// Argument shape for `datetime(year, month, day, hour=0, minute=0, second=0,
-/// microsecond=0, tzinfo=None, *, fold=0)`.
-///
-/// CPython emits two distinct wordings for over-arity: when the overflow
-/// could still fit in the keyword-only tail (`actual <= 9`) the message is
-/// "function takes at most 8 *positional* arguments"; once it exceeds the
-/// total slot count it switches to "function takes at most 9 arguments".
-/// The derive turns the pivot on automatically for `style = c` structs with
-/// keyword-only fields — the trailing kw-only `fold` slot is what bumps
-/// `max_total` to 9.
-///
-/// `fold` itself is accepted for CPython parity but currently has no effect
-/// on the stored datetime — Monty does not track DST-fold disambiguation.
+/// `datetime(year, month, day, hour=0, minute=0, second=0, microsecond=0, tzinfo=None, *, fold=0)`.
 #[derive(FromArgs)]
-#[from_args(name = "function", style = c)]
+#[from_args(name = "datetime")]
 struct DatetimeInitArgs {
     year: i32,
     month: i32,
@@ -372,11 +360,9 @@ pub(crate) fn class_fromtimestamp(vm: &mut VM<'_>, args: ArgValues) -> RunResult
     Ok(Value::allocate(dt, vm.heap))
 }
 
-/// Argument shape for `datetime.fromtimestamp(timestamp, tz=None)`, a
-/// `PyArg_ParseTupleAndKeywords` parser: `at_most_total` gives CPython's
-/// `fromtimestamp() takes at most 2 arguments (3 given)` for a duplicated `tz`.
+/// `datetime.fromtimestamp(timestamp, tz=None)`.
 #[derive(FromArgs)]
-#[from_args(name = "fromtimestamp", style = c_named, at_most_total)]
+#[from_args(name = "fromtimestamp")]
 struct FromtimestampArgs {
     timestamp: Value,
     #[from_args(default = Value::None)]
@@ -562,10 +548,9 @@ fn probe_neighbouring_days(date: CivilDate) -> RunResult<()> {
     }
 }
 
-/// Argument shape for `datetime.astimezone(tz=None)`, checked like [`NowArgs`]:
-/// `at_most_total` gives CPython's `astimezone() takes at most 1 argument (2 given)`.
+/// `datetime.astimezone(tz=None)`.
 #[derive(FromArgs)]
-#[from_args(name = "astimezone", at_most_total)]
+#[from_args(name = "astimezone")]
 struct AstimezoneArgs {
     #[from_args(default = Value::None)]
     tz: Value,
@@ -591,14 +576,9 @@ fn date_out_of_range() -> RunError {
     SimpleException::new_msg(ExcType::OverflowError, DATE_OUT_OF_RANGE).into()
 }
 
-/// Argument shape for `datetime.now(tz=None)`.
-///
-/// `tz` stays a raw [`Value`] so the None-or-timezone check runs in the body
-/// (`tzinfo_from_value`) with CPython's tzinfo wording. `at_most_total`
-/// matches CPython's `PyArg_ParseTupleAndKeywords` pre-count: a duplicate tz
-/// (`now(utc, tz=utc)`) reports "takes at most 1 argument (2 given)".
+/// `datetime.now(tz=None)`.
 #[derive(FromArgs)]
-#[from_args(name = "now", at_most_total)]
+#[from_args(name = "now")]
 struct NowArgs {
     #[from_args(default = Value::None)]
     tz: Value,
@@ -654,9 +634,7 @@ pub(crate) fn class_strptime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Valu
 /// - `YYYY-MM-DDTHH:MM:SS.ffffff`
 /// - Any of the above with `+HH:MM` or `+HH:MM:SS` timezone suffix
 pub(crate) fn class_fromisoformat(heap: &mut Heap, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-    let value = args
-        .reject_kwargs("datetime.fromisoformat", heap)?
-        .get_one_arg("datetime.fromisoformat", heap)?;
+    let value = args.get_one_arg("datetime.fromisoformat", heap)?;
     let s = date::extract_str_arg(&value, "fromisoformat", heap, interns);
     value.drop_with(heap);
     let s = s?;
@@ -717,7 +695,7 @@ fn combine_allocate(
 /// CPython's own wording (`combine() argument 1 must be datetime.date, not
 /// str`, and the shared `tzinfo argument must be ...` message).
 #[derive(FromArgs)]
-#[from_args(name = "combine", style = c_named, at_most_total)]
+#[from_args(name = "combine")]
 struct CombineArgs {
     date: Value,
     time: Value,
@@ -1033,7 +1011,7 @@ fn format_isoformat(dt: &DateTime, sep: char, spec: TimeSpec) -> String {
 /// (`not a string of length 2`) — so [`isoformat_separator`] checks it in the
 /// body. `bad_arg` still covers `timespec`.
 #[derive(FromArgs)]
-#[from_args(name = "isoformat", style = c_named, at_most_total, bad_arg)]
+#[from_args(name = "isoformat", bad_arg)]
 struct IsoformatArgs {
     #[from_args(default)]
     sep: Option<Value>,
@@ -1363,8 +1341,11 @@ impl<'heap> PyAttrs<'heap> for PyDateTimeImpl {
     type Receiver = HeapObjectRead<'heap, DateTime>;
 
     #[pymethod(Isoformat)]
-    fn isoformat<'h>(this: &mut HeapObjectRead<'h, DateTime>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let IsoformatArgs { sep, timespec } = IsoformatArgs::from_args(args, vm)?;
+    fn isoformat<'h>(
+        this: &mut HeapObjectRead<'h, DateTime>,
+        IsoformatArgs { sep, timespec }: IsoformatArgs,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Value> {
         defer_drop!(sep, vm);
         defer_drop!(timespec, vm);
         let separator = isoformat_separator(sep.as_ref(), vm)?;

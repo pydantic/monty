@@ -55,7 +55,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: CopyFunctions, args: ArgValues) ->
 
 /// A pure-Python `def` in CPython, so the parameter binds without a type check.
 #[derive(FromArgs)]
-#[from_args(name = "copy", style = def)]
+#[from_args(name = "copy")]
 struct CopyArgs {
     x: Value,
 }
@@ -70,7 +70,7 @@ fn call_copy(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// CPython's signature. `_nil` is its private "missing from `memo`" sentinel,
 /// accepted for arity parity and never read.
 #[derive(FromArgs)]
-#[from_args(name = "deepcopy", style = def)]
+#[from_args(name = "deepcopy")]
 struct DeepcopyArgs {
     x: Value,
     #[from_args(default = Value::None, static_string = "Memo")]

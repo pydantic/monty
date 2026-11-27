@@ -4,6 +4,11 @@
 import sys
 from pathlib import Path
 
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
+
 # root is injected by the test runner:
 # - Monty: Path('/mnt') with OverlayMemory mount over a real temp directory
 # - CPython: Path('<real_tmpdir>') pointing to a real temp directory
@@ -21,9 +26,10 @@ try:
     too_many_path.mkdir(0o777, False, False, 'extra')
     assert False, 'expected TypeError on mkdir too many positional args'
 except TypeError as exc:
-    assert str(exc) == 'Path.mkdir() takes from 1 to 4 positional arguments but 5 were given', (
-        f'unexpected message: {exc}'
-    )
+    assert str(exc) == _error_message(
+        monty='Path.mkdir() takes at most 3 arguments (4 given)',
+        cpython='Path.mkdir() takes from 1 to 4 positional arguments but 5 were given',
+    ), f'unexpected message: {exc}'
 assert too_many_path.exists() == False
 
 # === TypeError on mkdir with unknown keyword argument ===
@@ -409,7 +415,10 @@ try:
     (root / 'hello.txt').write_text()
     assert False, 'expected TypeError on write_text with no args'
 except TypeError as exc:
-    assert str(exc) == "Path.write_text() missing 1 required positional argument: 'data'", f'unexpected message: {exc}'
+    assert str(exc) == _error_message(
+        monty='Path.write_text() takes exactly 1 argument (0 given)',
+        cpython="Path.write_text() missing 1 required positional argument: 'data'",
+    ), f'unexpected message: {exc}'
 
 try:
     (root / 'hello.txt').write_bytes(123)
@@ -421,4 +430,7 @@ try:
     (root / 'hello.txt').write_bytes()
     assert False, 'expected TypeError on write_bytes with no args'
 except TypeError as exc:
-    assert str(exc) == "Path.write_bytes() missing 1 required positional argument: 'data'", f'unexpected message: {exc}'
+    assert str(exc) == _error_message(
+        monty='Path.write_bytes() takes exactly 1 argument (0 given)',
+        cpython="Path.write_bytes() missing 1 required positional argument: 'data'",
+    ), f'unexpected message: {exc}'

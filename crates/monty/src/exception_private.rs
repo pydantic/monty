@@ -385,52 +385,6 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::KeyError, "pop from an empty set").into()
     }
 
-    /// Creates a TypeError for when a function receives the wrong number of arguments.
-    ///
-    /// Matches CPython's error format exactly:
-    /// - For 1 expected arg: `{name}() takes exactly one argument ({actual} given)`
-    /// - For N expected args: `{name} expected {expected} arguments, got {actual}`
-    ///
-    /// # Arguments
-    /// * `name` - The function name (e.g., "len" for builtins, "list.append" for methods)
-    /// * `expected` - Number of expected arguments
-    /// * `actual` - Number of arguments actually provided
-    #[must_use]
-    fn type_error_arg_count(name: &str, expected: usize, actual: usize) -> RunError {
-        if expected == 1 {
-            // CPython: "len() takes exactly one argument (2 given)"
-            SimpleException::new_msg(
-                ExcType::TypeError,
-                format!("{name}() takes exactly one argument ({actual} given)"),
-            )
-            .into()
-        } else {
-            // CPython: "insert expected 2 arguments, got 1"
-            SimpleException::new_msg(
-                ExcType::TypeError,
-                format!("{name} expected {expected} arguments, got {actual}"),
-            )
-            .into()
-        }
-    }
-
-    /// Creates a TypeError for when a method that takes no arguments receives some.
-    ///
-    /// Matches CPython's format: `{name}() takes no arguments ({actual} given)`
-    ///
-    /// # Arguments
-    /// * `name` - The method name (e.g., "dict.keys")
-    /// * `actual` - Number of arguments actually provided
-    #[must_use]
-    fn type_error_no_args(name: &str, actual: usize) -> RunError {
-        // CPython: "dict.keys() takes no arguments (1 given)"
-        SimpleException::new_msg(
-            ExcType::TypeError,
-            format!("{name}() takes no arguments ({actual} given)"),
-        )
-        .into()
-    }
-
     /// Creates a TypeError for when a function receives fewer arguments than required.
     ///
     /// Matches CPython's format: `{name} expected at least {min} argument, got {actual}`
@@ -494,108 +448,6 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(
             ExcType::TypeError,
             format!("tuple for {method} must only contain {expected}, not {type_name}"),
-        )
-        .into()
-    }
-
-    /// Creates a TypeError for too many arguments to a method or named function.
-    ///
-    /// Matches CPython's format for method-style calls:
-    /// `{name}() takes at most {max} argument ({actual} given)` (singular when max=1)
-    /// `{name}() takes at most {max} arguments ({actual} given)` (plural otherwise)
-    ///
-    /// Both C parsers insert `keyword ` before `argument` when the call passed
-    /// no positionals at all (`nargs == 0` in `vgetargskeywords` /
-    /// `vgetargskeywordsfast_impl`), so pass `all_keyword` accordingly:
-    /// `fspath() takes at most 1 keyword argument (2 given)`.
-    ///
-    /// Use this instead of `type_error_at_most` for methods and type constructors that
-    /// CPython formats with parentheses, e.g. `now()`, `timezone()`, `expandtabs()`.
-    #[must_use]
-    fn type_error_method_at_most(name: &str, max: usize, actual: usize, all_keyword: bool) -> RunError {
-        let kind = if all_keyword { "keyword " } else { "" };
-        let plural = if max == 1 { "" } else { "s" };
-        SimpleException::new_msg(
-            ExcType::TypeError,
-            format!("{name}() takes at most {max} {kind}argument{plural} ({actual} given)"),
-        )
-        .into()
-    }
-
-    /// `PyArg_ParseTuple`'s wording for a fixed arity, which it uses whenever
-    /// min == max: `{name}() takes exactly {n} argument ({actual} given)`
-    /// (plural for `n != 1`; the digit, unlike `METH_O`'s `exactly one`).
-    #[must_use]
-    fn type_error_method_exact(name: &str, n: usize, actual: usize) -> RunError {
-        let plural = if n == 1 { "" } else { "s" };
-        SimpleException::new_msg(
-            ExcType::TypeError,
-            format!("{name}() takes exactly {n} argument{plural} ({actual} given)"),
-        )
-        .into()
-    }
-
-    /// Creates a TypeError for too few arguments to a `PyArg_ParseTuple` call:
-    /// `{name}() takes at least {min} argument(s) ({actual} given)`. Unlike
-    /// [`type_error_at_least_positional`] there is no `positional` qualifier —
-    /// these functions accept no keywords, so CPython never distinguishes.
-    #[must_use]
-    fn type_error_method_at_least(name: &str, min: usize, actual: usize) -> RunError {
-        let plural = if min == 1 { "" } else { "s" };
-        SimpleException::new_msg(
-            ExcType::TypeError,
-            format!("{name}() takes at least {min} argument{plural} ({actual} given)"),
-        )
-        .into()
-    }
-
-    /// Creates a TypeError for too few positional arguments to a method-style call.
-    ///
-    /// Matches CPython's format used by methods like `str.replace`:
-    /// `{name}() takes at least {min} positional argument ({actual} given)` (singular when min=1)
-    /// `{name}() takes at least {min} positional arguments ({actual} given)` (plural otherwise)
-    ///
-    /// Distinct from [`type_error_at_least`] which uses CPython's
-    /// `PyArg_UnpackTuple` wording (no parens, no "positional"). Emitted by
-    /// `FromArgs` for any struct with required positional-only fields,
-    /// matching CPython's C-method `_PyArg_UnpackKeywords` dispatch.
-    #[must_use]
-    fn type_error_at_least_positional(name: &str, min: usize, actual: usize) -> RunError {
-        let plural = if min == 1 { "" } else { "s" };
-        SimpleException::new_msg(
-            ExcType::TypeError,
-            format!("{name}() takes at least {min} positional argument{plural} ({actual} given)"),
-        )
-        .into()
-    }
-
-    /// Creates the bespoke `map()` arity error that CPython hard-codes.
-    ///
-    /// CPython's `map()` uses a single fixed message regardless of whether
-    /// 0 or 1 args were given: `map() must have at least two arguments.`
-    /// (note the trailing period). We mirror it here so `map()` / `map(f)`
-    /// match byte-for-byte rather than falling through to the generic
-    /// "missing N required positional arguments" wording the macro would
-    /// otherwise emit.
-    #[must_use]
-    fn type_error_map_arity() -> RunError {
-        SimpleException::new_msg(ExcType::TypeError, "map() must have at least two arguments.".to_owned()).into()
-    }
-
-    /// Creates a TypeError for exact-arity functions reporting too many *or* too few.
-    ///
-    /// Matches CPython's `PyArg_UnpackTuple` wording for fixed-arity callables
-    /// (e.g. `sorted`):
-    /// `{name} expected {exact} argument, got {actual}` (singular when exact=1)
-    /// `{name} expected {exact} arguments, got {actual}` (plural otherwise)
-    ///
-    /// Use this for the macro's `expected_exact` attribute.
-    #[must_use]
-    fn type_error_expected_exact(name: &str, exact: usize, actual: usize) -> RunError {
-        let plural = if exact == 1 { "" } else { "s" };
-        SimpleException::new_msg(
-            ExcType::TypeError,
-            format!("{name} expected {exact} argument{plural}, got {actual}"),
         )
         .into()
     }
@@ -729,24 +581,6 @@ pub(crate) trait ExcTypeExt: Sized {
         .into()
     }
 
-    /// Creates a TypeError for when a positional argument conflicts with a keyword argument
-    /// of the same name in a C-implemented type constructor.
-    ///
-    /// Matches CPython's `PyArg_ParseTupleAndKeywords` format:
-    /// `argument for function given by name ('{key}') and position ({pos})`
-    ///
-    /// The position is 1-indexed, matching CPython's convention. The `func_descriptor` is
-    /// typically `"function"` for most C types (like `datetime`), matching CPython's generic
-    /// wording for `PyArg_ParseTupleAndKeywords`.
-    #[must_use]
-    fn type_error_positional_keyword_conflict(func_descriptor: &str, key: &str, pos: usize) -> RunError {
-        SimpleException::new_msg(
-            ExcType::TypeError,
-            format!("argument for {func_descriptor} given by name ('{key}') and position ({pos})"),
-        )
-        .into()
-    }
-
     /// Creates a TypeError for unexpected keyword argument.
     ///
     /// Matches CPython's format: `{name}() got an unexpected keyword argument '{key}'`
@@ -757,116 +591,6 @@ pub(crate) trait ExcTypeExt: Sized {
             format!("{name}() got an unexpected keyword argument '{key}'"),
         )
         .into()
-    }
-
-    /// Creates a TypeError for unexpected keyword argument in C-implemented types.
-    ///
-    /// Matches CPython's `PyArg_ParseTupleAndKeywords` format:
-    /// `this function got an unexpected keyword argument '{key}'`
-    #[must_use]
-    fn type_error_c_unexpected_keyword(key: &str) -> RunError {
-        SimpleException::new_msg(
-            ExcType::TypeError,
-            format!("this function got an unexpected keyword argument '{key}'"),
-        )
-        .into()
-    }
-
-    /// Creates a TypeError for too many arguments to a C-implemented type.
-    ///
-    /// Matches CPython's `PyArg_ParseTupleAndKeywords` format:
-    /// `function takes at most {max} arguments ({actual} given)`
-    #[must_use]
-    fn type_error_c_at_most(max: usize, actual: usize) -> RunError {
-        SimpleException::new_msg(
-            ExcType::TypeError,
-            format!("function takes at most {max} arguments ({actual} given)"),
-        )
-        .into()
-    }
-
-    /// Variant of [`type_error_c_at_most`] used by C constructors that explicitly
-    /// say "positional arguments" (e.g. `datetime`):
-    /// `function takes at most {max} positional arguments ({actual} given)`
-    #[must_use]
-    fn type_error_c_at_most_positional(max: usize, actual: usize) -> RunError {
-        SimpleException::new_msg(
-            ExcType::TypeError,
-            format!("function takes at most {max} positional arguments ({actual} given)"),
-        )
-        .into()
-    }
-
-    /// Hybrid wording used by C constructors that mix positional-or-keyword
-    /// slots with keyword-only slots (e.g. `datetime`, where `fold` is
-    /// keyword-only). CPython's `PyArg_ParseTupleAndKeywords` emits two
-    /// distinct messages depending on whether the caller could conceivably
-    /// have meant the overflow args to fill the keyword-only tail:
-    ///
-    /// - `actual <= max_total`: the extra positionals *could* have filled the
-    ///   trailing keyword-only slots, so the error pins blame on positional
-    ///   overflow specifically — `function takes at most {max_pos} positional
-    ///   arguments ({actual} given)`.
-    /// - `actual > max_total`: there is no slot of any kind for the extras,
-    ///   so the error reports the total slot count without the "positional"
-    ///   qualifier — `function takes at most {max_total} arguments ({actual}
-    ///   given)`.
-    ///
-    /// `max_pos` is the number of positional-or-keyword slots; `max_total`
-    /// adds the trailing keyword-only slot count. When `max_total == max_pos`
-    /// (no kw-only fields) this collapses to [`type_error_c_at_most_positional`].
-    #[must_use]
-    fn type_error_c_at_most_positional_or_total(max_pos: usize, max_total: usize, actual: usize) -> RunError {
-        if actual > max_total && max_total > max_pos {
-            Self::type_error_c_at_most(max_total, actual)
-        } else {
-            Self::type_error_c_at_most_positional(max_pos, actual)
-        }
-    }
-
-    /// Creates a TypeError for a missing required argument in a C-implemented type.
-    ///
-    /// Matches CPython's `PyArg_ParseTupleAndKeywords` format:
-    /// `function missing required argument '{arg_name}' (pos {pos})`
-    #[must_use]
-    fn type_error_c_missing_required(arg_name: &str, pos: usize) -> RunError {
-        SimpleException::new_msg(
-            ExcType::TypeError,
-            format!("function missing required argument '{arg_name}' (pos {pos})"),
-        )
-        .into()
-    }
-
-    /// Creates a TypeError for a missing required argument in a C-implemented type,
-    /// with a function name prefix.
-    ///
-    /// Matches CPython's format for types like `timezone`:
-    /// `{name}() missing required argument '{arg_name}' (pos {pos})`
-    #[must_use]
-    fn type_error_c_missing_required_named(name: &str, arg_name: &str, pos: usize) -> RunError {
-        SimpleException::new_msg(
-            ExcType::TypeError,
-            format!("{name}() missing required argument '{arg_name}' (pos {pos})"),
-        )
-        .into()
-    }
-
-    /// Named positional-overflow wording used by clinic functions with
-    /// keyword-only slots (e.g. `os.stat`/`os.mkdir`): `{name}() takes
-    /// {exactly|at most} {max} positional argument{s} ({actual} given)` —
-    /// "exactly" when every positional param is required, and `takes no
-    /// positional arguments` when there are none (`DirEntry.is_dir`).
-    #[must_use]
-    fn type_error_named_positional(name: &str, max: usize, actual: usize, exact: bool) -> RunError {
-        let message = if max == 0 {
-            // `_PyArg_UnpackKeywords` drops the count for keyword-only signatures.
-            format!("{name}() takes no positional arguments")
-        } else {
-            let qualifier = if exact { "exactly" } else { "at most" };
-            let plural = if max == 1 { "" } else { "s" };
-            format!("{name}() takes {qualifier} {max} positional argument{plural} ({actual} given)")
-        };
-        SimpleException::new_msg(ExcType::TypeError, message).into()
     }
 
     /// Creates a TypeError matching the `os` module's `path_t` converter:
@@ -1011,31 +735,6 @@ pub(crate) trait ExcTypeExt: Sized {
             None => format!("{arg} unavailable on this platform"),
         };
         Self::not_implemented(msg).into()
-    }
-
-    /// Creates a TypeError for a missing required argument without a position,
-    /// as raised by hand-written vectorcall fast paths like `enumerate`:
-    /// `{name}() missing required argument '{arg_name}'`
-    #[must_use]
-    fn type_error_missing_required_no_pos(name: &str, arg_name: &str) -> RunError {
-        SimpleException::new_msg(
-            ExcType::TypeError,
-            format!("{name}() missing required argument '{arg_name}'"),
-        )
-        .into()
-    }
-
-    /// Creates a TypeError for a keyword rejected by a hand-written vectorcall
-    /// fast path (CPython's `enumerate` wording, distinct from the parser
-    /// families' "unexpected keyword argument"):
-    /// `'{key}' is an invalid keyword argument for {name}()`
-    #[must_use]
-    fn type_error_invalid_keyword_argument(name: &str, key: &str) -> RunError {
-        SimpleException::new_msg(
-            ExcType::TypeError,
-            format!("'{key}' is an invalid keyword argument for {name}()"),
-        )
-        .into()
     }
 
     /// Creates a TypeError matching CPython's `_PyArg_BadArgument`
@@ -1718,13 +1417,6 @@ pub(crate) trait ExcTypeExt: Sized {
             format!("too many values to unpack (expected {expected}, got {actual})")
         };
         SimpleException::new_msg(ExcType::ValueError, message).into()
-    }
-
-    /// C's `PyArg_ParseTuple` arity error for a fixed-arity method: `function takes
-    /// exactly 2 arguments (1 given)`.
-    fn type_error_function_exact(expected: usize, actual: usize) -> RunError {
-        let plural = if expected == 1 { "argument" } else { "arguments" };
-        Self::type_error(format!("function takes exactly {expected} {plural} ({actual} given)"))
     }
 
     /// Creates an IndexError for list index out of range (getitem).
@@ -2911,17 +2603,6 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(
             ExcType::TypeError,
             format!("sequence index must be integer, not '{type_}'"),
-        )
-        .into()
-    }
-
-    /// `TypeError: deque() takes at most 2 arguments (N given)` — CPython's own
-    /// wording, which no `FromArgs` style reproduces.
-    #[must_use]
-    fn type_error_deque_too_many_args(given: usize) -> RunError {
-        SimpleException::new_msg(
-            ExcType::TypeError,
-            format!("deque() takes at most 2 arguments ({given} given)"),
         )
         .into()
     }

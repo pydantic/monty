@@ -16,8 +16,8 @@ keyword is rejected. Fallback encoding is available through `dumps(default=...)`
     CPython also detects UTF-16 and UTF-32 input, which Monty rejects with `json.JSONDecodeError`.
 - `parse_float` and `parse_int` are the only keyword arguments accepted (`parse_float=Decimal` works).
     Passing any of `cls`, `object_hook`, `parse_constant`, or `object_pairs_hook` raises
-    `TypeError: JSONDecoder.__init__() got an unexpected keyword argument '...'`.
-    CPython accepts all four and uses this message only for a keyword the decoder does not know.
+    `TypeError: json.loads() got an unexpected keyword argument '<name>'`.
+    CPython accepts all four. Its unexpected-keyword error names `JSONDecoder.__init__()`.
 - `NaN`, `Infinity`, `-Infinity` are *always* accepted, with no toggle to
     reject them.
 - Nesting depth is capped at 200 levels; deeper inputs raise
@@ -80,6 +80,8 @@ has its `write` attribute called synchronously, under the same restrictions as
 
 Supported kwargs, with CPython semantics: `indent`, `sort_keys`,
 `ensure_ascii`, `allow_nan`, `separators`, `skipkeys`, `default`.
+Unexpected-keyword errors name `json.dump()` or `json.dumps()`.
+CPython names `JSONEncoder.__init__()` for these errors.
 
 Monty accepts a list, tuple, or named tuple for `separators`. CPython can unpack other iterables as well.
 

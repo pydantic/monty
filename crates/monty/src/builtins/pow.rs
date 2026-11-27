@@ -20,20 +20,10 @@ pub fn builtin_pow(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     base.py_pow(exp, Some(modulus), vm)
 }
 
-/// `pow(base, exp[, mod])` — CPython accepts all three as positional-or-keyword
-/// (and `mod` defaults to `None`), but Monty has not plumbed kwarg dispatch
-/// through to the dispatch body yet. `kwargs_not_supported_yet` rejects
-/// any kwarg with `NotImplementedError: pow() does not yet support
-/// keyword arguments` (replacing the previous `TypeError: pow() takes no
-/// keyword arguments` from `into_pos_only`) while the macro takes over
-/// positional arity validation — the bespoke
-/// `pow expected 2 or 3 arguments, got N` message becomes CPython's
-/// `pow() takes at most 3 arguments (N given)` /
-/// `pow() missing required argument 'X' (pos N)`. The `modulus` field
-/// will be renamed to `r#mod` and lose the flag when kwargs are
-/// implemented.
+/// CPython accepts keywords in `pow(base, exp, mod=None)`. Monty raises
+/// `NotImplementedError` for keywords. Rename `modulus` to `r#mod` when adding support.
 #[derive(FromArgs)]
-#[from_args(name = "pow", style = c_named, at_most_total, kwargs_not_supported_yet)]
+#[from_args(name = "pow", kwargs_not_supported_yet)]
 struct PowArgs {
     base: Value,
     exp: Value,

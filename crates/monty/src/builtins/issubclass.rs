@@ -12,7 +12,7 @@ use crate::{
 
 /// Arguments of `issubclass(cls, classinfo, /)`.
 #[derive(FromArgs)]
-#[from_args(name = "issubclass", style = unpack)]
+#[from_args(name = "issubclass")]
 struct IssubclassArgs {
     #[from_args(pos_only)]
     cls: Value,

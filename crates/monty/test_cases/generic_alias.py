@@ -1,6 +1,12 @@
 import collections
 import functools
 import re
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
 
 # === Building aliases ===
 Record = tuple[int, int, int, int, int]
@@ -152,12 +158,18 @@ try:
     list.__class_getitem__()
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == 'list.__class_getitem__() takes exactly one argument (0 given)'
+    assert str(exc) == _error_message(
+        monty='list.__class_getitem__() takes exactly 1 argument (0 given)',
+        cpython='list.__class_getitem__() takes exactly one argument (0 given)',
+    )
 try:
     collections.deque.__class_getitem__(1, 2)
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == 'deque.__class_getitem__() takes exactly one argument (2 given)'
+    assert str(exc) == _error_message(
+        monty='deque.__class_getitem__() takes exactly 1 argument (2 given)',
+        cpython='deque.__class_getitem__() takes exactly one argument (2 given)',
+    )
 
 # === An alias is truthy and has no length ===
 assert bool(tuple[()]) is True

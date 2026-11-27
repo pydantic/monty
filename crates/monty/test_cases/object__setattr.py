@@ -1,4 +1,9 @@
 from dataclasses import dataclass
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
 
 
 # === object.__setattr__ writes an instance attribute ===
@@ -68,27 +73,39 @@ try:
     object.__setattr__(p, 'x')
     assert False, 'expected TypeError for two arguments'
 except TypeError as exc:
-    assert str(exc) == '__setattr__ expected 2 arguments, got 1'
+    assert str(exc) == _error_message(
+        monty='object.__setattr__() takes exactly 3 arguments (2 given)',
+        cpython='__setattr__ expected 2 arguments, got 1',
+    )
 
 try:
     object.__setattr__(p, 'x', 1, 2)
     assert False, 'expected TypeError for four arguments'
 except TypeError as exc:
-    assert str(exc) == '__setattr__ expected 2 arguments, got 3'
+    assert str(exc) == _error_message(
+        monty='object.__setattr__() takes exactly 3 arguments (4 given)',
+        cpython='__setattr__ expected 2 arguments, got 3',
+    )
 
 # === No receiver at all fails in the descriptor, before the arity check ===
 try:
     object.__setattr__()
     assert False, 'expected TypeError for no arguments'
 except TypeError as exc:
-    assert str(exc) == "descriptor '__setattr__' of 'object' object needs an argument"
+    assert str(exc) == _error_message(
+        monty='object.__setattr__() takes exactly 3 arguments (0 given)',
+        cpython="descriptor '__setattr__' of 'object' object needs an argument",
+    )
 
 # === Keywords are rejected by the slot wrapper ===
 try:
     object.__setattr__(p, 'x', value=1)
     assert False, 'expected TypeError for a keyword argument'
 except TypeError as exc:
-    assert str(exc) == 'wrapper __setattr__() takes no keyword arguments'
+    assert str(exc) == _error_message(
+        monty='object.__setattr__() takes no keyword arguments',
+        cpython='wrapper __setattr__() takes no keyword arguments',
+    )
 
 # === It bypasses a frozen dataclass, the escape hatch CPython's own
 # generated `__init__` uses ===

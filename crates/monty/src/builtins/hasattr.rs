@@ -7,7 +7,7 @@ use crate::{
     builtins::Builtins,
     bytecode::{CallResult, PendingLookupEffect, VM},
     defer_drop,
-    exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
+    exception_private::{RunError, RunResult, SimpleException},
     frozen::FrozenFunction,
     heap::DropWithContext,
     types::{
@@ -36,13 +36,9 @@ use crate::{
 /// hasattr(42, 'nonexistent')    # False - int has no such attribute
 /// ```
 pub fn builtin_hasattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    let positional = args.into_pos_only("hasattr", vm.heap)?;
-    defer_drop!(positional, vm);
-
-    let (object, name) = match positional.as_slice() {
-        [object, name] => (object, name),
-        other => return Err(ExcType::type_error_arg_count("hasattr", 2, other.len())),
-    };
+    let values = args.get_two_args("hasattr", vm.heap)?;
+    defer_drop!(values, vm);
+    let (object, name) = values;
 
     let Some(name) = name.as_either_str(vm.heap).map(|s| s.resolve_interned(vm.interns)) else {
         return Err(SimpleException::new_msg(

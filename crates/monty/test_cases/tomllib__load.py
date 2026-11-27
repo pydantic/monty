@@ -4,6 +4,11 @@
 import sys
 import tomllib
 
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
+
 is_monty = sys.platform == 'monty'
 
 # root is injected by the test runner: a writable directory on both engines.
@@ -104,7 +109,10 @@ try:
     tomllib.load()
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == "load() missing 1 required positional argument: 'fp'"
+    assert str(exc) == _error_message(
+        monty='load() takes exactly 1 argument (0 given)',
+        cpython="load() missing 1 required positional argument: 'fp'",
+    )
 
 # `parse_float` is not implemented; CPython accepts it
 if is_monty:
@@ -113,4 +121,7 @@ if is_monty:
             tomllib.load(f, parse_float=float)
             assert False, 'expected TypeError'
         except TypeError as exc:
-            assert str(exc) == "load() got an unexpected keyword argument 'parse_float'"
+            assert str(exc) == _error_message(
+                monty='load() takes no keyword arguments',
+                cpython="load() got an unexpected keyword argument 'parse_float'",
+            )

@@ -22,7 +22,17 @@ mod types {
     pub struct TypeRef(pub &'static str);
 }
 mod args {
+    use crate::{bytecode::VM, exception_private::RunResult, intern::StaticStrings};
+
     pub struct ArgValues;
+    pub trait FromArgs: Sized {
+        fn bind_method_args(name: StaticStrings, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Self>;
+    }
+    impl FromArgs for ArgValues {
+        fn bind_method_args(_: StaticStrings, args: Self, _: &mut VM<'_>) -> RunResult<Self> {
+            Ok(args)
+        }
+    }
 }
 mod value {
     #[derive(Debug, PartialEq)]

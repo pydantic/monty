@@ -1,129 +1,94 @@
 # monty-macros
 
-Procedural macros used by the [`monty`](https://crates.io/crates/monty) crate.
-Not a public crate — consumers get the macros re-exported
-(`monty::args::FromArgs` / `monty::args::ToArgs`) and should not depend on
-`monty-macros` directly.
+Monty uses `FromArgs` inside the interpreter to bind a Python call to a Rust struct.
+In the other direction, `monty-types` uses `ToArgs` to turn a Rust struct into arguments for a host callback.
+Both derives generate paths relative to their owning crate.
+The third macro, `explicit_discriminants`, checks the numeric codes assigned to enum variants.
 
 ## `#[derive(FromArgs)]`
 
-Generates the `from_args` body for a Rust-implemented Python function. The
-macro is deliberately thin: it emits a `static ParamSpec` describing the
-signature and one call to the runtime binder
-(`crates/monty/src/args/bind_native.rs`), which owns all positional/kwarg
-dispatch, arity checks, duplicate detection, and reference-count cleanup.
-The generated code then converts each raw slot via `FromValue` in
-declaration order and applies defaults.
+Write the Python signature as a struct with named fields.
+For example, `math.prod(iterable, /, *, start=1)` takes its iterable by position and its starting value by keyword.
+Its [Rust implementation](../monty/src/modules/math/aggregate.rs) declares both parameters as follows.
 
 ```rust
-use monty::args::FromArgs;
-use monty::value::Value;
-
 #[derive(FromArgs)]
-#[from_args(name = "function", style = c)]
-struct DatetimeArgs {
-    year: i32,
-    month: i32,
-    day: i32,
-    #[from_args(default = 0)]
-    hour: i32,
-    #[from_args(default = Value::None)]
-    tzinfo: Value,
+#[from_args(name = "math.prod")]
+struct ProdArgs {
+    #[from_args(pos_only)]
+    iterable: Value,
+    #[from_args(kw_only, default = Value::Int(1))]
+    start: Value,
 }
-
-let DatetimeArgs { year, month, day, hour, tzinfo } =
-    DatetimeArgs::from_args(args, vm)?;
 ```
 
-Fields must appear in Python signature order:
-`[pos_only…] [pos_or_keyword…] [varargs] [kw_only…] [varkwargs]`, with
-required fields before optional ones in each region. Field types must
-implement `FromValue` (impls live in `monty::args::from_value`). Coercion
-failures are structured (`FromValueFail`): wrong-type failures get their
-wording from the extraction site (`bad_arg`/`bad_arg_named`, or the impl's
-`type_error`), while value-level failures (`ValueError`, `OverflowError`)
-surface unchanged. `str` arguments the function only reads should use
-`StrArg`, which validates without copying the text and lends `&str` via
-`as_str(vm)`.
+The handler calls `ProdArgs::from_args(args, vm)?` and owns the values in the returned struct.
+The `name` attribute supplies the callable name in error messages.
+When several handlers share one signature, omit `name` and pass the callable name to the derived method.
+For example, the [CSV reader](../monty/src/modules/csv.rs) calls `FmtParamArgs::from_args("reader", args, vm)?`.
+For a fixed pair of positional arguments, use `let (index, item) = args.get_two_args("list.insert", vm.heap)?;`.
 
-### `style` — pick the CPython parser family
+### Parameter declarations
 
-The `style` attribute names the argument parser the target function uses in
-CPython. It selects both the error *wording* and the error *ordering*
-(binding errors vs conversion errors — see `ErrorFamily` in
-`crates/monty/src/args/bind_native.rs` for the exact contracts). Pick it by
-looking at how the function is implemented in CPython:
+Declare fields in Python signature order, with required positional parameters before positional parameters with defaults.
 
-| CPython implementation | `style` | tell-tale error wording |
-|---|---|---|
-| pure-Python `def` (`re` module, `json.dumps`, `Path.mkdir`) | `def` | `f() takes from 1 to 2 positional arguments but 3 were given` |
-| Argument Clinic — most modern builtins/methods (look for clinic blocks / `*.c.h` includes in the CPython source) | `clinic` (the default — omit it) | `replace() takes at least 2 positional arguments (1 given)` |
-| `PyArg_ParseTupleAndKeywords`, no `:name` in the format string | `c` | `function missing required argument 'day' (pos 3)` |
-| `PyArg_ParseTupleAndKeywords` with `:name` | `c_named` | `timezone() missing required argument 'offset' (pos 1)` |
-| `PyArg_UnpackTuple` (positional-only, fixed `min..max`) | `unpack` | `name expected at most 2 arguments, got 3` (`expected N …` when min == max) |
+| Field attribute | Python parameter      | Rust behavior                                                         |
+| --------------- | --------------------- | --------------------------------------------------------------------- |
+| `pos_only`      | Before `/`            | Binds by position.                                                    |
+| No attribute    | Positional or keyword | Binds by position or by the field's name.                             |
+| `varargs`       | `*args`               | Collects remaining positional arguments into `Vec<Value>`.            |
+| `kw_only`       | After `*`             | Binds by keyword. Fields after `varargs` are implicitly keyword-only. |
+| `varkwargs`     | `**kwargs`            | Collects unmatched keywords into `KwargsValues`.                      |
 
-Style-derived behaviour that used to be separate flags: the C
-"… positional arguments …" overflow pivot turns on automatically for
-`style = c` and `style = c_named` structs with `kw_only` fields (CPython's
-`vgetargskeywords` / `_PyArg_UnpackKeywords` behave the same way; the named
-variant additionally says `takes exactly N positional argument(s)` when every
-positional param is required, e.g. `os.stat`), and `unpack` collapses to the
-exact-arity `expected N argument(s)` wording when no positional field has a
-default.
+On a named parameter, `#[from_args(default)]` uses the Rust type's `Default::default()` when the argument is omitted.
+Use `default = expr` for a Python default such as `Value::Int(1)`.
+Keyword matching uses an interned name. Set `static_string = "IterableArg"`, for example, when the `StaticStrings`
+variant for a field named `iterable` is `IterableArg`.
+The derive rejects defaults and `static_string` on collectors.
 
-Since CPython's `def` binding never type-checks, `style = def` structs
-should declare fields as raw `Value` (or `StrArg`-in-body) and coerce in the
-function body, so type errors carry the message the CPython function body
-would produce. `bad_arg` is rejected under `style = def` for the same
-reason. `varargs` is allowed: a `*args` signature never overflows, but a
-missing required parameter still wants the `def` wording.
+### Binding errors
 
-`style = unpack` models `PyArg_UnpackTuple`'s fixed positional `min..max`
-range, so the derive rejects anything outside that shape: every positional
-field must be `pos_only`, and `varargs`, `varkwargs`, and `at_most_total`
-are all incompatible.
+These calls show the messages Monty produces for the signature above and for `enumerate(iterable, start=0)`.
 
-### Modifiers
+```pycon
+>>> import math
+>>> math.prod([2, 3], start=4)
+24
+>>> math.prod([2, 3], 4)
+TypeError: math.prod() takes at most 1 positional argument (2 given)
+>>> math.prod(iterable=[2, 3])
+TypeError: math.prod() got some positional-only arguments passed as keyword arguments: 'iterable'
+>>> enumerate(start=1)
+TypeError: enumerate() missing 1 required positional argument: 'iterable'
+>>> enumerate([], iterable=[])
+TypeError: enumerate() got multiple values for argument 'iterable'
+```
 
-- `at_most_total` — pre-count positionals + kwargs against all named parameters,
-  including keyword-only parameters, before dispatch (`{name}() takes at most N arguments (M given)`).
-  This is a per-function empirical fact, not derivable from the fields or
-  the style. Litmus test: call the CPython function with valid positionals
-  plus one bogus kwarg — if it reports `takes at most N arguments (M
-  given)`, set the flag; if it reports `unexpected keyword argument`,
-  don't. Only meaningful for the C-parser families (`clinic`/`c`/`c_named`)
-  on signatures with a fixed maximum — rejected under `style = def` /
-  `style = unpack` and with `varargs`/`varkwargs`.
-- `vectorcall` — kwarg-free calls check positional arity first with
-  `_PyArg_CheckPositional` wording (`{name} expected at most N arguments,
-  got M`), modeling `tp_vectorcall` fast paths (`int`, `str`) that only
-  fall back to the clinic parser when keywords are present. Requires the
-  default `clinic` style plus `at_most_total` (which supplies the
-  parenthesised wording for the kwargs path).
-- `bad_arg` / `bad_arg_named` — report `FromValue` wrong-type failures in
-  CPython's `_PyArg_BadArgument` wording (`{name}() argument {pos|'arg'}
-  must be {expected}, not {got}`).
-- `kwarg_error_name = "..."` — override the function name in the
-  unknown-kwarg error only (`json.dumps` reports `JSONEncoder.__init__`).
-  Under `style = unpack` it instead names the function in the blanket
-  `takes no keyword arguments` rejection (`unicodedata.name()`).
-- `kwargs_not_supported_yet` — reject every kwarg with a
-  `NotImplementedError`; a Monty TODO marker.
+The [native binder](../monty/src/args/bind_native.rs) checks keywords before reporting excess or missing positional
+arguments.
+Once the arguments fit the signature, the derive converts supplied fields in declaration order using `FromValue`.
+It generates direct paths for common calls with zero, one, or two positional arguments.
+Both paths release owned values if conversion fails.
+See the [binding error fixtures](../monty/test_cases/args__macro_errors.py) for exact Monty and CPython messages.
 
-Field-level attributes: `pos_only`, `kw_only` (must carry a `default` — the
-runtime binder's fast paths skip the missing-keyword check, so required
-keyword-only params are rejected at derive time), `varargs` (must be
-`Vec<Value>` — elements are handed over unconverted), `varkwargs`,
-`default[ = expr]`, `static_string = "..."` (override the `StaticStrings`
-variant used for kwarg matching; neither applies to `varargs`/`varkwargs`
-fields). All are documented inline in
-[`src/from_args.rs`](src/from_args.rs), which also carries `#[cfg(test)]`
-unit tests for every attribute-validation error.
+Use `StrArg` for a string the handler reads through `as_str(vm)`, or `Value` when the handler performs its own coercion.
+The struct options `bad_arg` and `bad_arg_named` select wrong-type messages that identify the argument by position or
+name for converters that declare an expected type.
+Errors raised during conversion, such as `OverflowError`, propagate to the caller.
+Use `kwargs_not_supported_yet` when CPython accepts keywords that the Monty handler has yet to implement.
+Supplying any keyword then raises `NotImplementedError`.
 
 ## `#[derive(ToArgs)]`
 
-Projects a struct into the `CallArgs` a host callback takes, reusing the `#[from_args(...)]` field attributes.
-`varargs` fields contribute one positional argument per element.
+`ToArgs::to_args(self)` consumes a struct and builds the `CallArgs` sent to the host.
+For example, [`MkdirCallArgs`](../monty-types/src/os.rs) sends `path` as its sole positional argument and sends
+`parents` and `exist_ok` as named keywords, including when their values are `false`.
+
+Fields marked `pos_only` and ordinary fields before `varargs` become positional arguments in declaration order.
+A `varargs` field contributes one positional argument per element.
+Ordinary fields after `varargs` and fields marked `kw_only` become keyword arguments using their Rust field names.
+A unit struct produces an empty call.
+The derive rejects `varkwargs` fields.
 
 ## `#[pyattrs]`
 
@@ -137,7 +102,9 @@ Bases with different native payloads register a `TypeDef::subtype_call` adapter 
 
 Each annotation names its `StaticStrings` key explicitly:
 
-- `#[pymethod(Sort)]` registers an instance method with a native receiver, `ArgValues`, and `&mut VM`.
+- `#[pymethod(Sort)]` registers an instance method with a native receiver, its argument type, and `&mut VM`.
+  For example, `date.strftime` takes `StrftimeArgs { format }: StrftimeArgs`. The adapter validates the receiver,
+  then calls the derived `FromArgs` binder. Handlers that unpack their own arguments can take `ArgValues`.
   Methods return `RunResult<Value>` or `RunResult<CallResult>`; the adapter converts values and preserves suspension.
   Inherited methods are registered only on their defining base; MRO lookup supplies the owner for receiver validation.
 - `#[pyclassmethod(Fromkeys)]` registers `(StaticStrings, TypeRef, ArgValues, &mut VM) -> RunResult<CallResult>`.
@@ -162,24 +129,16 @@ Unannotated helper functions are preserved without registration.
 
 ## `#[explicit_discriminants(checksum = ...)]`
 
-Requires an explicit integer literal on every enum variant used as a numeric identity code,
-and a matching `checksum` argument.
-The checksum is FNV-1a over sorted, NUL-terminated `name:code` pairs, with codes normalized to decimal.
-Declaration order, integer-literal spelling and variant payloads do not affect it.
-Existing codes must never change or be reused, including after a variant is removed.
-New variants take unused codes.
+Use this attribute on an enum whose numeric codes must stay stable, such as
+[`ExcType`](../monty-types/src/exceptions.rs).
+Assign each variant a distinct integer literal and place the attribute before any derives so the check includes
+conditionally compiled variants.
+Keep each existing variant's code fixed. Use an unused code for each new variant and reserve removed codes.
 
-To initialize the checksum, compile with `#[monty_macros::explicit_discriminants]`: the error reports the current checksum as a copyable attribute.
-A mismatch reports both values and the replacement attribute; review the mappings before updating it.
-Place the attribute before any derives so it checks every declared variant, including inactive `cfg` and `cfg_attr` variants.
-One checksum covers every configuration.
-The macro returns the enum unchanged, preserving its attributes and representation.
-The macro rejects duplicate numeric codes even between mutually exclusive variants.
-
-## Not a standalone crate
-
-Argument-conversion code emits `crate::...` paths: `FromArgs` compiles inside `monty`, and `ToArgs` inside `monty-types`.
-Cross-crate use would need `proc-macro-crate` and paths to the appropriate crate.
+Start with `#[monty_macros::explicit_discriminants]` and compile to get the attribute with its checksum.
+Review the mapping diff before copying a replacement checksum from the diagnostic.
+The checksum is FNV-1a over sorted, NUL-terminated `name:code` pairs with codes written in decimal.
+Reordering variants or changing their payloads preserves the checksum.
 
 ## Monty crates
 

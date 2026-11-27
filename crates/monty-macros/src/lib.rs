@@ -50,11 +50,8 @@ pub fn explicit_discriminants(args: TokenStream, input: TokenStream) -> TokenStr
 /// Field types must implement `monty::args::FromValue`. Fields must appear
 /// in Python signature order:
 /// `[pos_only…] [pos_or_keyword…] [varargs] [kw_only…] [varkwargs]`, with
-/// required fields preceding optional ones in each region.
-///
-/// `#[from_args(name = "...")]` is required on the struct. The remaining
-/// attributes select CPython error-wording style or field roles; see the
-/// crate `README.md` and the source docstrings.
+/// required positional fields preceding optional positional fields.
+/// Shared signatures can receive the callable name as the first argument to `from_args`.
 #[proc_macro_derive(FromArgs, attributes(from_args))]
 pub fn derive_from_args(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);

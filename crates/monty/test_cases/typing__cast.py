@@ -1,4 +1,10 @@
+import sys
 from typing import assert_never, assert_type, cast
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
 
 # === cast returns its value untouched, whatever the type argument is ===
 assert cast(int, 'x') == 'x'
@@ -31,19 +37,28 @@ try:
     cast(int, 1, 2)
     assert False, 'cast(int, 1, 2) should fail'
 except TypeError as e:
-    assert str(e) == 'cast() takes 2 positional arguments but 3 were given'
+    assert str(e) == _error_message(
+        monty='cast() takes at most 2 arguments (3 given)',
+        cpython='cast() takes 2 positional arguments but 3 were given',
+    )
 
 try:
     assert_type(1)
     assert False, 'assert_type(1) should fail'
 except TypeError as e:
-    assert str(e) == "assert_type() missing 1 required positional argument: 'typ'"
+    assert str(e) == _error_message(
+        monty='assert_type() takes exactly 2 arguments (1 given)',
+        cpython="assert_type() missing 1 required positional argument: 'typ'",
+    )
 
 try:
     assert_type(1, int, 3)
     assert False, 'assert_type three args should fail'
 except TypeError as e:
-    assert str(e) == 'assert_type() takes 2 positional arguments but 3 were given'
+    assert str(e) == _error_message(
+        monty='assert_type() takes exactly 2 arguments (3 given)',
+        cpython='assert_type() takes 2 positional arguments but 3 were given',
+    )
 
 # === assert_never always raises, quoting a bounded repr ===
 try:
@@ -62,23 +77,35 @@ try:
     assert_never()
     assert False, 'assert_never() should fail'
 except TypeError as e:
-    assert str(e) == "assert_never() missing 1 required positional argument: 'arg'"
+    assert str(e) == _error_message(
+        monty='assert_never() takes exactly 1 argument (0 given)',
+        cpython="assert_never() missing 1 required positional argument: 'arg'",
+    )
 
 try:
     assert_never(1, 2, 3)
     assert False, 'assert_never three args should fail'
 except TypeError as e:
-    assert str(e) == 'assert_never() takes 1 positional argument but 3 were given'
+    assert str(e) == _error_message(
+        monty='assert_never() takes exactly 1 argument (3 given)',
+        cpython='assert_never() takes 1 positional argument but 3 were given',
+    )
 
 # === assert_type and assert_never take their arguments by position only ===
 try:
     assert_type(val=1)
     assert False, 'assert_type(val=1) should fail'
 except TypeError as e:
-    assert str(e) == "assert_type() got some positional-only arguments passed as keyword arguments: 'val'"
+    assert str(e) == _error_message(
+        monty='assert_type() takes no keyword arguments',
+        cpython="assert_type() got some positional-only arguments passed as keyword arguments: 'val'",
+    )
 
 try:
     assert_never(arg=1)
     assert False, 'assert_never(arg=1) should fail'
 except TypeError as e:
-    assert str(e) == "assert_never() got some positional-only arguments passed as keyword arguments: 'arg'"
+    assert str(e) == _error_message(
+        monty='assert_never() takes no keyword arguments',
+        cpython="assert_never() got some positional-only arguments passed as keyword arguments: 'arg'",
+    )

@@ -4,8 +4,13 @@
 import _io
 import csv
 import io
+import sys
 import json
 from io import BytesIO, StringIO
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
 
 
 def check(exc_type, message, fn):
@@ -87,14 +92,28 @@ with io.open_code(str(root / 'io_text.txt')) as f:
     assert type(f) is io.BufferedReader
     assert f.read() == b'one\ntwo\n'
 check(TypeError, "open_code() argument 'path' must be str, not int", lambda: io.open_code(1))
-check(TypeError, "open_code() missing required argument 'path' (pos 1)", lambda: io.open_code())
+check(
+    TypeError,
+    _error_message(
+        monty="open_code() missing 1 required positional argument: 'path'",
+        cpython="open_code() missing required argument 'path' (pos 1)",
+    ),
+    lambda: io.open_code(),
+)
 
 # === text_encoding ===
 assert io.text_encoding(None) == 'locale'
 assert io.text_encoding('latin-1') == 'latin-1'
 assert io.text_encoding(None, 3) == 'locale'
 assert io.text_encoding(1) == 1
-check(TypeError, 'text_encoding expected at least 1 argument, got 0', lambda: io.text_encoding())
+check(
+    TypeError,
+    _error_message(
+        monty='_io.text_encoding() takes at least 1 argument (0 given)',
+        cpython='text_encoding expected at least 1 argument, got 0',
+    ),
+    lambda: io.text_encoding(),
+)
 check(TypeError, '_io.text_encoding() takes no keyword arguments', lambda: io.text_encoding(encoding=None))
 check(TypeError, "'str' object cannot be interpreted as an integer", lambda: io.text_encoding(None, 'x'))
 with open(root / 'io_text.txt', encoding=io.text_encoding(None)) as f:

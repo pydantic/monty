@@ -5,11 +5,6 @@
 //! `limitations/hashlib.md`. The hash objects themselves live in
 //! `types::hashlib`, along with every algorithm, so nothing here depends on
 //! OpenSSL: `algorithms_available` is exactly `algorithms_guaranteed`.
-//!
-//! CPython's constructors are C functions in `_hashlib` (OpenSSL-backed,
-//! parsed by Argument Clinic) and `_blake2`, so their signatures use the
-//! named C parser style and the bodies reproduce the order in which CPython
-//! rejects bad values.
 
 use std::fmt::Display;
 
@@ -118,22 +113,24 @@ fn algorithm_names(vm: &mut VM<'_>) -> Value {
 
 /// Dispatches a call to a `hashlib` module function.
 pub(super) fn call(vm: &mut VM<'_>, function: HashlibFunctions, args: ArgValues) -> RunResult<Value> {
-    match function {
-        HashlibFunctions::Md5 => construct(HashAlgorithm::Md5, Md5Args::from_args(args, vm)?.into(), vm),
-        HashlibFunctions::Sha1 => construct(HashAlgorithm::Sha1, Sha1Args::from_args(args, vm)?.into(), vm),
-        HashlibFunctions::Sha224 => construct(HashAlgorithm::Sha224, Sha224Args::from_args(args, vm)?.into(), vm),
-        HashlibFunctions::Sha256 => construct(HashAlgorithm::Sha256, Sha256Args::from_args(args, vm)?.into(), vm),
-        HashlibFunctions::Sha384 => construct(HashAlgorithm::Sha384, Sha384Args::from_args(args, vm)?.into(), vm),
-        HashlibFunctions::Sha512 => construct(HashAlgorithm::Sha512, Sha512Args::from_args(args, vm)?.into(), vm),
-        HashlibFunctions::Sha3_224 => construct(HashAlgorithm::Sha3_224, Sha3_224Args::from_args(args, vm)?.into(), vm),
-        HashlibFunctions::Sha3_256 => construct(HashAlgorithm::Sha3_256, Sha3_256Args::from_args(args, vm)?.into(), vm),
-        HashlibFunctions::Sha3_384 => construct(HashAlgorithm::Sha3_384, Sha3_384Args::from_args(args, vm)?.into(), vm),
-        HashlibFunctions::Sha3_512 => construct(HashAlgorithm::Sha3_512, Sha3_512Args::from_args(args, vm)?.into(), vm),
-        HashlibFunctions::Shake128 => construct(HashAlgorithm::Shake128, Shake128Args::from_args(args, vm)?.into(), vm),
-        HashlibFunctions::Shake256 => construct(HashAlgorithm::Shake256, Shake256Args::from_args(args, vm)?.into(), vm),
-        HashlibFunctions::New => call_new(vm, args),
-        HashlibFunctions::Pbkdf2Hmac => call_pbkdf2_hmac(vm, args),
-    }
+    let algorithm = match function {
+        HashlibFunctions::Md5 => HashAlgorithm::Md5,
+        HashlibFunctions::Sha1 => HashAlgorithm::Sha1,
+        HashlibFunctions::Sha224 => HashAlgorithm::Sha224,
+        HashlibFunctions::Sha256 => HashAlgorithm::Sha256,
+        HashlibFunctions::Sha384 => HashAlgorithm::Sha384,
+        HashlibFunctions::Sha512 => HashAlgorithm::Sha512,
+        HashlibFunctions::Sha3_224 => HashAlgorithm::Sha3_224,
+        HashlibFunctions::Sha3_256 => HashAlgorithm::Sha3_256,
+        HashlibFunctions::Sha3_384 => HashAlgorithm::Sha3_384,
+        HashlibFunctions::Sha3_512 => HashAlgorithm::Sha3_512,
+        HashlibFunctions::Shake128 => HashAlgorithm::Shake128,
+        HashlibFunctions::Shake256 => HashAlgorithm::Shake256,
+        HashlibFunctions::New => return call_new(vm, args),
+        HashlibFunctions::Pbkdf2Hmac => return call_pbkdf2_hmac(vm, args),
+    };
+    let args = ConstructorArgs::from_args(algorithm.name(), args, vm)?;
+    construct(algorithm, args, vm)
 }
 
 // ============================================================================
@@ -144,9 +141,13 @@ pub(super) fn call(vm: &mut VM<'_>, function: HashlibFunctions, args: ArgValues)
 /// OpenSSL-backed constructor shares once its name is in the error messages.
 ///
 /// `usedforsecurity` is accepted and ignored: there is no FIPS mode to honour.
+#[derive(FromArgs)]
 struct ConstructorArgs {
+    #[from_args(default)]
     data: Option<Value>,
+    #[from_args(kw_only, default = Value::Bool(true))]
     usedforsecurity: Value,
+    #[from_args(kw_only, default, static_string = "StringAttr")]
     string: Option<Value>,
 }
 
@@ -157,53 +158,6 @@ impl<C: ContainsHeap> DropWithContext<C> for ConstructorArgs {
         self.string.drop_with(ctx);
     }
 }
-
-/// Stamps out one `FromArgs` struct per constructor, since the derive bakes
-/// the function name (`openssl_sha256() takes at most …`) into the spec.
-macro_rules! openssl_constructor_args {
-    ($($args:ident => $name:literal),* $(,)?) => {$(
-        #[derive(FromArgs)]
-        #[from_args(name = $name, style = c_named, at_most_total)]
-        struct $args {
-            #[from_args(default)]
-            data: Option<Value>,
-            #[from_args(kw_only, default = Value::Bool(true))]
-            usedforsecurity: Value,
-            #[from_args(kw_only, default, static_string = "StringAttr")]
-            string: Option<Value>,
-        }
-
-        impl From<$args> for ConstructorArgs {
-            fn from(args: $args) -> Self {
-                let $args {
-                    data,
-                    usedforsecurity,
-                    string,
-                } = args;
-                Self {
-                    data,
-                    usedforsecurity,
-                    string,
-                }
-            }
-        }
-    )*};
-}
-
-openssl_constructor_args!(
-    Md5Args => "openssl_md5",
-    Sha1Args => "openssl_sha1",
-    Sha224Args => "openssl_sha224",
-    Sha256Args => "openssl_sha256",
-    Sha384Args => "openssl_sha384",
-    Sha512Args => "openssl_sha512",
-    Sha3_224Args => "openssl_sha3_224",
-    Sha3_256Args => "openssl_sha3_256",
-    Sha3_384Args => "openssl_sha3_384",
-    Sha3_512Args => "openssl_sha3_512",
-    Shake128Args => "openssl_shake_128",
-    Shake256Args => "openssl_shake_256",
-);
 
 /// Builds a hash of `algorithm` over the constructor's initial data.
 fn construct(algorithm: HashAlgorithm, args: ConstructorArgs, vm: &mut VM<'_>) -> RunResult<Value> {
@@ -235,7 +189,7 @@ fn initial_data<'a>(data: Option<&'a Value>, string: Option<&'a Value>) -> RunRe
 /// `hashlib.new(name, *args, **kwargs)`, a pure-Python `def` that routes
 /// BLAKE2 names to the `_blake2` types and everything else to `_hashlib.new`.
 #[derive(FromArgs)]
-#[from_args(name = "__hash_new", style = def)]
+#[from_args(name = "__hash_new")]
 struct HashNewArgs {
     name: Value,
     #[from_args(varargs)]
@@ -246,7 +200,7 @@ struct HashNewArgs {
 
 /// `_hashlib.new(name, data=b'', *, usedforsecurity=True, string=None)`.
 #[derive(FromArgs)]
-#[from_args(name = "new", style = c_named, bad_arg_named, at_most_total)]
+#[from_args(name = "new", bad_arg_named)]
 struct OpensslNewArgs {
     name: StrArg,
     #[from_args(default)]
@@ -353,20 +307,35 @@ impl Blake2Kind {
 /// The constructor arguments before conversion. Every parameter stays a raw
 /// `Value` so the body can convert them in signature order, reproducing
 /// which error CPython's parser reports first.
+#[derive(FromArgs)]
 struct Blake2RawArgs {
+    #[from_args(default)]
     data: Option<Value>,
+    #[from_args(kw_only, default)]
     digest_size: Option<Value>,
+    #[from_args(kw_only, default)]
     key: Option<Value>,
+    #[from_args(kw_only, default)]
     salt: Option<Value>,
+    #[from_args(kw_only, default)]
     person: Option<Value>,
+    #[from_args(kw_only, default)]
     fanout: Option<Value>,
+    #[from_args(kw_only, default)]
     depth: Option<Value>,
+    #[from_args(kw_only, default)]
     leaf_size: Option<Value>,
+    #[from_args(kw_only, default)]
     node_offset: Option<Value>,
+    #[from_args(kw_only, default)]
     node_depth: Option<Value>,
+    #[from_args(kw_only, default)]
     inner_size: Option<Value>,
-    last_node: bool,
+    #[from_args(kw_only, default = LaxBool::new(false))]
+    last_node: LaxBool,
+    #[from_args(kw_only, default = Value::Bool(true))]
     usedforsecurity: Value,
+    #[from_args(kw_only, default, static_string = "StringAttr")]
     string: Option<Value>,
 }
 
@@ -392,84 +361,6 @@ impl<C: ContainsHeap> DropWithContext<C> for Blake2RawArgs {
     }
 }
 
-/// Stamps out the two `_blake2` constructor signatures, which differ only in
-/// the name their errors carry.
-macro_rules! blake2_constructor_args {
-    ($($args:ident => $name:literal),* $(,)?) => {$(
-        #[derive(FromArgs)]
-        #[from_args(name = $name, style = c_named, at_most_total)]
-        struct $args {
-            #[from_args(default)]
-            data: Option<Value>,
-            #[from_args(kw_only, default)]
-            digest_size: Option<Value>,
-            #[from_args(kw_only, default)]
-            key: Option<Value>,
-            #[from_args(kw_only, default)]
-            salt: Option<Value>,
-            #[from_args(kw_only, default)]
-            person: Option<Value>,
-            #[from_args(kw_only, default)]
-            fanout: Option<Value>,
-            #[from_args(kw_only, default)]
-            depth: Option<Value>,
-            #[from_args(kw_only, default)]
-            leaf_size: Option<Value>,
-            #[from_args(kw_only, default)]
-            node_offset: Option<Value>,
-            #[from_args(kw_only, default)]
-            node_depth: Option<Value>,
-            #[from_args(kw_only, default)]
-            inner_size: Option<Value>,
-            #[from_args(kw_only, default = LaxBool::new(false))]
-            last_node: LaxBool,
-            #[from_args(kw_only, default = Value::Bool(true))]
-            usedforsecurity: Value,
-            #[from_args(kw_only, default, static_string = "StringAttr")]
-            string: Option<Value>,
-        }
-
-        impl From<$args> for Blake2RawArgs {
-            fn from(args: $args) -> Self {
-                let $args {
-                    data,
-                    digest_size,
-                    key,
-                    salt,
-                    person,
-                    fanout,
-                    depth,
-                    leaf_size,
-                    node_offset,
-                    node_depth,
-                    inner_size,
-                    last_node,
-                    usedforsecurity,
-                    string,
-                } = args;
-                Self {
-                    data,
-                    digest_size,
-                    key,
-                    salt,
-                    person,
-                    fanout,
-                    depth,
-                    leaf_size,
-                    node_offset,
-                    node_depth,
-                    inner_size,
-                    last_node: last_node.bool(),
-                    usedforsecurity,
-                    string,
-                }
-            }
-        }
-    )*};
-}
-
-blake2_constructor_args!(Blake2bArgs => "blake2b", Blake2sArgs => "blake2s");
-
 /// The `blake2b` constructor, for the native type table.
 pub(crate) fn blake2b_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     blake2_init(Blake2Kind::Blake2b, vm, args)
@@ -485,10 +376,11 @@ pub(crate) fn blake2s_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>
 /// Conversions run in signature order, then the parameter checks in the
 /// order `_blake2` makes them, and the data last.
 pub(crate) fn blake2_init(kind: Blake2Kind, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let args: Blake2RawArgs = match kind {
-        Blake2Kind::Blake2b => Blake2bArgs::from_args(args, vm)?.into(),
-        Blake2Kind::Blake2s => Blake2sArgs::from_args(args, vm)?.into(),
+    let name = match kind {
+        Blake2Kind::Blake2b => "blake2b",
+        Blake2Kind::Blake2s => "blake2s",
     };
+    let args = Blake2RawArgs::from_args(name, args, vm)?;
     defer_drop!(args, vm);
     let max_digest = kind.max_digest_size();
     let digest_size = args
@@ -566,7 +458,7 @@ pub(crate) fn blake2_init(kind: Blake2Kind, vm: &mut VM<'_>, args: ArgValues) ->
         node_offset,
         node_depth,
         inner_size,
-        last_node: args.last_node,
+        last_node: args.last_node.bool(),
     };
     let mut hash = match kind {
         Blake2Kind::Blake2b => HashObject::blake2b(params),
@@ -629,7 +521,7 @@ fn overflow_error(msg: impl Display) -> RunError {
 /// function whose `password`, `salt` and `iterations` convert in the body so
 /// their errors come out in signature order.
 #[derive(FromArgs)]
-#[from_args(name = "pbkdf2_hmac", style = c_named, bad_arg_named, at_most_total)]
+#[from_args(name = "pbkdf2_hmac", bad_arg_named)]
 struct Pbkdf2HmacArgs {
     hash_name: StrArg,
     password: Value,

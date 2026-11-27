@@ -5,6 +5,12 @@
 import os
 from collections import namedtuple
 from pathlib import Path
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
 
 # `root` is Path('/mnt') in Monty and a real temp directory in CPython; compare
 # paths relative to it. Layout: hello.txt, empty.txt, data.bin, readonly.txt,
@@ -260,7 +266,10 @@ try:
     os.walk(root, 1, 2, 3, 4)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'walk() takes from 1 to 4 positional arguments but 5 were given'
+    assert str(e) == _error_message(
+        monty='walk() takes at most 4 arguments (5 given)',
+        cpython='walk() takes from 1 to 4 positional arguments but 5 were given',
+    )
 
 # === Path.walk ===
 path_walked = [(rel(p), sorted(dn), sorted(listed(fn))) for p, dn, fn in root.walk()]
@@ -358,7 +367,10 @@ try:
     hello.is_dir(True)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'is_dir() takes no positional arguments'
+    assert str(e) == _error_message(
+        monty='is_dir() takes at most 0 positional arguments (1 given)',
+        cpython='is_dir() takes no positional arguments',
+    )
 try:
     hello.is_dir(x=1)
     assert False, 'expected TypeError'

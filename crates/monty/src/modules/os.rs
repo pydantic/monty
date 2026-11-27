@@ -160,10 +160,9 @@ pub(super) fn call(vm: &mut VM<'_>, functions: OsFunctions, args: ArgValues) -> 
     }
 }
 
-/// `os.scandir(path=None)` argument shape — clinic-parsed with the
-/// `at_most_total` pre-count, like `os.listdir`.
+/// `os.scandir(path=None)`.
 #[derive(FromArgs)]
-#[from_args(name = "scandir", at_most_total)]
+#[from_args(name = "scandir")]
 struct ScandirArgs {
     #[from_args(default = Value::None)]
     path: Value,
@@ -183,10 +182,9 @@ fn scandir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     Ok(scandir_call(path))
 }
 
-/// `os.walk(top, topdown=True, onerror=None, followlinks=False)` argument
-/// shape — a pure-Python generator in CPython, hence `style = def`.
+/// `os.walk(top, topdown=True, onerror=None, followlinks=False)`.
 #[derive(FromArgs)]
-#[from_args(name = "walk", style = def)]
+#[from_args(name = "walk")]
 struct WalkArgs {
     top: Value,
     #[from_args(default = LaxBool::new(true))]
@@ -277,7 +275,7 @@ fn getcwdb(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 
 /// `os.chdir(path)` accepts a positional or keyword path, with CPython's total-count check.
 #[derive(FromArgs)]
-#[from_args(name = "chdir", style = c_named, at_most_total)]
+#[from_args(name = "chdir")]
 struct ChdirArgs {
     path: Value,
 }
@@ -340,10 +338,9 @@ fn getenv(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     }
 }
 
-/// `os.listdir(path=None)` argument shape — clinic-parsed with the
-/// `at_most_total` pre-count (`listdir() takes at most 1 argument (2 given)`).
+/// `os.listdir(path=None)`.
 #[derive(FromArgs)]
-#[from_args(name = "listdir", at_most_total)]
+#[from_args(name = "listdir")]
 struct ListdirArgs {
     #[from_args(default = Value::None)]
     path: Value,
@@ -373,7 +370,7 @@ fn listdir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 /// `follow_symlinks` uses [`LaxBool`] — CPython truth-tests it, so any value
 /// is accepted.
 #[derive(FromArgs)]
-#[from_args(name = "stat", style = c_named)]
+#[from_args(name = "stat")]
 struct StatArgs {
     path: Value,
     #[from_args(kw_only, default = Value::None)]
@@ -403,7 +400,7 @@ fn stat(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 
 /// `os.mkdir(path, mode=0o777, *, dir_fd=None)` argument shape.
 #[derive(FromArgs)]
-#[from_args(name = "mkdir", style = c_named)]
+#[from_args(name = "mkdir")]
 struct MkdirArgs {
     path: Value,
     #[from_args(default = Value::Int(0o777))]
@@ -430,11 +427,9 @@ fn mkdir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     })))
 }
 
-/// `os.makedirs(name, mode=0o777, exist_ok=False)` argument shape — a pure
-/// Python `def` in CPython, hence `style = def`. `exist_ok` uses [`LaxBool`]
-/// (truth-tested, never type-checked) like the sibling `PathMkdirArgs`.
+/// `os.makedirs(name, mode=0o777, exist_ok=False)`.
 #[derive(FromArgs)]
-#[from_args(name = "makedirs", style = def)]
+#[from_args(name = "makedirs")]
 struct MakedirsArgs {
     name: Value,
     #[from_args(default = Value::Int(0o777))]
@@ -462,7 +457,7 @@ fn makedirs(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 
 /// `os.remove(path, *, dir_fd=None)` argument shape.
 #[derive(FromArgs)]
-#[from_args(name = "remove", style = c_named)]
+#[from_args(name = "remove")]
 struct RemoveArgs {
     path: Value,
     #[from_args(kw_only, default = Value::None)]
@@ -478,7 +473,7 @@ fn remove(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 
 /// `os.unlink(path, *, dir_fd=None)` argument shape.
 #[derive(FromArgs)]
-#[from_args(name = "unlink", style = c_named)]
+#[from_args(name = "unlink")]
 struct UnlinkArgs {
     path: Value,
     #[from_args(kw_only, default = Value::None)]
@@ -510,7 +505,7 @@ fn single_path_call(
 
 /// `os.rmdir(path, *, dir_fd=None)` argument shape.
 #[derive(FromArgs)]
-#[from_args(name = "rmdir", style = c_named)]
+#[from_args(name = "rmdir")]
 struct RmdirArgs {
     path: Value,
     #[from_args(kw_only, default = Value::None)]
@@ -526,7 +521,7 @@ fn rmdir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 
 /// `os.rename(src, dst, *, src_dir_fd=None, dst_dir_fd=None)` argument shape.
 #[derive(FromArgs)]
-#[from_args(name = "rename", style = c_named)]
+#[from_args(name = "rename")]
 struct RenameArgs {
     src: Value,
     dst: Value,
@@ -549,7 +544,7 @@ fn rename(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 
 /// `os.replace(src, dst, *, src_dir_fd=None, dst_dir_fd=None)` argument shape.
 #[derive(FromArgs)]
-#[from_args(name = "replace", style = c_named)]
+#[from_args(name = "replace")]
 struct ReplaceArgs {
     src: Value,
     dst: Value,
@@ -598,10 +593,9 @@ fn rename_like(
     }
 }
 
-/// `os.fspath(path)` argument shape — clinic-parsed with the `at_most_total`
-/// pre-count (`fspath() takes at most 1 argument (2 given)`).
+/// `os.fspath(path)`.
 #[derive(FromArgs)]
-#[from_args(name = "fspath", style = c_named, at_most_total)]
+#[from_args(name = "fspath")]
 struct FspathArgs {
     path: Value,
 }

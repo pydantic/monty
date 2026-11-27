@@ -993,7 +993,7 @@ impl<'heap> PyAttrs<'heap> for PyListImpl {
     /// Implements Python's `list.insert(index, item)` method.
     #[pymethod(Insert)]
     fn insert<'h>(list: &HeapReadMut<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let (index_obj, item) = args.get_two_args("insert", vm.heap)?;
+        let (index_obj, item) = args.get_two_args("list.insert", vm.heap)?;
         defer_drop!(index_obj, vm);
         let mut item_guard = DropGuard::new(item, vm);
         let vm = item_guard.ctx();
@@ -1222,7 +1222,7 @@ impl<'heap> PyAttrs<'heap> for PyListImpl {
         let items = mem::take(&mut list.get_mut(vm.heap).items);
         defer_drop_mut!(items, vm);
 
-        let sort_result = parse_and_sort(items, args, vm);
+        let sort_result = parse_and_sort("sort", items, args, vm);
 
         // Swap our (sorted) buffer back into the list. Whatever the user placed
         // on the live empty list during the sort ends up in `items`; if

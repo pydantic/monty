@@ -5,6 +5,11 @@ import os
 import sys
 from pathlib import Path
 
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
+
 # === constants ===
 # Monty always presents the POSIX values regardless of host OS
 # (sys.platform == 'monty'); Windows CPython differs (sep='\\',
@@ -42,7 +47,10 @@ try:
     os.fspath()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == "fspath() missing required argument 'path' (pos 1)"
+    assert str(e) == _error_message(
+        monty="fspath() missing 1 required positional argument: 'path'",
+        cpython="fspath() missing required argument 'path' (pos 1)",
+    )
 try:
     os.fspath('a', 'b')
     assert False, 'expected TypeError'
@@ -53,7 +61,10 @@ try:
     os.fspath(path='a', foo=1)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'fspath() takes at most 1 keyword argument (2 given)'
+    assert str(e) == _error_message(
+        monty="fspath() got an unexpected keyword argument 'foo'",
+        cpython='fspath() takes at most 1 keyword argument (2 given)',
+    )
 
 # === listdir argument errors ===
 try:
@@ -88,7 +99,10 @@ try:
     os.listdir('.', foo=1)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'listdir() takes at most 1 argument (2 given)'
+    assert str(e) == _error_message(
+        monty="listdir() got an unexpected keyword argument 'foo'",
+        cpython='listdir() takes at most 1 argument (2 given)',
+    )
 try:
     os.listdir(foo=1)
     assert False, 'expected TypeError'
@@ -98,14 +112,20 @@ try:
     os.listdir(path='.', foo=1)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'listdir() takes at most 1 keyword argument (2 given)'
+    assert str(e) == _error_message(
+        monty="listdir() got an unexpected keyword argument 'foo'",
+        cpython='listdir() takes at most 1 keyword argument (2 given)',
+    )
 
 # === stat argument errors ===
 try:
     os.stat()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == "stat() missing required argument 'path' (pos 1)"
+    assert str(e) == _error_message(
+        monty="stat() missing 1 required positional argument: 'path'",
+        cpython="stat() missing required argument 'path' (pos 1)",
+    )
 try:
     os.stat(1.5)
     assert False, 'expected TypeError'
@@ -144,18 +164,27 @@ try:
     os.stat(foo=1)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == "stat() missing required argument 'path' (pos 1)"
+    assert str(e) == _error_message(
+        monty="stat() got an unexpected keyword argument 'foo'",
+        cpython="stat() missing required argument 'path' (pos 1)",
+    )
 try:
     os.stat('.', True)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'stat() takes exactly 1 positional argument (2 given)'
+    assert str(e) == _error_message(
+        monty='stat() takes at most 1 positional argument (2 given)',
+        cpython='stat() takes exactly 1 positional argument (2 given)',
+    )
 try:
     # the "(N given)" figure counts positionals only, not keywords
     os.stat('.', 1, dir_fd=None)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'stat() takes exactly 1 positional argument (2 given)'
+    assert str(e) == _error_message(
+        monty='stat() takes at most 1 positional argument (2 given)',
+        cpython='stat() takes exactly 1 positional argument (2 given)',
+    )
 try:
     os.stat('.', dir_fd=2**100)
     assert False, 'expected OverflowError'
@@ -170,19 +199,28 @@ try:
     os.stat('.', 1, 2, 3)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'stat() takes at most 3 arguments (4 given)'
+    assert str(e) == _error_message(
+        monty='stat() takes at most 1 positional argument (4 given)',
+        cpython='stat() takes at most 3 arguments (4 given)',
+    )
 try:
     os.stat('.', path='.')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == "argument for stat() given by name ('path') and position (1)"
+    assert str(e) == _error_message(
+        monty="stat() got multiple values for argument 'path'",
+        cpython="argument for stat() given by name ('path') and position (1)",
+    )
 
 # === mkdir argument errors ===
 try:
     os.mkdir()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == "mkdir() missing required argument 'path' (pos 1)"
+    assert str(e) == _error_message(
+        monty="mkdir() missing 1 required positional argument: 'path'",
+        cpython="mkdir() missing required argument 'path' (pos 1)",
+    )
 try:
     os.mkdir(1.5)
     assert False, 'expected TypeError'
@@ -213,7 +251,10 @@ try:
     os.mkdir('a', 1, 2, 3)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'mkdir() takes at most 3 arguments (4 given)'
+    assert str(e) == _error_message(
+        monty='mkdir() takes at most 2 positional arguments (4 given)',
+        cpython='mkdir() takes at most 3 arguments (4 given)',
+    )
 try:
     os.mkdir(1.5, foo=1)
     assert False, 'expected TypeError'
@@ -235,7 +276,10 @@ try:
     os.makedirs('a', 1, True, 4)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'makedirs() takes from 1 to 3 positional arguments but 4 were given'
+    assert str(e) == _error_message(
+        monty='makedirs() takes at most 3 arguments (4 given)',
+        cpython='makedirs() takes from 1 to 3 positional arguments but 4 were given',
+    )
 try:
     os.makedirs('a', 1.5)
     assert False, 'expected TypeError'
@@ -257,7 +301,10 @@ try:
     os.remove()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == "remove() missing required argument 'path' (pos 1)"
+    assert str(e) == _error_message(
+        monty="remove() missing 1 required positional argument: 'path'",
+        cpython="remove() missing required argument 'path' (pos 1)",
+    )
 try:
     os.remove(1.5)
     assert False, 'expected TypeError'
@@ -267,7 +314,10 @@ try:
     os.remove('a', 'b')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'remove() takes exactly 1 positional argument (2 given)'
+    assert str(e) == _error_message(
+        monty='remove() takes at most 1 positional argument (2 given)',
+        cpython='remove() takes exactly 1 positional argument (2 given)',
+    )
 try:
     os.unlink(1.5)
     assert False, 'expected TypeError'
@@ -277,7 +327,10 @@ try:
     os.unlink('a', 'b')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'unlink() takes exactly 1 positional argument (2 given)'
+    assert str(e) == _error_message(
+        monty='unlink() takes at most 1 positional argument (2 given)',
+        cpython='unlink() takes exactly 1 positional argument (2 given)',
+    )
 try:
     os.rmdir(1.5)
     assert False, 'expected TypeError'
@@ -287,19 +340,28 @@ try:
     os.rmdir('a', 'b')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'rmdir() takes exactly 1 positional argument (2 given)'
+    assert str(e) == _error_message(
+        monty='rmdir() takes at most 1 positional argument (2 given)',
+        cpython='rmdir() takes exactly 1 positional argument (2 given)',
+    )
 
 # === rename / replace argument errors ===
 try:
     os.rename()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == "rename() missing required argument 'src' (pos 1)"
+    assert str(e) == _error_message(
+        monty="rename() missing 2 required positional arguments: 'src' and 'dst'",
+        cpython="rename() missing required argument 'src' (pos 1)",
+    )
 try:
     os.rename('a')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == "rename() missing required argument 'dst' (pos 2)"
+    assert str(e) == _error_message(
+        monty="rename() missing 1 required positional argument: 'dst'",
+        cpython="rename() missing required argument 'dst' (pos 2)",
+    )
 try:
     os.rename(1.5, 'b')
     assert False, 'expected TypeError'
@@ -314,12 +376,18 @@ try:
     os.rename('a', 'b', 'c')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'rename() takes exactly 2 positional arguments (3 given)'
+    assert str(e) == _error_message(
+        monty='rename() takes at most 2 positional arguments (3 given)',
+        cpython='rename() takes exactly 2 positional arguments (3 given)',
+    )
 try:
     os.rename('a', 'b', 'c', src_dir_fd=None)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'rename() takes exactly 2 positional arguments (3 given)'
+    assert str(e) == _error_message(
+        monty='rename() takes at most 2 positional arguments (3 given)',
+        cpython='rename() takes exactly 2 positional arguments (3 given)',
+    )
 try:
     os.rename('/no-a', '/no-b', src_dir_fd=2**100)
     assert False, 'expected OverflowError'
@@ -329,17 +397,26 @@ try:
     os.rename('a', 'b', dst='c')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == "argument for rename() given by name ('dst') and position (2)"
+    assert str(e) == _error_message(
+        monty="rename() got multiple values for argument 'dst'",
+        cpython="argument for rename() given by name ('dst') and position (2)",
+    )
 try:
     os.replace()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == "replace() missing required argument 'src' (pos 1)"
+    assert str(e) == _error_message(
+        monty="replace() missing 2 required positional arguments: 'src' and 'dst'",
+        cpython="replace() missing required argument 'src' (pos 1)",
+    )
 try:
     os.replace('a')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == "replace() missing required argument 'dst' (pos 2)"
+    assert str(e) == _error_message(
+        monty="replace() missing 1 required positional argument: 'dst'",
+        cpython="replace() missing required argument 'dst' (pos 2)",
+    )
 try:
     os.replace(1.5, 'b')
     assert False, 'expected TypeError'
@@ -349,7 +426,10 @@ try:
     os.replace('a', 'b', 'c')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'replace() takes exactly 2 positional arguments (3 given)'
+    assert str(e) == _error_message(
+        monty='replace() takes at most 2 positional arguments (3 given)',
+        cpython='replace() takes exactly 2 positional arguments (3 given)',
+    )
 
 # === urandom argument errors raise before any host call ===
 try:

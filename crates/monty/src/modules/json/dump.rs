@@ -280,20 +280,9 @@ fn is_container(value: &Value, vm: &VM<'_>) -> bool {
     }
 }
 
-/// Argument shape for `json.dumps(obj, *, indent=None, sort_keys=False,
-/// ensure_ascii=True, allow_nan=True, separators=None, skipkeys=False, default=None)`.
-///
-/// Arity and missing-arg errors use the `dumps()` descriptor with `style =
-/// def` wording (CPython's `json.dumps` is a pure-Python `def`), but the
-/// unknown-kwarg error uses `JSONEncoder.__init__()` — CPython's `json.dumps`
-/// forwards unknown kwargs straight to the encoder constructor, which is what
-/// surfaces in the error. `kwarg_error_name` overrides the function name used
-/// in the unexpected-keyword message without affecting other error paths.
-/// Every field is a raw `Value` so the encoder can apply its own truth-test
-/// (`py_bool`) or shape coercion (`parse_indent_value` /
-/// `parse_separators_value`) on the way through.
+/// `json.dumps(obj, *, indent=None, sort_keys=False, ensure_ascii=True, allow_nan=True, separators=None, skipkeys=False, default=None)`.
 #[derive(FromArgs)]
-#[from_args(name = "dumps", style = def, kwarg_error_name = "JSONEncoder.__init__")]
+#[from_args(name = "json.dumps")]
 struct JsonDumpsArgs {
     obj: Value,
     #[from_args(kw_only, default = Value::None)]
@@ -315,7 +304,7 @@ struct JsonDumpsArgs {
 /// Argument shape for `json.dump(obj, fp, *, …)`: [`JsonDumpsArgs`] with the
 /// file object as second positional, under the `dump()` descriptor.
 #[derive(FromArgs)]
-#[from_args(name = "dump", style = def, kwarg_error_name = "JSONEncoder.__init__")]
+#[from_args(name = "json.dump")]
 struct JsonDumpArgs {
     obj: Value,
     fp: Value,

@@ -1,4 +1,10 @@
 import math
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
 
 # === Constants ===
 assert math.pi == 3.141592653589793
@@ -1509,10 +1515,34 @@ assert math.log(7**500) == 972.9550745276566
 assert math.log2(3**700) == 1109.4737505048092
 assert math.log10(3**700) == 333.9848783037637
 for compute, message in [
-    (lambda: math.log(), 'log expected at least 1 argument, got 0'),
-    (lambda: math.log(2, 10, 3), 'log expected at most 2 arguments, got 3'),
-    (lambda: math.perm(), 'perm expected at least 1 argument, got 0'),
-    (lambda: math.perm(1, 2, 3), 'perm expected at most 2 arguments, got 3'),
+    (
+        lambda: math.log(),
+        _error_message(
+            monty='math.log() takes at least 1 argument (0 given)',
+            cpython='log expected at least 1 argument, got 0',
+        ),
+    ),
+    (
+        lambda: math.log(2, 10, 3),
+        _error_message(
+            monty='math.log() takes at most 2 arguments (3 given)',
+            cpython='log expected at most 2 arguments, got 3',
+        ),
+    ),
+    (
+        lambda: math.perm(),
+        _error_message(
+            monty='math.perm() takes at least 1 argument (0 given)',
+            cpython='perm expected at least 1 argument, got 0',
+        ),
+    ),
+    (
+        lambda: math.perm(1, 2, 3),
+        _error_message(
+            monty='math.perm() takes at most 2 arguments (3 given)',
+            cpython='perm expected at most 2 arguments, got 3',
+        ),
+    ),
 ]:
     try:
         compute()

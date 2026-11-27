@@ -11,7 +11,7 @@ use crate::{
 
 /// CPython's keyword-capable `round(number, ndigits=None)` argument shape.
 #[derive(FromArgs)]
-#[from_args(name = "round", style = c_named, at_most_total)]
+#[from_args(name = "round")]
 struct RoundArgs {
     number: Value,
     #[from_args(default = Value::None)]

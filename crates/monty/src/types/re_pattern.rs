@@ -587,7 +587,7 @@ impl HeapItem for RePattern {
 /// is taken by the `re.Pattern.string` attribute name in CPython's class
 /// hierarchy).
 #[derive(FromArgs)]
-#[from_args(name = "sub", style = c_named, at_most_total)]
+#[from_args(name = "sub")]
 struct PatternSubArgs {
     repl: Value,
     #[from_args(static_string = "StringAttr")]
@@ -600,7 +600,7 @@ struct PatternSubArgs {
 ///
 /// See `PatternSubArgs` for why `string` uses `static_string`.
 #[derive(FromArgs)]
-#[from_args(name = "split", style = c_named, at_most_total)]
+#[from_args(name = "split")]
 struct PatternSplitArgs {
     #[from_args(static_string = "StringAttr")]
     string: Value,
@@ -917,12 +917,15 @@ impl<'heap> PyAttrs<'heap> for PyRePatternImpl {
     ///
     /// Supports `count` as either positional or keyword argument.
     #[pymethod(Sub)]
-    fn sub<'h>(pattern: &HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let PatternSubArgs {
+    fn sub<'h>(
+        pattern: &HeapRead<'h, RePattern>,
+        PatternSubArgs {
             repl: repl_val,
             string: string_val,
             count: count_val,
-        } = PatternSubArgs::from_args(args, vm)?;
+        }: PatternSubArgs,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Value> {
         defer_drop!(repl_val, vm);
         defer_drop!(string_val, vm);
 
@@ -956,11 +959,14 @@ impl<'heap> PyAttrs<'heap> for PyRePatternImpl {
     ///
     /// Supports `maxsplit` as either positional or keyword argument.
     #[pymethod(Split)]
-    fn split<'h>(pattern: &HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let PatternSplitArgs {
+    fn split<'h>(
+        pattern: &HeapRead<'h, RePattern>,
+        PatternSplitArgs {
             string: string_val,
             maxsplit: maxsplit_val,
-        } = PatternSplitArgs::from_args(args, vm)?;
+        }: PatternSplitArgs,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Value> {
         defer_drop!(string_val, vm);
 
         let maxsplit = extract_maxsplit(maxsplit_val, vm)?;

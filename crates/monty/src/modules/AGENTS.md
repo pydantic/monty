@@ -1,10 +1,6 @@
 # Adding / extending stdlib modules
 
-Guidance for the Python stdlib modules implemented in this directory
-(`re`, `json`, `math`, `datetime`, `unicodedata`, …). The overriding goal is
-**CPython parity**: signatures, error messages, and error *ordering* must
-match CPython 3.14 byte-for-byte. Verify every message against CPython with
-the `/python-playground` skill before pinning it in a test.
+Match CPython's supported call shapes and exception classes. Native signature errors display the Monty signature.
 
 ## Always use `#[derive(FromArgs)]` for function parameters
 
@@ -12,39 +8,21 @@ Any function beyond the trivial 0/1/2-positional shapes (covered by
 `ArgValues::check_zero_args` / `get_one_arg` / `get_two_args` /
 `get_zero_one_arg` / `into_pos_only`) MUST define its parameters with a
 `#[derive(FromArgs)]` struct. Never hand-roll `args.into_parts()` loops —
-they leak refcounts and diverge from CPython's wording. The derive emits a
+the binder handles refcount cleanup on errors. The derive emits a
 static param spec driven by the runtime binder
 (`crate::args::bind_native`), which handles dispatch, arity errors, kwarg
 matching, duplicate/conflict detection, and refcount cleanup mechanically.
 
-Full attribute reference: `crates/monty-macros/README.md` (including the
-CPython-family table and the `at_most_total` litmus test).
+See [the macro reference](../../../monty-macros/README.md) for parameter kinds and defaults.
 
-### 1. Pick the `style` by how CPython implements the function
-
-| CPython implementation                                                                                                                                                                            | `style`                                                       |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| pure-Python `def` (the `re` functions, `json.dumps`)                                                                                                                                              | `style = def`                                                 |
-| Argument Clinic, positional-only (`sorted`, `math.pow`)                                                                                                                                           | default — omit `style`                                        |
-| Argument Clinic with keyword-capable params (`accumulate`, `os.stat`)                                                                                                                             | `style = c_named` — it shares `_PyArg_UnpackKeywords` wording |
-| `PyArg_ParseTupleAndKeywords`, anonymous `function` errors                                                                                                                                        | `style = c`                                                   |
-| same, with the name embedded (`timezone() missing …`)                                                                                                                                             | `style = c_named`                                             |
-| `PyArg_UnpackTuple` (positional-only, `min..max` arity, kwargs rejected wholesale with `takes no keyword arguments`)                                                                              | `style = unpack`                                              |
-| `tp_vectorcall` fast path in front of a clinic parser (`int`, `str`: kwarg-free overflow says `int expected at most 2 arguments, got 3`, with kwargs `int() takes at most 2 arguments (3 given)`) | default style + `at_most_total, vectorcall`                   |
-
-The style controls wording *and* ordering (e.g. C families report leftover
-kwargs last; clinic/def bind fully before any conversion). When unsure, probe
-CPython: call the function with a bad type + a bogus kwarg, too many args,
-etc., and match the observed messages.
-
-### 2. Typical shapes (real examples from this directory)
+### Typical shapes (real examples from this directory)
 
 A pure-Python `def` — fields stay raw `Value` because CPython `def` binding
 never type-checks; coerce in the body (`re.rs`):
 
 ```rust
 #[derive(FromArgs)]
-#[from_args(name = "search", style = def)]
+#[from_args(name = "search")]
 struct ReSearchArgs {
     #[from_args(static_string = "PatternAttr")]
     pattern: Value,
@@ -55,12 +33,11 @@ struct ReSearchArgs {
 }
 ```
 
-A clinic function with keyword-capable positionals and a keyword-only tail
-(`itertools.rs`) — `c_named` per the table, so overflow reports `accumulate() takes at most 2 positional arguments (3 given)`:
+Two positional-or-keyword parameters and a keyword-only parameter from `itertools.rs`
 
 ```rust
 #[derive(FromArgs)]
-#[from_args(name = "accumulate", style = c_named)]
+#[from_args(name = "accumulate")]
 struct AccumulateArgs {
     #[from_args(static_string = "IterableArg")]
     iterable: Value,
@@ -79,7 +56,7 @@ inside `FromValue`:
 
 ```rust
 #[derive(FromArgs)]
-#[from_args(name = "normalize", style = unpack, bad_arg)]
+#[from_args(name = "normalize", bad_arg)]
 struct NormalizeArgs {
     #[from_args(pos_only)]
     form: StrArg,
@@ -100,17 +77,12 @@ fn call_normalize(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 }
 ```
 
-### 3. Field rules
+### Field rules
 
 - Declaration order = Python signature order:
     `[pos_only…] [pos_or_keyword…] [varargs] [kw_only…] [varkwargs]`, required
     fields before defaulted ones in the positional region.
-- **Typed fields** (`i64`, `i32`, `bool`, `StrArg`, `Option<T>`, custom
-    `FromValue` impls) are only for functions implemented in C in CPython —
-    pair with `bad_arg` / `bad_arg_named` when CPython uses
-    `_PyArg_BadArgument` wording (`f() argument 1 must be str, not int`).
-- **`style = def` fields must be raw `Value`** (coerce in the body so the
-    error message matches what CPython's function body raises).
+- Typed fields use `FromValue` after binding. Use raw `Value` for coercion in the function body.
 - Prefer `StrArg` over `String` for str params the function only reads — it
     validates without copying and lends `&str` via `.as_str(vm)`.
 - Field names that aren't single ASCII chars need a `StaticStrings` variant
@@ -121,11 +93,11 @@ fn call_normalize(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     `drop_with` on every path.
 - `varargs` fields must be `Vec<Value>`; convert elements in the body.
 
-### 4. Tests and docs
+### Tests and docs
 
 - Add behaviour tests to `crates/monty/test_cases/` (dual-run against
     CPython — asserts must pass on both engines; exact `==` messages, never
-    `in`). Signature-error orderings belong in `args__macro_errors.py`.
+    `in`). Signature diagnostics belong in `args__macro_errors.py`.
 - Document every remaining CPython divergence in `./limitations/<module>.md`
     — including "obvious" ones.
 - Run `make test-cases`, `make format-rs`, `make lint-rs` (and

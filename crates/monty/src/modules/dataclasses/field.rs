@@ -206,7 +206,7 @@ fn is_missing(value: &Value) -> bool {
 /// `field()` arguments, mirroring CPython's all-keyword-only signature.
 /// `MISSING` is the "not given" sentinel, since `None` is a legitimate default.
 #[derive(FromArgs)]
-#[from_args(name = "field", style = def)]
+#[from_args(name = "field")]
 struct FieldArgs {
     #[from_args(kw_only, default = Value::Marker(Marker(StaticStrings::Missing)))]
     default: Value,

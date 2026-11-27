@@ -270,7 +270,7 @@ fn call_seeded(target: RandomTarget, function: RandomFunctions, args: ArgValues,
 
 /// `seed(a=None, version=2)` — a Python `def` in CPython.
 #[derive(FromArgs)]
-#[from_args(name = "Random.seed", style = def)]
+#[from_args(name = "Random.seed")]
 struct SeedArgs {
     #[from_args(default = Value::None)]
     a: Value,
@@ -330,7 +330,7 @@ fn getstate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult
 
 /// `setstate(state)` — a Python `def` wrapping the C `setstate`.
 #[derive(FromArgs)]
-#[from_args(name = "Random.setstate", style = def)]
+#[from_args(name = "Random.setstate")]
 struct SetstateArgs {
     state: Value,
 }
@@ -499,9 +499,7 @@ fn random(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<V
 /// `getrandbits(k)`: `k` random bits as a non-negative int.
 fn getrandbits(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
     // A clinic `uint64_t` parameter: keywords are refused before the count.
-    let k = args
-        .reject_kwargs("Random.getrandbits", vm.heap)?
-        .get_one_arg("Random.getrandbits", vm.heap)?;
+    let k = args.get_one_arg("Random.getrandbits", vm.heap)?;
     defer_drop!(k, vm);
     let k = k.as_int_with_overflow(vm, ExcType::overflow_c_uint64)?;
     let k = u64::try_from(k).map_err(|_| ExcType::value_error_negative_int())?;
@@ -524,7 +522,7 @@ fn getrandbits(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunRes
 
 /// `randbytes(n)` — a Python `def`: `getrandbits(n * 8).to_bytes(n, 'little')`.
 #[derive(FromArgs)]
-#[from_args(name = "Random.randbytes", style = def)]
+#[from_args(name = "Random.randbytes")]
 struct RandbytesArgs {
     n: Value,
 }
@@ -563,7 +561,7 @@ fn randbytes(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResul
 /// rather than defaulted so the `step is not _ONE` check can tell an explicit
 /// step from the default.
 #[derive(FromArgs)]
-#[from_args(name = "Random.randrange", style = def)]
+#[from_args(name = "Random.randrange")]
 struct RandrangeArgs {
     start: Value,
     #[from_args(default = Value::None)]
@@ -640,7 +638,7 @@ fn randrange(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResul
 
 /// `randint(a, b)` — a Python `def`.
 #[derive(FromArgs)]
-#[from_args(name = "Random.randint", style = def)]
+#[from_args(name = "Random.randint")]
 struct RandintArgs {
     a: Value,
     b: Value,
@@ -699,7 +697,7 @@ fn int_arg_str(value: &Value) -> String {
 
 /// `choice(seq)` — a Python `def`.
 #[derive(FromArgs)]
-#[from_args(name = "Random.choice", style = def)]
+#[from_args(name = "Random.choice")]
 struct ChoiceArgs {
     seq: Value,
 }
@@ -718,7 +716,7 @@ fn choice(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<V
 
 /// `shuffle(x)` — a Python `def`.
 #[derive(FromArgs)]
-#[from_args(name = "Random.shuffle", style = def)]
+#[from_args(name = "Random.shuffle")]
 struct ShuffleArgs {
     x: Value,
 }
@@ -769,7 +767,7 @@ fn swap_items(x: &mut Value, i: i64, j: i64, vm: &mut VM<'_>) -> RunResult<()> {
 
 /// `sample(population, k, *, counts=None)` — a Python `def`.
 #[derive(FromArgs)]
-#[from_args(name = "Random.sample", style = def)]
+#[from_args(name = "Random.sample")]
 struct SampleArgs {
     population: Value,
     k: Value,
@@ -904,7 +902,7 @@ fn cumulative_counts(counts: &Value, vm: &mut VM<'_>) -> RunResult<Vec<i128>> {
 
 /// `choices(population, weights=None, *, cum_weights=None, k=1)` — a Python `def`.
 #[derive(FromArgs)]
-#[from_args(name = "Random.choices", style = def)]
+#[from_args(name = "Random.choices")]
 struct ChoicesArgs {
     population: Value,
     #[from_args(default = Value::None)]
@@ -1092,7 +1090,7 @@ fn index_value(index: u128) -> i64 {
 
 /// `uniform(a, b)` — a Python `def`.
 #[derive(FromArgs)]
-#[from_args(name = "Random.uniform", style = def)]
+#[from_args(name = "Random.uniform")]
 struct UniformArgs {
     a: Value,
     b: Value,
@@ -1110,7 +1108,7 @@ fn uniform(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<
 
 /// `triangular(low=0.0, high=1.0, mode=None)` — a Python `def`.
 #[derive(FromArgs)]
-#[from_args(name = "Random.triangular", style = def)]
+#[from_args(name = "Random.triangular")]
 struct TriangularArgs {
     #[from_args(default = Value::Float(0.0))]
     low: Value,
@@ -1152,7 +1150,7 @@ fn triangular(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResu
 
 /// `normalvariate(mu=0.0, sigma=1.0)` — a Python `def`.
 #[derive(FromArgs)]
-#[from_args(name = "Random.normalvariate", style = def)]
+#[from_args(name = "Random.normalvariate")]
 struct NormalArgs {
     #[from_args(default = Value::Float(0.0))]
     mu: Value,
@@ -1190,7 +1188,7 @@ fn normal_deviate(rng: &mut Mt19937, tracker: &ResourceTracker) -> RunResult<f64
 
 /// `gauss(mu=0.0, sigma=1.0)` — parsed separately to preserve its error messages.
 #[derive(FromArgs)]
-#[from_args(name = "Random.gauss", style = def)]
+#[from_args(name = "Random.gauss")]
 struct GaussArgs {
     #[from_args(default = Value::Float(0.0))]
     mu: Value,
@@ -1221,7 +1219,7 @@ fn gauss(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Va
 
 /// `lognormvariate(mu, sigma)` — a Python `def`.
 #[derive(FromArgs)]
-#[from_args(name = "Random.lognormvariate", style = def)]
+#[from_args(name = "Random.lognormvariate")]
 struct LognormArgs {
     mu: Value,
     sigma: Value,
@@ -1245,7 +1243,7 @@ fn lognormvariate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> Run
 
 /// `expovariate(lambd=1.0)` — a Python `def`.
 #[derive(FromArgs)]
-#[from_args(name = "Random.expovariate", style = def)]
+#[from_args(name = "Random.expovariate")]
 struct ExpovariateArgs {
     #[from_args(default = Value::Float(1.0))]
     lambd: Value,
@@ -1263,7 +1261,7 @@ fn expovariate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunRes
 
 /// `vonmisesvariate(mu, kappa)` — a Python `def`.
 #[derive(FromArgs)]
-#[from_args(name = "Random.vonmisesvariate", style = def)]
+#[from_args(name = "Random.vonmisesvariate")]
 struct VonmisesArgs {
     mu: Value,
     kappa: Value,
@@ -1312,7 +1310,7 @@ fn vonmisesvariate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> Ru
 
 /// `gammavariate(alpha, beta)` — a Python `def`.
 #[derive(FromArgs)]
-#[from_args(name = "Random.gammavariate", style = def)]
+#[from_args(name = "Random.gammavariate")]
 struct GammaArgs {
     alpha: Value,
     beta: Value,
@@ -1393,7 +1391,7 @@ fn gamma_deviate(rng: &mut Mt19937, alpha: f64, beta: f64, tracker: &ResourceTra
 
 /// `betavariate(alpha, beta)` — parsed separately to preserve its error messages.
 #[derive(FromArgs)]
-#[from_args(name = "Random.betavariate", style = def)]
+#[from_args(name = "Random.betavariate")]
 struct BetaArgs {
     alpha: Value,
     beta: Value,
@@ -1427,7 +1425,7 @@ fn betavariate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunRes
 
 /// `paretovariate(alpha)` — a Python `def`.
 #[derive(FromArgs)]
-#[from_args(name = "Random.paretovariate", style = def)]
+#[from_args(name = "Random.paretovariate")]
 struct ParetoArgs {
     alpha: Value,
 }
@@ -1443,7 +1441,7 @@ fn paretovariate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunR
 
 /// `weibullvariate(alpha, beta)` — parsed separately to preserve its error messages.
 #[derive(FromArgs)]
-#[from_args(name = "Random.weibullvariate", style = def)]
+#[from_args(name = "Random.weibullvariate")]
 struct WeibullArgs {
     alpha: Value,
     beta: Value,
@@ -1461,7 +1459,7 @@ fn weibullvariate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> Run
 
 /// `binomialvariate(n=1, p=0.5)` — a Python `def`.
 #[derive(FromArgs)]
-#[from_args(name = "Random.binomialvariate", style = def)]
+#[from_args(name = "Random.binomialvariate")]
 struct BinomialArgs {
     #[from_args(default = Value::Int(1))]
     n: Value,

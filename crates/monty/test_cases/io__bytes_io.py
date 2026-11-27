@@ -1,6 +1,11 @@
 import copy
 import io
+import sys
 from io import BytesIO
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
 
 
 def check(exc_type, message, fn):
@@ -36,7 +41,14 @@ check(TypeError, "a bytes-like object is required, not 'str'", lambda: BytesIO('
 check(TypeError, "a bytes-like object is required, not 'int'", lambda: BytesIO(1))
 check(TypeError, "a bytes-like object is required, not 'list'", lambda: BytesIO([1]))
 check(TypeError, 'BytesIO() takes at most 1 argument (2 given)', lambda: BytesIO(b'', b''))
-check(TypeError, 'BytesIO() takes at most 1 argument (2 given)', lambda: BytesIO(b'', foo=1))
+check(
+    TypeError,
+    _error_message(
+        monty="BytesIO() got an unexpected keyword argument 'foo'",
+        cpython='BytesIO() takes at most 1 argument (2 given)',
+    ),
+    lambda: BytesIO(b'', foo=1),
+)
 check(TypeError, "BytesIO() got an unexpected keyword argument 'foo'", lambda: BytesIO(foo=1))
 
 # `__init__` resets the stream and reopens a closed one
@@ -68,7 +80,13 @@ assert BytesIO(b'abc').read1(-1) == b'abc'
 check(TypeError, "argument should be integer or None, not 'float'", lambda: BytesIO(b'abc').read(1.0))
 check(TypeError, "argument should be integer or None, not 'str'", lambda: BytesIO(b'abc').read('1'))
 check(OverflowError, "cannot fit 'int' into an index-sized integer", lambda: BytesIO(b'a').read(2**70))
-check(TypeError, 'read expected at most 1 argument, got 2', lambda: BytesIO().read(1, 2))
+check(
+    TypeError,
+    _error_message(
+        monty='BytesIO.read() takes at most 1 argument (2 given)', cpython='read expected at most 1 argument, got 2'
+    ),
+    lambda: BytesIO().read(1, 2),
+)
 check(TypeError, 'BytesIO.read() takes no keyword arguments', lambda: BytesIO().read(size=1))
 check(TypeError, 'BytesIO.read1() takes no keyword arguments', lambda: BytesIO().read1(size=1))
 
@@ -136,7 +154,14 @@ check(TypeError, "a bytes-like object is required, not 'str'", lambda: BytesIO()
 check(TypeError, "a bytes-like object is required, not 'int'", lambda: BytesIO().write(1))
 check(TypeError, "a bytes-like object is required, not 'str'", lambda: BytesIO().writelines(['a']))
 check(TypeError, "a bytes-like object is required, not 'int'", lambda: BytesIO().writelines(b'ab'))
-check(TypeError, 'BytesIO.write() takes exactly one argument (0 given)', lambda: BytesIO().write())
+check(
+    TypeError,
+    _error_message(
+        monty='BytesIO.write() takes exactly 1 argument (0 given)',
+        cpython='BytesIO.write() takes exactly one argument (0 given)',
+    ),
+    lambda: BytesIO().write(),
+)
 check(TypeError, 'BytesIO.write() takes no keyword arguments', lambda: BytesIO().write(b=b'x'))
 check(TypeError, 'BytesIO.writelines() takes no keyword arguments', lambda: BytesIO().writelines(lines=[]))
 
@@ -157,7 +182,13 @@ check(ValueError, 'invalid whence (3, should be 0, 1 or 2)', lambda: BytesIO(b'a
 check(TypeError, "'float' object cannot be interpreted as an integer", lambda: BytesIO(b'a').seek(1.0))
 check(OverflowError, 'Python int too large to convert to C ssize_t', lambda: BytesIO(b'a').seek(2**70))
 check(OverflowError, 'Python int too large to convert to C int', lambda: BytesIO(b'a').seek(0, 2**40))
-check(TypeError, 'seek expected at least 1 argument, got 0', lambda: BytesIO().seek())
+check(
+    TypeError,
+    _error_message(
+        monty='BytesIO.seek() takes at least 1 argument (0 given)', cpython='seek expected at least 1 argument, got 0'
+    ),
+    lambda: BytesIO().seek(),
+)
 check(TypeError, 'BytesIO.seek() takes no keyword arguments', lambda: BytesIO().seek(pos=1))
 b = BytesIO(b'a')
 b.seek(1)

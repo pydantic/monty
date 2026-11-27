@@ -365,14 +365,7 @@ fn counter_kwarg_deltas(kwargs: KwargsValues) -> Vec<(Value, Value)> {
     }
 }
 
-/// `Counter.update`/`subtract` method body: binds `iterable=None, /, **kwargs`
-/// and folds the counts in. Returns `None`.
-///
-/// The binding is hand-rolled rather than `#[derive(FromArgs)]`: these are
-/// pure-Python `def` methods, so CPython's over-arity error counts the implicit
-/// `self` (`Counter.update() takes from 1 to 2 positional arguments but 3 were
-/// given`), which the derive's `def` family — positional-only, no receiver —
-/// cannot express. The `+ 1`s below re-introduce that `self`.
+/// `Counter.update`/`subtract` method body: binds `iterable=None, /, **kwargs` and folds the counts in. Returns `None`.
 pub(crate) fn counter_update_method<'h>(
     counter: &mut HeapObjectRead<'h, Dict>,
     args: ArgValues,

@@ -229,7 +229,4 @@ types, open-time effects) apply identically. The differences:
     `"'closefd' argument is not yet supported"` / `"'opener' argument is not yet supported"` `TypeError` as `open()`.
     CPython would instead
     raise `TypeError: open() got an unexpected keyword argument 'closefd'`.
-- Passing `file=...` as a keyword (which is meaningless on `Path.open()`
-    because `self` already supplies the file) raises Monty's "multiple
-    values for argument 'file'" `TypeError` rather than CPython's
-    "unexpected keyword argument 'file'". Real callers do not use this.
+- `Path.open(file=...)` raises a duplicate-argument error in Monty. CPython reports an unexpected keyword.

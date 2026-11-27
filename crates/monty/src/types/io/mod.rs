@@ -70,9 +70,7 @@ fn overflow_index_sized() -> RunError {
 ///
 /// Keywords are refused with `{kw_name}() takes no keyword arguments`.
 pub(crate) fn seek_args(args: ArgValues, kw_name: &str, vm: &mut VM<'_>) -> RunResult<(i64, i64)> {
-    let (pos, whence) = args
-        .reject_kwargs(kw_name, vm.heap)?
-        .get_one_two_args("seek", vm.heap)?;
+    let (pos, whence) = args.get_one_two_args(kw_name, vm.heap)?;
     defer_drop!(pos, vm);
     defer_drop!(whence, vm);
     let pos = pos.as_int(vm)?;

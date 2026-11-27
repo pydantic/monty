@@ -1,3 +1,4 @@
+import sys
 import re
 from annotationlib import ForwardRef
 from collections import Counter, defaultdict, deque, namedtuple
@@ -8,6 +9,11 @@ from hashlib import blake2b, blake2s, sha256, shake_128
 from itertools import chain
 from pathlib import Path
 from random import Random
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
 
 # === Unbound native methods ===
 items = []
@@ -39,7 +45,13 @@ for invalid, expected_error in [
     (lambda: str.upper([], [1]), "descriptor 'upper' for 'str' objects doesn't apply to a 'list' object"),
     (lambda: str.upper('foo', [1]), 'str.upper() takes no arguments (1 given)'),
     (lambda: str.upper('foo', extra=[1]), 'str.upper() takes no keyword arguments'),
-    (lambda: str.replace('foo'), 'replace() takes at least 2 positional arguments (0 given)'),
+    (
+        lambda: str.replace('foo'),
+        _error_message(
+            monty="replace() missing 2 required positional arguments: 'old' and 'new'",
+            cpython='replace() takes at least 2 positional arguments (0 given)',
+        ),
+    ),
     (lambda: list.append((), [1]), "descriptor 'append' for 'list' objects doesn't apply to a 'tuple' object"),
     (lambda: tuple.count([], [1]), "descriptor 'count' for 'tuple' objects doesn't apply to a 'list' object"),
     (
@@ -265,7 +277,10 @@ assert re.compile('a').split('a') == ['', '']
 try:
     items.append()
 except TypeError as exc:
-    assert str(exc) == 'list.append() takes exactly one argument (0 given)'
+    assert str(exc) == _error_message(
+        monty='list.append() takes exactly 1 argument (0 given)',
+        cpython='list.append() takes exactly one argument (0 given)',
+    )
 else:
     assert False, 'append should require an argument'
 assert pattern.search('a').group() == 'a'
@@ -471,7 +486,10 @@ for receiver in [date(2024, 6, 15), datetime(2024, 6, 15, 10, 20, 30, 123, tzinf
     try:
         date.replace(receiver, 2025, year=2026)
     except TypeError as exc:
-        assert str(exc) == "argument for replace() given by name ('year') and position (1)"
+        assert str(exc) == _error_message(
+            monty="replace() got multiple values for argument 'year'",
+            cpython="argument for replace() given by name ('year') and position (1)",
+        )
     else:
         assert False, 'replace accepted a duplicate year'
     try:

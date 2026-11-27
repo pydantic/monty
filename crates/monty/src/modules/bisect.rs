@@ -14,7 +14,9 @@ use crate::{
 
 /// The aliases share the same callable value as their canonical function.
 #[monty_macros::explicit_discriminants(checksum = 0xf2cb_3563_78c3_d9db)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, strum::IntoStaticStr, serde::Serialize, serde::Deserialize,
+)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum BisectFunctions {
     BisectLeft = 0,
@@ -63,56 +65,26 @@ fn convert_hi(value: &Value, vm: &mut VM<'_>) -> RunResult<i64> {
     result
 }
 
-// Separate derives preserve each function's name in Clinic binding errors.
-macro_rules! arguments {
-    ($ty:ident, $name:literal) => {
-        #[derive(FromArgs)]
-        #[from_args(name = $name, style = c_named)]
-        struct $ty {
-            a: Value,
-            x: Value,
-            #[from_args(default = Value::Int(0))]
-            lo: Value,
-            #[from_args(default = Value::None)]
-            hi: Value,
-            #[from_args(kw_only, default = Value::None)]
-            key: Value,
-        }
-    };
+#[derive(FromArgs)]
+struct BisectArgs {
+    a: Value,
+    x: Value,
+    #[from_args(default = Value::Int(0))]
+    lo: Value,
+    #[from_args(default = Value::None)]
+    hi: Value,
+    #[from_args(kw_only, default = Value::None)]
+    key: Value,
 }
-arguments!(BisectLeftArgs, "bisect_left");
-arguments!(BisectRightArgs, "bisect_right");
-arguments!(InsortLeftArgs, "insort_left");
-arguments!(InsortRightArgs, "insort_right");
 
 /// Dispatch with shared search logic and CPython's key evaluation order.
 pub(super) fn call(vm: &mut VM<'_>, function: BisectFunctions, args: ArgValues) -> RunResult<Value> {
-    let (a, x, lo, hi, key) = match function {
-        BisectFunctions::BisectLeft => {
-            let BisectLeftArgs { a, x, lo, hi, key } = BisectLeftArgs::from_args(args, vm)?;
-            (a, x, lo, hi, key)
-        }
-        BisectFunctions::BisectRight => {
-            let BisectRightArgs { a, x, lo, hi, key } = BisectRightArgs::from_args(args, vm)?;
-            (a, x, lo, hi, key)
-        }
-        BisectFunctions::InsortLeft => {
-            let InsortLeftArgs { a, x, lo, hi, key } = InsortLeftArgs::from_args(args, vm)?;
-            (a, x, lo, hi, key)
-        }
-        BisectFunctions::InsortRight => {
-            let InsortRightArgs { a, x, lo, hi, key } = InsortRightArgs::from_args(args, vm)?;
-            (a, x, lo, hi, key)
-        }
-    };
+    let BisectArgs { a, x, lo, hi, key } = BisectArgs::from_args(function.into(), args, vm)?;
     defer_drop!(a, vm);
     defer_drop!(x, vm);
     defer_drop!(key, vm);
     defer_drop!(lo, vm);
     defer_drop!(hi, vm);
-    // Clinic validates the complete signature before converting lo, then hi.
-    // Keeping raw fields in FromArgs makes unknown/duplicate kwargs win over
-    // conversion errors, unlike PyArg_ParseTupleAndKeywords-style extraction.
     let lo = lo.as_int(vm)?;
     let hi = convert_hi(hi, vm)?;
     let insert = matches!(function, BisectFunctions::InsortLeft | BisectFunctions::InsortRight);

@@ -13,12 +13,9 @@ use crate::{
     value::Value,
 };
 
-/// Argument shape for `sum(iterable, /, start=0)` — Argument Clinic in
-/// CPython, so `start` is keyword-capable while `iterable` is positional-only.
-/// `at_most_total` reproduces `_PyArg_UnpackKeywords`' total pre-count
-/// (`sum() takes at most 2 arguments (3 given)`).
+/// `sum(iterable, /, start=0)`.
 #[derive(FromArgs)]
-#[from_args(name = "sum", at_most_total)]
+#[from_args(name = "sum")]
 struct SumArgs {
     #[from_args(pos_only)]
     iterable: Value,

@@ -27,8 +27,7 @@ use crate::{
     value::{EitherStr, VALUE_SIZE, Value},
 };
 
-/// `deque([iterable[, maxlen]])` — both positional-or-keyword, both defaulted.
-/// See [`Deque::init`] for why the over-arity case is pre-checked instead.
+/// `deque([iterable[, maxlen]])`.
 #[derive(FromArgs)]
 #[from_args(name = "deque")]
 struct DequeArgs {
@@ -41,19 +40,17 @@ struct DequeArgs {
     maxlen: Value,
 }
 
-/// `deque.rotate([n])` — `PyArg_UnpackTuple`, so the arity error is
-/// `rotate expected at most 1 argument, got 2` (no type name).
+/// `deque.rotate([n])`.
 #[derive(FromArgs)]
-#[from_args(name = "rotate", style = unpack)]
+#[from_args(name = "rotate")]
 struct RotateArgs {
     #[from_args(pos_only, default = Value::Int(1))]
     n: Value,
 }
 
-/// `deque.insert(i, x)` — `PyArg_UnpackTuple` with a fixed arity, so the error is
-/// `insert expected 2 arguments, got 1`.
+/// `deque.insert(i, x)`.
 #[derive(FromArgs)]
-#[from_args(name = "insert", style = unpack)]
+#[from_args(name = "insert")]
 struct InsertArgs {
     #[from_args(pos_only)]
     index: Value,
@@ -61,10 +58,9 @@ struct InsertArgs {
     item: Value,
 }
 
-/// `deque.index(x[, start[, stop]])` — `PyArg_UnpackTuple` with `min < max`, so a
-/// missing `x` reports `index expected at least 1 argument, got 0`.
+/// `deque.index(x[, start[, stop]])`.
 #[derive(FromArgs)]
-#[from_args(name = "index", style = unpack)]
+#[from_args(name = "index")]
 struct IndexArgs {
     #[from_args(pos_only)]
     value: Value,
@@ -179,18 +175,7 @@ impl Deque {
     /// Constructs a deque from the `collections.deque(...)` call.
     ///
     /// `deque([iterable[, maxlen]])` — both arguments are positional-or-keyword.
-    /// The over-arity case is pre-checked because CPython's wording here
-    /// (`deque() takes at most 2 arguments (N given)`) omits the word
-    /// "positional" that every `FromArgs` style emits.
     pub fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-        if let ArgValues::ArgsKargs { args: positional, .. } = &args
-            && positional.len() > 2
-        {
-            let given = args.count();
-            args.drop_with(vm);
-            return Err(ExcType::type_error_deque_too_many_args(given));
-        }
-
         let DequeArgs { iterable, maxlen } = DequeArgs::from_args(args, vm)?;
 
         // `maxlen` is validated before the iterable is consumed (CPython order), so
@@ -1064,8 +1049,7 @@ impl<'heap> PyAttrs<'heap> for PyDequeImpl {
 
     #[pymethod(Rotate)]
     /// `deque.rotate([n=1])` — rotates right by `n` (left if negative), wrapping.
-    fn rotate<'h>(deque: &HeapReadMut<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let RotateArgs { n } = RotateArgs::from_args(args, vm)?;
+    fn rotate<'h>(deque: &HeapReadMut<'h, Deque>, RotateArgs { n }: RotateArgs, vm: &mut VM<'h>) -> RunResult<Value> {
         defer_drop!(n, vm);
         // A big int is a valid rotation count; only one out of `i64` range is an
         // `OverflowError`, matching CPython's `PyNumber_AsSsize_t`.
@@ -1091,11 +1075,14 @@ impl<'heap> PyAttrs<'heap> for PyDequeImpl {
 
     #[pymethod(Insert)]
     /// `deque.insert(i, x)` — raises if the deque is already at `maxlen`.
-    fn insert<'h>(deque: &HeapReadMut<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let InsertArgs {
+    fn insert<'h>(
+        deque: &HeapReadMut<'h, Deque>,
+        InsertArgs {
             index: index_value,
             item,
-        } = InsertArgs::from_args(args, vm)?;
+        }: InsertArgs,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Value> {
         defer_drop!(index_value, vm);
         // Every failing branch below releases `item` through the guard. The insert
         // at the end takes it back out.
@@ -1167,12 +1154,15 @@ impl<'heap> PyAttrs<'heap> for PyDequeImpl {
 
     #[pymethod(Index)]
     /// `deque.index(x[, start[, stop]])` — index of the first item equal to `x`.
-    fn index<'h>(deque: &HeapRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let IndexArgs {
+    fn index<'h>(
+        deque: &HeapRead<'h, Deque>,
+        IndexArgs {
             value: target,
             start,
             stop,
-        } = IndexArgs::from_args(args, vm)?;
+        }: IndexArgs,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Value> {
         defer_drop!(target, vm);
         defer_drop!(start, vm);
         defer_drop!(stop, vm);

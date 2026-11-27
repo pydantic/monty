@@ -1,4 +1,10 @@
 import binascii
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
 
 # === hexlify / b2a_hex ===
 assert binascii.hexlify(b'') == b''
@@ -216,13 +222,19 @@ try:
     binascii.crc_hqx(b'a')
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == 'crc_hqx expected 2 arguments, got 1'
+    assert str(exc) == _error_message(
+        monty='binascii.crc_hqx() takes exactly 2 arguments (1 given)',
+        cpython='crc_hqx expected 2 arguments, got 1',
+    )
 
 try:
     binascii.crc_hqx(data=b'a', crc=0)
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == 'binascii.crc_hqx() takes no keyword arguments'
+    assert str(exc) == _error_message(
+        monty='binascii.crc_hqx() takes no keyword arguments',
+        cpython='binascii.crc_hqx() takes no keyword arguments',
+    )
 
 try:
     binascii.crc_hqx('a', 0)
@@ -268,13 +280,19 @@ try:
     binascii.b2a_uu(data=b'a')
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == 'b2a_uu() takes exactly 1 positional argument (0 given)'
+    assert str(exc) == _error_message(
+        monty="binascii.b2a_uu() got some positional-only arguments passed as keyword arguments: 'data'",
+        cpython='b2a_uu() takes exactly 1 positional argument (0 given)',
+    )
 
 try:
     binascii.b2a_uu(b'a', bogus=1)
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == "b2a_uu() got an unexpected keyword argument 'bogus'"
+    assert str(exc) == _error_message(
+        monty="binascii.b2a_uu() got an unexpected keyword argument 'bogus'",
+        cpython="b2a_uu() got an unexpected keyword argument 'bogus'",
+    )
 
 # === a2b_uu ===
 assert binascii.a2b_uu(b' \n') == b''
@@ -338,7 +356,10 @@ try:
     binascii.a2b_uu(b'!80', 1)
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == 'binascii.a2b_uu() takes exactly one argument (2 given)'
+    assert str(exc) == _error_message(
+        monty='binascii.a2b_uu() takes exactly 1 argument (2 given)',
+        cpython='binascii.a2b_uu() takes exactly one argument (2 given)',
+    )
 
 try:
     binascii.a2b_uu(1)
@@ -414,7 +435,10 @@ try:
     binascii.b2a_qp(b'a', 1, 1, 1, 1)
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == 'b2a_qp() takes at most 4 arguments (5 given)'
+    assert str(exc) == _error_message(
+        monty='binascii.b2a_qp() takes at most 4 arguments (5 given)',
+        cpython='b2a_qp() takes at most 4 arguments (5 given)',
+    )
 
 # === a2b_qp ===
 assert binascii.a2b_qp(b'') == b''
@@ -440,7 +464,10 @@ try:
     binascii.a2b_qp(b'a', True, 1)
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == 'a2b_qp() takes at most 2 arguments (3 given)'
+    assert str(exc) == _error_message(
+        monty='binascii.a2b_qp() takes at most 2 arguments (3 given)',
+        cpython='a2b_qp() takes at most 2 arguments (3 given)',
+    )
 
 try:
     binascii.a2b_qp(1)

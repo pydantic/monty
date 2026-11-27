@@ -175,7 +175,7 @@ jobs:
       # monty-fs: its race soaks are enabled here or they never run on Linux.
       # It is also the only run of monty-types' Linux-only CPU clock tests: `monty`
       # enables `monty-types/cpu-clock` for the whole build.
-      - run: cargo llvm-cov --no-report -p monty -p monty-fs -p monty-types
+      - run: cargo llvm-cov --no-report -p monty -p monty-fs -p monty-types -p monty-macros
         env:
           MONTY_FS_SOAK: '1'
       - run: cargo llvm-cov run --no-report -p monty-datatest

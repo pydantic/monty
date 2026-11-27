@@ -49,6 +49,7 @@ whether each call is permitted.
     *does* accept `bytes` paths, decoding them as UTF-8; the `os` functions do
     not. The verbatim `os.listdir` phrase is POSIX CPython's, which includes `integer`
     even though Windows CPython omits it (no fd-based listdir there).
+
 - **Every file descriptor is closed.** Where CPython's converter takes an int as
     an fd (`os.stat`, `os.listdir`, `os.chdir`, and the `os.path` functions built on
     `os.stat`), Monty takes it too, but the sandbox has no open fds, so the call fails
@@ -60,27 +61,24 @@ whether each call is permitted.
     CPython reports with a platform errno. Ints outside C `int` raise the converter's
     `OverflowError` (`fd is greater than maximum`) like CPython. `os.stat(fd, follow_symlinks=False)`
     fails on the fd before CPython's `ValueError` about combining the two.
+
 - **No `__fspath__` protocol.** `os.fspath` (and every path-taking function)
     accepts only `str`, `bytes` (fspath only), and `pathlib.Path`: a
     user-defined class implementing `__fspath__` raises `TypeError` instead of
     having its method called.
+
 - **`dir_fd` keywords** (`dir_fd`, `src_dir_fd`, `dst_dir_fd`) are parsed
     for signature parity, but any non-`None` value raises the
     `NotImplementedError` CPython uses on platforms without them
     (`dir_fd unavailable on this platform`). Non-int values raise the
     converter `TypeError` (`argument should be integer or None, not str`).
+
 - **`os.stat(..., follow_symlinks=...)`** raises
     `NotImplementedError: stat: follow_symlinks unavailable on this platform`
     for any *falsy* value. CPython truth-tests the argument, so `False`,
     `None` and `0` all mean "lstat", which Monty has no behavior for.
     `os.lstat` itself is not implemented.
-- **All-keyword calls that overflow the signature** are not always reported
-    the way CPython reports them. `os.fspath(path='a', foo=1)` and
-    `os.listdir(path='.', foo=1)` match (`takes at most 1 keyword argument (2 given)`), but functions with keyword-only
-    slots (`os.stat`, `os.mkdir`,
-    `os.remove`, `os.rmdir`, `os.rename`) report the first unknown keyword
-    (`stat() got an unexpected keyword argument 'foo'`) where CPython reports
-    the arity (`stat() takes at most 3 keyword arguments (4 given)`).
+
 - **The working directory is virtual and belongs to the session.** A
     session's first feed sets it (an explicit `cwd`, else that feed's first
     mount's virtual path, else `/`); it then persists across feeds, including
@@ -96,6 +94,7 @@ whether each call is permitted.
     Existence predicates return `False` for these paths; other operations raise `ValueError`.
     Length and depth limits are mount policy: a feed with any mount applies them to every path before the callback
     sees it, including paths no mount covers, while a feed with no mounts passes paths of any length to the callback.
+
 - **`os.chdir(path)` suspends as `Path.stat`** on the resolved target: hosts
     cannot observe a directory change, and without a mount or `os` handler it
     raises `PermissionError`. The interpreter raises `NotADirectoryError`
@@ -107,35 +106,46 @@ whether each call is permitted.
     CPython would `fchdir`. A Rust host that
     answers the stat with a future gets `RuntimeError` instead of a silently
     unchanged directory.
+
 - **`mode` arguments** are type-checked (`'str' object cannot be interpreted as an integer`) but otherwise ignored:
     Monty's filesystem
     backends do not model POSIX permission bits.
+
 - **`os.replace` is an alias of `os.rename`** at the host boundary: both
     suspend with the same rename OS call, so overwrite semantics are whatever
     the host backend does (POSIX rename overwrites; a Windows host may
     refuse). CPython's `os.replace` guarantees overwrite on all platforms.
+
 - **Hosts see pathlib-style call names.** `os.listdir` suspends as
     `Path.iterdir` (the interpreter reduces the returned paths to names),
     `os.stat` and `os.chdir` as `Path.stat`, `os.remove`/`os.unlink` as `Path.unlink`,
     `os.mkdir`/`os.makedirs` as `Path.mkdir`, `os.rename`/`os.replace` and `Path.replace` as `Path.rename`.
     A custom `os` callback cannot distinguish e.g. `os.listdir`
     from `Path.iterdir`.
+
 - **`os.scandir` and `os.walk` read their whole directory or tree when called.** One host call answers each (see
     [pathlib.md](pathlib.md#glob-rglob-and-walk) for the shared divergences: no laziness, sorted entries, unreadable
     subdirectories read as empty). So `os.walk(1.5)` raises its `TypeError` at the call, where CPython's generator
     raises at the first `next()`.
+
 - **`DirEntry` answers from the scan.** `is_dir()`, `is_file()` and `is_symlink()` never ask the host again;
     `stat()` does, and `stat(follow_symlinks=False)` on a symlink raises the same `NotImplementedError` as `os.stat`.
     `inode()` is not implemented and `is_junction()` is always `False`. `DirEntry`, `Path(entry)`, `open(entry)` and
     `os.fspath(entry)` accept it as a path, but other `os.PathLike` objects are still refused (see above).
+
 - **Hosts see one call name for every directory scan.** `os.scandir`, `os.walk`, `Path.walk`, `Path.glob` and
     `Path.rglob` all suspend as `Path.scan`.
+
 - **`os.stat` results** print as `StatResult(...)`, not
     `os.stat_result(...)`, and carry only the 10 core fields, same as
     `Path.stat()` (see [filesystem.md](filesystem.md)).
+
 - **Error side-effects differ slightly for `os.makedirs`**: Monty validates
     `mode` up front, while CPython only fails when it reaches the final
     `mkdir`, after creating parent directories.
+
+- `os.fspath(path='a', foo=1)` and `os.listdir(path='.', foo=1)` report the unknown keyword in Monty.
+    CPython reports the total number of keyword arguments.
 
 ## `os.path`
 

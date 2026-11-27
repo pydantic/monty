@@ -1,4 +1,10 @@
 import datetime
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
 
 # === strftime ===
 
@@ -15,7 +21,10 @@ try:
     datetime.date(2024, 6, 15).strftime()
     assert False, 'expected strftime() with no args to fail'
 except TypeError as exc:
-    assert str(exc) == "strftime() missing required argument 'format' (pos 1)", f'strftime() no-args: {exc}'
+    assert str(exc) == _error_message(
+        monty="strftime() missing 1 required positional argument: 'format'",
+        cpython="strftime() missing required argument 'format' (pos 1)",
+    ), f'strftime() no-args: {exc}'
 
 try:
     datetime.date(2024, 6, 15).strftime('%Y', '%m')
@@ -27,7 +36,10 @@ try:
     datetime.date(2024, 6, 15).strftime('%Y', extra='nope')
     assert False, 'expected strftime() with unexpected kwarg to fail'
 except TypeError as exc:
-    assert str(exc) == 'strftime() takes at most 1 argument (2 given)', f'strftime() unexpected kwarg: {exc}'
+    assert str(exc) == _error_message(
+        monty="strftime() got an unexpected keyword argument 'extra'",
+        cpython='strftime() takes at most 1 argument (2 given)',
+    ), f'strftime() unexpected kwarg: {exc}'
 
 # Wrong-type `format` matches CPython's `_PyArg_BadArgument` wording, including
 # the special "not None" case (vs. the type name "NoneType").

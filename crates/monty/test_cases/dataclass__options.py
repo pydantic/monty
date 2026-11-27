@@ -1,6 +1,11 @@
 # The `@dataclass(...)` keyword form, for the options Monty implements:
 # `eq` and `frozen`. All behaviour here matches CPython.
 from dataclasses import FrozenInstanceError, dataclass
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
 
 
 # === The empty call form behaves like the bare decorator ===
@@ -351,7 +356,10 @@ try:
     frozen(First, Second)
     assert False, 'expected a second positional argument to raise'
 except TypeError as e:
-    assert str(e) == 'dataclass.<locals>.wrap() takes 1 positional argument but 2 were given'
+    assert str(e) == _error_message(
+        monty='dataclass.<locals>.wrap() takes at most 1 argument (2 given)',
+        cpython='dataclass.<locals>.wrap() takes 1 positional argument but 2 were given',
+    )
 
 try:
     frozen(cls=First, nope=1)

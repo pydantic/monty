@@ -7,6 +7,14 @@ is no way to subclass `BaseException`/`Exception`. `raise` must therefore use on
 these built-ins; `raise MyClass()` on a plain user class raises
 `TypeError: exceptions must derive from BaseException`, as in CPython.
 
+## Native call signatures
+
+Builtins and standard-library functions report missing, extra, or misplaced arguments from their declared signatures.
+For example, `enumerate(start=1)` raises `TypeError: enumerate() missing 1 required positional argument: 'iterable'`.
+Within a signature, the shared binder reports invalid keywords before positional count and missing-argument errors.
+It checks the signature before running value conversions. CPython's precedence varies by callable.
+A callable with unimplemented keyword support raises `NotImplementedError`.
+
 ## Implemented exception classes
 
 `BaseException`, `Exception`, `SystemExit`, `KeyboardInterrupt`,

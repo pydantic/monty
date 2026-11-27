@@ -27,7 +27,7 @@ pub(crate) fn builtin_iter(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallRe
 
 /// Argument shape for `iter(object, /)` and `iter(object, sentinel, /)`.
 #[derive(FromArgs)]
-#[from_args(name = "iter", style = unpack)]
+#[from_args(name = "iter")]
 struct IterArgs {
     #[from_args(pos_only)]
     object: Value,

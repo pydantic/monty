@@ -29,7 +29,7 @@ use crate::{
 
 /// Arguments of `eval(source, /, globals=None, locals=None)`.
 #[derive(FromArgs)]
-#[from_args(name = "eval", at_most_total)]
+#[from_args(name = "eval")]
 struct EvalArgs {
     #[from_args(pos_only)]
     source: Value,

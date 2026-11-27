@@ -415,14 +415,14 @@ pub(crate) fn hex_string(data: &[u8]) -> String {
 
 /// `digest(length)` of a `_hashlib.HASHXOF`.
 #[derive(FromArgs)]
-#[from_args(name = "digest", style = c_named, at_most_total)]
+#[from_args(name = "digest")]
 struct XofDigestArgs {
     length: u64,
 }
 
 /// `hexdigest(length)` of a `_hashlib.HASHXOF`.
 #[derive(FromArgs)]
-#[from_args(name = "hexdigest", style = c_named, at_most_total)]
+#[from_args(name = "hexdigest")]
 struct XofHexdigestArgs {
     length: u64,
 }
@@ -628,11 +628,10 @@ impl<'heap> PyAttrs<'heap> for PyHashXofImpl {
     #[pymethod(Digest)]
     fn digest<'h>(
         this: &mut HeapObjectRead<'h, HashObject>,
-        args: ArgValues,
+        XofDigestArgs { length }: XofDigestArgs,
         vm: &mut VM<'h>,
     ) -> RunResult<CallResult> {
         {
-            let XofDigestArgs { length } = XofDigestArgs::from_args(args, vm)?;
             let length = xof_length(length, 1, vm)?;
             let digest = this.get(vm.heap).digest_xof(length, &vm.heap.tracker)?;
             Ok(CallResult::Value(allocate_bytes(digest, vm.heap)))
@@ -642,11 +641,10 @@ impl<'heap> PyAttrs<'heap> for PyHashXofImpl {
     #[pymethod(Hexdigest)]
     fn hexdigest<'h>(
         this: &mut HeapObjectRead<'h, HashObject>,
-        args: ArgValues,
+        XofHexdigestArgs { length }: XofHexdigestArgs,
         vm: &mut VM<'h>,
     ) -> RunResult<CallResult> {
         {
-            let XofHexdigestArgs { length } = XofHexdigestArgs::from_args(args, vm)?;
             // The raw digest stays live while its hex is built.
             let length = xof_length(length, 3, vm)?;
             let digest = this.get(vm.heap).digest_xof(length, &vm.heap.tracker)?;

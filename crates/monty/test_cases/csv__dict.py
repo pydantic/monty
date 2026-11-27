@@ -1,6 +1,11 @@
 import csv
 import sys
 
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
+
 is_monty = sys.platform == 'monty'
 
 
@@ -117,7 +122,10 @@ try:
     csv.DictReader([], nope=1)
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == "this function got an unexpected keyword argument 'nope'"
+    assert str(exc) == _error_message(
+        monty="reader() got an unexpected keyword argument 'nope'",
+        cpython="this function got an unexpected keyword argument 'nope'",
+    )
 
 
 # === DictWriter ===
@@ -309,7 +317,10 @@ try:
     csv.DictWriter(sink, ['a'], nope=1)
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == "this function got an unexpected keyword argument 'nope'"
+    assert str(exc) == _error_message(
+        monty="writer() got an unexpected keyword argument 'nope'",
+        cpython="this function got an unexpected keyword argument 'nope'",
+    )
 try:
     csv.DictWriter(5, ['a'])
     assert False, 'expected TypeError'

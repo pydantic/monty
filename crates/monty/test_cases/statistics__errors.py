@@ -1,5 +1,10 @@
 import statistics
 from statistics import StatisticsError
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
 
 
 def check(exc_type, message, fn, *args, **kwargs):
@@ -66,7 +71,16 @@ check(StatisticsError, 'data and weights must be the same length', statistics.fm
 check(ValueError, "Unknown method: 'linear'", statistics.quantiles, [1, 2, 3], method='linear')
 check(ValueError, 'Unknown method: None', statistics.quantiles, [1, 2, 3], method=None)
 check(ValueError, "Unknown method: 'Inclusive'", statistics.quantiles, [1, 2, 3], method='Inclusive')
-check(TypeError, 'quantiles() takes 1 positional argument but 2 were given', statistics.quantiles, [1, 2], 4)
+check(
+    TypeError,
+    _error_message(
+        monty='quantiles() takes at most 1 positional argument (2 given)',
+        cpython='quantiles() takes 1 positional argument but 2 were given',
+    ),
+    statistics.quantiles,
+    [1, 2],
+    4,
+)
 
 # === quantiles uses `n` as CPython does: compared with `<`, used as a repeat count, then as a `range` bound ===
 check(StatisticsError, 'must have at least one data point', statistics.quantiles, [], n=2**70)
@@ -89,7 +103,16 @@ check(TypeError, "'int' object is not iterable", statistics.mean, 5)
 check(TypeError, "'NoneType' object is not iterable", statistics.median, None)
 check(TypeError, "'<' not supported between instances of 'str' and 'int'", statistics.median, [1, 'a'])
 check(TypeError, "mean() missing 1 required positional argument: 'data'", statistics.mean)
-check(TypeError, 'mean() takes 1 positional argument but 2 were given', statistics.mean, [1], [2])
+check(
+    TypeError,
+    _error_message(
+        monty='mean() takes at most 1 argument (2 given)',
+        cpython='mean() takes 1 positional argument but 2 were given',
+    ),
+    statistics.mean,
+    [1],
+    [2],
+)
 check(TypeError, "mean() got an unexpected keyword argument 'x'", statistics.mean, [1], x=1)
 
 # === StatisticsError is a ValueError that is also catchable by name ===

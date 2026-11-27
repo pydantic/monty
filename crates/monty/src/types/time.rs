@@ -213,9 +213,7 @@ fn allocate_with_tz(vm: &mut VM<'_>, mut time: Time, tz_ref: Option<HeapId>) -> 
 /// so the accepted grammar (and the rejection message) stays consistent across
 /// the three classes.
 pub(crate) fn class_fromisoformat(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let value = args
-        .reject_kwargs("time.fromisoformat", vm.heap)?
-        .get_one_arg("time.fromisoformat", vm.heap)?;
+    let value = args.get_one_arg("time.fromisoformat", vm.heap)?;
     let s = date::extract_str_arg(&value, "fromisoformat", vm.heap, vm.interns);
     value.drop_with(vm.heap);
     let s = s?;
@@ -252,15 +250,9 @@ pub(crate) fn allocate_naive(hour: i32, minute: i32, second: i32, microsecond: i
     Value::allocate(time, heap)
 }
 
-/// Argument shape for `time(hour=0, minute=0, second=0, microsecond=0,
-/// tzinfo=None, *, fold=0)`.
-///
-/// `style = c` reproduces CPython's two over-arity wordings: a sixth positional
-/// blames the positional limit (the overflow could still have filled keyword-only
-/// `fold`), a seventh the total. `tzinfo` stays a raw [`Value`] so the
-/// None-or-timezone check runs in the body with CPython's wording.
+/// `time(hour=0, minute=0, second=0, microsecond=0, tzinfo=None, *, fold=0)`.
 #[derive(FromArgs)]
-#[from_args(name = "function", style = c)]
+#[from_args(name = "time")]
 struct TimeInitArgs {
     #[from_args(default = 0)]
     hour: i32,
@@ -427,7 +419,7 @@ impl TimeSpec {
 /// the same shape [`StrftimeArgs`] has — including `bad_arg`, which supplies
 /// `isoformat() argument 1 must be str, not int`.
 #[derive(FromArgs)]
-#[from_args(name = "isoformat", style = c_named, at_most_total, bad_arg)]
+#[from_args(name = "isoformat", bad_arg)]
 struct IsoformatArgs {
     #[from_args(default)]
     timespec: Option<StrArg>,
@@ -655,8 +647,11 @@ impl<'heap> PyAttrs<'heap> for PyTimeImpl {
     type Receiver = HeapObjectRead<'heap, Time>;
 
     #[pymethod(Isoformat)]
-    fn isoformat<'h>(value: &mut HeapObjectRead<'h, Time>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let IsoformatArgs { timespec } = IsoformatArgs::from_args(args, vm)?;
+    fn isoformat<'h>(
+        value: &mut HeapObjectRead<'h, Time>,
+        IsoformatArgs { timespec }: IsoformatArgs,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Value> {
         defer_drop!(timespec, vm);
         let spec = match timespec {
             Some(timespec) => TimeSpec::parse(timespec.as_str(vm))?,
@@ -668,8 +663,11 @@ impl<'heap> PyAttrs<'heap> for PyTimeImpl {
     }
 
     #[pymethod(Strftime)]
-    fn strftime<'h>(value: &mut HeapObjectRead<'h, Time>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm)?;
+    fn strftime<'h>(
+        value: &mut HeapObjectRead<'h, Time>,
+        StrftimeArgs { format }: StrftimeArgs,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Value> {
         defer_drop!(format, vm);
         let time = value.get(vm.heap).clone();
         let tz = attached_timezone(&time, vm.heap);

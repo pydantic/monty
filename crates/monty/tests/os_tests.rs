@@ -190,6 +190,44 @@ fn path_append_methods_forward_the_path_and_data() {
 }
 
 #[test]
+fn path_append_text() {
+    let (func, args) = run_to_oscall("from pathlib import Path; Path('/log').append_text('hello')");
+    assert_eq!(func, "Path.append_text");
+    assert_eq!(
+        args,
+        [
+            MontyObject::path("/log".to_owned()),
+            MontyObject::string("hello".to_owned())
+        ]
+    );
+}
+
+#[test]
+fn path_append_bytes() {
+    let (func, args) = run_to_oscall(r"from pathlib import Path; Path('/log').append_bytes(b'\xff')");
+    assert_eq!(func, "Path.append_bytes");
+    assert_eq!(
+        args,
+        [MontyObject::path("/log".to_owned()), MontyObject::bytes(vec![0xff])]
+    );
+}
+
+#[test]
+fn path_append_requires_data_before_dispatch() {
+    for method in ["append_text", "append_bytes"] {
+        let code = format!("from pathlib import Path\nPath('/log').{method}()");
+        let error = host_runner(&code)
+            .start(vec![], ResourceTracker::default(), PrintWriter::Disabled)
+            .unwrap_err();
+        assert_eq!(error.exc_type(), ExcType::TypeError);
+        assert_eq!(
+            error.message().unwrap(),
+            format!("Path.{method}() takes exactly 1 argument (0 given)")
+        );
+    }
+}
+
+#[test]
 fn path_stat() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('/tmp/file.txt').stat()");
     assert_eq!(func, "Path.stat");
@@ -2231,20 +2269,23 @@ fn path_stat_accepts_explicit_follow_symlinks() {
 }
 
 #[test]
-fn path_mutation_and_stat_arity_errors_count_self() {
+fn path_methods_report_bound_signatures() {
     for (call, message) in [
-        ("stat(True)", "Path.stat() takes 1 positional argument but 2 were given"),
+        (
+            "stat(True)",
+            "Path.stat() takes at most 0 positional arguments (1 given)",
+        ),
         (
             "rename('target', 'extra')",
-            "Path.rename() takes 2 positional arguments but 3 were given",
+            "Path.rename() takes at most 1 argument (2 given)",
         ),
         (
             "replace('target', 'extra')",
-            "Path.replace() takes 2 positional arguments but 3 were given",
+            "Path.replace() takes at most 1 argument (2 given)",
         ),
         (
             "unlink(True, False)",
-            "Path.unlink() takes from 1 to 2 positional arguments but 3 were given",
+            "Path.unlink() takes at most 1 argument (2 given)",
         ),
     ] {
         let error = host_runner(&format!("from pathlib import Path\nPath('/file').{call}"))
@@ -2256,7 +2297,7 @@ fn path_mutation_and_stat_arity_errors_count_self() {
 }
 
 #[test]
-fn path_mkdir_validates_c_int_modes_and_counts_self() {
+fn path_mkdir_validates_mode_and_signature() {
     for mode in ["2**40", "-(2**40)", "2**100"] {
         for code in [
             format!("from pathlib import Path\nPath('/dir').mkdir(mode={mode})"),
@@ -2273,7 +2314,7 @@ fn path_mkdir_validates_c_int_modes_and_counts_self() {
         .unwrap_err();
     assert_eq!(
         error.message(),
-        Some("Path.mkdir() takes from 1 to 4 positional arguments but 5 were given")
+        Some("Path.mkdir() takes at most 3 arguments (4 given)")
     );
 }
 

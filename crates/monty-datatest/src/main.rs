@@ -210,7 +210,7 @@ impl Expectation {
 /// If no expectation comment is present, the test just verifies the code runs without exception.
 ///
 /// Panics on a malformed header: headers are author-controlled, so that's a test bug.
-fn parse_fixture(content: &str) -> (String, Expectation, TestConfig) {
+fn parse_fixture(content: &str, interpreter: Interpreter) -> (String, Expectation, TestConfig) {
     let lines: Vec<&str> = content.lines().collect();
 
     assert!(!lines.is_empty(), "Empty fixture file");
@@ -237,9 +237,7 @@ fn parse_fixture(content: &str) -> (String, Expectation, TestConfig) {
         config.timezone = Some(name);
     }
 
-    // Check for TRACEBACK expectation (triple-quoted string at end of file)
-    // Format: """TRACEBACK:\n...\n"""
-    if let Some((code, traceback)) = parse_traceback_expectation(content) {
+    if let Some((code, traceback)) = parse_traceback_expectation(content, interpreter) {
         return (code, Expectation::Traceback(traceback), config);
     }
 
@@ -279,7 +277,7 @@ fn parse_fixture(content: &str) -> (String, Expectation, TestConfig) {
 ///
 /// The traceback string should contain the full expected output including the
 /// "Traceback (most recent call last):" header and the exception line.
-fn parse_traceback_expectation(content: &str) -> Option<(String, String)> {
+fn parse_traceback_expectation(content: &str, interpreter: Interpreter) -> Option<(String, String)> {
     const MARKER: &str = "\"\"\"\nTRACEBACK:\n";
 
     // Normalize \r\n to \n so this works on Windows where git may check out
@@ -299,9 +297,22 @@ fn parse_traceback_expectation(content: &str) -> Option<(String, String)> {
 
     // Find the closing triple quotes (preceded by newline)
     let end_pos = after_marker.find("\n\"\"\"")?;
-    let traceback_content = &after_marker[..end_pos];
+    // Untagged lines are shared. A tagged line is literal output for that interpreter.
+    let traceback = after_marker[..end_pos]
+        .split('\n')
+        .filter_map(|line| {
+            if let Some(text) = line.strip_prefix("[monty] ") {
+                (interpreter == Interpreter::Monty).then_some(text)
+            } else if let Some(text) = line.strip_prefix("[cpython] ") {
+                (interpreter == Interpreter::Cpython).then_some(text)
+            } else {
+                Some(line)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
 
-    Some((code, traceback_content.to_string()))
+    Some((code, traceback))
 }
 
 /// Parses the ref-counts format: {'var': count, 'var2': count2}
@@ -2972,7 +2983,7 @@ fn run_test_cases_monty(path: &Path) -> Result<(), Box<dyn Error>> {
     // the harness never changes directory, so a CPython fixture that calls
     // `os.chdir` cannot race another thread's fixture read.
     let path = CANONICAL_WS_DIR.join(path).canonicalize()?;
-    let (code, expectation, config) = parse_fixture(&fs::read_to_string(&path)?);
+    let (code, expectation, config) = parse_fixture(&fs::read_to_string(&path)?, Interpreter::Monty);
     run_monty_case(&path, config.xfail_monty, move |path| {
         if config.mount_fs {
             try_run_mount_fs_test(path, &code, &expectation, &config)
@@ -3047,7 +3058,7 @@ fn run_test_cases_cpython(path: &Path) -> Result<(), Box<dyn Error>> {
     let path = path.strip_prefix(CANONICAL_WS_DIR.as_path())?;
 
     let content = fs::read_to_string(CANONICAL_WS_DIR.join(path))?;
-    let (code, expectation, config) = parse_fixture(&content);
+    let (code, expectation, config) = parse_fixture(&content, Interpreter::Cpython);
     let test_name = path
         .strip_prefix(TEST_CASES_RELATIVE_DIR)
         .unwrap_or(path)
@@ -3092,3 +3103,28 @@ datatest_stable::harness! {
 #[cfg(test)]
 #[path = "../tests/units/create_exclusive.rs"]
 mod create_exclusive_tests;
+
+#[cfg(test)]
+mod fixture_tests {
+    use super::{Expectation, Interpreter, parse_fixture};
+
+    #[test]
+    fn interpreter_tracebacks_with_crlf() {
+        let content = concat!(
+            "len()\r\n\"\"\"\r\nTRACEBACK:\r\n",
+            "Traceback (most recent call last):\r\n",
+            "[monty] TypeError: Monty\r\n[cpython] TypeError: CPython\r\n\"\"\"\r\n",
+        );
+        for (interpreter, message) in [(Interpreter::Monty, "Monty"), (Interpreter::Cpython, "CPython")] {
+            let (code, expectation, _) = parse_fixture(content, interpreter);
+            assert_eq!(code, "len()");
+            let Expectation::Traceback(traceback) = expectation else {
+                panic!("expected a traceback");
+            };
+            assert_eq!(
+                traceback,
+                format!("Traceback (most recent call last):\nTypeError: {message}")
+            );
+        }
+    }
+}

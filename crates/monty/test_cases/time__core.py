@@ -1,4 +1,10 @@
 from datetime import date, datetime, time, timedelta, timezone
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
 
 # === construction / defaults ===
 assert isinstance(time(), time), 'time() builds a time'
@@ -185,25 +191,37 @@ try:
     time(1, 2, 3, 4, None, 5)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'function takes at most 5 positional arguments (6 given)'
+    assert str(e) == _error_message(
+        monty='time() takes at most 5 positional arguments (6 given)',
+        cpython='function takes at most 5 positional arguments (6 given)',
+    )
 
 try:
     time(1, 2, 3, 4, None, 5, 6)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'function takes at most 6 arguments (7 given)'
+    assert str(e) == _error_message(
+        monty='time() takes at most 5 positional arguments (7 given)',
+        cpython='function takes at most 6 arguments (7 given)',
+    )
 
 try:
     time(1, hour=2)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == "argument for function given by name ('hour') and position (1)"
+    assert str(e) == _error_message(
+        monty="time() got multiple values for argument 'hour'",
+        cpython="argument for function given by name ('hour') and position (1)",
+    )
 
 try:
     time(0, foo=1)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == "this function got an unexpected keyword argument 'foo'"
+    assert str(e) == _error_message(
+        monty="time() got an unexpected keyword argument 'foo'",
+        cpython="this function got an unexpected keyword argument 'foo'",
+    )
 
 try:
     time(1.5)
@@ -277,7 +295,10 @@ try:
     time(1).strftime()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == "strftime() missing required argument 'format' (pos 1)"
+    assert str(e) == _error_message(
+        monty="strftime() missing 1 required positional argument: 'format'",
+        cpython="strftime() missing required argument 'format' (pos 1)",
+    )
 
 try:
     time(1).strftime('%H', '%M')
@@ -329,7 +350,10 @@ try:
     time.fromisoformat()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'time.fromisoformat() takes exactly one argument (0 given)'
+    assert str(e) == _error_message(
+        monty='time.fromisoformat() takes exactly 1 argument (0 given)',
+        cpython='time.fromisoformat() takes exactly one argument (0 given)',
+    )
 
 # === utcoffset / tzname / dst ===
 # A naive time answers None to all three; only fixed offsets exist, so `dst()`

@@ -1,25 +1,13 @@
-use monty_types::{PrintWriter, ResourceTracker};
+use monty_types::ResourceTracker;
 use num_bigint::BigInt;
 
 use super::*;
 use crate::{
-    args::{ArgValues, FromArgs},
-    bytecode::VM,
-    heap::{Heap, HeapData, HeapReader},
-    intern::{CompileInterns, Interns},
-    run::{Program, SessionTables},
+    args::{ArgValues, FromArgs, KwargsValues, tests::with_test_vm},
+    heap::{Heap, HeapData},
+    intern::{CompileInterns, Interns, StaticStrings},
     types::{Bytes, List, LongInt, NamedTuple, str::allocate_string},
 };
-
-fn with_test_vm<R>(f: impl for<'h> FnOnce(&mut VM<'h>) -> R) -> R {
-    let mut heap = Heap::new(16, ResourceTracker::default());
-    let mut tables = SessionTables::default();
-    let program = Program::for_tests();
-    HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
-        let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
-        f(&mut vm)
-    })
-}
 
 #[test]
 fn access_allocated_payload_by_type() {
@@ -399,5 +387,40 @@ fn from_args_vm_field_and_block_default() {
         assert_eq!(parsed.vm, 10);
         assert_eq!(parsed.other, 20);
         assert_eq!(parsed.extra, 7);
+    });
+}
+
+#[derive(Debug, FromArgs)]
+#[from_args(name = "f")]
+struct RequiredKeyword {
+    #[from_args(pos_only, default)]
+    a: i32,
+    #[from_args(pos_only, default)]
+    b: i32,
+    #[from_args(kw_only)]
+    key: i32,
+}
+
+#[test]
+fn derive_requires_keyword_on_every_positional_fast_path() {
+    with_test_vm(|vm| {
+        for args in [
+            ArgValues::Empty,
+            ArgValues::One(Value::Int(1)),
+            ArgValues::Two(Value::Int(1), Value::Int(2)),
+        ] {
+            let error = RequiredKeyword::from_args(args, vm)
+                .unwrap_err()
+                .into_python_exception(vm.interns, |_| None);
+            assert_eq!(
+                error.message(),
+                Some("f() missing 1 required keyword-only argument: 'key'")
+            );
+        }
+
+        let key = vm.interns.intern_static(StaticStrings::Key);
+        let args = ArgValues::Kwargs(KwargsValues::Inline(vec![(key, Value::Int(7))]));
+        let parsed = RequiredKeyword::from_args(args, vm).unwrap();
+        assert_eq!((parsed.a, parsed.b, parsed.key), (0, 0, 7));
     });
 }

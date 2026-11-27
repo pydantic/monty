@@ -189,7 +189,7 @@ struct CallArgs {
 /// function, so this shape is what its arity errors describe; Monty keeps the
 /// settings on a function-less wrapper instead.
 #[derive(FromArgs)]
-#[from_args(name = "lru_cache.<locals>.decorating_function", style = def)]
+#[from_args(name = "lru_cache.<locals>.decorating_function")]
 struct DecoratingFunctionArgs {
     user_function: Value,
 }

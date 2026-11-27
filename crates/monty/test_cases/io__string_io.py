@@ -1,6 +1,11 @@
 import copy
 import io
+import sys
 from io import StringIO
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
 
 
 def check(exc_type, message, fn):
@@ -43,12 +48,22 @@ check(ValueError, "illegal newline value: 'x'", lambda: StringIO('', 'x'))
 check(TypeError, 'newline must be str or None, not int', lambda: StringIO(1, 1))
 check(ValueError, "illegal newline value: 'x'", lambda: StringIO(1, 'x'))
 check(TypeError, 'StringIO() takes at most 2 arguments (3 given)', lambda: StringIO('', None, 1))
-check(TypeError, 'StringIO() takes at most 2 arguments (3 given)', lambda: StringIO('', None, foo=1))
+check(
+    TypeError,
+    _error_message(
+        monty="StringIO() got an unexpected keyword argument 'foo'",
+        cpython='StringIO() takes at most 2 arguments (3 given)',
+    ),
+    lambda: StringIO('', None, foo=1),
+)
 check(TypeError, "StringIO() got an unexpected keyword argument 'foo'", lambda: StringIO(foo=1))
 check(TypeError, "StringIO() got an unexpected keyword argument 'foo'", lambda: StringIO('', foo=1))
 check(
     TypeError,
-    "argument for StringIO() given by name ('initial_value') and position (1)",
+    _error_message(
+        monty="StringIO() got multiple values for argument 'initial_value'",
+        cpython="argument for StringIO() given by name ('initial_value') and position (1)",
+    ),
     lambda: StringIO('', initial_value=''),
 )
 
@@ -81,7 +96,13 @@ assert StringIO('abc').read(True) == 'a'
 check(TypeError, "argument should be integer or None, not 'float'", lambda: StringIO('abc').read(1.0))
 check(TypeError, "argument should be integer or None, not 'str'", lambda: StringIO('abc').read('1'))
 check(OverflowError, "cannot fit 'int' into an index-sized integer", lambda: StringIO('a').read(2**70))
-check(TypeError, 'read expected at most 1 argument, got 2', lambda: StringIO('abc').read(1, 2))
+check(
+    TypeError,
+    _error_message(
+        monty='StringIO.read() takes at most 1 argument (2 given)', cpython='read expected at most 1 argument, got 2'
+    ),
+    lambda: StringIO('abc').read(1, 2),
+)
 check(TypeError, 'StringIO.read() takes no keyword arguments', lambda: StringIO('abc').read(size=1))
 
 # === non-ASCII positions count chars ===
@@ -186,7 +207,14 @@ assert s.tell() == 6
 check(TypeError, "string argument expected, got 'bytes'", lambda: StringIO().write(b'x'))
 check(TypeError, "string argument expected, got 'int'", lambda: StringIO().write(1))
 check(TypeError, "string argument expected, got 'bool'", lambda: StringIO().write(True))
-check(TypeError, 'StringIO.write() takes exactly one argument (0 given)', lambda: StringIO().write())
+check(
+    TypeError,
+    _error_message(
+        monty='StringIO.write() takes exactly 1 argument (0 given)',
+        cpython='StringIO.write() takes exactly one argument (0 given)',
+    ),
+    lambda: StringIO().write(),
+)
 check(TypeError, 'StringIO.write() takes no keyword arguments', lambda: StringIO().write(s='x'))
 
 # === writelines ===
@@ -198,7 +226,14 @@ s.writelines('fg')
 assert s.getvalue() == 'ab\ncdefg'
 check(TypeError, "string argument expected, got 'int'", lambda: StringIO().writelines([1]))
 check(TypeError, "'int' object is not iterable", lambda: StringIO().writelines(1))
-check(TypeError, '_IOBase.writelines() takes exactly one argument (0 given)', lambda: StringIO().writelines())
+check(
+    TypeError,
+    _error_message(
+        monty='_IOBase.writelines() takes exactly 1 argument (0 given)',
+        cpython='_IOBase.writelines() takes exactly one argument (0 given)',
+    ),
+    lambda: StringIO().writelines(),
+)
 check(TypeError, '_IOBase.writelines() takes no keyword arguments', lambda: StringIO().writelines(lines=[]))
 
 # === seek and tell ===
@@ -222,8 +257,20 @@ check(TypeError, "'float' object cannot be interpreted as an integer", lambda: S
 check(TypeError, "'float' object cannot be interpreted as an integer", lambda: StringIO('a').seek(0, 1.0))
 check(OverflowError, 'Python int too large to convert to C ssize_t', lambda: StringIO('a').seek(2**70))
 check(OverflowError, 'Python int too large to convert to C int', lambda: StringIO('a').seek(0, 2**40))
-check(TypeError, 'seek expected at least 1 argument, got 0', lambda: StringIO('a').seek())
-check(TypeError, 'seek expected at most 2 arguments, got 3', lambda: StringIO('a').seek(1, 0, 0))
+check(
+    TypeError,
+    _error_message(
+        monty='StringIO.seek() takes at least 1 argument (0 given)', cpython='seek expected at least 1 argument, got 0'
+    ),
+    lambda: StringIO('a').seek(),
+)
+check(
+    TypeError,
+    _error_message(
+        monty='StringIO.seek() takes at most 2 arguments (3 given)', cpython='seek expected at most 2 arguments, got 3'
+    ),
+    lambda: StringIO('a').seek(1, 0, 0),
+)
 check(TypeError, 'StringIO.seek() takes no keyword arguments', lambda: StringIO('a').seek(pos=1))
 check(TypeError, 'StringIO.tell() takes no arguments (1 given)', lambda: StringIO().tell(1))
 s = StringIO()

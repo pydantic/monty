@@ -4,10 +4,7 @@
 //! MIME helpers `encodebytes`/`decodebytes`; the file-object `encode`/`decode`
 //! pair is not — see `limitations/base64.md`.
 //!
-//! CPython's `base64` is pure Python delegating to `binascii`, so every
-//! function here uses `#[from_args(style = def)]` and coerces in the body,
-//! reproducing both CPython's signature errors and the order its bodies reject
-//! bad values in. Decode failures raise [`ExcType::BinasciiError`]
+//! Decode failures raise [`ExcType::BinasciiError`]
 //! (`binascii.Error`, a `ValueError` subclass) with `binascii`'s wording.
 //!
 //! Encoders take bytes only; decoders also take ASCII `str` (CPython's
@@ -497,7 +494,7 @@ fn call_a85decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// never type-checks, so the body's coercion order is what produces the
 /// observable errors.
 #[derive(FromArgs)]
-#[from_args(name = "b64encode", style = def)]
+#[from_args(name = "b64encode")]
 struct B64EncodeArgs {
     s: Value,
     #[from_args(default = Value::None)]
@@ -509,7 +506,7 @@ struct B64EncodeArgs {
 /// `validate` is a raw `Value` truth-tested in the body — CPython forwards it
 /// to `binascii.a2b_base64(strict_mode=...)`, which accepts any object.
 #[derive(FromArgs)]
-#[from_args(name = "b64decode", style = def)]
+#[from_args(name = "b64decode")]
 struct B64DecodeArgs {
     s: Value,
     #[from_args(default = Value::None)]
@@ -521,7 +518,7 @@ struct B64DecodeArgs {
 /// Argument shape for `b32decode(s, casefold=False, map01=None)` — see
 /// [`B64DecodeArgs`] for why the flags are raw `Value`s.
 #[derive(FromArgs)]
-#[from_args(name = "b32decode", style = def)]
+#[from_args(name = "b32decode")]
 struct B32DecodeArgs {
     s: Value,
     #[from_args(default = Value::Bool(false))]
@@ -532,7 +529,7 @@ struct B32DecodeArgs {
 
 /// Argument shape for `b32hexdecode(s, casefold=False)`.
 #[derive(FromArgs)]
-#[from_args(name = "b32hexdecode", style = def)]
+#[from_args(name = "b32hexdecode")]
 struct B32HexDecodeArgs {
     s: Value,
     #[from_args(default = Value::Bool(false))]
@@ -541,7 +538,7 @@ struct B32HexDecodeArgs {
 
 /// Argument shape for `b16decode(s, casefold=False)`.
 #[derive(FromArgs)]
-#[from_args(name = "b16decode", style = def)]
+#[from_args(name = "b16decode")]
 struct B16DecodeArgs {
     s: Value,
     #[from_args(default = Value::Bool(false))]
@@ -551,7 +548,7 @@ struct B16DecodeArgs {
 /// Argument shape for `b85encode(b, pad=False)` — note the parameter is `b`,
 /// not the `s` the rest of the module uses, which signature errors report.
 #[derive(FromArgs)]
-#[from_args(name = "b85encode", style = def)]
+#[from_args(name = "b85encode")]
 struct B85EncodeArgs {
     b: Value,
     #[from_args(default = Value::Bool(false))]
@@ -560,7 +557,7 @@ struct B85EncodeArgs {
 
 /// Argument shape for `b85decode(b)`.
 #[derive(FromArgs)]
-#[from_args(name = "b85decode", style = def)]
+#[from_args(name = "b85decode")]
 struct B85DecodeArgs {
     b: Value,
 }
@@ -568,7 +565,7 @@ struct B85DecodeArgs {
 /// Argument shape for
 /// `a85encode(b, *, foldspaces=False, wrapcol=0, pad=False, adobe=False)`.
 #[derive(FromArgs)]
-#[from_args(name = "a85encode", style = def)]
+#[from_args(name = "a85encode")]
 struct A85EncodeArgs {
     b: Value,
     #[from_args(kw_only, default = Value::Bool(false))]
@@ -588,7 +585,7 @@ struct A85EncodeArgs {
 /// whatever object was passed, so an explicit argument takes a different path
 /// from the built-in set.
 #[derive(FromArgs)]
-#[from_args(name = "a85decode", style = def)]
+#[from_args(name = "a85decode")]
 struct A85DecodeArgs {
     b: Value,
     #[from_args(kw_only, default = Value::Bool(false))]
@@ -607,7 +604,7 @@ struct A85DecodeArgs {
 macro_rules! single_arg_struct {
     ($struct_name:ident, $py_name:literal) => {
         #[derive(FromArgs)]
-        #[from_args(name = $py_name, style = def)]
+        #[from_args(name = $py_name)]
         struct $struct_name {
             s: Value,
         }
