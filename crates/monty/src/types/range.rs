@@ -371,6 +371,8 @@ impl<'heap> PyAttrs<'heap> for PyRangeImpl {
             _ if value.as_long_int(vm).is_some() => Ok(Value::Int(0)),
             _ => {
                 let mut count = 0_i128;
+                // Nested `__eq__` callbacks restart dispatch, so short loops need a check before periodic polling.
+                vm.heap.tracker.check_time()?;
                 for index in 0..range.len_i128() {
                     let check_index = usize::try_from(index).unwrap_or(usize::MAX);
                     vm.heap.tracker.check_time_every(check_index)?;
@@ -408,6 +410,8 @@ impl<'heap> PyAttrs<'heap> for PyRangeImpl {
             None if value.as_long_int(vm).is_some() => Err(ExcType::value_error_not_in_range()),
             None => {
                 let mut index = 0_i128;
+                // Nested `__eq__` callbacks restart dispatch, so short loops need a check before periodic polling.
+                vm.heap.tracker.check_time()?;
                 let found = loop {
                     if index == range.len_i128() {
                         break None;
