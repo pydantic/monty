@@ -26,6 +26,7 @@ use crate::{
     identity::Identity,
     intern::{FunctionId, StaticStrings},
     modules::{ModuleFunctions, asyncio::task_call_method, collections::defaultdict::defaultdict_missing},
+    py_attrs::NativeMethod,
     types::{
         GenericAlias, LazyHeapSet, LongInt, Property, PyTrait, Type, TypeRef, Union, allocate_tuple,
         bytes::PyBytes,
@@ -70,6 +71,7 @@ macro_rules! define_py_value {
             Float(f64),
             Builtin(Builtins),
             ModuleFunction(ModuleFunctions),
+            NativeMethod(NativeMethod),
             DefFunction(FunctionId),
             Marker(Marker),
             Property(Property),
@@ -109,6 +111,7 @@ macro_rules! define_py_value {
                     Self::Bool(value) => Identity::Bool(*value),
                     Self::Float(value) => Identity::Float(value.to_bits()),
                     Self::Builtin(value) => Identity::Builtin(*value),
+                    Self::NativeMethod(method) => Identity::NativeMethod(*method),
                     Self::ModuleFunction(value) => Identity::ModuleFunction(*value),
                     Self::DefFunction(id) => Identity::DefFunction(id.index()),
                     Self::Marker(value) => Identity::Marker(*value),
@@ -124,7 +127,7 @@ macro_rules! define_py_value {
                 match self {
                     Self::Str(_) | Self::Bytes(_) | Self::Int(_)
                     | Self::Undefined | Self::Ellipsis | Self::NotImplemented | Self::None
-                    | Self::Bool(_) | Self::Float(_) | Self::Builtin(_) | Self::ModuleFunction(_)
+                    | Self::Bool(_) | Self::Float(_) | Self::Builtin(_) | Self::ModuleFunction(_) | Self::NativeMethod(_)
                     | Self::DefFunction(_) | Self::Marker(_) | Self::Property(_) => None,
                     $(Self::$variant(value) => Some(value.id()),)*
                 }
@@ -188,6 +191,7 @@ macro_rules! forward_py_value {
             Self::NamedTuple($value) => $body,
             Self::NamedTupleClass($value) => $body,
             Self::Dict($value) => $body,
+            Self::MappingProxy($value) => $body,
             Self::DictKeysView($value) => $body,
             Self::DictItemsView($value) => $body,
             Self::DictValuesView($value) => $body,
@@ -389,6 +393,7 @@ impl<'h> PyValue<'h> {
             Self::Bool(false) => Ok(f.write_str("False")?),
             Self::Float(value) => Ok(write!(f, "{}", FormatFloat(*value))?),
             Self::Builtin(value) => Ok(value.py_repr_fmt(f)?),
+            Self::NativeMethod(method) => Ok(write!(f, "<method '{}' of '{}' objects>", vm.interns.get_str(method.name), method.owner.name())?),
             Self::ModuleFunction(function) => {
                 let py_id = self.py_identity().into_value(vm.heap);
                 defer_drop!(py_id, vm);
@@ -571,6 +576,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
             Self::Bool(value) => Value::Bool(*value).py_hash(vm),
             Self::Float(value) => Value::Float(*value).py_hash(vm),
             Self::Builtin(value) => Value::Builtin(*value).py_hash(vm),
+            Self::NativeMethod(method) => Value::NativeMethod(*method).py_hash(vm),
             Self::ModuleFunction(value) => Value::ModuleFunction(*value).py_hash(vm),
             Self::DefFunction(id) => Value::DefFunction(*id).py_hash(vm),
             Self::Marker(value) => Value::Marker(*value).py_hash(vm),
@@ -598,6 +604,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
             Self::Bool(_) => Type::Bool.into(),
             Self::Float(_) => Type::Float.into(),
             Self::Builtin(value) => value.py_type().into(),
+            Self::NativeMethod(method) => method.kind().into(),
             Self::ModuleFunction(_) => Type::BuiltinFunction.into(),
             Self::DefFunction(_) => Type::Function.into(),
             Self::Marker(value) => value.py_type().into(),
@@ -674,6 +681,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
             Self::Bool(value) => Value::Bool(*value).py_eq_impl(other, vm),
             Self::Float(value) => Value::Float(*value).py_eq_impl(other, vm),
             Self::Builtin(value) => Value::Builtin(*value).py_eq_impl(other, vm),
+            Self::NativeMethod(method) => Value::NativeMethod(*method).py_eq_impl(other, vm),
             Self::ModuleFunction(value) => Value::ModuleFunction(*value).py_eq_impl(other, vm),
             Self::DefFunction(id) => Value::DefFunction(*id).py_eq_impl(other, vm),
             Self::Marker(value) => Value::Marker(*value).py_eq_impl(other, vm),
@@ -1089,6 +1097,22 @@ mod tests {
             );
             defer_drop!(exception, vm);
             assert_eq!(exception.py_value(vm).py_hash(vm).unwrap(), None);
+        });
+    }
+
+    #[test]
+    fn native_method_descriptor_preserves_its_value_semantics() {
+        with_vm(|vm, _| {
+            let name = EitherStr::Interned(vm.interns.intern_static(StaticStrings::Append));
+            let descriptor = Type::List.class_getattr(&name, vm).unwrap();
+            defer_drop!(descriptor, vm);
+            let view = descriptor.py_value(vm);
+            assert_eq!(view.py_type(vm), Type::MethodDescriptor);
+            assert_eq!(descriptor.py_type_heap(vm.heap), Type::MethodDescriptor);
+            assert!(view.py_identity() == descriptor.id());
+            assert_eq!(view.py_hash(vm).unwrap(), descriptor.py_hash(vm).unwrap());
+            assert_eq!(view.py_eq_impl(descriptor, vm).unwrap(), Some(true));
+            assert_eq!(view.py_eq_impl(&Value::None, vm).unwrap(), None);
         });
     }
 

@@ -6,10 +6,10 @@ Python.
 
 ## Implemented builtin functions
 
-`abs`, `all`, `any`, `bin`, `chr`, `delattr`, `divmod`, `enumerate`, `eval`, `exec`, `filter`,
+`abs`, `all`, `any`, `bin`, `chr`, `delattr`, `dir`, `divmod`, `enumerate`, `eval`, `exec`, `filter`,
 `format`, `getattr`, `hasattr`, `hash`, `hex`, `id`, `isinstance`, `iter`, `len`,
 `locals`, `map`, `max`, `min`, `next`, `oct`, `open`, `ord`, `pow`, `print`, `repr`,
-`reversed`, `round`, `setattr`, `sorted`, `sum`, `type`, `zip`.
+`reversed`, `round`, `setattr`, `sorted`, `sum`, `type`, `vars`, `zip`.
 `eval`, `exec` and `locals` are described in [eval_exec.md](eval_exec.md).
 
 ## Implemented type constructors (also builtins)
@@ -23,7 +23,7 @@ Python.
 These raise `NameError`:
 
 - **Code objects and imports**: `compile`, `__import__`.
-- **Namespace introspection**: `globals`, `vars`, `dir`.
+- **Namespace introspection**: `globals`.
 - **Interactive**: `input`, `breakpoint`, `help`.
 - **Construction / coercion**: `bytearray`, `memoryview`, `object`, `ascii`.
 - **Inheritance**: `super`; call the base explicitly (`Base.__init__(self, ...)`).
@@ -37,15 +37,11 @@ works on classes; see [classes.md](classes.md#inheritance).
 - **No `__class__` on builtin values** — `[].__class__`, `list.__class__` and
     `list[int].__class__` raise `AttributeError`; only instances of Monty classes
     carry it (see [classes.md](classes.md)). Use `type(x)`.
-- **Builtin methods are call-only** — reading one without calling it raises
-    `AttributeError`, so `[1].append`, `'a'.upper`, `{}.get`, `dict.fromkeys`
-    and `list.__class_getitem__` cannot be assigned, passed as a callback or
-    reached through `getattr`.
-    Direct calls with an explicit first positional receiver, such as `str.upper('foo')` and `list.append(items, value)`,
-    are supported for registered builtin instance methods.
-    Date methods called directly accept datetime receivers, but only the implemented date methods are available
-    (see [datetime.md](datetime.md)).
-    Counter's Python-defined methods have additional receiver restrictions (see [collections.md](collections.md#counter)).
+- `dir()` on native types lists registered attributes. Names implemented only by interpreter slots
+    or specialized attribute getters may be absent.
+- Native class dictionaries list the methods and constants in Monty's native attribute tables. CPython
+    also lists interpreter-provided slots such as `list.__dict__['__len__']`.
+- `vars()` follows Monty's `locals()` semantics. Bundled modules and functions do not expose an attribute dictionary.
 - **`str.translate()`** — a table entry (from a dict or `str.maketrans()`) that maps to a surrogate code point
     (`0xD800`–`0xDFFF`) raises `ValueError: character mapping must be in range(0x110000)`, because Monty strings cannot
     hold lone surrogates.

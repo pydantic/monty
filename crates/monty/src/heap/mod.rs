@@ -11,6 +11,7 @@ use std::{
     fmt,
     iter::once,
     marker::PhantomData,
+    mem,
     ops::{Deref, DerefMut},
     ptr::{self, NonNull},
     sync::Arc,
@@ -23,7 +24,7 @@ use serde::{de::Error as _, ser::SerializeStruct};
 use crate::types::TypeRef;
 use crate::{
     asyncio::{Awaiter, ExternalFutureState, GatherState, TaskFutureState, WaitFutureState},
-    types::{ExtFunction, HostClassType, TimeZone, Tuple, decimal::py_context::DecimalSlot},
+    types::{Dict, ExtFunction, HostClassType, TimeZone, Tuple, class::Namespace, decimal::py_context::DecimalSlot},
     value::Value,
 };
 // Re-export items moved to `heap_traits` so that `crate::heap::DropGuard` etc. continue
@@ -1051,24 +1052,39 @@ fn restore_entries(entries: &mut StableHeap<HeapEntry>) -> Result<WeakIndexes, &
         if matches!(entry.color.get(), CcColor::Gray | CcColor::White) {
             return Err("snapshot contains a transient GC color");
         }
-        match entry.get_mut().data.0.get_mut() {
+        let namespace = match entry.get_mut().data.0.get_mut() {
             HeapData::ExtFunction(function) => {
                 *indexes
                     .ext_function_cache
                     .entry(function.cache_key())
                     .or_default()
                     .slot_mut(function.is_async()) = Some(id);
+                None
             }
             HeapData::Instance(instance) => {
                 indexes.index_boundary_uuid(instance.uuid(), id);
+                Some(&mut instance.attrs)
             }
             HeapData::Class(class) => {
                 indexes.index_boundary_uuid(class.uuid(), id);
+                Some(&mut class.namespace)
             }
             HeapData::HostClassType(ty) => {
                 indexes.host_type_index.insert(ty.type_id(), id);
+                None
             }
-            _ => {}
+            _ => None,
+        };
+        if let Some(Namespace::Inline(dict)) = namespace {
+            let data = HeapData::Dict(mem::replace(dict.as_mut(), Dict::new()));
+            let dict_id = entries.allocate(HeapEntry::new(data));
+            let mut entry = entries.entry(id).expect("namespace owner");
+            let slot = match entry.get_mut().data.0.get_mut() {
+                HeapData::Instance(instance) => &mut instance.attrs,
+                HeapData::Class(class) => &mut class.namespace,
+                _ => unreachable!("namespace owner"),
+            };
+            *slot = Namespace::Shared(dict_id);
         }
     }
     Ok(indexes)
@@ -1131,6 +1147,17 @@ const GC_INTERVAL: usize = if cfg!(feature = "memory-model-checks") {
 } else {
     DEFAULT_GC_INTERVAL
 };
+
+impl HeapEntry {
+    fn new(data: HeapData) -> Self {
+        Self {
+            refcount: Cell::new(1),
+            readers: Cell::new(0),
+            data: UnsafeHeapData(UnsafeCell::new(data)),
+            color: Cell::new(CcColor::Black),
+        }
+    }
+}
 
 impl Heap {
     /// Creates a new heap with the given resource tracker.
@@ -1216,12 +1243,7 @@ impl Heap {
                 .set(self.allocations_since_gc.get().wrapping_add(1));
         }
 
-        HeapEntry {
-            refcount: Cell::new(1),
-            readers: Cell::new(0),
-            data: UnsafeHeapData(UnsafeCell::new(data)),
-            color: Cell::new(CcColor::Black),
-        }
+        HeapEntry::new(data)
     }
 
     /// Returns the singleton empty tuple.
@@ -1955,6 +1977,7 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 }
             }
         }
+        HeapData::MappingProxy(view) => on_child(view.dict_id()),
         HeapData::DictKeysView(view) => {
             on_child(view.dict_id());
         }
@@ -2044,26 +2067,12 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 }
             }
             // The class namespace holds method/class-variable values.
-            for (k, v) in class.namespace() {
-                if let Value::Ref(id) = k {
-                    on_child(*id);
-                }
-                if let Value::Ref(id) = v {
-                    on_child(*id);
-                }
-            }
+            on_child(class.namespace.id());
         }
         HeapData::Instance(instance) => {
             // An instance references its class plus its attribute dict's entries.
             on_child(instance.class());
-            for (k, v) in instance.attrs() {
-                if let Value::Ref(id) = k {
-                    on_child(*id);
-                }
-                if let Value::Ref(id) = v {
-                    on_child(*id);
-                }
-            }
+            on_child(instance.attrs.id());
         }
         HeapData::BuiltinDescriptor(d) => d.visit_children(&mut on_child),
         HeapData::BoundMethod(bm) => {
@@ -2267,6 +2276,7 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         HeapData::NamedTuple(nt) => nt.py_dec_ref_ids(stack),
         HeapData::NamedTupleClass(class) => class.py_dec_ref_ids(stack),
         HeapData::Dict(d) => d.py_dec_ref_ids(stack),
+        HeapData::MappingProxy(view) => view.py_dec_ref_ids(stack),
         HeapData::DictKeysView(view) => view.py_dec_ref_ids(stack),
         HeapData::DictItemsView(view) => view.py_dec_ref_ids(stack),
         HeapData::DictValuesView(view) => view.py_dec_ref_ids(stack),

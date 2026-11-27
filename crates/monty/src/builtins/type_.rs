@@ -252,7 +252,9 @@ pub(crate) fn run_init_subclass(class_id: HeapId, kwargs: KwargsValues, vm: &mut
     };
     let hook = class.ancestors().iter().find_map(|ancestor| match ancestor {
         TypeRef::Class(id) => match vm.heap.get(*id) {
-            HeapData::Class(base) => base.namespace().get_by_str("__init_subclass__", vm.heap, vm.interns),
+            HeapData::Class(base) => base
+                .namespace(vm.heap)
+                .get_by_str("__init_subclass__", vm.heap, vm.interns),
             _ => None,
         },
         TypeRef::Native(_) => None,

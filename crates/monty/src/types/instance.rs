@@ -2,7 +2,7 @@ use std::{borrow::Cow, fmt::Write, mem};
 
 use monty_types::MontyUuid;
 
-use super::{Dict, LazyHeapSet, PyTrait, Type, TypeRef, descriptor};
+use super::{Dict, LazyHeapSet, PyTrait, Type, TypeRef, class::Namespace, descriptor};
 use crate::{
     args::{ArgValues, KwargsValues},
     boundary_uuid::create_uuid,
@@ -11,11 +11,12 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     frozen::{FrozenFunction, FrozenFunctions},
-    hash::{HashValue, identity_hash},
+    hash::{HashValue, hash_one, identity_hash},
     heap::{
-        BorrowedHeapReadMut, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead,
-        HeapReadMut, HeapReadOutput, heap_read_ref_as_field_mut,
+        DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadMut,
+        HeapReadOutput, HeapReader,
     },
+    identity::Identity,
     intern::Interns,
     modules::{
         ModuleFunctions,
@@ -38,7 +39,7 @@ pub(crate) struct Instance {
     class: HeapId,
     /// Instance attributes (`__dict__`).
     #[serde(rename = "A")]
-    attrs: Dict,
+    pub(crate) attrs: Namespace,
     /// Boundary identity, generated lazily the first time the instance crosses
     /// to the host; dumped with the heap so it stays stable across restores.
     #[serde(rename = "U")]
@@ -48,10 +49,10 @@ pub(crate) struct Instance {
 impl Instance {
     /// Creates a new instance of `class` with the given initial attributes.
     #[must_use]
-    pub fn new(class: HeapId, attrs: Dict) -> Self {
+    pub fn new(class: HeapId, attrs: Dict, heap: &Heap) -> Self {
         Self {
             class,
-            attrs,
+            attrs: Namespace::Shared(heap.allocate(HeapData::Dict(attrs))),
             uuid: None,
         }
     }
@@ -77,8 +78,8 @@ impl Instance {
 
     /// Returns a reference to the instance's attribute dict (`__dict__`).
     #[must_use]
-    pub fn attrs(&self) -> &Dict {
-        &self.attrs
+    pub fn attrs<'a>(&self, heap: &'a Heap) -> &'a Dict {
+        self.attrs.dict(heap)
     }
 }
 
@@ -96,6 +97,14 @@ pub(crate) struct BoundMethod {
 }
 
 impl BoundMethod {
+    pub(crate) fn kind(&self) -> Type {
+        if matches!(self.func, Value::NativeMethod(_)) {
+            Type::BuiltinFunction
+        } else {
+            Type::Function
+        }
+    }
+
     /// Allocates `func` bound to `instance`, taking both references.
     pub(crate) fn allocate(instance: Value, func: Value, heap: &Heap) -> Value {
         Value::allocate(Self { instance, func }, heap)
@@ -139,15 +148,18 @@ impl<'h> HeapRead<'h, Instance> {
     pub(crate) fn allocate_empty_like(&self, vm: &mut VM<'h>) -> HeapId {
         let class_id = self.get(vm.heap).class();
         vm.heap.inc_ref(class_id);
-        vm.heap
-            .allocate(HeapData::Instance(Box::new(Instance::new(class_id, Dict::new()))))
+        vm.heap.allocate(HeapData::Instance(Box::new(Instance::new(
+            class_id,
+            Dict::new(),
+            vm.heap,
+        ))))
     }
 }
 
 impl<'h> HeapReadMut<'h, Instance> {
-    /// Borrows the inline attribute dictionary without exposing a replaceable handle.
-    pub(crate) fn attrs_mut(&self) -> BorrowedHeapReadMut<'_, 'h, Dict> {
-        heap_read_ref_as_field_mut!(self, Instance, attrs)
+    /// Returns the live attribute dictionary for mutation.
+    pub(crate) fn attrs_mut(&self, heap: &HeapReader<'h>) -> HeapObjectRead<'h, Dict> {
+        heap.read_as(self.get(heap).attrs.id()).expect("namespace is a dict")
     }
 
     /// Sets an instance attribute, returning the previous value (if any) for the
@@ -179,12 +191,33 @@ impl<'h> HeapReadMut<'h, Instance> {
     pub fn set_attr_unchecked(&self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         if name
             .as_either_str(vm.heap)
+            .is_some_and(|name| name.as_str(vm.interns) == "__dict__")
+            && class_dunder(self.get(vm.heap).class(), "__dict__", vm).is_none()
+        {
+            name.drop_with(vm);
+            if let Value::Ref(id) = value
+                && matches!(vm.heap.get(id), HeapData::Dict(_))
+            {
+                let id = value.into_ref_id().expect("matched a dictionary reference");
+                let old = self.get(vm.heap).attrs.id();
+                self.get_mut(vm.heap).attrs = Namespace::Shared(id);
+                return Ok(Some(Value::Ref(old)));
+            }
+            let error = ExcType::type_error(format!(
+                "__dict__ must be set to a dictionary, not a '{}'",
+                value.py_type_name(vm)
+            ));
+            value.drop_with(vm);
+            return Err(error);
+        }
+        if name
+            .as_either_str(vm.heap)
             .is_some_and(|name| name.as_str(vm.interns) == "__class__")
         {
             name.drop_with(vm);
             self.assign_class(value, vm).map(|()| None)
         } else {
-            self.attrs_mut().set(name, value, vm)
+            self.attrs_mut(vm.heap).set(name, value, vm)
         }
     }
 
@@ -570,7 +603,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
 impl HeapItem for Instance {
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         stack.push(self.class);
-        self.attrs.py_dec_ref_ids(stack);
+        stack.push(self.attrs.id());
     }
 }
 
@@ -605,32 +638,63 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BoundMethod> {
         vm.call_function(func, args.prepend(instance))
     }
 
-    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
-        // Monty has no dedicated `method` type; bound methods report `function`.
-        Type::Function.into()
+    fn py_type(&self, vm: &VM<'h>) -> TypeRef {
+        self.get(vm.heap).kind().into()
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
         None
     }
 
-    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        let bound = self.get(vm.heap);
+        if let Value::NativeMethod(method) = bound.func
+            && let Some(other) = other.get_as::<BoundMethod>(vm.heap)
+        {
+            return Ok(Some(
+                matches!(other.func, Value::NativeMethod(m) if m == method)
+                    && Identity::new(&bound.instance) == Identity::new(&other.instance),
+            ));
+        }
         Ok(None)
     }
 
-    fn py_hash(&self, _vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
-        // Bound methods hash by identity, consistent with their identity-only
-        // equality (CPython hashes by `(instance, func)` — see limitations/classes.md).
-        Ok(Some(identity_hash(self.id())))
+    fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+        let bound = self.get(vm.heap);
+        Ok(Some(if let Value::NativeMethod(method) = bound.func {
+            hash_one((
+                method.owner.legacy_index(),
+                method.name.raw(),
+                Identity::new(&bound.instance).encoded(),
+            ))
+        } else {
+            identity_hash(self.id())
+        }))
     }
 
-    fn py_repr_fmt(&self, f: &mut impl Write, _vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
-        Ok(write!(f, "<bound method>")?)
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
+        let bound = self.get(vm.heap);
+        if let Value::NativeMethod(method) = bound.func {
+            write!(
+                f,
+                "<built-in method {} of {} object at 0x{:x}>",
+                vm.interns.get_str(method.name),
+                bound.instance.py_type_name(vm),
+                Identity::new(&bound.instance).encoded()
+            )?;
+        } else {
+            f.write_str("<bound method>")?;
+        }
+        Ok(())
     }
 
     /// Bound receivers and functions are inspectable; annotation metadata belongs to the function.
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let bound = self.get(vm.heap);
+        if let Value::NativeMethod(method) = bound.func {
+            let value = method.bound_attr(&bound.instance, attr.as_str(vm.interns), vm);
+            return Ok(value.map(CallResult::Value));
+        }
         match attr.as_str(vm.interns) {
             "__func__" => return Ok(Some(CallResult::Value(bound.func.clone_with_heap(vm.heap)))),
             "__self__" => return Ok(Some(CallResult::Value(bound.instance.clone_with_heap(vm.heap)))),
@@ -644,17 +708,25 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BoundMethod> {
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let bound = self.get(vm.heap);
-        let callable = match attr.as_str(vm.interns) {
-            "__func__" => bound.func.clone_with_heap(vm.heap),
-            "__self__" => bound.instance.clone_with_heap(vm.heap),
-            "__annotations__" | "__annotate__" => {
-                let function = bound.func.clone_with_heap(vm.heap);
-                defer_drop!(function, vm);
-                return function.py_value(vm).py_call_attr(vm, attr, args);
-            }
-            _ => {
+        let callable = if let Value::NativeMethod(method) = bound.func {
+            let Some(value) = method.bound_attr(&bound.instance, attr.as_str(vm.interns), vm) else {
                 args.drop_with(vm);
-                return Err(ExcType::attribute_error("function", attr.as_str(vm.interns)));
+                return Err(ExcType::attribute_error(Type::BuiltinFunction, attr.as_str(vm.interns)));
+            };
+            value
+        } else {
+            match attr.as_str(vm.interns) {
+                "__func__" => bound.func.clone_with_heap(vm.heap),
+                "__self__" => bound.instance.clone_with_heap(vm.heap),
+                "__annotations__" | "__annotate__" => {
+                    let function = bound.func.clone_with_heap(vm.heap);
+                    defer_drop!(function, vm);
+                    return function.py_value(vm).py_call_attr(vm, attr, args);
+                }
+                _ => {
+                    args.drop_with(vm);
+                    return Err(ExcType::attribute_error("function", attr.as_str(vm.interns)));
+                }
             }
         };
         defer_drop!(callable, vm);
@@ -964,7 +1036,7 @@ pub(crate) fn namespace_member<'v>(
     interns: &Interns,
 ) -> Option<&'v Value> {
     match heap.get(class_id) {
-        HeapData::Class(class) => class.namespace().get_by_str(name, heap, interns),
+        HeapData::Class(class) => class.namespace(heap).get_by_str(name, heap, interns),
         _ => None,
     }
 }
@@ -1187,14 +1259,17 @@ mod tests {
     }
 
     #[test]
-    fn user_repr_propagates_writer_errors() {
-        let mut executor = Executor::new(
-            "class Example:\n    def __repr__(self):\n        return 'result'\nExample()".to_owned(),
-            "test.py",
-            Vec::new(),
-            CompileOptions::default(),
-        )
-        .unwrap();
+    fn repr_propagates_writer_errors() {
+        for source in [
+            "class Example:\n    def __repr__(self):\n        return 'result'\nExample()",
+            "[].append",
+        ] {
+            assert_repr_write_fails(source);
+        }
+    }
+
+    fn assert_repr_write_fails(source: &str) {
+        let mut executor = Executor::new(source.to_owned(), "test.py", Vec::new(), CompileOptions::default()).unwrap();
         let mut heap = Heap::new(16, ResourceTracker::default());
         let globals = executor.empty_globals();
 
@@ -1207,7 +1282,7 @@ mod tests {
                 PrintWriter::Disabled,
             );
             let FrameExit::Return(value) = vm.run_external().unwrap() else {
-                unreachable!("the program returns its instance")
+                unreachable!("the program returns a value")
             };
             defer_drop!(value, vm);
             assert!(

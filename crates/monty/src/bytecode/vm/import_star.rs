@@ -14,7 +14,7 @@ use crate::{
     name_map::namespace_overflow_message,
     namespace::NamespaceId,
     parse::CodeRange,
-    types::{Dict, Instance, List, Module, PyTrait},
+    types::{Instance, List, Module, PyTrait},
     value::Value,
 };
 
@@ -36,7 +36,7 @@ impl VM<'_> {
     /// `TypeError` for a non-`str` one when the loop reaches it.
     fn import_star_names(&mut self) -> RunResult<Value> {
         let module = self.import_star_module(0)?;
-        let attrs = module_attrs(module, self)?;
+        let attrs = module.members(self)?;
         let names = match attrs.get_by_str("__all__", self.heap, self.interns) {
             Some(all) => {
                 let all = all.clone_with_heap(self.heap);
@@ -98,7 +98,7 @@ impl VM<'_> {
         };
         matches!(
             self.heap.get(instance.class()),
-            HeapData::Class(class) if class.namespace().get_by_str("__getitem__", self.heap, self.interns).is_some()
+            HeapData::Class(class) if class.namespace(self.heap).get_by_str("__getitem__", self.heap, self.interns).is_some()
         )
     }
 
@@ -108,7 +108,7 @@ impl VM<'_> {
         let len = self.stack.len();
         let Some(attr) = self.stack[len - 1].as_either_str(self.heap) else {
             let module = self.import_star_module(2)?;
-            let attrs = module_attrs(module, self)?;
+            let attrs = module.members(self)?;
             let from_all = attrs.get_by_str("__all__", self.heap, self.interns).is_some();
             let module_name = module
                 .error_name(self)
@@ -165,17 +165,6 @@ impl VM<'_> {
         self.stack[self.stack.len() - 1 - depth]
             .get_as::<Module>(self.heap)
             .ok_or_else(ExcType::import_star_without_namespace)
-    }
-}
-
-/// A module's attribute dict: a file module's namespace, else its `attrs`.
-fn module_attrs<'a>(module: &'a Module, vm: &'a VM<'_>) -> RunResult<&'a Dict> {
-    match module.namespace() {
-        Some(namespace) => match vm.heap.get(namespace) {
-            HeapData::Dict(dict) => Ok(dict),
-            _ => Err(RunError::internal("module namespace is not a dict")),
-        },
-        None => Ok(module.attrs()),
     }
 }
 

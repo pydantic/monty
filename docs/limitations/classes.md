@@ -108,7 +108,7 @@ order and error wording, but with these divergences:
     `Foo.__init__() missing ...`.
 - **`type(obj)`** returns the class object (so identity works), but its own
     `repr` is `<class 'Foo'>` with the bare name; CPython qualifies it.
-- **Bound methods report `function`, not `method`.** `type(obj.method)` is
+- **Python-defined bound methods report `function`, not `method`.** `type(obj.method)` is
     `<class 'function'>` where CPython says `<class 'method'>`; Monty has no
     dedicated `method` type.
 - **Ordering comparisons on instances raise, but a user `__lt__`/`__gt__`/… is
@@ -139,11 +139,11 @@ order and error wording, but with these divergences:
     `__call__` uses the ordinary suspendable call path.
 - **Ordering dunders are still not dispatched**; see the entry above.
     Instances are always truthy (no `__bool__`/`__len__` dispatch).
-- **Bound methods compare and hash by identity**: each `obj.method` access
+- **Python-defined bound methods compare and hash by identity**: each `obj.method` access
     creates a fresh object, so `obj.method == obj.method` is `False` and two
     accesses hash differently. CPython compares/hashes bound methods by
     `(instance, func)`, making separate accesses equal.
-- **Bound-method `repr`** is the bare `<bound method>`; CPython renders
+- **Python-defined bound-method `repr`** is the bare `<bound method>`; CPython renders
     `<bound method Foo.m of <__main__.Foo object at 0x..>>`.
 - **Assigning `Foo.__name__`** stores an ordinary class member. Unlike CPython,
     where `type.__name__` is a metaclass descriptor whose setter renames the

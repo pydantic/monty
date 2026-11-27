@@ -274,7 +274,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DirScan> {
         let value = match (self.get(vm.heap), attr.static_string(vm.interns)) {
             (DirScan::Entry(entry), Some(StaticStrings::Name)) => allocate_string(entry.name.as_str(), vm.heap),
             (DirScan::Entry(entry), Some(StaticStrings::Path)) => allocate_string(entry.path.as_str(), vm.heap),
-            _ => return Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns))),
+            _ => return Ok(None),
         };
         Ok(Some(CallResult::Value(value)))
     }

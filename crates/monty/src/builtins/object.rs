@@ -123,7 +123,7 @@ pub(crate) fn builtin_object_new(vm: &mut VM<'_>, args: ArgValues) -> RunResult<
         }
     }
     vm.heap.inc_ref(class_id);
-    let instance = Instance::new(class_id, Dict::new());
+    let instance = Instance::new(class_id, Dict::new(), vm.heap);
     Ok(Value::allocate(instance, vm.heap))
 }
 

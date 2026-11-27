@@ -26,6 +26,7 @@ use crate::{
     identity::Identity,
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
     modules::ModuleFunctions,
+    py_attrs::{self, NativeMethod},
     py_value::PyValue,
     types::{
         Bytes, BytesIterator, CmpOrder, Complex, HeapStr, LazyHeapSet, LongInt, Property, PyTrait, Type, TypeRef,
@@ -88,6 +89,9 @@ pub(crate) enum Value {
     /// Module functions require importing a module to access (e.g., `asyncio.gather`).
     #[serde(rename = "M")]
     ModuleFunction(ModuleFunctions),
+    /// A method descriptor read from a native class.
+    #[serde(rename = "W")]
+    NativeMethod(NativeMethod),
     /// A function defined in the module (not a closure, doesn't capture any variables)
     #[serde(rename = "D")]
     DefFunction(FunctionId),
@@ -263,6 +267,7 @@ impl<'h> PyTrait<'h> for Value {
             Self::InlineString(_) => Type::Str.into(),
             Self::InternBytes(_) => Type::Bytes.into(),
             Self::Builtin(c) => c.py_type().into(),
+            Self::NativeMethod(method) => method.kind().into(),
             Self::ModuleFunction(_) => Type::BuiltinFunction.into(),
             Self::DefFunction(_) => Type::Function.into(),
             Self::Marker(m) => m.py_type().into(),
@@ -303,6 +308,10 @@ impl<'h> PyTrait<'h> for Value {
             }),
             Self::Builtin(b) => Ok(match other {
                 Self::Builtin(o) => Some(b == o),
+                _ => None,
+            }),
+            Self::NativeMethod(m) => Ok(match other {
+                Self::NativeMethod(o) => Some(m == o),
                 _ => None,
             }),
             Self::ModuleFunction(mf) => Ok(match other {
@@ -905,6 +914,7 @@ impl Value {
             Self::Bool(value) => PyValue::Bool(*value),
             Self::Float(value) => PyValue::Float(*value),
             Self::Builtin(value) => PyValue::Builtin(*value),
+            Self::NativeMethod(method) => PyValue::NativeMethod(*method),
             Self::ModuleFunction(value) => PyValue::ModuleFunction(*value),
             Self::DefFunction(id) => PyValue::DefFunction(*id),
             Self::Marker(value) => PyValue::Marker(*value),
@@ -1022,6 +1032,7 @@ impl Value {
             Self::InlineString(_) => Type::Str,
             Self::InternBytes(_) => Type::Bytes,
             Self::Builtin(_) => Type::BuiltinFunction,
+            Self::NativeMethod(method) => method.kind(),
             Self::ModuleFunction(_) | Self::DefFunction(_) => Type::Function,
             Self::Marker(m) => m.py_type(),
             Self::Property(_) => Type::Property,
@@ -1234,6 +1245,11 @@ impl Value {
             Self::Builtin(Builtins::Type(Type::Type)) => Ok(Some(hash_named("builtin", "type"))),
             Self::Builtin(Builtins::Type(ty)) => Ok(Some(hash_named("type", ty.name()))),
             // the `Debug` form carries the module too, so `time.sleep` and `asyncio.sleep` differ
+            Self::NativeMethod(method) => Ok(Some(hash_one((
+                "method_descriptor",
+                method.owner.legacy_index(),
+                method.name.raw(),
+            )))),
             Self::ModuleFunction(function) => Ok(Some(hash_named("module_function", &format!("{function:?}")))),
             // Hash functions based on function ID
             Self::DefFunction(f_id) => Ok(Some(hash_one(f_id))),
@@ -1310,10 +1326,12 @@ impl Value {
             // `__name__`, class constants and the members handed out as values
             // all live with the type, including the `AttributeError`.
             Self::Builtin(Builtins::Type(t)) => {
-                return match t.class_getattr(attr, vm) {
-                    Some(value) => Ok(CallResult::Value(value)),
-                    None => Err(t.attribute_error(attr, vm)),
-                };
+                return t.class_getattr(attr, vm).map(CallResult::Value);
+            }
+            Self::NativeMethod(method) => {
+                if let Some(value) = method.attr(attr.as_str(vm.interns), vm) {
+                    return Ok(CallResult::Value(value));
+                }
             }
             // A plain `def` has its PEP 649 attributes and nothing else.
             Self::DefFunction(func_id) => {
@@ -1322,6 +1340,11 @@ impl Value {
                 }
             }
             _ => {}
+        }
+        if let TypeRef::Native(ty) = self.py_type(vm)
+            && let Some(method) = py_attrs::read_member(ty, attr, Some(self), vm)
+        {
+            return Ok(CallResult::Value(method));
         }
         let type_name = self.py_type_name(vm);
         Err(ExcType::attribute_error(type_name, attr.as_str(vm.interns)))
@@ -1826,6 +1849,7 @@ impl Value {
             Self::Int(v) => Self::Int(*v),
             Self::Float(v) => Self::Float(*v),
             Self::Builtin(b) => Self::Builtin(*b),
+            Self::NativeMethod(method) => Self::NativeMethod(*method),
             Self::ModuleFunction(mf) => Self::ModuleFunction(*mf),
             Self::DefFunction(f) => Self::DefFunction(*f),
             Self::InternString(s) => Self::InternString(*s),
@@ -1976,7 +2000,7 @@ impl Value {
     /// `__call__` enables the protocol even when that member is not callable.
     pub(crate) fn is_callable(&self, vm: &VM<'_>) -> bool {
         match self {
-            Self::Builtin(_) | Self::ModuleFunction(_) | Self::DefFunction(_) => true,
+            Self::Builtin(_) | Self::ModuleFunction(_) | Self::NativeMethod(_) | Self::DefFunction(_) => true,
             Self::Ref(id) => match vm.heap.get(*id) {
                 HeapData::Instance(instance) => class_defines(instance.class(), "__call__", vm),
                 value => value.is_callable(),

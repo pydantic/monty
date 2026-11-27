@@ -9,6 +9,7 @@ mod any;
 mod bin;
 mod chr;
 mod delattr;
+pub(crate) mod dir;
 mod divmod;
 mod enumerate;
 pub(crate) mod eval_exec;
@@ -42,6 +43,7 @@ mod setattr;
 mod sorted;
 mod sum;
 pub(crate) mod type_;
+pub(crate) mod vars;
 mod zip;
 
 use std::{fmt, fmt::Write, str::FromStr};
@@ -201,6 +203,8 @@ impl BuiltinsFunctionsExt for BuiltinsFunctions {
             // `eval()` / `exec()` push the compiled snippet's frame.
             Self::Eval => return eval_exec::builtin_eval(vm, args),
             Self::Exec => return eval_exec::builtin_exec(vm, args),
+            Self::Dir => return dir::builtin_dir(vm, args),
+            Self::Vars => return vars::builtin_vars(vm, args),
             Self::Locals => locals::builtin_locals(vm, args),
         };
         r.map(CallResult::Value)

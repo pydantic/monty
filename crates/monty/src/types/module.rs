@@ -57,6 +57,17 @@ pub(crate) enum ModuleName {
 }
 
 impl Module {
+    /// A module's attribute dict: a file module's namespace, else its `attrs`.
+    pub(crate) fn members<'a>(&'a self, vm: &'a VM<'_>) -> RunResult<&'a Dict> {
+        match self.namespace() {
+            Some(namespace) => match vm.heap.get(namespace) {
+                HeapData::Dict(dict) => Ok(dict),
+                _ => Err(RunError::internal("module namespace is not a dict")),
+            },
+            None => Ok(self.attrs()),
+        }
+    }
+
     /// Creates a new bundled module with an empty attributes dictionary.
     ///
     /// Attribute names are interned lazily when the module materializes them.
@@ -208,6 +219,12 @@ impl<'h> HeapRead<'h, Module> {
     /// For `Property` values, invokes the property getter rather than returning
     /// the Property itself - this implements Python's descriptor protocol.
     pub fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> Option<CallResult> {
+        if attr.as_str(vm.interns) == "__dict__"
+            && let Some(id) = self.get(vm.heap).namespace()
+        {
+            vm.heap.inc_ref(id);
+            return Some(CallResult::Value(Value::Ref(id)));
+        }
         let value = self.attr_value(attr.as_str(vm.interns), vm)?;
         // If the value is a Property, invoke its getter to compute the actual value
         if let Value::Property(prop) = value {
@@ -262,13 +279,7 @@ impl<'h> HeapRead<'h, Module> {
     /// An owned copy of the attribute `name`, from the file namespace or `attrs`.
     fn attr_value(&self, name: &str, vm: &VM<'h>) -> Option<Value> {
         let module = self.get(vm.heap);
-        let attrs = match module.namespace() {
-            Some(namespace) => match vm.heap.get(namespace) {
-                HeapData::Dict(dict) => dict,
-                _ => return None,
-            },
-            None => &module.attrs,
-        };
+        let attrs = module.members(vm).ok()?;
         attrs
             .get_by_str(name, vm.heap, vm.interns)
             .map(|value| value.clone_with_heap(vm.heap))

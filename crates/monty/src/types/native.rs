@@ -25,7 +25,7 @@ use crate::{
     bytecode::{CallResult, PyGeneratorImpl, VM},
     exception_private::{ExcType, RunResult, exc_new},
     modules::{collections, csv, hashlib, itertools},
-    py_attrs::{AttrTable, PyAttrs, SubtypeCall},
+    py_attrs::{AttrTable, NativeMethod, PyAttrs, SubtypeCall},
     types::{
         Bytes, Deque, Dict, ForwardRef, FrozenSet, List, Partial, Path, Random, Range, Set, Slice, TimeZone, Tuple,
         builtin_descriptor, complex, date, datetime, decimal,
@@ -441,6 +441,9 @@ impl Type {
             Self::BlockingIOError => 169,
             Self::ClassMethod => 170,
             Self::StaticMethod => 171,
+            Self::MethodDescriptor => 172,
+            Self::MappingProxy => 173,
+            Self::ClassMethodDescriptor => 174,
         }
     }
 
@@ -1217,6 +1220,9 @@ native_types! {
         .exc(ExcType::InvalidStateError),
     ClassMethod("classmethod").builtin().basetype().ctor(Constructor::Value(builtin_descriptor::classmethod_init)),
     StaticMethod("staticmethod").builtin().basetype().ctor(Constructor::Value(builtin_descriptor::staticmethod_init)),
+    MappingProxy("mappingproxy").attrs(<super::MappingProxy as PyAttrs<'static>>::TABLE),
+    ClassMethodDescriptor("classmethod_descriptor").attrs(<NativeMethod as PyAttrs<'static>>::TABLE),
+    MethodDescriptor("method_descriptor").attrs(<NativeMethod as PyAttrs<'static>>::TABLE),
 }
 
 #[cfg(test)]

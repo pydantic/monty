@@ -57,8 +57,3 @@ C `long`, which is 32 bits on Windows:
 `bytes` is the only bytes-like input: Monty has no `bytearray`, `memoryview` or `array`.
 The `int` parameters take `int` and `bool`; a class defining `__index__` raises
 `TypeError: 'X' object cannot be interpreted as an integer` (see [classes.md](classes.md)).
-
-## Method objects
-
-`h.update` cannot be bound and called later: methods on hash objects can only be called in place
-(`h.update(b'...')`), as for the other builtin types (see [classes.md](classes.md)).

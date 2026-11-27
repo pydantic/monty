@@ -20,7 +20,7 @@ use crate::{
     heap::{DropGuard, DropWithContext, HeapData, HeapReadOutput},
     modules::ModuleFunctions,
     types::{
-        Dict, PyTrait, Tuple, Type, TypeRef, descriptor,
+        Dict, MappingProxy, PyTrait, Tuple, Type, TypeRef, descriptor,
         instance::{FastAttributeLookupResult, class_dunder, lookup_attribute_fast},
         key_hash::set_element_hash,
         tuple::allocate_tuple,
@@ -61,12 +61,15 @@ impl VM<'_> {
     /// sequence or mapping (per `flags`) of an acceptable length.
     ///
     /// Sequences are `list`, `tuple`, namedtuples, `range` and `deque`, never
-    /// `str` or `bytes`; mappings are `dict` and its `collections` subclasses.
+    /// `str` or `bytes`; mappings include dictionary subclasses and native class namespaces.
     pub(super) fn match_shape(&mut self, length: u16, flags: u8) {
         let subject = self.peek();
         let ty = subject.py_type(self).native();
         let shape_ok = if flags & MATCH_SHAPE_MAPPING != 0 {
-            matches!(ty, Some(Type::Dict | Type::DefaultDict | Type::Counter))
+            matches!(
+                ty,
+                Some(Type::Dict | Type::DefaultDict | Type::Counter | Type::MappingProxy)
+            )
         } else {
             matches!(
                 ty,
@@ -317,7 +320,7 @@ impl VM<'_> {
 /// earlier key was already found missing. Only keys with equal hashes are
 /// compared, so large distinct keys never cost a full `==` each.
 fn lookup_pattern_keys(subject: &Value, keys: &Value, vm: &mut VM<'_>) -> RunResult<Option<Vec<Value>>> {
-    let (Some(dict), Some(keys)) = (subject.read_as::<Dict>(vm.heap), keys.read_as::<Tuple>(vm.heap)) else {
+    let (Some(dict), Some(keys)) = (MappingProxy::source(subject, vm.heap), keys.read_as::<Tuple>(vm.heap)) else {
         return Ok(None);
     };
     let len = keys.get(vm.heap).as_slice().len();
@@ -347,7 +350,7 @@ fn lookup_pattern_keys(subject: &Value, keys: &Value, vm: &mut VM<'_>) -> RunRes
 /// Builds the `**rest` dict: a plain `dict` copy of `subject` with every key
 /// in the `keys` tuple removed.
 fn build_rest_dict(subject: &Value, keys: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
-    let (Some(dict), Some(keys)) = (subject.read_as::<Dict>(vm.heap), keys.read_as::<Tuple>(vm.heap)) else {
+    let (Some(dict), Some(keys)) = (MappingProxy::source(subject, vm.heap), keys.read_as::<Tuple>(vm.heap)) else {
         unreachable!("MatchKeys rest mode runs after a successful mapping MatchShape")
     };
     let pairs = dict.clone_all_pairs(vm)?;

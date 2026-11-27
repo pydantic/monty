@@ -806,7 +806,7 @@ fn class_attr_is_true(class_id: HeapId, name: &str, vm: &mut VM<'_>) -> RunResul
     let HeapData::Class(class) = vm.heap.get(class_id) else {
         unreachable!("hint_source classified a class");
     };
-    let Some(value) = class.namespace().get_by_str(name, vm.heap, vm.interns) else {
+    let Some(value) = class.namespace(vm.heap).get_by_str(name, vm.heap, vm.interns) else {
         return Ok(false);
     };
     let value = value.clone_with_heap(vm.heap);
