@@ -443,10 +443,8 @@ every construction request. Divergences:
 - Method decorators — `@classmethod`, `@staticmethod`, `@property`, and any
     decorator on a `def` inside a class body (rejected at parse time). Decorators
     on classes and on non-method functions are supported.
-- **Classes are barely introspectable**: `__dict__` and `dir()` are
-    unavailable (`cls.__name__` and `cls.__annotations__` work, see
-    [typing.md](typing.md#annotations)). A class decorator can therefore
-    discover fields and nothing else.
+- **No public class or instance `__dict__`.** Use [`dir(cls)` or `dir(obj)`](builtins.md#behavioural-divergences)
+    to list names.
 - **Tracebacks from decorator application point at the whole `class` statement**
     (a span from the first decorator through the body, with the body elided as
     `...<N lines>...`), where CPython pins the individual decorator that raised.

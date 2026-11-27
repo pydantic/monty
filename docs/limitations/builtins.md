@@ -6,7 +6,7 @@ Python.
 
 ## Implemented builtin functions
 
-`abs`, `all`, `any`, `bin`, `chr`, `divmod`, `enumerate`, `eval`, `exec`, `filter`,
+`abs`, `all`, `any`, `bin`, `chr`, `dir`, `divmod`, `enumerate`, `eval`, `exec`, `filter`,
 `format`, `getattr`, `hasattr`, `hash`, `hex`, `id`, `isinstance`, `iter`, `len`,
 `locals`, `map`, `max`, `min`, `next`, `oct`, `open`, `ord`, `pow`, `print`, `repr`,
 `reversed`, `round`, `setattr`, `sorted`, `sum`, `type`, `zip`.
@@ -23,7 +23,7 @@ Python.
 These raise `NameError`:
 
 - **Code objects and imports**: `compile`, `__import__`.
-- **Namespace introspection**: `globals`, `vars`, `dir`.
+- **Namespace introspection**: `globals`, `vars`.
 - **Interactive**: `input`, `breakpoint`, `help`.
 - **Decorators / descriptors**: `classmethod`, `staticmethod`, `property`.
     (`@property` on functions is not recognized; use a method.)
@@ -36,6 +36,11 @@ works on classes; see [classes.md](classes.md#inheritance).
 
 ## Behavioural divergences
 
+- **`dir()`** has the same scope limitations as [`locals()`](eval_exec.md#locals), including missing implicit module dunders.
+- **`dir(obj)`** can omit implicit metadata and native members, including some that Monty implements.
+    Default enumeration does not evaluate descriptors or ask the host for lazy attributes.
+    On a sandbox instance or a module with `__dir__`, the hook, iteration, and sorting cannot suspend for the host.
+    The default `object.__dir__` is not available as a direct call.
 - **No `__class__` on builtin values** — `[].__class__`, `list.__class__` and
     `list[int].__class__` raise `AttributeError`; only instances of Monty classes
     carry it (see [classes.md](classes.md)). Use `type(x)`.

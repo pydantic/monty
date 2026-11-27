@@ -22,6 +22,10 @@ use crate::{
 
 pub(crate) const STDLIB_TESTS_DIR: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/vendor/cpython/work/generated/Lib/test");
+const PROJECTED_TESTS_DIR: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/vendor/cpython/work/generated/monty/Lib/test"
+);
 
 #[derive(Deserialize)]
 struct VendorManifest {
@@ -31,19 +35,24 @@ struct VendorManifest {
 #[derive(Deserialize)]
 struct TestSources {
     suites: Vec<String>,
+    #[serde(default)]
+    project: BTreeMap<String, Vec<String>>,
 }
 
-static SUITES: LazyLock<Vec<String>> = LazyLock::new(|| {
+static TEST_SOURCES: LazyLock<TestSources> = LazyLock::new(|| {
     let manifest: VendorManifest =
         toml::from_str(include_str!("../../monty/stdlib/vendor.toml")).expect("invalid vendor.toml");
-    manifest.tests.suites
+    manifest.tests
 });
 
 /// Only run the enabled suites even though the complete upstream test tree is present.
 pub(crate) fn suite_pattern() -> String {
-    assert!(!SUITES.is_empty(), "vendor.toml: no CPython suites enabled");
-    let mut patterns = Vec::with_capacity(SUITES.len());
-    for file in SUITES.iter() {
+    assert!(
+        !TEST_SOURCES.suites.is_empty(),
+        "vendor.toml: no CPython suites enabled"
+    );
+    let mut patterns = Vec::with_capacity(TEST_SOURCES.suites.len());
+    for file in &TEST_SOURCES.suites {
         let path = Path::new(STDLIB_TESTS_DIR).join(file);
         assert!(
             path.is_file(),
@@ -103,7 +112,7 @@ static MANIFEST: LazyLock<Result<Manifest, String>> = LazyLock::new(|| {
     let manifest: Manifest =
         toml::from_str(include_str!("../vendor/cpython/skips.toml")).map_err(|err| format!("skips.toml: {err}"))?;
     for (file, policy) in &manifest.suites {
-        if !SUITES.contains(file) {
+        if !TEST_SOURCES.suites.contains(file) {
             return Err(format!("skips.toml: suite {file} is not enabled in vendor.toml"));
         }
         if policy.skip.is_some() && !policy.exclude.is_empty() {
@@ -137,7 +146,7 @@ impl Suite {
             .to_str()
             .ok_or("non-UTF-8 suite filename")?
             .replace('\\', "/");
-        if !SUITES.contains(&file) {
+        if !TEST_SOURCES.suites.contains(&file) {
             return Err(format!("suite {file} is not enabled in vendor.toml").into());
         }
         let name = file
@@ -148,16 +157,29 @@ impl Suite {
         Ok(Self { path, file, module })
     }
 
+    /// The test tree Monty imports and type-checks, which may contain a subset of the suite.
+    fn monty_tree(&self) -> &'static Path {
+        let root = if TEST_SOURCES.project.contains_key(&self.file) {
+            PROJECTED_TESTS_DIR
+        } else {
+            STDLIB_TESTS_DIR
+        };
+        Path::new(root)
+    }
+
     /// Discovery executes suite code too, so it shares the CPython runner's lock and timeout.
     fn with_cpython<T>(
         &self,
-        run: impl for<'py> FnOnce(Bound<'py, PyModule>, &str, &str) -> PyResult<T>,
+        tree: &Path,
+        run: impl for<'py> FnOnce(Bound<'py, PyModule>, &str, &str, &str) -> PyResult<T>,
     ) -> Result<T, Box<dyn Error>> {
-        let path = self.path.to_str().ok_or("non-UTF-8 suite path")?;
+        let path = tree.join(&self.file);
+        let path = path.to_str().ok_or("non-UTF-8 suite path")?;
+        let root = tree.to_str().ok_or("non-UTF-8 test tree")?;
         let _lock = CPYTHON_TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
         let watchdog = CpythonWatchdog::arm(&self.module);
         let result = Python::attach(|py| {
-            run(import_script(py, "run_stdlib_suite"), path, &self.module)
+            run(import_script(py, "run_stdlib_suite"), root, path, &self.module)
                 .map_err(|err| format_cpython_exception(py, &err))
         });
         watchdog.check(&self.module).map_err(|err| err.to_string())?;
@@ -174,16 +196,13 @@ pub(crate) fn run_test_cases_monty_stdlib(path: &Path) -> Result<(), Box<dyn Err
         return Ok(());
     }
 
-    let cases: Vec<(String, String, String)> = suite.with_cpython(|runner, path, module| {
-        runner
-            .call_method1("discover", (STDLIB_TESTS_DIR, path, module))?
-            .extract()
+    let tree = suite.monty_tree();
+    let cases: Vec<(String, String, String)> = suite.with_cpython(tree, |runner, root, path, module| {
+        runner.call_method1("discover", (root, path, module))?.extract()
     })?;
     let calls = monty_test_calls(&suite.module, &cases, policy)?;
     let code = format!("import {} as _monty_suite\n{MONTY_RUNNER}{calls}", suite.module);
-    let lib = Path::new(STDLIB_TESTS_DIR)
-        .parent()
-        .expect("test directory is under Lib");
+    let lib = tree.parent().expect("test directory is under Lib");
     let mut mounts = MountTable::new();
     mounts.mount("/mnt", lib, MountMode::ReadOnly, None)?;
     run_monty_case(&suite.path, false, move |path| {
@@ -197,10 +216,10 @@ pub(crate) fn run_test_cases_monty_stdlib(path: &Path) -> Result<(), Box<dyn Err
     })
 }
 
-/// Check the suite source, including methods excluded from runtime execution.
+/// Check the suite source staged for Monty, including runtime-excluded methods.
 pub(crate) fn run_type_check_stdlib(path: &Path) -> Result<(), Box<dyn Error>> {
     let suite = Suite::new(path)?;
-    let source = fs::read_to_string(&suite.path)?;
+    let source = fs::read_to_string(suite.monty_tree().join(&suite.file))?;
     let module_stubs = [ModuleStub::new(
         "unittest",
         include_str!("../vendor/cpython/unittest.pyi"),
@@ -257,8 +276,9 @@ fn monty_test_calls(
 
 pub(crate) fn run_test_cases_cpython_stdlib(path: &Path) -> Result<(), Box<dyn Error>> {
     let suite = Suite::new(path)?;
-    let report: String = suite
-        .with_cpython(|runner, path, module| runner.call_method1("run", (STDLIB_TESTS_DIR, path, module))?.extract())?;
+    let report: String = suite.with_cpython(Path::new(STDLIB_TESTS_DIR), |runner, root, path, module| {
+        runner.call_method1("run", (root, path, module))?.extract()
+    })?;
     if !report.is_empty() {
         eprint!("{report}");
     }

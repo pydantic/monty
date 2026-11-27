@@ -362,7 +362,7 @@ Remove unsupported top-level builtins and model the sandbox exception constructo
  
  @disjoint_base
  class list(MutableSequence[_T]):
-@@ -1384,78 +1084,17 @@
+@@ -1384,78 +1084,18 @@
  def abs(x: SupportsAbs[_T], /) -> _T: ...
  def all(iterable: Iterable[object], /) -> bool: ...
  def any(iterable: Iterable[object], /) -> bool: ...
@@ -437,11 +437,11 @@ Remove unsupported top-level builtins and model the sandbox exception constructo
  credits: _sitebuiltins._Printer
  
 -def delattr(obj: object, name: str, /) -> None: ...
--def dir(o: object = ..., /) -> list[str]: ...
+ def dir(o: object = ..., /) -> list[str]: ...
  @overload
  def divmod(x: SupportsDivMod[_T_contra, _T_co], y: _T_contra, /) -> _T_co: ...
  @overload
-@@ -1540,7 +1179,6 @@
+@@ -1540,7 +1180,6 @@
  def getattr(o: object, name: str, default: dict[Any, Any], /) -> Any | dict[Any, Any]: ...
  @overload
  def getattr(o: object, name: str, default: _T, /) -> Any | _T: ...
@@ -449,7 +449,7 @@ Remove unsupported top-level builtins and model the sandbox exception constructo
  def hasattr(obj: object, name: str, /) -> bool: ...
  def hash(obj: object, /) -> int: ...
  
-@@ -1548,7 +1186,6 @@
+@@ -1548,7 +1187,6 @@
  
  def hex(number: SupportsIndex, /) -> str: ...
  def id(obj: object, /) -> int: ...
@@ -457,7 +457,7 @@ Remove unsupported top-level builtins and model the sandbox exception constructo
  @type_check_only
  class _GetItemIterable(Protocol[_T_co]):
      def __getitem__(self, i: int, /) -> _T_co: ...
-@@ -1574,6 +1211,7 @@
+@@ -1574,6 +1212,7 @@
  license: _sitebuiltins._Printer
  
  def locals() -> dict[str, Any]: ...
@@ -465,7 +465,7 @@ Remove unsupported top-level builtins and model the sandbox exception constructo
  @disjoint_base
  class map(Generic[_S]):
      # 3.14 adds `strict` argument.
-@@ -1910,8 +1548,6 @@
+@@ -1910,8 +1549,6 @@
  @overload
  def round(number: _SupportsRound2[_T], ndigits: SupportsIndex) -> _T: ...
  
@@ -474,7 +474,7 @@ Remove unsupported top-level builtins and model the sandbox exception constructo
  def setattr(obj: object, name: str, value: Any, /) -> None: ...
  @overload
  def sorted(
-@@ -1939,12 +1575,6 @@
+@@ -1939,12 +1576,6 @@
  @overload
  def sum(iterable: Iterable[_AddableT1], /, start: _AddableT2) -> _AddableT1 | _AddableT2: ...
  
@@ -487,7 +487,7 @@ Remove unsupported top-level builtins and model the sandbox exception constructo
  @disjoint_base
  class zip(Generic[_T_co]):
      if sys.version_info >= (3, 10):
-@@ -2027,17 +1657,6 @@
+@@ -2027,17 +1658,6 @@
      def __iter__(self) -> Self: ...
      def __next__(self) -> _T_co: ...
  
@@ -505,7 +505,7 @@ Remove unsupported top-level builtins and model the sandbox exception constructo
  if sys.version_info >= (3, 10):
      from types import EllipsisType, NotImplementedType
  
-@@ -2048,11 +1667,6 @@
+@@ -2048,11 +1668,6 @@
      Ellipsis: EllipsisType
      NotImplemented: NotImplementedType
  else:
@@ -517,7 +517,7 @@ Remove unsupported top-level builtins and model the sandbox exception constructo
  
      Ellipsis: ellipsis
  
-@@ -2082,7 +1696,6 @@
+@@ -2082,7 +1697,6 @@
          __notes__: list[str]
          def add_note(self, note: str, /) -> None: ...
  
@@ -525,7 +525,7 @@ Remove unsupported top-level builtins and model the sandbox exception constructo
  class KeyboardInterrupt(BaseException): ...
  
  @disjoint_base
-@@ -2123,17 +1736,9 @@
+@@ -2123,17 +1737,9 @@
  else:
      class AttributeError(Exception): ...
  
@@ -544,7 +544,7 @@ Remove unsupported top-level builtins and model the sandbox exception constructo
  
  class LookupError(Exception): ...
  class MemoryError(Exception): ...
-@@ -2147,9 +1752,7 @@
+@@ -2147,9 +1753,7 @@
  else:
      class NameError(Exception): ...
  
@@ -554,7 +554,7 @@ Remove unsupported top-level builtins and model the sandbox exception constructo
  
  @disjoint_base
  class SyntaxError(Exception):
-@@ -2181,10 +1784,8 @@
+@@ -2181,10 +1785,8 @@
      # If you provide more than two arguments, it still creates the SyntaxError, but
      # the arguments from the info tuple are not parsed. This form is omitted.
  
@@ -565,7 +565,7 @@ Remove unsupported top-level builtins and model the sandbox exception constructo
  class OverflowError(ArithmeticError): ...
  class ZeroDivisionError(ArithmeticError): ...
  class ModuleNotFoundError(ImportError): ...
-@@ -2192,139 +1793,28 @@
+@@ -2192,139 +1794,28 @@
  class KeyError(LookupError): ...
  class UnboundLocalError(NameError): ...
  

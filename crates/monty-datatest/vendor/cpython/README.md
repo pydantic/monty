@@ -13,8 +13,8 @@ cargo run -p monty-datatest --features cpython-tests -- test_keyword.py --nocapt
 
 ## Discovery and exclusions
 
-CPython discovers and runs the suite with its own `unittest` and resolves `test.support` and fixtures from the prepared tree.
-Monty uses that discovery to select methods, then imports the suite and the patched [`unittest` package](patches/0003-unittest-package.patch) from a read-only mount of `work/generated/Lib`.
+CPython runs the full suite in a subprocess with its own `unittest`, resolving `test.support` and fixtures from the prepared tree.
+The Monty runner uses embedded CPython's `unittest` to discover methods, then imports the suite and the patched [`unittest` package](patches/0003-unittest-package.patch) from a read-only mount of `work/generated/Lib`.
 The package is not bundled with the runtime.
 It creates a new instance per method, runs `setUp` and `tearDown`, and drains the cleanup stack in LIFO order even after an error.
 The Monty runner stops on the first failing method or subtest.
@@ -22,14 +22,21 @@ It does not implement class or module fixtures, runtime skips, or expected failu
 
 [`skips.toml`](skips.toml) affects Monty only.
 Under `[suites."<file>".exclude]`, list exact `unittest` IDs with reasons.
-If the file cannot even load in Monty, use `skip = "<reason>"` under `[suites."<file>"]` instead of listing methods.
+If the file cannot load and has no applicable methods, use `skip = "<reason>"` under `[suites."<file>"]` instead.
+For a broad suite that cannot load but has applicable methods, list their `ClassName.test_name` under `[tests.project]`
+in `vendor.toml`.
+`make prepare-cpython-tests` extracts those methods into stand-alone `unittest.TestCase` classes in `work/generated/monty/`.
+The generated modules import `sys` and `unittest`; put any other imports the methods need inside the methods and list
+any fixture files they import in `[tests].support`.
+A top-level `if sys.platform != 'monty':` block in a selected method is omitted before Monty parses it.
+Use it for unsupported cases inside a method without removing their coverage on CPython, which runs the full suite.
 Stale IDs and enabled suites with no runnable methods are errors.
 Use `--nocapture` to see manifest exclusions and native `unittest` runtime skips.
 
 ## Type checking
 
 Each suite's type check runs separately from its runtime tests and fails on any diagnostic, including unused ignores.
-It checks the full suite source, including methods excluded from runtime, using Monty's normal stdlib stubs and a test-only [`unittest.pyi`](unittest.pyi).
+It checks the source staged for Monty, including methods excluded from runtime, using Monty's normal stdlib stubs and a test-only [`unittest.pyi`](unittest.pyi).
 The checker does not resolve imports from the runtime mount.
 Use rule-specific `# ty: ignore[...]` comments for deliberate runtime probes outside the stubs or for missing APIs in excluded methods.
 Keep those comments in a separate patch, and remove them when the relevant stub changes make them unnecessary.

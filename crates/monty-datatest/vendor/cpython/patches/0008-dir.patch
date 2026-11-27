@@ -1,0 +1,244 @@
+Keep the unsupported dir() probes on CPython: sys.exit, native module subclassing, __slots__, traceback attributes, object construction, direct __dir__ calls, and descriptors.
+Omit del and sys.modules cleanup on Monty, which runs in a fresh session.
+Give the CPython shutdown subprocess access to the pinned test package even when its Python installation omits that package.
+
+--- a/test/test_builtin.py
++++ b/test/test_builtin.py
+@@ -686,14 +686,15 @@
+         local_var = 1
+         self.assertIn('local_var', dir())
+ 
+-        # dir(module)
+-        self.assertIn('exit', dir(sys))
+-
+-        # dir(module_with_invalid__dict__)
+-        class Foo(types.ModuleType):
+-            __dict__ = 8
+-        f = Foo("foo")
+-        self.assertRaises(TypeError, dir, f)
++        if sys.platform != 'monty':
++            # dir(module)
++            self.assertIn('exit', dir(sys))
++
++            # dir(module_with_invalid__dict__)
++            class Foo(types.ModuleType):
++                __dict__ = 8
++            f = Foo("foo")
++            self.assertRaises(TypeError, dir, f)
+ 
+         # dir(type)
+         self.assertIn("strip", dir(str))
+@@ -708,21 +709,22 @@
+         f = Foo()
+         self.assertIn("y", dir(f))
+ 
+-        # dir(obj_no__dict__)
+-        class Foo(object):
+-            __slots__ = []
+-        f = Foo()
+-        self.assertIn("__repr__", dir(f))
+-
+-        # dir(obj_no__class__with__dict__)
+-        # (an ugly trick to cause getattr(f, "__class__") to fail)
+-        class Foo(object):
+-            __slots__ = ["__class__", "__dict__"]
+-            def __init__(self):
+-                self.bar = "wow"
+-        f = Foo()
+-        self.assertNotIn("__repr__", dir(f))
+-        self.assertIn("bar", dir(f))
++        if sys.platform != 'monty':
++            # dir(obj_no__dict__)
++            class Foo(object):
++                __slots__ = []
++            f = Foo()
++            self.assertIn("__repr__", dir(f))
++
++            # dir(obj_no__class__with__dict__)
++            # (an ugly trick to cause getattr(f, "__class__") to fail)
++            class Foo(object):
++                __slots__ = ["__class__", "__dict__"]
++                def __init__(self):
++                    self.bar = "wow"
++            f = Foo()
++            self.assertNotIn("__repr__", dir(f))
++            self.assertIn("bar", dir(f))
+ 
+         # dir(obj_using __dir__)
+         class Foo(object):
+@@ -754,14 +756,15 @@
+         f = Foo()
+         self.assertRaises(TypeError, dir, f)
+ 
+-        # dir(traceback)
+-        try:
+-            raise IndexError
+-        except IndexError as e:
+-            self.assertEqual(len(dir(e.__traceback__)), 4)
+-
+-        # test that object has a __dir__()
+-        self.assertEqual(sorted([].__dir__()), dir([]))
++        if sys.platform != 'monty':
++            # dir(traceback)
++            try:
++                raise IndexError
++            except IndexError as e:
++                self.assertEqual(len(dir(e.__traceback__)), 4)
++
++            # test that object has a __dir__()
++            self.assertEqual(sorted([].__dir__()), dir([]))
+ 
+     def test___ne__(self):
+         self.assertFalse(None.__ne__(None))
+--- a/test/test_descr.py
++++ b/test/test_descr.py
+@@ -2604,7 +2604,8 @@
+         # Testing dir() ...
+         junk = 12
+         self.assertEqual(dir(), ['junk', 'self'])
+-        del junk
++        if sys.platform != 'monty':
++            del junk
+ 
+         # Just make sure these don't blow up!
+         for arg in 2, 2, 2j, 2e0, [2], "2", b"2", (2,), {2:2}, type, self.test_dir:
+@@ -2645,52 +2646,53 @@
+         self.assertEqual(interesting(dir(a)), astuff + ['adata', 'amethod'])
+         ## self.assertIn('__self__', dir(a.Amethod))
+ 
+-        # Try a module subclass.
+-        class M(type(sys)):
+-            pass
+-        minstance = M("m")
+-        minstance.b = 2
+-        minstance.a = 1
+-        default_attributes = ['__name__', '__doc__', '__package__',
+-                              '__loader__', '__spec__']
+-        names = [x for x in dir(minstance) if x not in default_attributes]
+-        self.assertEqual(names, ['a', 'b'])
+-
+-        class M2(M):
+-            def getdict(self):
+-                return "Not a dict!"
+-            __dict__ = property(getdict)
+-
+-        m2instance = M2("m2")
+-        m2instance.b = 2
+-        m2instance.a = 1
+-        self.assertEqual(m2instance.__dict__, "Not a dict!")
+-        with self.assertRaises(TypeError):
+-            dir(m2instance)
+-
+-        # Two essentially featureless objects, (Ellipsis just inherits stuff
+-        # from object.
+-        self.assertEqual(dir(object()), dir(Ellipsis))
+-
+-        # Nasty test case for proxied objects
+-        class Wrapper(object):
+-            def __init__(self, obj):
+-                self.__obj = obj
+-            def __repr__(self):
+-                return "Wrapper(%s)" % repr(self.__obj)
+-            def __getitem__(self, key):
+-                return Wrapper(self.__obj[key])
+-            def __len__(self):
+-                return len(self.__obj)
+-            def __getattr__(self, name):
+-                return Wrapper(getattr(self.__obj, name))
+-
+-        class C(object):
+-            def __getclass(self):
+-                return Wrapper(type(self))
+-            __class__ = property(__getclass)
+-
+-        dir(C()) # This used to segfault
++        if sys.platform != 'monty':
++            # Try a module subclass.
++            class M(type(sys)):
++                pass
++            minstance = M("m")
++            minstance.b = 2
++            minstance.a = 1
++            default_attributes = ['__name__', '__doc__', '__package__',
++                                  '__loader__', '__spec__']
++            names = [x for x in dir(minstance) if x not in default_attributes]
++            self.assertEqual(names, ['a', 'b'])
++
++            class M2(M):
++                def getdict(self):
++                    return "Not a dict!"
++                __dict__ = property(getdict)
++
++            m2instance = M2("m2")
++            m2instance.b = 2
++            m2instance.a = 1
++            self.assertEqual(m2instance.__dict__, "Not a dict!")
++            with self.assertRaises(TypeError):
++                dir(m2instance)
++
++            # Two essentially featureless objects, (Ellipsis just inherits stuff
++            # from object.
++            self.assertEqual(dir(object()), dir(Ellipsis))
++
++            # Nasty test case for proxied objects
++            class Wrapper(object):
++                def __init__(self, obj):
++                    self.__obj = obj
++                def __repr__(self):
++                    return "Wrapper(%s)" % repr(self.__obj)
++                def __getitem__(self, key):
++                    return Wrapper(self.__obj[key])
++                def __len__(self):
++                    return len(self.__obj)
++                def __getattr__(self, name):
++                    return Wrapper(getattr(self.__obj, name))
++
++            class C(object):
++                def __getclass(self):
++                    return Wrapper(type(self))
++                __class__ = property(__getclass)
++
++            dir(C()) # This used to segfault
+ 
+     def test_supers(self):
+         # Testing super...
+--- a/test/test_module/__init__.py
++++ b/test/test_module/__init__.py
+@@ -154,7 +154,8 @@
+     def test_module_dir(self):
+         import test.test_module.good_getattr as gga
+         self.assertEqual(dir(gga), ['a', 'b', 'c'])
+-        del sys.modules['test.test_module.good_getattr']
++        if sys.platform != 'monty':
++            del sys.modules['test.test_module.good_getattr']
+ 
+     def test_module_dir_errors(self):
+         import test.test_module.bad_getattr as bga
+@@ -163,9 +164,10 @@
+             dir(bga)
+         with self.assertRaises(TypeError):
+             dir(bad_getattr2)
+-        del sys.modules['test.test_module.bad_getattr']
+-        if 'test.test_module.bad_getattr2' in sys.modules:
+-            del sys.modules['test.test_module.bad_getattr2']
++        if sys.platform != 'monty':
++            del sys.modules['test.test_module.bad_getattr']
++            if 'test.test_module.bad_getattr2' in sys.modules:
++                del sys.modules['test.test_module.bad_getattr2']
+ 
+     def test_module_getattr_tricky(self):
+         from test.test_module import bad_getattr3
+@@ -296,7 +298,12 @@
+ 
+     def test_module_finalization_at_shutdown(self):
+         # Module globals and builtins should still be available during shutdown
+-        rc, out, err = assert_python_ok("-c", "from test.test_module import final_a")
++        from pathlib import Path
++
++        lib = str(Path(__file__).parents[2])
++        rc, out, err = assert_python_ok(
++            "-c", f"import sys, unittest; sys.path.insert(0, {lib!r}); from test.test_module import final_a"
++        )
+         self.assertFalse(err)
+         lines = out.splitlines()
+         self.assertEqual(set(lines), {

@@ -1,6 +1,7 @@
 """Discover and run the adapted CPython suites with native unittest."""
 
 import io
+import subprocess
 import sys
 import unittest
 from collections.abc import Generator, Iterator
@@ -74,10 +75,29 @@ def discover(root: str, path: str, name: str) -> list[tuple[str, str, str]]:
 
 
 def run(root: str, path: str, name: str) -> str:
-    """Run the full suite, including methods excluded on Monty."""
+    """Run the full suite on CPython's main thread with its native environment."""
+    process = subprocess.run(
+        [sys.executable, '-I', '-X', 'utf8', __file__, root, path, name],
+        capture_output=True,
+        encoding='utf-8',
+        timeout=25,
+        check=False,
+    )
+    output = process.stdout + process.stderr
+    if process.returncode:
+        raise RuntimeError(output or f'{name}: CPython exited with status {process.returncode}')
+    return output
+
+
+def _run_suite(root: str, path: str, name: str) -> str:
     with _load_suite(root, path, name) as (_, suite):
         output = io.StringIO()
         result = unittest.TextTestRunner(stream=output, verbosity=2).run(suite)
         if not result.wasSuccessful() or not result.testsRun:
             raise RuntimeError(output.getvalue())
         return output.getvalue() if result.skipped else ''
+
+
+if __name__ == '__main__':
+    root, path, name = sys.argv[1:]
+    print(_run_suite(root, path, name), end='')

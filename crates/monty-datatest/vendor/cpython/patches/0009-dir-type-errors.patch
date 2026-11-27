@@ -1,0 +1,57 @@
+The dir tests deliberately pass too many arguments and attach new attributes to instances. Imports of mounted fixtures are not resolved by the type checker.
+
+--- a/test/test_builtin.py
++++ b/test/test_builtin.py
+@@ -680,7 +680,7 @@
+ 
+     def test_dir(self):
+         # dir(wrong number of arguments)
+-        self.assertRaises(TypeError, dir, 42, 42)
++        self.assertRaises(TypeError, dir, 42, 42)  # ty: ignore[too-many-positional-arguments]
+ 
+         # dir() - local scope
+         local_var = 1
+--- a/test/test_descr.py
++++ b/test/test_descr.py
+@@ -2627,8 +2627,8 @@
+         self.assertEqual(interesting(dir(c)), cstuff)
+         ## self.assertIn('__self__', dir(C.Cmethod))
+ 
+-        c.cdata = 2
+-        c.cmethod = lambda self: 0
++        c.cdata = 2  # ty: ignore[unresolved-attribute]
++        c.cmethod = lambda self: 0  # ty: ignore[unresolved-attribute]
+         self.assertEqual(interesting(dir(c)), cstuff + ['cdata', 'cmethod'])
+         ## self.assertIn('__self__', dir(c.Cmethod))
+ 
+@@ -2641,8 +2641,8 @@
+         ## self.assertIn('__self__', dir(A.Amethod))
+         a = A()
+         self.assertEqual(interesting(dir(a)), astuff)
+-        a.adata = 42
+-        a.amethod = lambda self: 3
++        a.adata = 42  # ty: ignore[unresolved-attribute]
++        a.amethod = lambda self: 3  # ty: ignore[unresolved-attribute]
+         self.assertEqual(interesting(dir(a)), astuff + ['adata', 'amethod'])
+         ## self.assertIn('__self__', dir(a.Amethod))
+ 
+--- a/test/test_module/__init__.py
++++ b/test/test_module/__init__.py
+@@ -152,14 +152,14 @@
+             del sys.modules['test.test_module.bad_getattr2']
+ 
+     def test_module_dir(self):
+-        import test.test_module.good_getattr as gga
++        import test.test_module.good_getattr as gga  # ty: ignore[import-not-found]
+         self.assertEqual(dir(gga), ['a', 'b', 'c'])
+         if sys.platform != 'monty':
+             del sys.modules['test.test_module.good_getattr']
+ 
+     def test_module_dir_errors(self):
+-        import test.test_module.bad_getattr as bga
+-        from test.test_module import bad_getattr2
++        import test.test_module.bad_getattr as bga  # ty: ignore[import-not-found]
++        from test.test_module import bad_getattr2  # ty: ignore[import-not-found]
+         with self.assertRaises(TypeError):
+             dir(bga)
+         with self.assertRaises(TypeError):

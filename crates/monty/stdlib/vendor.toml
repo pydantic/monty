@@ -25,5 +25,28 @@ files = [
 # `make test-cpython` prepares all of Lib/test but runs only these suites.
 # `support` lists additional Lib/ paths to extract; list test helper files here if a patch edits them.
 [tests]
-suites = ["test_colorsys.py", "test_fnmatch.py", "test_keyword.py", "test_memoryio.py", "test_textwrap.py"]
-support = ["unittest/__init__.py", "unittest/case.py", "unittest/util.py"]
+suites = [
+    "test_builtin.py",
+    "test_colorsys.py",
+    "test_descr.py",
+    "test_fnmatch.py",
+    "test_keyword.py",
+    "test_memoryio.py",
+    "test_module/__init__.py",
+    "test_textwrap.py",
+]
+support = [
+    "test/test_module/bad_getattr.py",
+    "test/test_module/bad_getattr2.py",
+    "test/test_module/good_getattr.py",
+    "unittest/__init__.py",
+    "unittest/case.py",
+    "unittest/util.py",
+]
+
+# These suites have unsupported imports and syntax outside the dir tests.
+# CPython runs the full files; Monty runs these methods from a generated test module.
+[tests.project]
+"test_builtin.py" = ["BuiltinTest.test_dir"]
+"test_descr.py" = ["ClassPropertiesAndMethods.test_dir"]
+"test_module/__init__.py" = ["ModuleTests.test_module_dir", "ModuleTests.test_module_dir_errors"]

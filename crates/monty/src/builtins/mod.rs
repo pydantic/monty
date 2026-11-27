@@ -8,6 +8,7 @@ mod all;
 mod any;
 mod bin;
 mod chr;
+mod dir;
 mod divmod;
 mod enumerate;
 pub(crate) mod eval_exec;
@@ -159,6 +160,7 @@ impl BuiltinsFunctionsExt for BuiltinsFunctions {
             Self::Any => any::builtin_any(vm, args),
             Self::Bin => bin::builtin_bin(vm, args),
             Self::Chr => chr::builtin_chr(vm, args),
+            Self::Dir => dir::builtin_dir(vm, args),
             Self::Divmod => divmod::builtin_divmod(vm, args),
             Self::Enumerate => enumerate::builtin_enumerate(vm, args),
             Self::Filter => return filter::builtin_filter(vm, args),

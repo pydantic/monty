@@ -80,7 +80,8 @@ blocker in its source and the modules with only one syntax blocker (which may st
 blockers).
 
 `make test-cpython` extracts `Lib/test` from the pinned CPython archive into the gitignored
-`crates/monty-datatest/vendor/cpython/work/` tree, type-checks the suites enabled in `[tests].suites`, and runs them on both interpreters.
+`crates/monty-datatest/vendor/cpython/work/` tree and runs the suites enabled in `[tests].suites` on both interpreters.
+For suites listed under `[tests.project]`, Monty runs and type-checks only the selected methods; CPython runs the full suite.
 `make test-cases` runs only Monty's own cases and does not need the archive.
 Use `make prepare-cpython-tests`, edit the generated sources, then use `--test --make-patch NNNN-name --reason '...'`
 to save adaptations against the full upstream files.
