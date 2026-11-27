@@ -7,7 +7,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
+    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{Interns, StaticStrings, StringId},
     types::{Dict, List},
     value::{EitherStr, Value},
@@ -137,9 +137,21 @@ impl Module {
         self.id
     }
 
-    /// Returns a reference to the module's attribute dictionary.
+    /// Returns a reference to the module's inline attribute dictionary.
     pub fn attrs(&self) -> &Dict {
         &self.attrs
+    }
+
+    /// The namespace used for attribute lookup, including for file modules.
+    pub(crate) fn namespace_attrs<'a>(&'a self, heap: &'a Heap) -> &'a Dict {
+        if let Some(namespace) = self.namespace() {
+            let HeapData::Dict(dict) = heap.get(namespace) else {
+                unreachable!("a file module namespace must be a dict");
+            };
+            dict
+        } else {
+            &self.attrs
+        }
     }
 
     /// Sets an attribute in the module's dictionary.
@@ -261,15 +273,8 @@ impl<'h> HeapRead<'h, Module> {
 
     /// An owned copy of the attribute `name`, from the file namespace or `attrs`.
     fn attr_value(&self, name: &str, vm: &VM<'h>) -> Option<Value> {
-        let module = self.get(vm.heap);
-        let attrs = match module.namespace() {
-            Some(namespace) => match vm.heap.get(namespace) {
-                HeapData::Dict(dict) => dict,
-                _ => return None,
-            },
-            None => &module.attrs,
-        };
-        attrs
+        self.get(vm.heap)
+            .namespace_attrs(vm.heap)
             .get_by_str(name, vm.heap, vm.interns)
             .map(|value| value.clone_with_heap(vm.heap))
     }

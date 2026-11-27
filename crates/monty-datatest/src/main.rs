@@ -399,11 +399,7 @@ fn ensure_python_modules_imported() {
             py.import("asyncio").expect("Failed to import asyncio");
             py.import("traceback").expect("Failed to import traceback");
 
-            // Also pre-import `test_fixtures` once so its module-level
-            // code (dataclass definitions, `os.environ` monkey-patch) runs
-            // before any test thread races on it. Per-test injection then
-            // just reads the cached `exported_globals` attribute — see
-            // `import_shared_test_globals`.
+            // Import `test_fixtures` before parallel tests use its shared fixture definitions.
             import_shared_test_globals(py);
         });
     });
@@ -2416,8 +2412,7 @@ impl CpythonTimeZone {
 
     /// Sets or clears `TZ` and re-reads it, returning the previous value.
     ///
-    /// Through `os.putenv`, not `os.environ`: `test_fixtures.py` replaces the
-    /// latter with a `VirtualEnviron` overlay, while `tzset` reads the real one.
+    /// `tzset` reads the process environment, not the test's `VirtualEnviron` overlay.
     fn set(py: Python<'_>, value: Option<&str>) -> Option<String> {
         let previous = env::var("TZ").ok();
         let os = py.import("os").expect("os unavailable");
@@ -2581,6 +2576,28 @@ impl Drop for RecursionLimitGuard<'_> {
     }
 }
 
+/// Restores the process's Python environment before another CPython test runs.
+struct VirtualEnvironment<'py>(Bound<'py, PyAny>);
+
+impl<'py> VirtualEnvironment<'py> {
+    fn new(fixtures: &Bound<'py, PyModule>) -> Self {
+        let context = fixtures
+            .call_method0("virtual_environment")
+            .expect("Failed to create virtual environment context");
+        context
+            .call_method0("__enter__")
+            .expect("Failed to enter virtual environment");
+        Self(context)
+    }
+}
+
+impl Drop for VirtualEnvironment<'_> {
+    fn drop(&mut self) {
+        let none = self.0.py().None();
+        let _ = self.0.call_method1("__exit__", (&none, &none, &none));
+    }
+}
+
 /// Import the run_traceback module
 fn import_run_traceback(py: Python<'_>) -> Bound<'_, PyModule> {
     import_script(py, "run_traceback")
@@ -2604,11 +2621,7 @@ fn import_script<'py>(py: Python<'py>, name: &str) -> Bound<'py, PyModule> {
 
 /// Import `test_fixtures` (lazily, cached by pyo3) and return the module.
 ///
-/// Every CPython test pulls the `exported_globals` dict out of this module
-/// to populate its globals. `ensure_python_modules_imported` calls this
-/// once to run the module's top-level code (dataclass definitions and the
-/// `os.environ` monkey-patch) before any test thread races on it; later
-/// calls return the cached `sys.modules` entry.
+/// Monty's cases use `exported_globals` to populate their CPython globals.
 fn import_shared_test_globals(py: Python<'_>) -> Bound<'_, PyModule> {
     import_script(py, "test_fixtures")
 }
@@ -2712,6 +2725,7 @@ fn try_run_cpython_test(
         // module is imported once and cached, so this is just an
         // `update()` of a small dict — no re-exec per test.
         let shared = import_shared_test_globals(py);
+        let _environment = VirtualEnvironment::new(&shared);
         let exported = shared
             .getattr("exported_globals")
             .expect("test_fixtures.exported_globals missing");

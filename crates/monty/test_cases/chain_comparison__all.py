@@ -73,7 +73,9 @@ assert (1 in [1, 2] in [[1, 2], [3]]) == True
 
 
 # === Verify no namespace pollution ===
-# Note: The old implementation used _chain_cmp_N variables which would leak.
-# The new stack-based implementation doesn't create any intermediate variables.
-# We can't easily test for namespace pollution without dir(), so we just verify
-# that chain comparisons work correctly (covered by tests above).
+def test_no_namespace_pollution(low, middle, high):
+    assert low < middle < high, 'expected an increasing chain'
+    assert dir() == ['high', 'low', 'middle']
+
+
+test_no_namespace_pollution(1, 2, 3)

@@ -1,0 +1,2358 @@
+Type-check the full adapted suites, including methods excluded at runtime.
+Keep upstream probes that deliberately violate signatures, use dynamic attributes, or depend on CPython APIs outside Monty’s stubs.
+
+--- a/test/test_builtin.py
++++ b/test/test_builtin.py
+@@ -186,22 +186,22 @@
+         self.assertEqual(list(it), seq[1:])
+ 
+     def test_import(self):
+-        __import__('sys')
+-        __import__('time')
+-        __import__('string')
+-        __import__(name='sys')
+-        __import__(name='time', level=0)
+-        self.assertRaises(ModuleNotFoundError, __import__, 'spamspam')
+-        self.assertRaises(TypeError, __import__, 1, 2, 3, 4)
+-        self.assertRaises(ValueError, __import__, '')
+-        self.assertRaises(TypeError, __import__, 'sys', name='sys')
++        __import__('sys')  # ty: ignore[unresolved-reference]
++        __import__('time')  # ty: ignore[unresolved-reference]
++        __import__('string')  # ty: ignore[unresolved-reference]
++        __import__(name='sys')  # ty: ignore[unresolved-reference]
++        __import__(name='time', level=0)  # ty: ignore[unresolved-reference]
++        self.assertRaises(ModuleNotFoundError, __import__, 'spamspam')  # ty: ignore[unresolved-reference]
++        self.assertRaises(TypeError, __import__, 1, 2, 3, 4)  # ty: ignore[unresolved-reference]
++        self.assertRaises(ValueError, __import__, '')  # ty: ignore[unresolved-reference]
++        self.assertRaises(TypeError, __import__, 'sys', name='sys')  # ty: ignore[unresolved-reference]
+         # Relative import outside of a package with no __package__ or __spec__ (bpo-37409).
+-        with self.assertWarns(ImportWarning):
+-            self.assertRaises(ImportError, __import__, '',
++        with self.assertWarns(ImportWarning):  # ty: ignore[unresolved-reference]
++            self.assertRaises(ImportError, __import__, '',  # ty: ignore[unresolved-reference]
+                               {'__package__': None, '__spec__': None, '__name__': '__main__'},
+                               locals={}, fromlist=('foo',), level=1)
+         # embedded null character
+-        self.assertRaises(ModuleNotFoundError, __import__, 'string\x00')
++        self.assertRaises(ModuleNotFoundError, __import__, 'string\x00')  # ty: ignore[unresolved-reference]
+ 
+     def test_abs(self):
+         # int
+@@ -214,13 +214,13 @@
+         self.assertEqual(abs(3.14), 3.14)
+         self.assertEqual(abs(-3.14), 3.14)
+         # str
+-        self.assertRaises(TypeError, abs, 'a')
++        self.assertRaises(TypeError, abs, 'a')  # ty: ignore[invalid-argument-type]
+         # bool
+         self.assertEqual(abs(True), 1)
+         self.assertEqual(abs(False), 0)
+         # other
+-        self.assertRaises(TypeError, abs)
+-        self.assertRaises(TypeError, abs, None)
++        self.assertRaises(TypeError, abs)  # ty: ignore[missing-argument]
++        self.assertRaises(TypeError, abs, None)  # ty: ignore[invalid-argument-type]
+         class AbsClass(object):
+             def __abs__(self):
+                 return -5
+@@ -232,8 +232,8 @@
+         self.assertRaises(RuntimeError, all, [2, TestFailingBool(), 6])
+         self.assertRaises(RuntimeError, all, TestFailingIter())
+         self.assertRaises(TypeError, all, 10)               # Non-iterable
+-        self.assertRaises(TypeError, all)                   # No args
+-        self.assertRaises(TypeError, all, [2, 4, 6], [])    # Too many args
++        self.assertRaises(TypeError, all)                   # No args  # ty: ignore[missing-argument]
++        self.assertRaises(TypeError, all, [2, 4, 6], [])    # Too many args  # ty: ignore[too-many-positional-arguments]
+         self.assertEqual(all([]), True)                     # Empty iterator
+         self.assertEqual(all([0, TestFailingBool()]), False)# Short-circuit
+         S = [50, 60]
+@@ -241,7 +241,7 @@
+         S = [50, 40, 60]
+         self.assertEqual(all(x > 42 for x in S), False)
+         S = [50, 40, 60, TestFailingBool()]
+-        self.assertEqual(all(x > 42 for x in S), False)
++        self.assertEqual(all(x > 42 for x in S), False)  # ty: ignore[unsupported-operator]
+ 
+     def test_any(self):
+         self.assertEqual(any([None, None, None]), False)
+@@ -249,14 +249,14 @@
+         self.assertRaises(RuntimeError, any, [None, TestFailingBool(), 6])
+         self.assertRaises(RuntimeError, any, TestFailingIter())
+         self.assertRaises(TypeError, any, 10)               # Non-iterable
+-        self.assertRaises(TypeError, any)                   # No args
+-        self.assertRaises(TypeError, any, [2, 4, 6], [])    # Too many args
++        self.assertRaises(TypeError, any)                   # No args  # ty: ignore[missing-argument]
++        self.assertRaises(TypeError, any, [2, 4, 6], [])    # Too many args  # ty: ignore[too-many-positional-arguments]
+         self.assertEqual(any([]), False)                    # Empty iterator
+         self.assertEqual(any([1, TestFailingBool()]), True) # Short-circuit
+         S = [40, 60, 30]
+         self.assertEqual(any(x > 42 for x in S), True)
+         S = [40, 60, 30, TestFailingBool()]
+-        self.assertEqual(any(x > 42 for x in S), True)
++        self.assertEqual(any(x > 42 for x in S), True)  # ty: ignore[unsupported-operator]
+         S = [10, 20, 30]
+         self.assertEqual(any(x > 42 for x in S), False)
+ 
+@@ -280,7 +280,7 @@
+ 
+         # check the overriding the builtins works
+ 
+-        global all, any, tuple
++        global all, any, tuple  # ty: ignore[unresolved-global]
+         saved = all, any, tuple
+         try:
+             all = lambda x : "all"
+@@ -309,19 +309,19 @@
+ 
+     def test_builtin_call_async_genexpr_no_crash(self):
+         async def f_all():
+-            return all(await 2 for _ in [])
++            return all(await 2 for _ in [])  # ty: ignore[invalid-await]
+ 
+         async def f_any():
+-            return any(await 2 for _ in [])
++            return any(await 2 for _ in [])  # ty: ignore[invalid-await]
+ 
+         async def f_tuple():
+-            return tuple(await 2 for _ in [])
++            return tuple(await 2 for _ in [])  # ty: ignore[invalid-await]
+ 
+         async def f_list():
+-            return list(await 2 for _ in [])
++            return list(await 2 for _ in [])  # ty: ignore[invalid-argument-type, invalid-await]
+ 
+         async def f_set():
+-            return set(await 2 for _ in [])
++            return set(await 2 for _ in [])  # ty: ignore[invalid-argument-type, invalid-await]
+ 
+         for f in (f_all, f_any, f_tuple, f_list, f_set):
+             with self.subTest(func=f.__name__):
+@@ -329,20 +329,20 @@
+                     run_yielding_async_fn(f)
+ 
+     def test_ascii(self):
+-        self.assertEqual(ascii(''), '\'\'')
+-        self.assertEqual(ascii(0), '0')
+-        self.assertEqual(ascii(()), '()')
+-        self.assertEqual(ascii([]), '[]')
+-        self.assertEqual(ascii({}), '{}')
++        self.assertEqual(ascii(''), '\'\'')  # ty: ignore[unresolved-reference]
++        self.assertEqual(ascii(0), '0')  # ty: ignore[unresolved-reference]
++        self.assertEqual(ascii(()), '()')  # ty: ignore[unresolved-reference]
++        self.assertEqual(ascii([]), '[]')  # ty: ignore[unresolved-reference]
++        self.assertEqual(ascii({}), '{}')  # ty: ignore[unresolved-reference]
+         a = []
+         a.append(a)
+-        self.assertEqual(ascii(a), '[[...]]')
++        self.assertEqual(ascii(a), '[[...]]')  # ty: ignore[unresolved-reference]
+         a = {}
+         a[0] = a
+-        self.assertEqual(ascii(a), '{0: {...}}')
++        self.assertEqual(ascii(a), '{0: {...}}')  # ty: ignore[unresolved-reference]
+         # Advanced checks for unicode strings
+         def _check_uni(s):
+-            self.assertEqual(ascii(s), repr(s))
++            self.assertEqual(ascii(s), repr(s))  # ty: ignore[unresolved-reference]
+         _check_uni("'")
+         _check_uni('"')
+         _check_uni('"\'')
+@@ -357,10 +357,10 @@
+         _check_uni('\udfff')
+         # Issue #9804: surrogates should be joined even for printable
+         # wide characters (UCS-2 builds).
+-        self.assertEqual(ascii('\U0001d121'), "'\\U0001d121'")
++        self.assertEqual(ascii('\U0001d121'), "'\\U0001d121'")  # ty: ignore[unresolved-reference]
+         # All together
+         s = "'\0\"\n\r\t abcd\x85é\U00012fff\uD800\U0001D121xxx."
+-        self.assertEqual(ascii(s),
++        self.assertEqual(ascii(s),  # ty: ignore[unresolved-reference]
+             r"""'\'\x00"\n\r\t abcd\x85\xe9\U00012fff\ud800\U0001d121xxx.'""")
+ 
+     def test_neg(self):
+@@ -369,38 +369,38 @@
+         self.assertEqual(-x, sys.maxsize+1)
+ 
+     def test_callable(self):
+-        self.assertTrue(callable(len))
+-        self.assertFalse(callable("a"))
+-        self.assertTrue(callable(callable))
+-        self.assertTrue(callable(lambda x, y: x + y))
+-        self.assertFalse(callable(__builtins__))
++        self.assertTrue(callable(len))  # ty: ignore[unresolved-reference]
++        self.assertFalse(callable("a"))  # ty: ignore[unresolved-reference]
++        self.assertTrue(callable(callable))  # ty: ignore[unresolved-reference]
++        self.assertTrue(callable(lambda x, y: x + y))  # ty: ignore[unresolved-reference]
++        self.assertFalse(callable(__builtins__))  # ty: ignore[unresolved-reference]
+         def f(): pass
+-        self.assertTrue(callable(f))
++        self.assertTrue(callable(f))  # ty: ignore[unresolved-reference]
+ 
+         class C1:
+             def meth(self): pass
+-        self.assertTrue(callable(C1))
++        self.assertTrue(callable(C1))  # ty: ignore[unresolved-reference]
+         c = C1()
+-        self.assertTrue(callable(c.meth))
+-        self.assertFalse(callable(c))
++        self.assertTrue(callable(c.meth))  # ty: ignore[unresolved-reference]
++        self.assertFalse(callable(c))  # ty: ignore[unresolved-reference]
+ 
+         # __call__ is looked up on the class, not the instance
+-        c.__call__ = None
+-        self.assertFalse(callable(c))
+-        c.__call__ = lambda self: 0
+-        self.assertFalse(callable(c))
+-        del c.__call__
+-        self.assertFalse(callable(c))
++        c.__call__ = None  # ty: ignore[unresolved-attribute]
++        self.assertFalse(callable(c))  # ty: ignore[unresolved-reference]
++        c.__call__ = lambda self: 0  # ty: ignore[unresolved-attribute]
++        self.assertFalse(callable(c))  # ty: ignore[unresolved-reference]
++        del c.__call__  # ty: ignore[unresolved-attribute]
++        self.assertFalse(callable(c))  # ty: ignore[unresolved-reference]
+ 
+         class C2(object):
+             def __call__(self): pass
+         c2 = C2()
+-        self.assertTrue(callable(c2))
+-        c2.__call__ = None
+-        self.assertTrue(callable(c2))
++        self.assertTrue(callable(c2))  # ty: ignore[unresolved-reference]
++        c2.__call__ = None  # ty: ignore[invalid-assignment]
++        self.assertTrue(callable(c2))  # ty: ignore[unresolved-reference]
+         class C3(C2): pass
+         c3 = C3()
+-        self.assertTrue(callable(c3))
++        self.assertTrue(callable(c3))  # ty: ignore[unresolved-reference]
+ 
+     def test_chr(self):
+         self.assertEqual(chr(0), '\0')
+@@ -408,8 +408,8 @@
+         self.assertEqual(chr(65), 'A')
+         self.assertEqual(chr(97), 'a')
+         self.assertEqual(chr(0xff), '\xff')
+-        self.assertRaises(TypeError, chr)
+-        self.assertRaises(TypeError, chr, 65.0)
++        self.assertRaises(TypeError, chr)  # ty: ignore[missing-argument]
++        self.assertRaises(TypeError, chr, 65.0)  # ty: ignore[invalid-argument-type]
+         self.assertEqual(chr(0x0000FFFF), "\U0000FFFF")
+         self.assertEqual(chr(0x00010000), "\U00010000")
+         self.assertEqual(chr(0x00010001), "\U00010001")
+@@ -431,21 +431,21 @@
+         self.assertNotHasAttr(builtins, "cmp")
+ 
+     def test_compile(self):
+-        compile('print(1)\n', '', 'exec')
++        compile('print(1)\n', '', 'exec')  # ty: ignore[unresolved-reference]
+         bom = b'\xef\xbb\xbf'
+-        compile(bom + b'print(1)\n', '', 'exec')
+-        compile(source='pass', filename='?', mode='exec')
+-        compile(dont_inherit=False, filename='tmp', source='0', mode='eval')
+-        compile('pass', '?', dont_inherit=True, mode='exec')
+-        compile(memoryview(b"text"), "name", "exec")
+-        self.assertRaises(TypeError, compile)
+-        self.assertRaises(ValueError, compile, 'print(42)\n', '<string>', 'badmode')
+-        self.assertRaises(ValueError, compile, 'print(42)\n', '<string>', 'single', 0xff)
+-        self.assertRaises(TypeError, compile, 'pass', '?', 'exec',
++        compile(bom + b'print(1)\n', '', 'exec')  # ty: ignore[unresolved-reference]
++        compile(source='pass', filename='?', mode='exec')  # ty: ignore[unresolved-reference]
++        compile(dont_inherit=False, filename='tmp', source='0', mode='eval')  # ty: ignore[unresolved-reference]
++        compile('pass', '?', dont_inherit=True, mode='exec')  # ty: ignore[unresolved-reference]
++        compile(memoryview(b"text"), "name", "exec")  # ty: ignore[unresolved-reference]
++        self.assertRaises(TypeError, compile)  # ty: ignore[unresolved-reference]
++        self.assertRaises(ValueError, compile, 'print(42)\n', '<string>', 'badmode')  # ty: ignore[unresolved-reference]
++        self.assertRaises(ValueError, compile, 'print(42)\n', '<string>', 'single', 0xff)  # ty: ignore[unresolved-reference]
++        self.assertRaises(TypeError, compile, 'pass', '?', 'exec',  # ty: ignore[unresolved-reference]
+                           mode='eval', source='0', filename='tmp')
+-        compile('print("\xe5")\n', '', 'exec')
+-        self.assertRaises(SyntaxError, compile, chr(0), 'f', 'exec')
+-        self.assertRaises(ValueError, compile, str('a = 1'), 'f', 'bad')
++        compile('print("\xe5")\n', '', 'exec')  # ty: ignore[unresolved-reference]
++        self.assertRaises(SyntaxError, compile, chr(0), 'f', 'exec')  # ty: ignore[unresolved-reference]
++        self.assertRaises(ValueError, compile, str('a = 1'), 'f', 'bad')  # ty: ignore[unresolved-reference]
+ 
+         # test the optimize argument
+ 
+@@ -470,9 +470,9 @@
+             with self.subTest(optval=optval):
+             # test both direct compilation and compilation via AST
+                 codeobjs = []
+-                codeobjs.append(compile(codestr, "<test>", "exec", optimize=optval))
++                codeobjs.append(compile(codestr, "<test>", "exec", optimize=optval))  # ty: ignore[unresolved-reference]
+                 tree = ast.parse(codestr, optimize=optval)
+-                codeobjs.append(compile(tree, "<test>", "exec", optimize=optval))
++                codeobjs.append(compile(tree, "<test>", "exec", optimize=optval))  # ty: ignore[unresolved-reference]
+                 for code in codeobjs:
+                     ns = {}
+                     exec(code, ns)
+@@ -491,7 +491,7 @@
+         ]
+         for mode, code_sample in product(modes, code_samples):
+             source = dedent(code_sample)
+-            co = compile(source,
++            co = compile(source,  # ty: ignore[unresolved-reference]
+                             '?',
+                             mode,
+                             flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
+@@ -510,16 +510,16 @@
+                     yield i
+                     await sleep(0)""")
+ 
+-        co = compile(code, '?', 'exec', flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
++        co = compile(code, '?', 'exec', flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)  # ty: ignore[unresolved-reference]
+         glob = {}
+         exec(co, glob)
+         self.assertEqual(type(glob['ticker']()), AsyncGeneratorType)
+ 
+     def test_compile_ast(self):
+         args = ("a*__debug__", "f.py", "exec")
+-        raw = compile(*args, flags = ast.PyCF_ONLY_AST).body[0]
+-        opt1 = compile(*args, flags = ast.PyCF_OPTIMIZED_AST).body[0]
+-        opt2 = compile(ast.parse(args[0]), *args[1:], flags = ast.PyCF_OPTIMIZED_AST).body[0]
++        raw = compile(*args, flags = ast.PyCF_ONLY_AST).body[0]  # ty: ignore[unresolved-reference]
++        opt1 = compile(*args, flags = ast.PyCF_OPTIMIZED_AST).body[0]  # ty: ignore[unresolved-reference]
++        opt2 = compile(ast.parse(args[0]), *args[1:], flags = ast.PyCF_OPTIMIZED_AST).body[0]  # ty: ignore[unresolved-reference]
+ 
+         for tree in (raw, opt1, opt2):
+             self.assertIsInstance(tree.value, ast.BinOp)
+@@ -537,16 +537,16 @@
+             self.assertEqual(opt_right.value, __debug__)
+ 
+     def test_delattr(self):
+-        sys.spam = 1
+-        delattr(sys, 'spam')
+-        self.assertRaises(TypeError, delattr)
+-        self.assertRaises(TypeError, delattr, sys)
++        sys.spam = 1  # ty: ignore[unresolved-attribute]
++        delattr(sys, 'spam')  # ty: ignore[unresolved-reference]
++        self.assertRaises(TypeError, delattr)  # ty: ignore[unresolved-reference]
++        self.assertRaises(TypeError, delattr, sys)  # ty: ignore[unresolved-reference]
+         msg = r"^attribute name must be string, not 'int'$"
+-        self.assertRaisesRegex(TypeError, msg, delattr, sys, 1)
++        self.assertRaisesRegex(TypeError, msg, delattr, sys, 1)  # ty: ignore[unresolved-reference]
+ 
+     def test_dir(self):
+         # dir(wrong number of arguments)
+-        self.assertRaises(TypeError, dir, 42, 42)
++        self.assertRaises(TypeError, dir, 42, 42)  # ty: ignore[too-many-positional-arguments]
+ 
+         # dir() - local scope
+         local_var = 1
+@@ -653,7 +653,7 @@
+             self.assertAlmostEqual(result[0], exp_result[0])
+             self.assertAlmostEqual(result[1], exp_result[1])
+ 
+-        self.assertRaises(TypeError, divmod)
++        self.assertRaises(TypeError, divmod)  # ty: ignore[missing-argument]
+         self.assertRaisesRegex(
+             ZeroDivisionError,
+             "division by zero",
+@@ -679,14 +679,14 @@
+         bom = b'\xef\xbb\xbf'
+         self.assertEqual(eval(bom + b'a', globals, locals), 1)
+         self.assertEqual(eval('"\xe5"', globals), "\xe5")
+-        self.assertRaises(TypeError, eval)
+-        self.assertRaises(TypeError, eval, ())
++        self.assertRaises(TypeError, eval)  # ty: ignore[missing-argument]
++        self.assertRaises(TypeError, eval, ())  # ty: ignore[invalid-argument-type]
+         self.assertRaises(SyntaxError, eval, bom[:2] + b'a')
+ 
+         class X:
+             def __getitem__(self, key):
+                 raise ValueError
+-        self.assertRaises(ValueError, eval, "foo", {}, X())
++        self.assertRaises(ValueError, eval, "foo", {}, X())  # ty: ignore[invalid-argument-type]
+ 
+     def test_eval_kwargs(self):
+         data = {"A_GLOBAL_VALUE": 456}
+@@ -706,18 +706,18 @@
+                 return list('xyz')
+ 
+         m = M()
+-        g = globals()
+-        self.assertEqual(eval('a', g, m), 12)
+-        self.assertRaises(NameError, eval, 'b', g, m)
+-        self.assertEqual(eval('dir()', g, m), list('xyz'))
+-        self.assertEqual(eval('globals()', g, m), g)
+-        self.assertEqual(eval('locals()', g, m), m)
+-        self.assertRaises(TypeError, eval, 'a', m)
++        g = globals()  # ty: ignore[unresolved-reference]
++        self.assertEqual(eval('a', g, m), 12)  # ty: ignore[invalid-argument-type]
++        self.assertRaises(NameError, eval, 'b', g, m)  # ty: ignore[invalid-argument-type]
++        self.assertEqual(eval('dir()', g, m), list('xyz'))  # ty: ignore[invalid-argument-type]
++        self.assertEqual(eval('globals()', g, m), g)  # ty: ignore[invalid-argument-type]
++        self.assertEqual(eval('locals()', g, m), m)  # ty: ignore[invalid-argument-type]
++        self.assertRaises(TypeError, eval, 'a', m)  # ty: ignore[invalid-argument-type]
+         class A:
+             "Non-mapping"
+             pass
+         m = A()
+-        self.assertRaises(TypeError, eval, 'a', g, m)
++        self.assertRaises(TypeError, eval, 'a', g, m)  # ty: ignore[invalid-argument-type]
+ 
+         # Verify that dict subclasses work as well
+         class D(dict):
+@@ -745,7 +745,7 @@
+             def __setitem__(self, key, formula):
+                 self._cells[key] = formula
+             def __getitem__(self, key):
+-                return eval(self._cells[key], globals(), self)
++                return eval(self._cells[key], globals(), self)  # ty: ignore[invalid-argument-type, unresolved-reference]
+ 
+         ss = SpreadSheet()
+         ss['a1'] = '5'
+@@ -760,7 +760,7 @@
+                 raise KeyError(item)
+             def keys(self):
+                 return 1 # used to be 'a' but that's no longer an error
+-        self.assertRaises(TypeError, eval, 'dir()', globals(), C())
++        self.assertRaises(TypeError, eval, 'dir()', globals(), C())  # ty: ignore[invalid-argument-type, unresolved-reference]
+ 
+     def test_exec(self):
+         g = {}
+@@ -798,7 +798,7 @@
+         self.assertEqual(g, {})
+ 
+     def test_exec_globals(self):
+-        code = compile("print('Hello World!')", "", "exec")
++        code = compile("print('Hello World!')", "", "exec")  # ty: ignore[unresolved-reference]
+         # no builtin function
+         self.assertRaisesRegex(NameError, "name 'print' is not defined",
+                                exec, code, {'__builtins__': {}})
+@@ -819,12 +819,12 @@
+             frozen_builtins = frozendict(__builtins__.__dict__)
+         else:
+             frozen_builtins = frozendict(__builtins__)
+-        code = compile("__builtins__['superglobal']=2; print(superglobal)", "test", "exec")
++        code = compile("__builtins__['superglobal']=2; print(superglobal)", "test", "exec")  # ty: ignore[unresolved-reference]
+         self.assertRaises(frozendict_error,
+                           exec, code, {'__builtins__': frozen_builtins})
+ 
+         # no __build_class__ function
+-        code = compile("class A: pass", "", "exec")
++        code = compile("class A: pass", "", "exec")  # ty: ignore[unresolved-reference]
+         self.assertRaisesRegex(NameError, "__build_class__ not found",
+                                exec, code, {'__builtins__': {}})
+         # __build_class__ in a custom __builtins__
+@@ -834,7 +834,7 @@
+ 
+         # read-only globals
+         namespace = frozendict({})
+-        code = compile("x=1", "test", "exec")
++        code = compile("x=1", "test", "exec")  # ty: ignore[unresolved-reference]
+         self.assertRaises(frozendict_error,
+                           exec, code, namespace)
+ 
+@@ -848,12 +848,12 @@
+                 raise setonlyerror
+ 
+         # globals' `__getitem__` raises
+-        code = compile("globalname", "test", "exec")
++        code = compile("globalname", "test", "exec")  # ty: ignore[unresolved-reference]
+         self.assertRaises(setonlyerror,
+                           exec, code, setonlydict({'globalname': 1}))
+ 
+         # builtins' `__getitem__` raises
+-        code = compile("superglobal", "test", "exec")
++        code = compile("superglobal", "test", "exec")  # ty: ignore[unresolved-reference]
+         self.assertRaises(setonlyerror, exec, code,
+                           {'__builtins__': setonlydict({'superglobal': 1})})
+ 
+@@ -861,7 +861,7 @@
+         class customdict(dict):  # this one should not do anything fancy
+             pass
+ 
+-        code = compile("superglobal", "test", "exec")
++        code = compile("superglobal", "test", "exec")  # ty: ignore[unresolved-reference]
+         # works correctly
+         exec(code, {'__builtins__': customdict({'superglobal': 1})})
+         # custom builtins dict subclass is missing key
+@@ -869,7 +869,7 @@
+                                exec, code, {'__builtins__': customdict()})
+ 
+     def test_eval_builtins_mapping(self):
+-        code = compile("superglobal", "test", "eval")
++        code = compile("superglobal", "test", "eval")  # ty: ignore[unresolved-reference]
+         # works correctly
+         ns = {'__builtins__': types.MappingProxyType({'superglobal': 1})}
+         self.assertEqual(eval(code, ns), 1)
+@@ -879,7 +879,7 @@
+                                eval, code, ns)
+ 
+     def test_exec_builtins_mapping_import(self):
+-        code = compile("import foo.bar", "test", "exec")
++        code = compile("import foo.bar", "test", "exec")  # ty: ignore[unresolved-reference]
+         ns = {'__builtins__': types.MappingProxyType({})}
+         self.assertRaisesRegex(ImportError, "__import__ not found", exec, code, ns)
+         ns = {'__builtins__': types.MappingProxyType({'__import__': lambda *args: args})}
+@@ -888,7 +888,7 @@
+ 
+     def test_eval_builtins_mapping_reduce(self):
+         # list_iterator.__reduce__() calls _PyEval_GetBuiltin("iter")
+-        code = compile("x.__reduce__()", "test", "eval")
++        code = compile("x.__reduce__()", "test", "eval")  # ty: ignore[unresolved-reference]
+         ns = {'__builtins__': types.MappingProxyType({}), 'x': iter([1, 2])}
+         self.assertRaisesRegex(AttributeError, "iter", eval, code, ns)
+         ns = {'__builtins__': types.MappingProxyType({'iter': iter}), 'x': iter([1, 2])}
+@@ -971,7 +971,7 @@
+             exec,
+             three_freevars.__code__,
+             three_freevars.__globals__,
+-            closure=my_closure)
++            closure=my_closure)  # ty: ignore[invalid-argument-type]
+         my_closure = tuple(my_closure)
+ 
+         # should fail: anything passed to closure= isn't allowed
+@@ -979,49 +979,49 @@
+         self.assertRaises(TypeError,
+             exec,
+             "pass",
+-            closure=int)
++            closure=int)  # ty: ignore[invalid-argument-type]
+ 
+         # should fail: correct closure= argument isn't allowed
+         # when the source is a string
+         self.assertRaises(TypeError,
+             exec,
+             "pass",
+-            closure=my_closure)
++            closure=my_closure)  # ty: ignore[invalid-argument-type]
+ 
+         # should fail: closure tuple with one non-cell-var
+         my_closure = list(my_closure)
+-        my_closure[0] = int
++        my_closure[0] = int  # ty: ignore[invalid-assignment]
+         my_closure = tuple(my_closure)
+         self.assertRaises(TypeError,
+             exec,
+             three_freevars.__code__,
+             three_freevars.__globals__,
+-            closure=my_closure)
++            closure=my_closure)  # ty: ignore[invalid-argument-type]
+ 
+     def test_filter(self):
+         self.assertEqual(list(filter(lambda c: 'a' <= c <= 'z', 'Hello World')), list('elloorld'))
+         self.assertEqual(list(filter(None, [1, 'hello', [], [3], '', None, 9, 0])), [1, 'hello', [3], 9])
+         self.assertEqual(list(filter(lambda x: x > 0, [1, -3, 9, 0, 2])), [1, 9, 2])
+-        self.assertEqual(list(filter(None, Squares(10))), [1, 4, 9, 16, 25, 36, 49, 64, 81])
+-        self.assertEqual(list(filter(lambda x: x%2, Squares(10))), [1, 9, 25, 49, 81])
++        self.assertEqual(list(filter(None, Squares(10))), [1, 4, 9, 16, 25, 36, 49, 64, 81])  # ty: ignore[no-matching-overload]
++        self.assertEqual(list(filter(lambda x: x%2, Squares(10))), [1, 9, 25, 49, 81])  # ty: ignore[no-matching-overload]
+         def identity(item):
+             return 1
+-        filter(identity, Squares(5))
+-        self.assertRaises(TypeError, filter)
++        filter(identity, Squares(5))  # ty: ignore[no-matching-overload]
++        self.assertRaises(TypeError, filter)  # ty: ignore[missing-argument]
+         class BadSeq(object):
+             def __getitem__(self, index):
+                 if index<4:
+                     return 42
+                 raise ValueError
+-        self.assertRaises(ValueError, list, filter(lambda x: x, BadSeq()))
++        self.assertRaises(ValueError, list, filter(lambda x: x, BadSeq()))  # ty: ignore[no-matching-overload]
+         def badfunc():
+             pass
+-        self.assertRaises(TypeError, list, filter(badfunc, range(5)))
++        self.assertRaises(TypeError, list, filter(badfunc, range(5)))  # ty: ignore[no-matching-overload]
+ 
+         # test bltinmodule.c::filtertuple()
+         self.assertEqual(list(filter(None, (1, 2))), [1, 2])
+         self.assertEqual(list(filter(lambda x: x>=3, (1, 2, 3, 4))), [3, 4])
+-        self.assertRaises(TypeError, list, filter(42, (1, 2)))
++        self.assertRaises(TypeError, list, filter(42, (1, 2)))  # ty: ignore[no-matching-overload]
+ 
+     def test_filter_pickle(self):
+         for proto in range(pickle.HIGHEST_PROTOCOL + 1):
+@@ -1031,21 +1031,21 @@
+ 
+     def test_getattr(self):
+         self.assertTrue(getattr(sys, 'stdout') is sys.stdout)
+-        self.assertRaises(TypeError, getattr)
+-        self.assertRaises(TypeError, getattr, sys)
++        self.assertRaises(TypeError, getattr)  # ty: ignore[missing-argument]
++        self.assertRaises(TypeError, getattr, sys)  # ty: ignore[missing-argument]
+         msg = r"^attribute name must be string, not 'int'$"
+-        self.assertRaisesRegex(TypeError, msg, getattr, sys, 1)
+-        self.assertRaisesRegex(TypeError, msg, getattr, sys, 1, 'spam')
++        self.assertRaisesRegex(TypeError, msg, getattr, sys, 1)  # ty: ignore[invalid-argument-type]
++        self.assertRaisesRegex(TypeError, msg, getattr, sys, 1, 'spam')  # ty: ignore[too-many-positional-arguments]
+         self.assertRaises(AttributeError, getattr, sys, chr(sys.maxunicode))
+         # unicode surrogates are not encodable to the default encoding (utf8)
+         self.assertRaises(AttributeError, getattr, 1, "\uDAD1\uD51E")
+ 
+     def test_hasattr(self):
+         self.assertTrue(hasattr(sys, 'stdout'))
+-        self.assertRaises(TypeError, hasattr)
+-        self.assertRaises(TypeError, hasattr, sys)
++        self.assertRaises(TypeError, hasattr)  # ty: ignore[missing-argument]
++        self.assertRaises(TypeError, hasattr, sys)  # ty: ignore[missing-argument]
+         msg = r"^attribute name must be string, not 'int'$"
+-        self.assertRaisesRegex(TypeError, msg, hasattr, sys, 1)
++        self.assertRaisesRegex(TypeError, msg, hasattr, sys, 1)  # ty: ignore[invalid-argument-type]
+         self.assertEqual(False, hasattr(sys, chr(sys.maxunicode)))
+ 
+         # Check that hasattr propagates all exceptions outside of
+@@ -1093,7 +1093,7 @@
+     def test_hex(self):
+         self.assertEqual(hex(16), '0x10')
+         self.assertEqual(hex(-16), '-0x10')
+-        self.assertRaises(TypeError, hex, {})
++        self.assertRaises(TypeError, hex, {})  # ty: ignore[invalid-argument-type]
+ 
+     def test_id(self):
+         id(None)
+@@ -1107,8 +1107,8 @@
+     # Test input() later, alphabetized as if it were raw_input
+ 
+     def test_iter(self):
+-        self.assertRaises(TypeError, iter)
+-        self.assertRaises(TypeError, iter, 42, 42)
++        self.assertRaises(TypeError, iter)  # ty: ignore[missing-argument]
++        self.assertRaises(TypeError, iter, 42, 42)  # ty: ignore[too-many-positional-arguments]
+         lists = [("1", "2"), ["1", "2"], "12"]
+         for l in lists:
+             i = iter(l)
+@@ -1131,8 +1131,8 @@
+         self.assertTrue(not isinstance(e, C))
+         self.assertTrue(not isinstance(c, D))
+         self.assertTrue(not isinstance('foo', E))
+-        self.assertRaises(TypeError, isinstance, E, 'foo')
+-        self.assertRaises(TypeError, isinstance)
++        self.assertRaises(TypeError, isinstance, E, 'foo')  # ty: ignore[invalid-argument-type]
++        self.assertRaises(TypeError, isinstance)  # ty: ignore[missing-argument]
+ 
+     def test_issubclass(self):
+         class C:
+@@ -1147,9 +1147,9 @@
+         self.assertTrue(issubclass(D, C))
+         self.assertTrue(issubclass(C, C))
+         self.assertTrue(not issubclass(C, D))
+-        self.assertRaises(TypeError, issubclass, 'foo', E)
+-        self.assertRaises(TypeError, issubclass, E, 'foo')
+-        self.assertRaises(TypeError, issubclass)
++        self.assertRaises(TypeError, issubclass, 'foo', E)  # ty: ignore[invalid-argument-type]
++        self.assertRaises(TypeError, issubclass, E, 'foo')  # ty: ignore[invalid-argument-type]
++        self.assertRaises(TypeError, issubclass)  # ty: ignore[missing-argument]
+ 
+     def test_len(self):
+         self.assertEqual(len('123'), 3)
+@@ -1183,7 +1183,7 @@
+                 return -sys.maxsize-10
+         self.assertRaises(ValueError, len, HugeNegativeLen())
+         class NoLenMethod(object): pass
+-        self.assertRaises(TypeError, len, NoLenMethod())
++        self.assertRaises(TypeError, len, NoLenMethod())  # ty: ignore[invalid-argument-type]
+ 
+     def test_map_pickle(self):
+         for proto in range(pickle.HIGHEST_PROTOCOL + 1):
+@@ -1323,9 +1323,9 @@
+             TypeError,
+             'max expected at least 1 argument, got 0'
+         ):
+-            max()
+-
+-        self.assertRaises(TypeError, max, 42)
++            max()  # ty: ignore[no-matching-overload]
++
++        self.assertRaises(TypeError, max, 42)  # ty: ignore[invalid-argument-type]
+         with self.assertRaisesRegex(
+             ValueError,
+             r'max\(\) iterable argument is empty'
+@@ -1334,7 +1334,7 @@
+         class BadSeq:
+             def __getitem__(self, index):
+                 raise ValueError
+-        self.assertRaises(ValueError, max, BadSeq())
++        self.assertRaises(ValueError, max, BadSeq())  # ty: ignore[invalid-argument-type]
+ 
+         for stmt in (
+             "max(key=int)",                 # no args
+@@ -1347,7 +1347,7 @@
+             "max(1, 2, key=1)",             # keyfunc is not callable
+             ):
+             try:
+-                exec(stmt, globals())
++                exec(stmt, globals())  # ty: ignore[unresolved-reference]
+             except TypeError:
+                 pass
+             else:
+@@ -1386,9 +1386,9 @@
+             TypeError,
+             'min expected at least 1 argument, got 0'
+         ):
+-            min()
+-
+-        self.assertRaises(TypeError, min, 42)
++            min()  # ty: ignore[no-matching-overload]
++
++        self.assertRaises(TypeError, min, 42)  # ty: ignore[invalid-argument-type]
+         with self.assertRaisesRegex(
+             ValueError,
+             r'min\(\) iterable argument is empty'
+@@ -1397,7 +1397,7 @@
+         class BadSeq:
+             def __getitem__(self, index):
+                 raise ValueError
+-        self.assertRaises(ValueError, min, BadSeq())
++        self.assertRaises(ValueError, min, BadSeq())  # ty: ignore[invalid-argument-type]
+ 
+         for stmt in (
+             "min(key=int)",                 # no args
+@@ -1410,7 +1410,7 @@
+             "min(1, 2, key=1)",             # keyfunc is not callable
+             ):
+             try:
+-                exec(stmt, globals())
++                exec(stmt, globals())  # ty: ignore[unresolved-reference]
+             except TypeError:
+                 pass
+             else:
+@@ -1461,7 +1461,7 @@
+     def test_oct(self):
+         self.assertEqual(oct(100), '0o144')
+         self.assertEqual(oct(-100), '-0o144')
+-        self.assertRaises(TypeError, oct, ())
++        self.assertRaises(TypeError, oct, ())  # ty: ignore[invalid-argument-type]
+ 
+     def write_testfile(self):
+         # NB the first 4 lines are also used to test input, below
+@@ -1501,7 +1501,7 @@
+             self.write_testfile()
+             current_locale_encoding = locale.getencoding()
+             with warnings.catch_warnings():
+-                warnings.simplefilter("ignore", EncodingWarning)
++                warnings.simplefilter("ignore", EncodingWarning)  # ty: ignore[unresolved-reference]
+                 fp = open(TESTFN, 'w')
+             with fp:
+                 self.assertEqual(fp.encoding, current_locale_encoding)
+@@ -1510,7 +1510,7 @@
+     def test_open_non_inheritable(self):
+         fileobj = open(__file__, encoding="utf-8")
+         with fileobj:
+-            self.assertFalse(os.get_inheritable(fileobj.fileno()))
++            self.assertFalse(os.get_inheritable(fileobj.fileno()))  # ty: ignore[unresolved-attribute]
+ 
+     def test_ord(self):
+         self.assertEqual(ord(' '), 32)
+@@ -1576,7 +1576,7 @@
+                     if isinstance(x, float) or \
+                        isinstance(y, float) or \
+                        isinstance(z, float):
+-                        self.assertRaises(TypeError, pow, x, y, z)
++                        self.assertRaises(TypeError, pow, x, y, z)  # ty: ignore[invalid-argument-type]
+                     else:
+                         self.assertAlmostEqual(pow(x, y, z), 24.0)
+ 
+@@ -1587,7 +1587,7 @@
+         self.assertEqual(pow(-1, -2, 3), 1)
+         self.assertRaises(ValueError, pow, 1, 2, 0)
+ 
+-        self.assertRaises(TypeError, pow)
++        self.assertRaises(TypeError, pow)  # ty: ignore[missing-argument]
+ 
+         # Test passing in arguments as keywords.
+         self.assertEqual(pow(0, exp=0), 1)
+@@ -1604,35 +1604,35 @@
+     def test_input(self):
+         self.write_testfile()
+         fp = open(TESTFN, encoding="utf-8")
+-        savestdin = sys.stdin
++        savestdin = sys.stdin  # ty: ignore[unresolved-attribute]
+         savestdout = sys.stdout # Eats the echo
+         try:
+-            sys.stdin = fp
++            sys.stdin = fp  # ty: ignore[unresolved-attribute]
+             sys.stdout = BitBucket()
+-            self.assertEqual(input(), "1+1")
+-            self.assertEqual(input(), 'The quick brown fox jumps over the lazy dog.')
+-            self.assertEqual(input('testing\n'), 'Dear John')
++            self.assertEqual(input(), "1+1")  # ty: ignore[unresolved-reference]
++            self.assertEqual(input(), 'The quick brown fox jumps over the lazy dog.')  # ty: ignore[unresolved-reference]
++            self.assertEqual(input('testing\n'), 'Dear John')  # ty: ignore[unresolved-reference]
+ 
+             # SF 1535165: don't segfault on closed stdin
+             # sys.stdout must be a regular file for triggering
+             sys.stdout = savestdout
+-            sys.stdin.close()
+-            self.assertRaises(ValueError, input)
++            sys.stdin.close()  # ty: ignore[unresolved-attribute]
++            self.assertRaises(ValueError, input)  # ty: ignore[unresolved-reference]
+ 
+             sys.stdout = BitBucket()
+-            sys.stdin = io.StringIO("NULL\0")
+-            self.assertRaises(TypeError, input, 42, 42)
+-            sys.stdin = io.StringIO("    'whitespace'")
+-            self.assertEqual(input(), "    'whitespace'")
+-            sys.stdin = io.StringIO()
+-            self.assertRaises(EOFError, input)
++            sys.stdin = io.StringIO("NULL\0")  # ty: ignore[unresolved-attribute]
++            self.assertRaises(TypeError, input, 42, 42)  # ty: ignore[unresolved-reference]
++            sys.stdin = io.StringIO("    'whitespace'")  # ty: ignore[unresolved-attribute]
++            self.assertEqual(input(), "    'whitespace'")  # ty: ignore[unresolved-reference]
++            sys.stdin = io.StringIO()  # ty: ignore[unresolved-attribute]
++            self.assertRaises(EOFError, input)  # ty: ignore[unresolved-reference]
+ 
+             del sys.stdout
+-            self.assertRaises(RuntimeError, input, 'prompt')
+-            del sys.stdin
+-            self.assertRaises(RuntimeError, input, 'prompt')
++            self.assertRaises(RuntimeError, input, 'prompt')  # ty: ignore[unresolved-reference]
++            del sys.stdin  # ty: ignore[unresolved-attribute]
++            self.assertRaises(RuntimeError, input, 'prompt')  # ty: ignore[unresolved-reference]
+         finally:
+-            sys.stdin = savestdin
++            sys.stdin = savestdin  # ty: ignore[unresolved-attribute]
+             sys.stdout = savestdout
+             fp.close()
+ 
+@@ -1644,7 +1644,7 @@
+                     patch = False
+                     sys.stdout = X()
+                     sys.stderr = X()
+-                    sys.stdin = X('input\n')
++                    sys.stdin = X('input\n')  # ty: ignore[unresolved-attribute]
+                     support.gc_collect()
+                 return io.StringIO.__getattribute__(self, name)
+ 
+@@ -1655,9 +1655,9 @@
+             # the only references:
+             sys.stdout = X()
+             sys.stderr = X()
+-            sys.stdin = X('input\n')
++            sys.stdin = X('input\n')  # ty: ignore[unresolved-attribute]
+             patch = True
+-            input()  # should not crash
++            input()  # should not crash  # ty: ignore[unresolved-reference]
+ 
+     # test_int(): see test_int.py for tests of built-in function int().
+ 
+@@ -1733,7 +1733,7 @@
+         # test new kwargs
+         self.assertEqual(round(number=-8.0, ndigits=-1), -10.0)
+ 
+-        self.assertRaises(TypeError, round)
++        self.assertRaises(TypeError, round)  # ty: ignore[missing-argument]
+ 
+         # test generic rounding delegation for reals
+         class TestRound:
+@@ -1745,13 +1745,13 @@
+ 
+         self.assertEqual(round(TestRound()), 23)
+ 
+-        self.assertRaises(TypeError, round, 1, 2, 3)
+-        self.assertRaises(TypeError, round, TestNoRound())
++        self.assertRaises(TypeError, round, 1, 2, 3)  # ty: ignore[too-many-positional-arguments]
++        self.assertRaises(TypeError, round, TestNoRound())  # ty: ignore[invalid-argument-type]
+ 
+         t = TestNoRound()
+-        t.__round__ = lambda *args: args
+-        self.assertRaises(TypeError, round, t)
+-        self.assertRaises(TypeError, round, t, 0)
++        t.__round__ = lambda *args: args  # ty: ignore[unresolved-attribute]
++        self.assertRaises(TypeError, round, t)  # ty: ignore[invalid-argument-type]
++        self.assertRaises(TypeError, round, t, 0)  # ty: ignore[invalid-argument-type]
+ 
+     # Some versions of glibc for alpha have a bug that affects
+     # float -> integer rounding (floor, ceil, rint, round) for
+@@ -1786,14 +1786,14 @@
+     def test_setattr(self):
+         setattr(sys, 'spam', 1)
+         try:
+-            self.assertEqual(sys.spam, 1)
++            self.assertEqual(sys.spam, 1)  # ty: ignore[unresolved-attribute]
+         finally:
+-            del sys.spam
+-        self.assertRaises(TypeError, setattr)
+-        self.assertRaises(TypeError, setattr, sys)
+-        self.assertRaises(TypeError, setattr, sys, 'spam')
++            del sys.spam  # ty: ignore[unresolved-attribute]
++        self.assertRaises(TypeError, setattr)  # ty: ignore[missing-argument]
++        self.assertRaises(TypeError, setattr, sys)  # ty: ignore[missing-argument]
++        self.assertRaises(TypeError, setattr, sys, 'spam')  # ty: ignore[missing-argument]
+         msg = r"^attribute name must be string, not 'int'$"
+-        self.assertRaisesRegex(TypeError, msg, setattr, sys, 1, 'spam')
++        self.assertRaisesRegex(TypeError, msg, setattr, sys, 1, 'spam')  # ty: ignore[invalid-argument-type]
+ 
+     # test_str(): see test_str.py and test_bytes.py for str() tests.
+ 
+@@ -1801,7 +1801,7 @@
+         self.assertEqual(sum([]), 0)
+         self.assertEqual(sum(list(range(2,8))), 27)
+         self.assertEqual(sum(iter(list(range(2,8)))), 27)
+-        self.assertEqual(sum(Squares(10)), 285)
++        self.assertEqual(sum(Squares(10)), 285)  # ty: ignore[no-matching-overload]
+         self.assertEqual(sum(iter(Squares(10))), 285)
+         self.assertEqual(sum([[1], [2], [3]], []), [1, 2, 3])
+ 
+@@ -1828,26 +1828,26 @@
+         self.assertTrue(math.isinf(sum([float("inf"), float("inf")])))
+         self.assertTrue(math.isinf(sum([1e308, 1e308])))
+ 
+-        self.assertRaises(TypeError, sum)
+-        self.assertRaises(TypeError, sum, 42)
+-        self.assertRaises(TypeError, sum, ['a', 'b', 'c'])
++        self.assertRaises(TypeError, sum)  # ty: ignore[missing-argument]
++        self.assertRaises(TypeError, sum, 42)  # ty: ignore[invalid-argument-type]
++        self.assertRaises(TypeError, sum, ['a', 'b', 'c'])  # ty: ignore[invalid-argument-type]
+         self.assertRaises(TypeError, sum, ['a', 'b', 'c'], '')
+         self.assertRaises(TypeError, sum, [b'a', b'c'], b'')
+-        values = [bytearray(b'a'), bytearray(b'b')]
+-        self.assertRaises(TypeError, sum, values, bytearray(b''))
+-        self.assertRaises(TypeError, sum, [[1], [2], [3]])
+-        self.assertRaises(TypeError, sum, [{2:3}])
+-        self.assertRaises(TypeError, sum, [{2:3}]*2, {2:3})
++        values = [bytearray(b'a'), bytearray(b'b')]  # ty: ignore[unresolved-reference]
++        self.assertRaises(TypeError, sum, values, bytearray(b''))  # ty: ignore[unresolved-reference]
++        self.assertRaises(TypeError, sum, [[1], [2], [3]])  # ty: ignore[invalid-argument-type]
++        self.assertRaises(TypeError, sum, [{2:3}])  # ty: ignore[invalid-argument-type]
++        self.assertRaises(TypeError, sum, [{2:3}]*2, {2:3})  # ty: ignore[too-many-positional-arguments]
+         self.assertRaises(TypeError, sum, [], '')
+         self.assertRaises(TypeError, sum, [], b'')
+-        self.assertRaises(TypeError, sum, [], bytearray())
++        self.assertRaises(TypeError, sum, [], bytearray())  # ty: ignore[unresolved-reference]
+         self.assertRaises(OverflowError, sum, [1.0, 10**1000])
+         self.assertRaises(OverflowError, sum, [1j, 10**1000])
+ 
+         class BadSeq:
+             def __getitem__(self, index):
+                 raise ValueError
+-        self.assertRaises(ValueError, sum, BadSeq())
++        self.assertRaises(ValueError, sum, BadSeq())  # ty: ignore[invalid-argument-type]
+ 
+         empty = []
+         sum(([x] for x in range(10)), empty)
+@@ -1860,13 +1860,13 @@
+ 
+         # test that sum() of complex and real numbers doesn't
+         # smash sign of imaginary 0
+-        self.assertComplexesAreIdentical(sum([complex(1, -0.0), 1]),
++        self.assertComplexesAreIdentical(sum([complex(1, -0.0), 1]),  # ty: ignore[unresolved-attribute]
+                                          complex(2, -0.0))
+-        self.assertComplexesAreIdentical(sum([1, complex(1, -0.0)]),
++        self.assertComplexesAreIdentical(sum([1, complex(1, -0.0)]),  # ty: ignore[unresolved-attribute]
+                                          complex(2, -0.0))
+-        self.assertComplexesAreIdentical(sum([complex(1, -0.0), 1.0]),
++        self.assertComplexesAreIdentical(sum([complex(1, -0.0), 1.0]),  # ty: ignore[unresolved-attribute]
+                                          complex(2, -0.0))
+-        self.assertComplexesAreIdentical(sum([1.0, complex(1, -0.0)]),
++        self.assertComplexesAreIdentical(sum([1.0, complex(1, -0.0)]),  # ty: ignore[unresolved-attribute]
+                                          complex(2, -0.0))
+ 
+     @(requires_IEEE_754 if sys.platform != "monty" else _identity)
+@@ -1893,29 +1893,29 @@
+ 
+     @(staticmethod if sys.platform != "monty" else _identity)
+     def get_vars_f0():
+-        return vars()
++        return vars()  # ty: ignore[unresolved-reference]
+ 
+     @(staticmethod if sys.platform != "monty" else _identity)
+     def get_vars_f2():
+         BuiltinTest.get_vars_f0()
+         a = 1
+         b = 2
+-        return vars()
++        return vars()  # ty: ignore[unresolved-reference]
+ 
+     def test_vars(self):
+ 
+         class C_get_vars(object):
+             def getDict(self):
+                 return {'a':2}
+-            __dict__ = property(fget=getDict)
+-
+-        self.assertEqual(set(vars()), set(dir()))
+-        self.assertEqual(set(vars(sys)), set(dir(sys)))
++            __dict__ = property(fget=getDict)  # ty: ignore[invalid-assignment]
++
++        self.assertEqual(set(vars()), set(dir()))  # ty: ignore[unresolved-reference]
++        self.assertEqual(set(vars(sys)), set(dir(sys)))  # ty: ignore[unresolved-reference]
+         self.assertEqual(self.get_vars_f0(), {})
+         self.assertEqual(self.get_vars_f2(), {'a': 1, 'b': 2})
+-        self.assertRaises(TypeError, vars, 42, 42)
+-        self.assertRaises(TypeError, vars, 42)
+-        self.assertEqual(vars(C_get_vars()), {'a':2})
++        self.assertRaises(TypeError, vars, 42, 42)  # ty: ignore[unresolved-reference]
++        self.assertRaises(TypeError, vars, 42)  # ty: ignore[unresolved-reference]
++        self.assertEqual(vars(C_get_vars()), {'a':2})  # ty: ignore[unresolved-reference]
+ 
+     def iter_error(self, iterable, error):
+         """Collect `iterable` into a list, catching an expected `error`."""
+@@ -1938,13 +1938,13 @@
+             def __getitem__(self, i):
+                 if i < 0 or i > 2: raise IndexError
+                 return i + 4
+-        self.assertEqual(list(zip(a, I())), t)
++        self.assertEqual(list(zip(a, I())), t)  # ty: ignore[invalid-argument-type]
+         self.assertEqual(list(zip()), [])
+         self.assertEqual(list(zip(*[])), [])
+-        self.assertRaises(TypeError, zip, None)
++        self.assertRaises(TypeError, zip, None)  # ty: ignore[invalid-argument-type]
+         class G:
+             pass
+-        self.assertRaises(TypeError, zip, a, G())
++        self.assertRaises(TypeError, zip, a, G())  # ty: ignore[invalid-argument-type]
+         self.assertRaises(RuntimeError, zip, a, TestFailingIter())
+ 
+         # Make sure zip doesn't try to allocate a billion elements for the
+@@ -1957,7 +1957,7 @@
+                 else:
+                     return i
+         self.assertEqual(
+-            list(zip(SequenceWithoutALength(), range(2**30))),
++            list(zip(SequenceWithoutALength(), range(2**30))),  # ty: ignore[invalid-argument-type]
+             list(enumerate(range(5)))
+         )
+ 
+@@ -1967,7 +1967,7 @@
+                     raise ValueError
+                 else:
+                     return i
+-        self.assertRaises(ValueError, list, zip(BadSeq(), BadSeq()))
++        self.assertRaises(ValueError, list, zip(BadSeq(), BadSeq()))  # ty: ignore[invalid-argument-type]
+ 
+     def test_zip_pickle(self):
+         a = (1, 2, 3)
+@@ -2159,8 +2159,8 @@
+         self.assertRaises(TypeError, format, BadFormatResult(), "")
+ 
+         # TypeError because format_spec is not unicode or str
+-        self.assertRaises(TypeError, format, object(), 4)
+-        self.assertRaises(TypeError, format, object(), object())
++        self.assertRaises(TypeError, format, object(), 4)  # ty: ignore[invalid-argument-type]
++        self.assertRaises(TypeError, format, object(), object())  # ty: ignore[invalid-argument-type]
+ 
+         # tests for object.__format__ really belong elsewhere, but
+         #  there's no good place to put them
+@@ -2168,9 +2168,9 @@
+         self.assertStartsWith(x, '<object object at')
+ 
+         # first argument to object.__format__ must be string
+-        self.assertRaises(TypeError, object().__format__, 3)
+-        self.assertRaises(TypeError, object().__format__, object())
+-        self.assertRaises(TypeError, object().__format__, None)
++        self.assertRaises(TypeError, object().__format__, 3)  # ty: ignore[invalid-argument-type]
++        self.assertRaises(TypeError, object().__format__, object())  # ty: ignore[invalid-argument-type]
++        self.assertRaises(TypeError, object().__format__, None)  # ty: ignore[invalid-argument-type]
+ 
+         # --------------------------------------------------------------------
+         # Issue #7994: object.__format__ with a non-empty format string is
+@@ -2212,12 +2212,12 @@
+         self.assertEqual(bin(-(2**65-1)), '-0b' + '1' * 65)
+ 
+     def test_bytearray_translate(self):
+-        x = bytearray(b"abc")
++        x = bytearray(b"abc")  # ty: ignore[unresolved-reference]
+         self.assertRaises(ValueError, x.translate, b"1", 1)
+         self.assertRaises(TypeError, x.translate, b"1"*256, 1)
+ 
+     def test_bytearray_extend_error(self):
+-        array = bytearray()
++        array = bytearray()  # ty: ignore[unresolved-reference]
+         bad_iter = map(int, "X")
+         self.assertRaises(ValueError, array.extend, bad_iter)
+ 
+@@ -2225,8 +2225,8 @@
+         for const in None, Ellipsis, NotImplemented:
+             tp = type(const)
+             self.assertIs(tp(), const)
+-            self.assertRaises(TypeError, tp, 1, 2)
+-            self.assertRaises(TypeError, tp, a=1, b=2)
++            self.assertRaises(TypeError, tp, 1, 2)  # ty: ignore[too-many-positional-arguments]
++            self.assertRaises(TypeError, tp, a=1, b=2)  # ty: ignore[unknown-argument]
+ 
+     def test_bool_notimplemented(self):
+         # GH-79893: NotImplemented is a sentinel value that should never
+@@ -2249,15 +2249,15 @@
+ 
+                 # Missing instance attributes:
+                 with self.assertRaises(AttributeError):
+-                    singleton.prop = 1
++                    singleton.prop = 1  # ty: ignore[invalid-assignment]
+                 with self.assertRaises(AttributeError):
+-                    singleton.prop
++                    singleton.prop  # ty: ignore[unresolved-attribute]
+ 
+                 # Missing class attributes:
+                 with self.assertRaises(TypeError):
+-                    type(singleton).prop = 1
++                    type(singleton).prop = 1  # ty: ignore[invalid-assignment]
+                 with self.assertRaises(AttributeError):
+-                    type(singleton).prop
++                    type(singleton).prop  # ty: ignore[unresolved-attribute]
+ 
+ 
+ if sys.platform != 'monty':
+@@ -2571,11 +2571,11 @@
+         # Issue #29327: The first argument is positional-only.
+         sorted([])
+         with self.assertRaises(TypeError):
+-            sorted(iterable=[])
++            sorted(iterable=[])  # ty: ignore[no-matching-overload]
+         # Other arguments are keyword-only
+         sorted([], key=None)
+         with self.assertRaises(TypeError):
+-            sorted([], None)
++            sorted([], None)  # ty: ignore[no-matching-overload]
+ 
+     def test_inputtypes(self):
+         s = 'abracadabra'
+@@ -2590,7 +2590,7 @@
+ 
+     def test_baddecorator(self):
+         data = 'The quick Brown fox Jumped over The lazy Dog'.split()
+-        self.assertRaises(TypeError, sorted, data, None, lambda x,y: 0)
++        self.assertRaises(TypeError, sorted, data, None, lambda x,y: 0)  # ty: ignore[too-many-positional-arguments]
+ 
+ 
+ if sys.platform != "monty":
+@@ -2691,7 +2691,7 @@
+         with self.assertRaises(TypeError):
+             type('a', (), {}, x=5)
+         with self.assertRaises(TypeError):
+-            type('a', (), dict={})
++            type('a', (), dict={})  # ty: ignore[no-matching-overload]
+ 
+     def test_type_name(self):
+         for name in 'A', '\xc4', '\U0001f40d', 'B.A', '42', '':
+@@ -2705,7 +2705,7 @@
+         with self.assertRaises(UnicodeEncodeError):
+             type('A\udcdcB', (), {})
+         with self.assertRaises(TypeError):
+-            type(b'A', (), {})
++            type(b'A', (), {})  # ty: ignore[invalid-argument-type]
+ 
+         C = type('C', (), {})
+         for name in 'A', '\xc4', '\U0001f40d', 'B.A', '42', '':
+@@ -2723,7 +2723,7 @@
+             A.__name__ = 'A\udcdcB'
+         self.assertEqual(A.__name__, 'C')
+         with self.assertRaises(TypeError):
+-            A.__name__ = b'A'
++            A.__name__ = b'A'  # ty: ignore[invalid-assignment]
+         self.assertEqual(A.__name__, 'C')
+ 
+     def test_type_qualname(self):
+@@ -2735,11 +2735,11 @@
+             type('A', (), {'__qualname__': b'B'})
+         self.assertEqual(A.__qualname__, 'B.C')
+ 
+-        A.__qualname__ = 'D.E'
++        A.__qualname__ = 'D.E'  # ty: ignore[invalid-assignment]
+         self.assertEqual(A.__name__, 'A')
+         self.assertEqual(A.__qualname__, 'D.E')
+         with self.assertRaises(TypeError):
+-            A.__qualname__ = b'B'
++            A.__qualname__ = b'B'  # ty: ignore[invalid-assignment]
+         self.assertEqual(A.__qualname__, 'D.E')
+ 
+     def test_type_firstlineno(self):
+@@ -2750,7 +2750,7 @@
+         A.__module__ = 'testmodule'
+         self.assertEqual(A.__module__, 'testmodule')
+         self.assertNotIn('__firstlineno__', A.__dict__)
+-        A.__firstlineno__ = 43
++        A.__firstlineno__ = 43  # ty: ignore[invalid-assignment]
+         self.assertEqual(A.__dict__['__firstlineno__'], 43)
+ 
+     def test_type_typeparams(self):
+@@ -2758,7 +2758,7 @@
+             pass
+         T, = A.__type_params__
+         self.assertIsInstance(T, typing.TypeVar)
+-        A.__type_params__ = "whatever"
++        A.__type_params__ = "whatever"  # ty: ignore[invalid-assignment]
+         self.assertEqual(A.__type_params__, "whatever")
+         with self.assertRaises(TypeError):
+             del A.__type_params__
+@@ -2774,28 +2774,28 @@
+         A = type('A', (), {})
+         self.assertEqual(A.__doc__, None)
+         for doc in 'x', '\xc4', '\U0001f40d', 'x\x00y', 'x\udcdcy', b'x', 42, None:
+-            A.__doc__ = doc
++            A.__doc__ = doc  # ty: ignore[invalid-assignment]
+             self.assertEqual(A.__doc__, doc)
+ 
+     def test_bad_args(self):
+         with self.assertRaises(TypeError):
+-            type()
++            type()  # ty: ignore[no-matching-overload]
+         with self.assertRaises(TypeError):
+-            type('A', ())
++            type('A', ())  # ty: ignore[no-matching-overload]
+         with self.assertRaises(TypeError):
+-            type('A', (), {}, ())
++            type('A', (), {}, ())  # ty: ignore[no-matching-overload]
+         with self.assertRaises(TypeError):
+-            type('A', (), dict={})
++            type('A', (), dict={})  # ty: ignore[no-matching-overload]
+         with self.assertRaises(TypeError):
+-            type('A', [], {})
++            type('A', [], {})  # ty: ignore[invalid-argument-type]
+         with self.assertRaises(TypeError):
+             type('A', (), types.MappingProxyType({}))
+         with self.assertRaises(TypeError):
+-            type('A', (None,), {})
++            type('A', (None,), {})  # ty: ignore[invalid-base]
+         with self.assertRaises(TypeError):
+-            type('A', (bool,), {})
++            type('A', (bool,), {})  # ty: ignore[subclass-of-final-class]
+         with self.assertRaises(TypeError):
+-            type('A', (int, str), {})
++            type('A', (int, str), {})  # ty: ignore[instance-layout-conflict]
+ 
+     def test_bad_slots(self):
+         with self.assertRaises(TypeError):
+--- a/test/test_descr.py
++++ b/test/test_descr.py
+@@ -315,14 +315,14 @@
+     @(unittest.skipIf(xxsubtype is None, "requires xxsubtype module") if sys.platform != "monty" else _identity)
+     def test_spam_lists(self):
+         # Testing spamlist operations...
+-        import copy, xxsubtype as spam
++        import copy, xxsubtype as spam  # ty: ignore[import-not-found]
+ 
+         def spamlist(l, memo=None):
+-            import xxsubtype as spam
++            import xxsubtype as spam  # ty: ignore[import-not-found]
+             return spam.spamlist(l)
+ 
+         # This is an ugly hack:
+-        copy._deepcopy_dispatch[spam.spamlist] = spamlist
++        copy._deepcopy_dispatch[spam.spamlist] = spamlist  # ty: ignore[unresolved-attribute]
+ 
+         self.binop_test(spamlist([1]), spamlist([2]), spamlist([1,2]), "a+b",
+                        "__add__")
+@@ -360,15 +360,15 @@
+     @(unittest.skipIf(xxsubtype is None, "requires xxsubtype module") if sys.platform != "monty" else _identity)
+     def test_spam_dicts(self):
+         # Testing spamdict operations...
+-        import copy, xxsubtype as spam
++        import copy, xxsubtype as spam  # ty: ignore[import-not-found]
+         def spamdict(d, memo=None):
+-            import xxsubtype as spam
++            import xxsubtype as spam  # ty: ignore[import-not-found]
+             sd = spam.spamdict()
+             for k, v in list(d.items()):
+                 sd[k] = v
+             return sd
+         # This is an ugly hack:
+-        copy._deepcopy_dispatch[spam.spamdict] = spamdict
++        copy._deepcopy_dispatch[spam.spamdict] = spamdict  # ty: ignore[unresolved-attribute]
+ 
+         self.binop_test(spamdict({1:2,3:4}), 1, 1, "b in a", "__contains__")
+         self.binop_test(spamdict({1:2,3:4}), 2, 0, "b in a", "__contains__")
+@@ -595,13 +595,13 @@
+         self.assertEqual(E.__mro__, (E, C, B, A, object))
+         # MRO order disagreement
+         try:
+-            class F(D, E): pass
++            class F(D, E): pass  # ty: ignore[inconsistent-mro]
+         except TypeError:
+             pass
+         else:
+             self.fail("expected MRO order disagreement (F)")
+         try:
+-            class G(E, D): pass
++            class G(E, D): pass  # ty: ignore[inconsistent-mro]
+         except TypeError:
+             pass
+         else:
+@@ -700,7 +700,7 @@
+         self.assertNotEqual(a, b)
+         self.assertNotHasAttr(a, "foo")
+         try:
+-            a.foo = 12
++            a.foo = 12  # ty: ignore[unresolved-attribute]
+         except (AttributeError, TypeError):
+             pass
+         else:
+@@ -711,8 +711,8 @@
+             pass
+         x = Cdict()
+         self.assertEqual(x.__dict__, {})
+-        x.foo = 1
+-        self.assertEqual(x.foo, 1)
++        x.foo = 1  # ty: ignore[unresolved-attribute]
++        self.assertEqual(x.foo, 1)  # ty: ignore[unresolved-attribute]
+         self.assertEqual(x.__dict__, {'foo': 1})
+ 
+     def test_object_class_assignment_between_heaptypes_and_nonheaptypes(self):
+@@ -783,7 +783,7 @@
+         a = D()
+         self.assertHasAttr(a, "__dict__")
+         self.assertNotHasAttr(a, "__weakref__")
+-        a.foo = 42
++        a.foo = 42  # ty: ignore[unresolved-attribute]
+         self.assertEqual(a.__dict__, {"foo": 42})
+ 
+         class W(object):
+@@ -792,33 +792,33 @@
+         self.assertHasAttr(a, "__weakref__")
+         self.assertNotHasAttr(a, "__dict__")
+         try:
+-            a.foo = 42
++            a.foo = 42  # ty: ignore[unresolved-attribute]
+         except AttributeError:
+             pass
+         else:
+             self.fail("shouldn't be allowed to set a.foo")
+ 
+-        class C1(W, D):
++        class C1(W, D):  # ty: ignore[instance-layout-conflict]
+             __slots__ = []
+         a = C1()
+         self.assertHasAttr(a, "__dict__")
+         self.assertHasAttr(a, "__weakref__")
+-        a.foo = 42
++        a.foo = 42  # ty: ignore[unresolved-attribute]
+         self.assertEqual(a.__dict__, {"foo": 42})
+ 
+-        class C2(D, W):
++        class C2(D, W):  # ty: ignore[instance-layout-conflict]
+             __slots__ = []
+         a = C2()
+         self.assertHasAttr(a, "__dict__")
+         self.assertHasAttr(a, "__weakref__")
+-        a.foo = 42
++        a.foo = 42  # ty: ignore[unresolved-attribute]
+         self.assertEqual(a.__dict__, {"foo": 42})
+ 
+     def test_classmethods(self):
+         # Testing class methods...
+         class C(object):
+             def foo(*a): return a
+-            goo = classmethod(foo)
++            goo = classmethod(foo)  # ty: ignore[unresolved-reference]
+         c = C()
+         self.assertEqual(C.goo(1), (C, 1))
+         self.assertEqual(c.goo(1), (C, 1))
+@@ -834,31 +834,31 @@
+         def f(cls, arg):
+             "f docstring"
+             return (cls, arg)
+-        ff = classmethod(f)
++        ff = classmethod(f)  # ty: ignore[unresolved-reference]
+         self.assertEqual(ff.__get__(0, int)(42), (int, 42))
+         self.assertEqual(ff.__get__(0)(42), (int, 42))
+ 
+         # Test super() with classmethods (SF bug 535444)
+         self.assertEqual(C.goo.__self__, C)
+         self.assertEqual(D.goo.__self__, D)
+-        self.assertEqual(super(D,D).goo.__self__, D)
+-        self.assertEqual(super(D,d).goo.__self__, D)
+-        self.assertEqual(super(D,D).goo(), (D,))
+-        self.assertEqual(super(D,d).goo(), (D,))
++        self.assertEqual(super(D,D).goo.__self__, D)  # ty: ignore[unresolved-reference]
++        self.assertEqual(super(D,d).goo.__self__, D)  # ty: ignore[unresolved-reference]
++        self.assertEqual(super(D,D).goo(), (D,))  # ty: ignore[unresolved-reference]
++        self.assertEqual(super(D,d).goo(), (D,))  # ty: ignore[unresolved-reference]
+ 
+         # Verify that a non-callable will raise
+-        meth = classmethod(1).__get__(1)
++        meth = classmethod(1).__get__(1)  # ty: ignore[unresolved-reference]
+         self.assertRaises(TypeError, meth)
+ 
+         # Verify that classmethod() doesn't allow keyword args
+         try:
+-            classmethod(f, kw=1)
++            classmethod(f, kw=1)  # ty: ignore[unresolved-reference]
+         except TypeError:
+             pass
+         else:
+             self.fail("classmethod shouldn't accept keyword args")
+ 
+-        cm = classmethod(f)
++        cm = classmethod(f)  # ty: ignore[unresolved-reference]
+         cm_dict = {'__doc__': (
+                        "f docstring"
+                        if support.HAVE_PY_DOCSTRINGS
+@@ -876,11 +876,11 @@
+         self.assertNotHasAttr(cm, "x")
+ 
+     def test_classmethod_staticmethod_annotations(self):
+-        for deco in (classmethod, staticmethod):
++        for deco in (classmethod, staticmethod):  # ty: ignore[unresolved-reference]
+             @deco
+             def unannotated(cls): pass
+             @deco
+-            def annotated(cls) -> int: pass
++            def annotated(cls) -> int: pass  # ty: ignore[empty-body]
+ 
+             for method in (annotated, unannotated):
+                 with self.subTest(deco=deco, method=method):
+@@ -921,23 +921,23 @@
+ 
+         self.assertEqual(Spam.__new__.__annotations__, {})
+         obj = Spam.__dict__['__new__']
+-        self.assertIsInstance(obj, staticmethod)
++        self.assertIsInstance(obj, staticmethod)  # ty: ignore[unresolved-reference]
+         self.assertEqual(obj.__annotations__, {})
+ 
+     @(support.refcount_test if sys.platform != "monty" else _identity)
+     def test_refleaks_in_classmethod___init__(self):
+         gettotalrefcount = support.get_attribute(sys, 'gettotalrefcount')
+-        cm = classmethod(None)
++        cm = classmethod(None)  # ty: ignore[unresolved-reference]
+         refs_before = gettotalrefcount()
+         for i in range(100):
+             cm.__init__(None)
+-        self.assertAlmostEqual(gettotalrefcount() - refs_before, 0, delta=10)
++        self.assertAlmostEqual(gettotalrefcount() - refs_before, 0, delta=10)  # ty: ignore[unknown-argument]
+ 
+     @(support.impl_detail("the module 'xxsubtype' is internal") if sys.platform != "monty" else _identity)
+     @(unittest.skipIf(xxsubtype is None, "requires xxsubtype module") if sys.platform != "monty" else _identity)
+     def test_classmethods_in_c(self):
+         # Testing C-based class methods...
+-        import xxsubtype as spam
++        import xxsubtype as spam  # ty: ignore[import-not-found]
+         a = (1, 2, 3)
+         d = {'abc': 123}
+         x, a1, d1 = spam.spamlist.classmeth(*a, **d)
+@@ -997,7 +997,7 @@
+         import io
+ 
+         obj = io.StringIO()
+-        descr = io.TextIOBase.read
++        descr = io.TextIOBase.read  # ty: ignore[unresolved-attribute]
+ 
+         with self.assertRaises(TypeError) as cm:
+             descr.__get__(obj, "not_a_type")
+@@ -1010,7 +1010,7 @@
+         # Testing static methods...
+         class C(object):
+             def foo(*a): return a
+-            goo = staticmethod(foo)
++            goo = staticmethod(foo)  # ty: ignore[unresolved-reference]
+         c = C()
+         self.assertEqual(C.goo(1), (1,))
+         self.assertEqual(c.goo(1), (1,))
+@@ -1022,7 +1022,7 @@
+         self.assertEqual(d.goo(1), (1,))
+         self.assertEqual(d.foo(1), (d, 1))
+         self.assertEqual(D.foo(d, 1), (d, 1))
+-        sm = staticmethod(None)
++        sm = staticmethod(None)  # ty: ignore[unresolved-reference]
+         self.assertEqual(sm.__dict__, {'__doc__': None.__doc__})
+         sm.x = 42
+         self.assertEqual(sm.x, 42)
+@@ -1033,17 +1033,17 @@
+     @(support.refcount_test if sys.platform != "monty" else _identity)
+     def test_refleaks_in_staticmethod___init__(self):
+         gettotalrefcount = support.get_attribute(sys, 'gettotalrefcount')
+-        sm = staticmethod(None)
++        sm = staticmethod(None)  # ty: ignore[unresolved-reference]
+         refs_before = gettotalrefcount()
+         for i in range(100):
+             sm.__init__(None)
+-        self.assertAlmostEqual(gettotalrefcount() - refs_before, 0, delta=10)
++        self.assertAlmostEqual(gettotalrefcount() - refs_before, 0, delta=10)  # ty: ignore[unknown-argument]
+ 
+     @(support.impl_detail("the module 'xxsubtype' is internal") if sys.platform != "monty" else _identity)
+     @(unittest.skipIf(xxsubtype is None, "requires xxsubtype module") if sys.platform != "monty" else _identity)
+     def test_staticmethods_in_c(self):
+         # Testing C-based static methods...
+-        import xxsubtype as spam
++        import xxsubtype as spam  # ty: ignore[import-not-found]
+         a = (1, 2, 3)
+         d = {"abc": 123}
+         x, a1, d1 = spam.spamlist.staticmeth(*a, **d)
+@@ -1059,7 +1059,7 @@
+         # Testing classic classes...
+         class C:
+             def foo(*a): return a
+-            goo = classmethod(foo)
++            goo = classmethod(foo)  # ty: ignore[unresolved-reference]
+         c = C()
+         self.assertEqual(C.goo(1), (C, 1))
+         self.assertEqual(c.goo(1), (C, 1))
+@@ -1096,8 +1096,8 @@
+ 
+     @(unittest.expectedFailure if sys.platform != "monty" else _identity)
+     def test_bad_new(self):
+-        self.assertRaises(TypeError, object.__new__)
+-        self.assertRaises(TypeError, object.__new__, '')
++        self.assertRaises(TypeError, object.__new__)  # ty: ignore[missing-argument]
++        self.assertRaises(TypeError, object.__new__, '')  # ty: ignore[invalid-argument-type]
+         self.assertRaises(TypeError, list.__new__, object)
+         self.assertRaises(TypeError, object.__new__, list)
+         class C(object):
+@@ -1111,25 +1111,25 @@
+         class A(object):
+             pass
+         object.__new__(A)
+-        self.assertRaises(TypeError, object.__new__, A, 5)
++        self.assertRaises(TypeError, object.__new__, A, 5)  # ty: ignore[too-many-positional-arguments]
+         object.__init__(A())
+-        self.assertRaises(TypeError, object.__init__, A(), 5)
++        self.assertRaises(TypeError, object.__init__, A(), 5)  # ty: ignore[too-many-positional-arguments]
+ 
+         class A(object):
+             def __init__(self, foo):
+                 self.foo = foo
+         object.__new__(A)
+-        object.__new__(A, 5)
++        object.__new__(A, 5)  # ty: ignore[too-many-positional-arguments]
+         object.__init__(A(3))
+-        self.assertRaises(TypeError, object.__init__, A(3), 5)
++        self.assertRaises(TypeError, object.__init__, A(3), 5)  # ty: ignore[too-many-positional-arguments]
+ 
+         class A(object):
+             def __new__(cls, foo):
+                 return object.__new__(cls)
+         object.__new__(A)
+-        self.assertRaises(TypeError, object.__new__, A, 5)
++        self.assertRaises(TypeError, object.__new__, A, 5)  # ty: ignore[too-many-positional-arguments]
+         object.__init__(A(3))
+-        object.__init__(A(3), 5)
++        object.__init__(A(3), 5)  # ty: ignore[too-many-positional-arguments]
+ 
+         class A(object):
+             def __new__(cls, foo):
+@@ -1137,9 +1137,9 @@
+             def __init__(self, foo):
+                 self.foo = foo
+         object.__new__(A)
+-        self.assertRaises(TypeError, object.__new__, A, 5)
++        self.assertRaises(TypeError, object.__new__, A, 5)  # ty: ignore[too-many-positional-arguments]
+         object.__init__(A(3))
+-        self.assertRaises(TypeError, object.__init__, A(3), 5)
++        self.assertRaises(TypeError, object.__init__, A(3), 5)  # ty: ignore[too-many-positional-arguments]
+ 
+     @(unittest.expectedFailure if sys.platform != "monty" else _identity)
+     def test_restored_object_new(self):
+@@ -1152,16 +1152,16 @@
+             def __init__(self, foo):
+                 self.foo = foo
+         with warnings.catch_warnings():
+-            warnings.simplefilter('error', DeprecationWarning)
+-            b = B(3)
++            warnings.simplefilter('error', DeprecationWarning)  # ty: ignore[unresolved-reference]
++            b = B(3)  # ty: ignore[too-many-positional-arguments]
+         self.assertEqual(b.foo, 3)
+         self.assertEqual(b.__class__, B)
+         del B.__new__
+-        self.assertRaises(AssertionError, B)
++        self.assertRaises(AssertionError, B)  # ty: ignore[invalid-argument-type]
+         del A.__new__
+         with warnings.catch_warnings():
+-            warnings.simplefilter('error', DeprecationWarning)
+-            b = B(3)
++            warnings.simplefilter('error', DeprecationWarning)  # ty: ignore[unresolved-reference]
++            b = B(3)  # ty: ignore[too-many-positional-arguments]
+         self.assertEqual(b.foo, 3)
+         self.assertEqual(b.__class__, B)
+ 
+@@ -1210,13 +1210,13 @@
+         expected_errmsg = "unbound method set.add() needs an argument"
+ 
+         with self.assertRaises(TypeError) as cm:
+-            set_add()
++            set_add()  # ty: ignore[missing-argument]
+         self.assertEqual(cm.exception.args[0], expected_errmsg)
+ 
+         expected_errmsg = "descriptor 'add' for 'set' objects doesn't apply to a 'int' object"
+ 
+         with self.assertRaises(TypeError) as cm:
+-            set_add(0)
++            set_add(0)  # ty: ignore[invalid-argument-type, missing-argument]
+         self.assertEqual(cm.exception.args[0], expected_errmsg)
+ 
+         with self.assertRaises(TypeError) as cm:
+@@ -1279,7 +1279,7 @@
+             ("__reversed__", reversed, empty_seq, set(), {}),
+             ("__length_hint__", list, zero, set(),
+              {"__iter__" : iden, "__next__" : stop}),
+-            ("__sizeof__", sys.getsizeof, zero, set(), {}),
++            ("__sizeof__", sys.getsizeof, zero, set(), {}),  # ty: ignore[unresolved-attribute]
+             ("__instancecheck__", do_isinstance, return_true, set(), {}),
+             ("__missing__", do_dict_missing, some_number,
+              set(("__class__",)), {}),
+@@ -1327,7 +1327,7 @@
+             for attr, obj in env.items():
+                 setattr(X, attr, obj)
+             setattr(X, name, meth_impl)
+-            runner(X())
++            runner(X())  # ty: ignore[invalid-argument-type, no-matching-overload]
+ 
+             record = []
+             class X(Checker):
+@@ -1335,7 +1335,7 @@
+             for attr, obj in env.items():
+                 setattr(X, attr, obj)
+             setattr(X, name, SpecialDescr(meth_impl))
+-            runner(X())
++            runner(X())  # ty: ignore[invalid-argument-type, no-matching-overload]
+             self.assertEqual(record, [1], name)
+ 
+             class X(Checker):
+@@ -1343,7 +1343,7 @@
+             for attr, obj in env.items():
+                 setattr(X, attr, obj)
+             setattr(X, name, ErrDescr())
+-            self.assertRaises(MyException, runner, X())
++            self.assertRaises(MyException, runner, X())  # ty: ignore[invalid-argument-type]
+ 
+     def test_specials(self):
+         # Testing special operators...
+@@ -1456,7 +1456,7 @@
+         a = C()
+         self.assertNotHasAttr(a, "x")
+         a.x = 42
+-        self.assertEqual(a._C__x, 42)
++        self.assertEqual(a._C__x, 42)  # ty: ignore[unresolved-attribute]
+         self.assertEqual(a.x, 42)
+         del a.x
+         self.assertNotHasAttr(a, "x")
+@@ -1499,7 +1499,7 @@
+ 
+         d = D()
+         try:
+-            for i in d:
++            for i in d:  # ty: ignore[not-iterable]
+                 str(i)
+         except ZeroDivisionError:
+             pass
+@@ -1510,7 +1510,7 @@
+     def test_testcapi_no_segfault(self):
+         # this segfaulted in 2.5b2
+         try:
+-            import _testcapi
++            import _testcapi  # ty: ignore[import-not-found]
+         except ImportError:
+             pass
+         else:
+@@ -1604,7 +1604,7 @@
+ 
+         for badarg in 0, 0, 0j, "0", [0], (0,):
+             try:
+-                dict(badarg)
++                dict(badarg)  # ty: ignore[no-matching-overload]
+             except TypeError:
+                 pass
+             except ValueError:
+@@ -1619,22 +1619,22 @@
+                 self.fail("no TypeError from dict(%r)" % badarg)
+ 
+         with self.assertRaises(TypeError):
+-            dict({}, {})
++            dict({}, {})  # ty: ignore[no-matching-overload]
+ 
+         class Mapping:
+             # Lacks a .keys() method; will be added later.
+             dict = {1:2, 3:4, 'a':1j}
+ 
+         try:
+-            dict(Mapping())
++            dict(Mapping())  # ty: ignore[no-matching-overload]
+         except TypeError:
+             pass
+         else:
+             self.fail("no TypeError from dict(incomplete mapping)")
+ 
+-        Mapping.keys = lambda self: list(self.dict.keys())
+-        Mapping.__getitem__ = lambda self, i: self.dict[i]
+-        d = dict(Mapping())
++        Mapping.keys = lambda self: list(self.dict.keys())  # ty: ignore[unresolved-attribute]
++        Mapping.__getitem__ = lambda self, i: self.dict[i]  # ty: ignore[unresolved-attribute]
++        d = dict(Mapping())  # ty: ignore[no-matching-overload]
+         self.assertEqual(d, Mapping.dict)
+ 
+         # Init from sequence of iterable objects, each producing a 2-sequence.
+@@ -1645,7 +1645,7 @@
+             def __iter__(self):
+                 return iter([self.first, self.last])
+ 
+-        d = dict([AddressBookEntry('Tim', 'Warsaw'),
++        d = dict([AddressBookEntry('Tim', 'Warsaw'),  # ty: ignore[no-matching-overload]
+                   AddressBookEntry('Barry', 'Peters'),
+                   AddressBookEntry('Tim', 'Peters'),
+                   AddressBookEntry('Barry', 'Warsaw')])
+@@ -1657,7 +1657,7 @@
+         # Bad sequence lengths.
+         for bad in [('tooshort',)], [('too', 'long', 'by 1')]:
+             try:
+-                dict(bad)
++                dict(bad)  # ty: ignore[no-matching-overload]
+             except ValueError:
+                 pass
+             else:
+@@ -1688,8 +1688,8 @@
+         self.assertEqual(interesting(dir(c)), cstuff)
+         ## self.assertIn('__self__', dir(C.Cmethod))
+ 
+-        c.cdata = 2
+-        c.cmethod = lambda self: 0
++        c.cdata = 2  # ty: ignore[unresolved-attribute]
++        c.cmethod = lambda self: 0  # ty: ignore[unresolved-attribute]
+         self.assertEqual(interesting(dir(c)), cstuff + ['cdata', 'cmethod'])
+         ## self.assertIn('__self__', dir(c.Cmethod))
+ 
+@@ -1702,8 +1702,8 @@
+         ## self.assertIn('__self__', dir(A.Amethod))
+         a = A()
+         self.assertEqual(interesting(dir(a)), astuff)
+-        a.adata = 42
+-        a.amethod = lambda self: 3
++        a.adata = 42  # ty: ignore[unresolved-attribute]
++        a.amethod = lambda self: 3  # ty: ignore[unresolved-attribute]
+         self.assertEqual(interesting(dir(a)), astuff + ['adata', 'amethod'])
+         ## self.assertIn('__self__', dir(a.Amethod))
+ 
+@@ -1766,7 +1766,7 @@
+ 
+         class B(A):
+             def __init__(self):
+-                self.__super = super(B, self)
++                self.__super = super(B, self)  # ty: ignore[unresolved-reference]
+             def meth(self, a):
+                 return "B(%r)" % a + self.__super.meth(a)
+ 
+@@ -1774,22 +1774,22 @@
+ 
+         class C(A):
+             def meth(self, a):
+-                return "C(%r)" % a + self.__super.meth(a)
+-        C._C__super = super(C)
++                return "C(%r)" % a + self.__super.meth(a)  # ty: ignore[unresolved-attribute]
++        C._C__super = super(C)  # ty: ignore[unresolved-attribute, unresolved-reference]
+ 
+         self.assertEqual(C().meth(3), "C(3)A(3)")
+ 
+         class D(C, B):
+             def meth(self, a):
+-                return "D(%r)" % a + super(D, self).meth(a)
++                return "D(%r)" % a + super(D, self).meth(a)  # ty: ignore[unresolved-reference]
+ 
+         self.assertEqual(D().meth(4), "D(4)C(4)B(4)A(4)")
+ 
+         # Test for subclassing super
+ 
+-        class mysuper(super):
++        class mysuper(super):  # ty: ignore[unresolved-reference]
+             def __init__(self, *args):
+-                return super(mysuper, self).__init__(*args)
++                return super(mysuper, self).__init__(*args)  # ty: ignore[unresolved-reference]
+ 
+         class E(D):
+             def meth(self, a):
+@@ -1801,35 +1801,35 @@
+             def meth(self, a):
+                 s = self.__super # == mysuper(F, self)
+                 return "F(%r)[%s]" % (a, s.__class__.__name__) + s.meth(a)
+-        F._F__super = mysuper(F)
++        F._F__super = mysuper(F)  # ty: ignore[unresolved-attribute]
+ 
+         self.assertEqual(F().meth(6), "F(6)[mysuper]E(6)D(6)C(6)B(6)A(6)")
+ 
+         # Make sure certain errors are raised
+ 
+         try:
+-            super(D, 42)
++            super(D, 42)  # ty: ignore[unresolved-reference]
+         except TypeError:
+             pass
+         else:
+             self.fail("shouldn't allow super(D, 42)")
+ 
+         try:
+-            super(D, C())
++            super(D, C())  # ty: ignore[unresolved-reference]
+         except TypeError:
+             pass
+         else:
+             self.fail("shouldn't allow super(D, C())")
+ 
+         try:
+-            super(D).__get__(12)
++            super(D).__get__(12)  # ty: ignore[unresolved-reference]
+         except TypeError:
+             pass
+         else:
+             self.fail("shouldn't allow super(D).__get__(12)")
+ 
+         try:
+-            super(D).__get__(C())
++            super(D).__get__(C())  # ty: ignore[unresolved-reference]
+         except TypeError:
+             pass
+         else:
+@@ -1848,7 +1848,7 @@
+ 
+         dd = DDsub()
+         self.assertEqual(dd.x, "hello")
+-        self.assertEqual(super(DDsub, dd).x, 42)
++        self.assertEqual(super(DDsub, dd).x, 42)  # ty: ignore[unresolved-reference]
+ 
+         # Ensure that super() lookup of descriptor from classmethod
+         # works (SF ID# 743627)
+@@ -1857,15 +1857,15 @@
+             aProp = property(lambda self: "foo")
+ 
+         class Sub(Base):
+-            @classmethod
++            @classmethod  # ty: ignore[unresolved-reference]
+             def test(klass):
+-                return super(Sub,klass).aProp
++                return super(Sub,klass).aProp  # ty: ignore[unresolved-reference]
+ 
+         self.assertEqual(Sub.test(), Base.aProp)
+ 
+         # Verify that super() doesn't allow keyword args
+         with self.assertRaises(TypeError):
+-            super(Base, kw=1)
++            super(Base, kw=1)  # ty: ignore[unresolved-reference]
+ 
+ 
+         ## class CountedInput(file):
+@@ -1914,24 +1914,24 @@
+     def test_keywords(self):
+         # Testing keyword args to basic type constructors ...
+         with self.assertRaisesRegex(TypeError, 'keyword argument'):
+-            int(x=1)
++            int(x=1)  # ty: ignore[no-matching-overload]
+         with self.assertRaisesRegex(TypeError, 'keyword argument'):
+-            float(x=2)
++            float(x=2)  # ty: ignore[positional-only-parameter-as-kwarg]
+         with self.assertRaisesRegex(TypeError, 'keyword argument'):
+-            bool(x=2)
++            bool(x=2)  # ty: ignore[unknown-argument]
+         self.assertEqual(complex(imag=42, real=666), complex(666, 42))
+         self.assertEqual(str(object=500), '500')
+         self.assertEqual(str(object=b'abc', errors='strict'), 'abc')
+         with self.assertRaisesRegex(TypeError, 'keyword argument'):
+-            tuple(sequence=range(3))
++            tuple(sequence=range(3))  # ty: ignore[no-matching-overload]
+         with self.assertRaisesRegex(TypeError, 'keyword argument'):
+-            list(sequence=(0, 1, 2))
++            list(sequence=(0, 1, 2))  # ty: ignore[no-matching-overload]
+         # note: as of Python 2.3, dict() no longer has an "items" keyword arg
+ 
+         for constructor in (int, float, int, complex, str, str,
+                             tuple, list):
+             try:
+-                constructor(bogus_keyword_arg=1)
++                constructor(bogus_keyword_arg=1)  # ty: ignore[no-matching-overload, unknown-argument]
+             except TypeError:
+                 pass
+             else:
+@@ -1976,7 +1976,7 @@
+             pass
+ 
+         for base in (classic, int, object):
+-            class C(base):
++            class C(base):  # ty: ignore[unsupported-base]
+                 def __init__(self, value):
+                     self.value = int(value)
+                 def __eq__(self, other):
+@@ -2054,7 +2054,7 @@
+         class classic:
+             pass
+         for base in (classic, int, object, list):
+-            class C(base):
++            class C(base):  # ty: ignore[unsupported-base]
+                 def __init__(self, value):
+                     self.value = int(value)
+                 def __eq__(self, other):
+@@ -2113,7 +2113,7 @@
+ 
+     def test_descrdoc(self):
+         # Testing descriptor doc strings...
+-        from _io import FileIO
++        from _io import FileIO  # ty: ignore[import-not-found]
+         def check(descr, what):
+             self.assertEqual(descr.__doc__, what)
+         check(FileIO.closed, "True if the file is closed") # getset descriptor
+@@ -2130,7 +2130,7 @@
+                     otype = otype.__name__
+                 return 'object=%s; type=%s' % (object, otype)
+         class NewClass:
+-            __doc__ = DocDescr()
++            __doc__ = DocDescr()  # ty: ignore[invalid-assignment]
+         self.assertEqual(NewClass.__doc__, 'object=None; type=NewClass')
+         self.assertEqual(NewClass().__doc__, 'object=NewClass instance; type=NewClass')
+ 
+@@ -2186,7 +2186,7 @@
+             pass
+         m = MyInt(42)
+         try:
+-            binascii.b2a_hex(m)
++            binascii.b2a_hex(m)  # ty: ignore[invalid-argument-type]
+             self.fail('subclass of int should not have a buffer interface')
+         except TypeError:
+             pass
+@@ -2225,8 +2225,8 @@
+         # Testing keyword arguments to __init__, __call__...
+         def f(a): return a
+         self.assertEqual(f.__call__(a=42), 42)
+-        ba = bytearray()
+-        bytearray.__init__(ba, 'abc\xbd\u20ac',
++        ba = bytearray()  # ty: ignore[unresolved-reference]
++        bytearray.__init__(ba, 'abc\xbd\u20ac',  # ty: ignore[unresolved-reference]
+                            encoding='latin1', errors='replace')
+         self.assertEqual(ba, b'abc\xbd?')
+ 
+@@ -2238,9 +2238,9 @@
+         class A(object):
+             pass
+ 
+-        A.__call__ = A()
++        A.__call__ = A()  # ty: ignore[invalid-assignment]
+         with self.assertRaises(RecursionError):
+-            A()()
++            A()()  # ty: ignore[call-non-callable]
+ 
+     def test_hash_inheritance(self):
+         # Testing hash of mutable subclasses...
+@@ -2266,7 +2266,7 @@
+             self.fail("hash() of list subclass should fail")
+ 
+     def test_str_operations(self):
+-        try: 'a' + 5
++        try: 'a' + 5  # ty: ignore[unsupported-operator]
+         except TypeError: pass
+         else: self.fail("'' + 5 doesn't raise TypeError")
+ 
+@@ -2274,7 +2274,7 @@
+         except ValueError: pass
+         else: self.fail("''.split('') doesn't raise ValueError")
+ 
+-        try: ''.join([0])
++        try: ''.join([0])  # ty: ignore[no-matching-overload]
+         except TypeError: pass
+         else: self.fail("''.join([0]) doesn't raise TypeError")
+ 
+@@ -2317,8 +2317,8 @@
+             pass
+         a = Node()
+         b = Node()
+-        a.b = b
+-        b.a = a
++        a.b = b  # ty: ignore[unresolved-attribute]
++        b.a = a  # ty: ignore[unresolved-attribute]
+         z = deepcopy(a) # This blew up before
+ 
+     def test_uninitialized_modules(self):
+@@ -2330,7 +2330,7 @@
+         self.assertNotHasAttr(m, "__file__")
+         self.assertNotHasAttr(m, "foo")
+         self.assertFalse(m.__dict__)   # None or {} are both reasonable answers
+-        m.foo = 1
++        m.foo = 1  # ty: ignore[unresolved-attribute]
+         self.assertEqual(m.__dict__, {"foo": 1})
+ 
+     def test_funny_new(self):
+@@ -2349,13 +2349,13 @@
+         self.assertEqual(d.foo, None)
+         d = C(1)
+         self.assertIsInstance(d, D)
+-        self.assertEqual(d.foo, 1)
++        self.assertEqual(d.foo, 1)  # ty: ignore[unresolved-attribute]
+         d = D(1)
+         self.assertIsInstance(d, D)
+         self.assertEqual(d.foo, 1)
+ 
+         class C(object):
+-            @staticmethod
++            @staticmethod  # ty: ignore[unresolved-reference]
+             def __new__(*args):
+                 return args
+         self.assertEqual(C(1, 2), (C, 1, 2))
+@@ -2364,7 +2364,7 @@
+         self.assertEqual(D(1, 2), (D, 1, 2))
+ 
+         class C(object):
+-            @classmethod
++            @classmethod  # ty: ignore[unresolved-reference]
+             def __new__(*args):
+                 return args
+         self.assertEqual(C(1, 2), (C, C, 1, 2))
+@@ -2481,7 +2481,7 @@
+             self.assertEqual(C.__basicsize__, B.__basicsize__)
+         self.assertHasAttr(C, '__dict__')
+         self.assertHasAttr(C, '__weakref__')
+-        C().x = 2
++        C().x = 2  # ty: ignore[unresolved-attribute]
+ 
+     def test_rmul(self):
+         # Testing correct invocation of __rmul__...
+@@ -2541,26 +2541,26 @@
+     def test_ipow_exception_text(self):
+         x = None
+         with self.assertRaises(TypeError) as cm:
+-            x **= 2
++            x **= 2  # ty: ignore[unsupported-operator]
+         self.assertIn('unsupported operand type(s) for **=', str(cm.exception))
+ 
+         with self.assertRaises(TypeError) as cm:
+-            y = x ** 2
++            y = x ** 2  # ty: ignore[unsupported-operator]
+         self.assertIn('unsupported operand type(s) for **', str(cm.exception))
+ 
+     def test_pow_wrapper_error_messages(self):
+-        self.assertRaisesRegex(TypeError,
++        self.assertRaisesRegex(TypeError,  # ty: ignore[missing-argument]
+                                'expected 1 or 2 arguments, got 0',
+                                int().__pow__)
+         self.assertRaisesRegex(TypeError,
+                                'expected 1 or 2 arguments, got 3',
+-                               int().__pow__, 1, 2, 3)
+-        self.assertRaisesRegex(TypeError,
++                               int().__pow__, 1, 2, 3)  # ty: ignore[too-many-positional-arguments]
++        self.assertRaisesRegex(TypeError,  # ty: ignore[missing-argument]
+                                'expected 1 or 2 arguments, got 0',
+                                int().__rpow__)
+         self.assertRaisesRegex(TypeError,
+                                'expected 1 or 2 arguments, got 3',
+-                               int().__rpow__, 1, 2, 3)
++                               int().__rpow__, 1, 2, 3)  # ty: ignore[too-many-positional-arguments]
+ 
+     def test_mutable_bases(self):
+         # Testing mutable bases...
+@@ -2573,7 +2573,7 @@
+                 if attr == 'a':
+                     return 2
+                 else:
+-                    return super(C2, self).__getattribute__(attr)
++                    return super(C2, self).__getattribute__(attr)  # ty: ignore[unresolved-reference]
+             def meth(self):
+                 return 1
+         class D(C):
+@@ -2584,10 +2584,10 @@
+         e = E()
+         D.__bases__ = (C,)
+         D.__bases__ = (C2,)
+-        self.assertEqual(d.meth(), 1)
+-        self.assertEqual(e.meth(), 1)
+-        self.assertEqual(d.a, 2)
+-        self.assertEqual(e.a, 2)
++        self.assertEqual(d.meth(), 1)  # ty: ignore[unresolved-attribute]
++        self.assertEqual(e.meth(), 1)  # ty: ignore[unresolved-attribute]
++        self.assertEqual(d.a, 2)  # ty: ignore[unresolved-attribute]
++        self.assertEqual(e.a, 2)  # ty: ignore[unresolved-attribute]
+         self.assertEqual(C2.__subclasses__(), [D])
+ 
+         try:
+@@ -2635,7 +2635,7 @@
+         for tp in builtin_types:
+             object.__getattribute__(tp, "__bases__")
+             if tp is not object:
+-                if tp is ExceptionGroup:
++                if tp is ExceptionGroup:  # ty: ignore[unresolved-reference]
+                     num_bases = 2
+                 else:
+                     num_bases = 1
+@@ -2673,21 +2673,21 @@
+ 
+     def test_unsubclassable_types(self):
+         with self.assertRaises(TypeError):
+-            class X(type(None)):
++            class X(type(None)):  # ty: ignore[subclass-of-final-class]
+                 pass
+         with self.assertRaises(TypeError):
+-            class X(object, type(None)):
++            class X(object, type(None)):  # ty: ignore[inconsistent-mro, subclass-of-final-class]
+                 pass
+         with self.assertRaises(TypeError):
+-            class X(type(None), object):
++            class X(type(None), object):  # ty: ignore[subclass-of-final-class]
+                 pass
+         class O(object):
+             pass
+         with self.assertRaises(TypeError):
+-            class X(O, type(None)):
++            class X(O, type(None)):  # ty: ignore[subclass-of-final-class]
+                 pass
+         with self.assertRaises(TypeError):
+-            class X(type(None), O):
++            class X(type(None), O):  # ty: ignore[subclass-of-final-class]
+                 pass
+ 
+         class X(object):
+@@ -2906,7 +2906,7 @@
+ 
+         class C(B):
+             def f(self):
+-                return super(C, self).f() + "->C.f"
++                return super(C, self).f() + "->C.f"  # ty: ignore[unresolved-reference]
+ 
+         obj = C()
+         p = Proxy(obj)
+@@ -2977,7 +2977,7 @@
+         # Testing sys.stdout is changed in getattr...
+         class StdoutGuard:
+             def __getattr__(self, attr):
+-                sys.stdout = sys.__stdout__
++                sys.stdout = sys.__stdout__  # ty: ignore[unresolved-attribute]
+                 raise RuntimeError(f"Premature access to sys.stdout.{attr}")
+ 
+         with redirect_stdout(StdoutGuard()):
+@@ -3010,7 +3010,7 @@
+             attr = Descr()
+ 
+         c = C()
+-        c.__dict__[Evil()] = 0
++        c.__dict__[Evil()] = 0  # ty: ignore[invalid-assignment]
+ 
+         self.assertEqual(c.attr, 1)
+         # this makes a crash more likely:
+@@ -3052,7 +3052,7 @@
+         self.assertNotOrderable(l.__add__, l.__add__)
+         self.assertEqual(l.__add__.__name__, '__add__')
+         self.assertIs(l.__add__.__self__, l)
+-        self.assertIs(l.__add__.__objclass__, list)
++        self.assertIs(l.__add__.__objclass__, list)  # ty: ignore[unresolved-attribute]
+         self.assertEqual(l.__add__.__doc__, list.__add__.__doc__)
+         # hash([].__add__) should not be based on hash([])
+         hash(l.__add__)
+@@ -3084,7 +3084,7 @@
+         self.assertTrue(list.__add__ != list.__mul__)
+         self.assertNotOrderable(list.__add__, list.__add__)
+         self.assertEqual(list.__add__.__name__, '__add__')
+-        self.assertIs(list.__add__.__objclass__, list)
++        self.assertIs(list.__add__.__objclass__, list)  # ty: ignore[unresolved-attribute]
+ 
+         # Testing objects of <type 'method_descriptor'>...
+         self.assertTrue(list.append == list.append)
+@@ -3093,7 +3093,7 @@
+         self.assertTrue(list.append != list.pop)
+         self.assertNotOrderable(list.append, list.append)
+         self.assertEqual(list.append.__name__, 'append')
+-        self.assertIs(list.append.__objclass__, list)
++        self.assertIs(list.append.__objclass__, list)  # ty: ignore[unresolved-attribute]
+ 
+     def test_not_implemented(self):
+         # Testing NotImplemented...
+@@ -3209,7 +3209,7 @@
+         self.assertRaises(AttributeError, getattr, EvilGetattribute(), "attr")
+ 
+     def test_type___getattribute__(self):
+-        self.assertRaises(TypeError, type.__getattribute__, list, type)
++        self.assertRaises(TypeError, type.__getattribute__, list, type)  # ty: ignore[invalid-argument-type]
+ 
+     def test_abstractmethods(self):
+         # type pretends not to have __abstractmethods__.
+@@ -3220,20 +3220,20 @@
+         class X(object):
+             pass
+         with self.assertRaises(AttributeError):
+-            del X.__abstractmethods__
++            del X.__abstractmethods__  # ty: ignore[unresolved-attribute]
+ 
+     def test_gh55664(self):
+         # gh-55664: issue a warning when the
+         # __dict__ of a class contains non-string keys
+-        with self.assertWarnsRegex(RuntimeWarning, 'MyClass'):
+-            MyClass = type('MyClass', (), {1: 2})
++        with self.assertWarnsRegex(RuntimeWarning, 'MyClass'):  # ty: ignore[unresolved-reference]
++            MyClass = type('MyClass', (), {1: 2})  # ty: ignore[invalid-argument-type]
+ 
+         class meta(type):
+             def __new__(mcls, name, bases, ns):
+                 ns[1] = 2
+-                return super().__new__(mcls, name, bases, ns)
+-
+-        with self.assertWarnsRegex(RuntimeWarning, 'MyClass'):
++                return super().__new__(mcls, name, bases, ns)  # ty: ignore[unresolved-reference]
++
++        with self.assertWarnsRegex(RuntimeWarning, 'MyClass'):  # ty: ignore[unresolved-reference]
+             MyClass = meta('MyClass', (), {})
+ 
+     def test_proxy_call(self):
+@@ -3246,11 +3246,11 @@
+ 
+         # call a method descriptor
+         with self.assertRaises(TypeError):
+-            str.split(fake_str)
++            str.split(fake_str)  # ty: ignore[no-matching-overload]
+ 
+         # call a slot wrapper descriptor
+         with self.assertRaises(TypeError):
+-            str.__add__(fake_str, "abc")
++            str.__add__(fake_str, "abc")  # ty: ignore[no-matching-overload]
+ 
+     def test_specialized_method_calls_check_types(self):
+         # https://github.com/python/cpython/issues/92063
+@@ -3260,24 +3260,24 @@
+         for i in range(20):
+             with self.assertRaises(TypeError):
+                 # CALL_METHOD_DESCRIPTOR_FAST_WITH_KEYWORDS
+-                list.sort(thing)
++                list.sort(thing)  # ty: ignore[invalid-argument-type]
+         for i in range(20):
+             with self.assertRaises(TypeError):
+                 # CALL_METHOD_DESCRIPTOR_FAST_WITH_KEYWORDS
+-                str.split(thing)
++                str.split(thing)  # ty: ignore[no-matching-overload]
+         for i in range(20):
+             with self.assertRaises(TypeError):
+                 # CALL_METHOD_DESCRIPTOR_NOARGS
+-                str.upper(thing)
++                str.upper(thing)  # ty: ignore[no-matching-overload]
+         for i in range(20):
+             with self.assertRaises(TypeError):
+                 # CALL_METHOD_DESCRIPTOR_FAST
+-                str.strip(thing)
++                str.strip(thing)  # ty: ignore[no-matching-overload]
+         from collections import deque
+         for i in range(20):
+             with self.assertRaises(TypeError):
+                 # CALL_METHOD_DESCRIPTOR_O
+-                deque.append(thing, thing)
++                deque.append(thing, thing)  # ty: ignore[invalid-argument-type]
+ 
+     @(support.skip_if_huge_c_stack() if sys.platform != "monty" else _identity)
+     @(support.skip_emscripten_stack_overflow() if sys.platform != "monty" else _identity)
+@@ -3306,18 +3306,18 @@
+         # should raise an exception instead of silently being ignored
+         class A(int):
+             __eq__ = str.__eq__
+-            __add__ = str.__add__
++            __add__ = str.__add__  # ty: ignore[invalid-method-override]
+         a = A()
+         with self.assertRaises(TypeError):
+             a == a
+         with self.assertRaises(TypeError):
+-            a + a
++            a + a  # ty: ignore[unsupported-operator]
+ 
+     def test_slot_shadows_class_variable(self):
+         with self.assertRaises(ValueError) as cm:
+             class X:
+                 __slots__ = ["foo"]
+-                foo = None
++                foo = None  # ty: ignore[invalid-assignment]
+         m = str(cm.exception)
+         self.assertEqual("'foo' in __slots__ conflicts with class variable", m)
+ 
+@@ -3350,8 +3350,8 @@
+         # See issue #1683368
+         class OverrideNeither:
+             pass
+-        self.assertRaises(TypeError, OverrideNeither, 1)
+-        self.assertRaises(TypeError, OverrideNeither, kw=1)
++        self.assertRaises(TypeError, OverrideNeither, 1)  # ty: ignore[too-many-positional-arguments]
++        self.assertRaises(TypeError, OverrideNeither, kw=1)  # ty: ignore[unknown-argument]
+         class OverrideNew:
+             def __new__(cls, foo, kw=0, *args, **kwds):
+                 return object.__new__(cls, *args, **kwds)
+@@ -3364,7 +3364,7 @@
+             case(1)
+             case(1, kw=2)
+             self.assertRaises(TypeError, case, 1, 2, 3)
+-            self.assertRaises(TypeError, case, 1, 2, foo=3)
++            self.assertRaises(TypeError, case, 1, 2, foo=3)  # ty: ignore[parameter-already-assigned]
+ 
+     def test_subclassing_does_not_duplicate_dict_descriptors(self):
+         class Base:
+@@ -3393,7 +3393,7 @@
+         base = Base()
+         derived1 = Derived1()
+         derived2 = Derived2()
+-        super_d2 = super(Derived2, derived2)
++        super_d2 = super(Derived2, derived2)  # ty: ignore[unresolved-reference]
+         self.assertRegex(repr(base.method),
+             r"<bound method .*Base\.method of <.*Base object at .*>>")
+         self.assertRegex(repr(derived1.method),
+@@ -3404,7 +3404,7 @@
+             r"<bound method .*Base\.method of <.*Derived2 object at .*>>")
+ 
+         class Foo:
+-            @classmethod
++            @classmethod  # ty: ignore[unresolved-reference]
+             def method(cls):
+                 pass
+         foo = Foo()
+@@ -3422,10 +3422,10 @@
+         method = types.MethodType(func, instance)
+         self.assertRegex(repr(method),
+             r"<bound method \? of <object object at .*>>")
+-        func.__name__ = "name"
++        func.__name__ = "name"  # ty: ignore[unresolved-attribute]
+         self.assertRegex(repr(method),
+             r"<bound method name of <object object at .*>>")
+-        func.__qualname__ = "qualname"
++        func.__qualname__ = "qualname"  # ty: ignore[unresolved-attribute]
+         self.assertRegex(repr(method),
+             r"<bound method qualname of <object object at .*>>")
+ 
+@@ -3440,9 +3440,9 @@
+         class X:
+             descr = Descr()
+             def __new__(cls):
+-                cls.descr = None
++                cls.descr = None  # ty: ignore[invalid-assignment]
+                 # Create this large list to corrupt some unused memory
+-                cls.lst = [2**i for i in range(10000)]
++                cls.lst = [2**i for i in range(10000)]  # ty: ignore[unresolved-attribute]
+         X.descr
+ 
+     def test_instance_method_get_behavior(self):
+@@ -3457,8 +3457,8 @@
+ 
+         a = A()
+         b = B()
+-        b.meth = a.meth.__get__(b, B)
+-        self.assertEqual(b.meth(), a)
++        b.meth = a.meth.__get__(b, B)  # ty: ignore[unresolved-attribute]
++        self.assertEqual(b.meth(), a)  # ty: ignore[unresolved-attribute]
+ 
+     def test_attr_raise_through_property(self):
+         # test case for gh-103272
+@@ -3475,7 +3475,7 @@
+ 
+         # test case for gh-103551
+         class B:
+-            @property
++            @property  # ty: ignore[invalid-argument-type]
+             def __getattr__(self, name):
+                 raise ValueError("FOO")
+ 
+@@ -3487,7 +3487,7 @@
+             B().foo
+ 
+     def test_staticmethod_new(self):
+-        class MyStaticMethod(staticmethod):
++        class MyStaticMethod(staticmethod):  # ty: ignore[unresolved-reference]
+             def __init__(self, func):
+                 pass
+         def func(): pass
+@@ -3497,7 +3497,7 @@
+         self.assertIsNone(sm.__wrapped__)
+ 
+     def test_classmethod_new(self):
+-        class MyClassMethod(classmethod):
++        class MyClassMethod(classmethod):  # ty: ignore[unresolved-reference]
+             def __init__(self, func):
+                 pass
+         def func(): pass
+--- a/test/test_module/__init__.py
++++ b/test/test_module/__init__.py
+@@ -106,14 +106,14 @@
+         self.assertEqual(f().__dict__["bar"], 4)
+ 
+     def test_module_dir(self):
+-        import test.test_module.good_getattr as gga
++        import test.test_module.good_getattr as gga  # ty: ignore[import-not-found]
+         self.assertEqual(dir(gga), ['a', 'b', 'c'])
+         if sys.platform != 'monty':
+             sys.modules.pop('test.test_module.good_getattr', None)
+ 
+     def test_module_dir_errors(self):
+-        import test.test_module.bad_getattr as bga
+-        from test.test_module import bad_getattr2
++        import test.test_module.bad_getattr as bga  # ty: ignore[import-not-found]
++        from test.test_module import bad_getattr2  # ty: ignore[import-not-found]
+         with self.assertRaises(TypeError):
+             dir(bga)
+         with self.assertRaises(TypeError):
+@@ -304,7 +304,7 @@
+             __slots__ = ("a", "b")
+ 
+             def __init__(self, name):
+-                super().__init__(name)
++                super().__init__(name)  # ty: ignore[unresolved-reference]
+ 
+         m = ModuleWithSlots("name")
+         with self.assertRaises(AttributeError):

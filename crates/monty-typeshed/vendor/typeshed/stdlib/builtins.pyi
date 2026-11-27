@@ -1095,6 +1095,7 @@ if sys.version_info >= (3, 10):
 copyright: _sitebuiltins._Printer
 credits: _sitebuiltins._Printer
 
+def dir(o: object = ..., /) -> list[str]: ...
 @overload
 def divmod(x: SupportsDivMod[_T_contra, _T_co], y: _T_contra, /) -> _T_co: ...
 @overload

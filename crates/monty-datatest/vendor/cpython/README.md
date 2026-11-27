@@ -13,7 +13,8 @@ cargo run -p monty-datatest --features cpython-tests -- test_keyword.py --nocapt
 
 ## Discovery and exclusions
 
-CPython discovers and runs the suite with its own `unittest` and resolves `test.support` and fixtures from the prepared tree.
+Both interpreters use the same patched suite source.
+Embedded CPython discovers and runs the suite with its own `unittest` and resolves `test.support` and fixtures from the prepared tree.
 Monty uses that discovery to select methods, then imports the suite and the patched [`unittest` package](patches/0003-unittest-package.patch) from a read-only mount of `work/generated/Lib`.
 The package is not bundled with the runtime.
 It creates a new instance per method, runs `setUp` and `tearDown`, and drains the cleanup stack in LIFO order even after an error.
@@ -29,7 +30,7 @@ Use `--nocapture` to see manifest exclusions and native `unittest` runtime skips
 ## Type checking
 
 Each suite's type check runs separately from its runtime tests and fails on any diagnostic, including unused ignores.
-It checks the full suite source, including methods excluded from runtime, using Monty's normal stdlib stubs and a test-only [`unittest.pyi`](unittest.pyi).
+It checks the prepared suite source, including methods excluded from runtime, using Monty's normal stdlib stubs and a test-only [`unittest.pyi`](unittest.pyi).
 The checker does not resolve imports from the runtime mount.
 Use rule-specific `# ty: ignore[...]` comments for deliberate runtime probes outside the stubs or for missing APIs in excluded methods.
 Keep those comments in a separate patch, and remove them when the relevant stub changes make them unnecessary.
@@ -43,3 +44,4 @@ Preparing the tree again overwrites local edits, so save the patch first.
 Keep upstream imports, inputs, and assertions where possible.
 The harness imports the suite as a module, so a guarded `unittest.main()` does not run.
 If a missing import is only needed by excluded methods, move it into those methods so the rest of the suite can still load.
+An exclusion only prevents a method from running. Syntax that stops Monty from loading the suite must be adapted in the patch.

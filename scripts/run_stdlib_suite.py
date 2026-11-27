@@ -74,7 +74,7 @@ def discover(root: str, path: str, name: str) -> list[tuple[str, str, str]]:
 
 
 def run(root: str, path: str, name: str) -> str:
-    """Run the full suite, including methods excluded on Monty."""
+    """Run the prepared suite, including methods excluded on Monty."""
     with _load_suite(root, path, name) as (_, suite):
         output = io.StringIO()
         result = unittest.TextTestRunner(stream=output, verbosity=2).run(suite)

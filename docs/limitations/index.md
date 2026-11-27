@@ -68,7 +68,8 @@ For compilation and runtime limits, see [resource limits](resource_limits.md).
     `fn.__name__`, `fn.__doc__` and friends raise `AttributeError`, and new attributes cannot be set — so
     `functools.wraps`-style metadata copying and registries keyed on `fn.__name__` have no equivalent.
 - `compile`, `globals` and `__import__` — all raise `NameError`.
-    `eval` and `exec` exist (source text only), and so does `locals()`; see [eval_exec.md](eval_exec.md).
+    `eval` and `exec` exist (source text only); see [eval_exec.md](eval_exec.md).
+    `locals()` and `dir()` are also supported; see [builtins.md](builtins.md).
 - Third-party packages.
     There is no `sys.path` and no site-packages.
 
