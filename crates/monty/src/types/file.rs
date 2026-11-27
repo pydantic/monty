@@ -1804,7 +1804,7 @@ file_attrs!(PyTextFileImpl {
     fn mode<'h>(this: &HeapObjectRead<'h, OpenFile>, vm: &mut VM<'h>) -> Value {
         allocate_string(this.get(vm.heap).mode.as_str().to_owned(), vm.heap)
     }
-    #[pyget(Encoding, member)]
+    #[pyget(Encoding)]
     fn encoding<'h>(_this: &HeapObjectRead<'h, OpenFile>, vm: &mut VM<'h>) -> Value {
         allocate_string("utf-8", vm.heap)
     }

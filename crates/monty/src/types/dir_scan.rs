@@ -965,7 +965,7 @@ pub(crate) struct PyDirEntryImpl;
 impl<'heap> PyAttrs<'heap> for PyDirEntryImpl {
     type Receiver = HeapObjectRead<'heap, DirScan>;
 
-    #[pyget(Name, member)]
+    #[pyget(Name)]
     fn name<'h>(this: &HeapObjectRead<'h, DirScan>, vm: &mut VM<'h>) -> Value {
         let DirScan::Entry(entry) = this.get(vm.heap) else {
             unreachable!("dispatched on DirScan::Entry");
@@ -973,7 +973,7 @@ impl<'heap> PyAttrs<'heap> for PyDirEntryImpl {
         allocate_string(entry.name.as_str(), vm.heap)
     }
 
-    #[pyget(Path, member)]
+    #[pyget(Path)]
     fn path<'h>(this: &HeapObjectRead<'h, DirScan>, vm: &mut VM<'h>) -> Value {
         let DirScan::Entry(entry) = this.get(vm.heap) else {
             unreachable!("dispatched on DirScan::Entry");

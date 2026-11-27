@@ -104,7 +104,6 @@ mod py_attrs {
     #[derive(Clone, Copy)]
     pub enum AccessorKind {
         GetSet,
-        Member,
         Instance,
     }
 
@@ -178,7 +177,7 @@ impl PyAttrs<'_> for FloatMethods {
         Ok(())
     }
 
-    #[pyget(Size, member)]
+    #[pyget(Size)]
     fn size(_: f64, _: &mut VM<'_>) -> Value {
         Value(3)
     }
@@ -205,10 +204,10 @@ fn pairs_getter_and_setter_in_one_entry() {
     let Some(py_attrs::AttrDef::GetSet {
         get,
         set: Some(set),
-        kind: py_attrs::AccessorKind::Member,
+        kind: py_attrs::AccessorKind::GetSet,
     }) = (FloatMethods::TABLE.lookup)(StaticStrings::Size)
     else {
-        panic!("member getter/setter missing");
+        panic!("getter/setter missing");
     };
     assert_eq!(
         FloatMethods::TABLE
@@ -308,6 +307,10 @@ fn rejects_invalid_attribute_declarations() {
         (
             "type Receiver = bool; #[pymethod(A, B)] fn first() {}",
             "expected one StaticStrings key",
+        ),
+        (
+            "type Receiver = bool; #[pyget(A, member)] fn get() {}",
+            "unexpected attribute option",
         ),
         (
             "type Receiver = bool; #[pymethod(A)] #[pyvalue(B)] fn first() {}",

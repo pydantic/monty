@@ -563,17 +563,17 @@ pub(crate) struct PyTimeDeltaImpl;
 impl<'heap> PyAttrs<'heap> for PyTimeDeltaImpl {
     type Receiver = HeapObjectRead<'heap, TimeDelta>;
 
-    #[pyget(Days, member)]
+    #[pyget(Days)]
     fn days<'h>(this: &HeapObjectRead<'h, TimeDelta>, vm: &mut VM<'h>) -> Value {
         Value::Int(i64::from(components(this.get(vm.heap)).0))
     }
 
-    #[pyget(Seconds, member)]
+    #[pyget(Seconds)]
     fn seconds<'h>(this: &HeapObjectRead<'h, TimeDelta>, vm: &mut VM<'h>) -> Value {
         Value::Int(i64::from(components(this.get(vm.heap)).1))
     }
 
-    #[pyget(Microseconds, member)]
+    #[pyget(Microseconds)]
     fn microseconds<'h>(this: &HeapObjectRead<'h, TimeDelta>, vm: &mut VM<'h>) -> Value {
         Value::Int(i64::from(components(this.get(vm.heap)).2))
     }

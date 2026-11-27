@@ -218,7 +218,8 @@ try:
     writer.dialect = csv.excel
     assert False, 'expected AttributeError'
 except AttributeError as exc:
-    assert str(exc) == 'readonly attribute'
+    expected = "attribute 'dialect' of '_csv.writer' objects is not writable" if is_monty else 'readonly attribute'
+    assert str(exc) == expected
 try:
     writer.nope = 1
     assert False, 'expected AttributeError'

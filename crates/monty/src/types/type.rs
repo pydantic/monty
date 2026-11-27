@@ -200,10 +200,9 @@ impl Type {
             "__init_subclass__" => bind_init_subclass(type_value(self), self.class_constant(attr, vm)?, vm.heap),
             _ => match self.lookup_class_attr(attr, vm.interns)? {
                 (_, AttrDef::Value(get)) => get(vm),
-                (owner, AttrDef::GetSet { kind, .. }) => {
-                    let member = matches!(kind, AccessorKind::Member);
+                (owner, AttrDef::GetSet { .. }) => {
                     let name = vm.interns.intern_static(attr.static_string(vm.interns)?);
-                    builtin_descriptor::native_attribute(owner, name, member, vm)
+                    builtin_descriptor::native_attribute(owner, name, vm)
                 }
                 _ => return None,
             },

@@ -941,22 +941,22 @@ impl<'heap> PyAttrs<'heap> for PyForwardRefImpl {
         this.get(vm.heap).arg.clone_with_heap(vm.heap)
     }
 
-    #[pyget(DunderForwardModule, member)]
+    #[pyget(DunderForwardModule)]
     fn forward_module<'h>(this: &HeapObjectRead<'h, ForwardRef>, vm: &mut VM<'h>) -> Value {
         this.get(vm.heap).module.clone_with_heap(vm.heap)
     }
 
-    #[pyget(DunderOwner, member)]
+    #[pyget(DunderOwner)]
     fn owner<'h>(this: &HeapObjectRead<'h, ForwardRef>, vm: &mut VM<'h>) -> Value {
         this.get(vm.heap).owner.clone_with_heap(vm.heap)
     }
 
-    #[pyget(DunderForwardIsArgument, member)]
+    #[pyget(DunderForwardIsArgument)]
     fn is_argument<'h>(this: &HeapObjectRead<'h, ForwardRef>, vm: &mut VM<'h>) -> Value {
         Value::Bool(this.get(vm.heap).is_argument)
     }
 
-    #[pyget(DunderForwardIsClass, member)]
+    #[pyget(DunderForwardIsClass)]
     fn is_class<'h>(this: &HeapObjectRead<'h, ForwardRef>, vm: &mut VM<'h>) -> Value {
         Value::Bool(this.get(vm.heap).is_class)
     }

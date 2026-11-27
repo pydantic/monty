@@ -453,7 +453,6 @@ impl Type {
             Self::BlockingIOError => 169,
             Self::ClassMethod => 170,
             Self::StaticMethod => 171,
-            Self::MemberDescriptor => 175,
             Self::GetSetDescriptor => 176,
         }
     }
@@ -1246,8 +1245,6 @@ native_types! {
         .attrs(<builtin_descriptor::PyFunctionWrapperImpl as PyAttrs<'static>>::TABLE).builtin().basetype().ctor(Constructor::Value(builtin_descriptor::classmethod_init)),
     StaticMethod("staticmethod")
         .attrs(<builtin_descriptor::PyFunctionWrapperImpl as PyAttrs<'static>>::TABLE).builtin().basetype().ctor(Constructor::Value(builtin_descriptor::staticmethod_init)),
-    MemberDescriptor("member_descriptor")
-        .attrs(<builtin_descriptor::PyNativeDescriptorImpl as PyAttrs<'static>>::TABLE),
     GetSetDescriptor("getset_descriptor")
         .attrs(<builtin_descriptor::PyNativeDescriptorImpl as PyAttrs<'static>>::TABLE),
 }

@@ -1,9 +1,15 @@
 import csv
+import sys
 from io import StringIO
 
 reader = csv.reader(['a,b'])
 line_num = type(reader).line_num
-assert type(line_num).__name__ == 'member_descriptor'
+if sys.platform == 'monty':
+    assert type(line_num).__name__ == 'getset_descriptor'
+    assert repr(line_num) == "<attribute 'line_num' of '_csv.reader' objects>"
+else:
+    assert type(line_num).__name__ == 'member_descriptor'
+    assert repr(line_num) == "<member 'line_num' of '_csv.reader' objects>"
 assert line_num.__name__ == 'line_num'
 assert line_num.__objclass__ is type(reader)
 assert line_num.__get__(None, type(reader)) is line_num

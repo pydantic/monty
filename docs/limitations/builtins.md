@@ -37,6 +37,9 @@ works on classes; see [classes.md](classes.md#inheritance).
 - **No `__class__` on builtin values** — `[].__class__`, `list.__class__` and
     `list[int].__class__` raise `AttributeError`; only instances of Monty classes
     carry it (see [classes.md](classes.md)). Use `type(x)`.
+- **Native data attributes use getset descriptors.** CPython uses member descriptors for some attributes, including
+    `complex.real` and `timedelta.days`. In Monty, assigning to these read-only attributes raises `AttributeError`
+    with the getset wording, such as `attribute 'real' of 'complex' objects is not writable`.
 - **Builtin methods are call-only** — reading one without calling it raises
     `AttributeError`, so `[1].append`, `'a'.upper`, `{}.get`, `dict.fromkeys`
     and `list.__class_getitem__` cannot be assigned, passed as a callback or

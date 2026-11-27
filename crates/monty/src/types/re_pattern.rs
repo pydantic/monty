@@ -869,12 +869,12 @@ pub(crate) struct PyRePatternImpl;
 impl<'heap> PyAttrs<'heap> for PyRePatternImpl {
     type Receiver = HeapRead<'heap, RePattern>;
 
-    #[pyget(PatternAttr, member)]
+    #[pyget(PatternAttr)]
     fn pattern<'h>(this: &HeapRead<'h, RePattern>, vm: &mut VM<'h>) -> Value {
         allocate_string(this.get(vm.heap).pattern.as_str(), vm.heap)
     }
 
-    #[pyget(Flags, member)]
+    #[pyget(Flags)]
     fn flags<'h>(this: &HeapRead<'h, RePattern>, vm: &mut VM<'h>) -> Value {
         Value::Int(i64::from(this.get(vm.heap).flags))
     }

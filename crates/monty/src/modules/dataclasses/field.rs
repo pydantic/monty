@@ -368,14 +368,14 @@ pub(crate) struct PyDataclassFieldImpl;
 impl<'heap> PyAttrs<'heap> for PyDataclassFieldImpl {
     type Receiver = HeapObjectRead<'heap, DataclassField>;
 
-    #[pyget(Name, member)]
+    #[pyget(Name)]
     fn name<'h>(this: &HeapObjectRead<'h, DataclassField>, vm: &mut VM<'h>) -> Value {
         this.get(vm.heap)
             .name
             .map_or(Value::None, |id| allocate_string(vm.interns.get_str(id), vm.heap))
     }
 
-    #[pyget(FieldType, member)]
+    #[pyget(FieldType)]
     fn annotation<'h>(this: &HeapObjectRead<'h, DataclassField>, vm: &mut VM<'h>) -> Value {
         this.get(vm.heap)
             .annotation
@@ -383,42 +383,42 @@ impl<'heap> PyAttrs<'heap> for PyDataclassFieldImpl {
             .map_or(Value::None, |value| value.clone_with_heap(vm.heap))
     }
 
-    #[pyget(Default, member)]
+    #[pyget(Default)]
     fn default_value<'h>(this: &HeapObjectRead<'h, DataclassField>, vm: &mut VM<'h>) -> Value {
         clone_or_missing(this.get(vm.heap).default.as_ref(), vm)
     }
 
-    #[pyget(DefaultFactory, member)]
+    #[pyget(DefaultFactory)]
     fn default_factory<'h>(this: &HeapObjectRead<'h, DataclassField>, vm: &mut VM<'h>) -> Value {
         clone_or_missing(this.get(vm.heap).default_factory.as_ref(), vm)
     }
 
-    #[pyget(Init, member)]
+    #[pyget(Init)]
     fn init_flag<'h>(_this: &HeapObjectRead<'h, DataclassField>, _vm: &mut VM<'h>) -> Value {
         Value::Bool(true)
     }
 
-    #[pyget(Repr, member)]
+    #[pyget(Repr)]
     fn repr_flag<'h>(_this: &HeapObjectRead<'h, DataclassField>, _vm: &mut VM<'h>) -> Value {
         Value::Bool(true)
     }
 
-    #[pyget(Compare, member)]
+    #[pyget(Compare)]
     fn compare<'h>(_this: &HeapObjectRead<'h, DataclassField>, _vm: &mut VM<'h>) -> Value {
         Value::Bool(true)
     }
 
-    #[pyget(KwOnly, member)]
+    #[pyget(KwOnly)]
     fn kw_only<'h>(_this: &HeapObjectRead<'h, DataclassField>, _vm: &mut VM<'h>) -> Value {
         Value::Bool(false)
     }
 
-    #[pyget(Hash, member)]
+    #[pyget(Hash)]
     fn hash<'h>(_this: &HeapObjectRead<'h, DataclassField>, _vm: &mut VM<'h>) -> Value {
         Value::None
     }
 
-    #[pyget(Doc, member)]
+    #[pyget(Doc)]
     fn doc<'h>(_this: &HeapObjectRead<'h, DataclassField>, _vm: &mut VM<'h>) -> Value {
         Value::None
     }

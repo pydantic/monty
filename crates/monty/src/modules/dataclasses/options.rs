@@ -9,7 +9,7 @@ use crate::{
     bytecode::VM,
     exception_private::RunResult,
     hash::{HashValue, identity_hash},
-    heap::{HeapId, HeapItem, HeapObjectRead},
+    heap::{HeapId, HeapItem, HeapObjectRead, HeapRead},
     py_attrs::PyAttrs,
     types::{LazyHeapSet, PyTrait, Type, TypeRef},
     value::Value,
@@ -111,57 +111,59 @@ impl HeapItem for DataclassParams {
     }
 }
 
+type Receiver<'h> = <DataclassParams as PyAttrs<'h>>::Receiver;
+
 #[pyattrs]
 impl<'heap> PyAttrs<'heap> for DataclassParams {
-    type Receiver = HeapObjectRead<'heap, DataclassParams>;
+    type Receiver = HeapRead<'heap, DataclassParams>;
 
-    #[pyget(Eq, member)]
-    fn eq<'h>(this: &HeapObjectRead<'h, DataclassParams>, vm: &mut VM<'h>) -> Value {
+    #[pyget(Eq)]
+    fn eq<'h>(this: &Receiver<'h>, vm: &mut VM<'h>) -> Value {
         Value::Bool(this.get(vm.heap).options.eq)
     }
 
-    #[pyget(Frozen, member)]
-    fn frozen<'h>(this: &HeapObjectRead<'h, DataclassParams>, vm: &mut VM<'h>) -> Value {
+    #[pyget(Frozen)]
+    fn frozen<'h>(this: &Receiver<'h>, vm: &mut VM<'h>) -> Value {
         Value::Bool(this.get(vm.heap).options.frozen)
     }
 
-    #[pyget(Init, member)]
-    fn init_flag<'h>(_this: &HeapObjectRead<'h, DataclassParams>, _vm: &mut VM<'h>) -> Value {
+    #[pyget(Init)]
+    fn init_flag(_: &Receiver<'_>, _: &mut VM<'_>) -> Value {
         Value::Bool(true)
     }
 
-    #[pyget(Repr, member)]
-    fn repr_flag<'h>(_this: &HeapObjectRead<'h, DataclassParams>, _vm: &mut VM<'h>) -> Value {
+    #[pyget(Repr)]
+    fn repr_flag(_: &Receiver<'_>, _: &mut VM<'_>) -> Value {
         Value::Bool(true)
     }
 
-    #[pyget(MatchArgs, member)]
-    fn match_args<'h>(_this: &HeapObjectRead<'h, DataclassParams>, _vm: &mut VM<'h>) -> Value {
+    #[pyget(MatchArgs)]
+    fn match_args(_: &Receiver<'_>, _: &mut VM<'_>) -> Value {
         Value::Bool(true)
     }
 
-    #[pyget(Order, member)]
-    fn order<'h>(_this: &HeapObjectRead<'h, DataclassParams>, _vm: &mut VM<'h>) -> Value {
+    #[pyget(Order)]
+    fn order(_: &Receiver<'_>, _: &mut VM<'_>) -> Value {
         Value::Bool(false)
     }
 
-    #[pyget(UnsafeHash, member)]
-    fn unsafe_hash<'h>(_this: &HeapObjectRead<'h, DataclassParams>, _vm: &mut VM<'h>) -> Value {
+    #[pyget(UnsafeHash)]
+    fn unsafe_hash(_: &Receiver<'_>, _: &mut VM<'_>) -> Value {
         Value::Bool(false)
     }
 
-    #[pyget(KwOnly, member)]
-    fn kw_only<'h>(_this: &HeapObjectRead<'h, DataclassParams>, _vm: &mut VM<'h>) -> Value {
+    #[pyget(KwOnly)]
+    fn kw_only(_: &Receiver<'_>, _: &mut VM<'_>) -> Value {
         Value::Bool(false)
     }
 
-    #[pyget(Slots, member)]
-    fn slots<'h>(_this: &HeapObjectRead<'h, DataclassParams>, _vm: &mut VM<'h>) -> Value {
+    #[pyget(Slots)]
+    fn slots(_: &Receiver<'_>, _: &mut VM<'_>) -> Value {
         Value::Bool(false)
     }
 
-    #[pyget(WeakrefSlot, member)]
-    fn weakref_slot<'h>(_this: &HeapObjectRead<'h, DataclassParams>, _vm: &mut VM<'h>) -> Value {
+    #[pyget(WeakrefSlot)]
+    fn weakref_slot(_: &Receiver<'_>, _: &mut VM<'_>) -> Value {
         Value::Bool(false)
     }
 }

@@ -3,6 +3,7 @@
 # skip-cpython-windows = true
 # ///
 import os
+import sys
 from collections import namedtuple
 from pathlib import Path
 
@@ -370,7 +371,12 @@ try:
     hello.name = 'x'
     assert False, 'expected AttributeError'
 except AttributeError as e:
-    assert str(e) == 'readonly attribute'
+    expected = (
+        "attribute 'name' of 'posix.DirEntry' objects is not writable"
+        if sys.platform == 'monty'
+        else 'readonly attribute'
+    )
+    assert str(e) == expected
 try:
     hello.foo
     assert False, 'expected AttributeError'

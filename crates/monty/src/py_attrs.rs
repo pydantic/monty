@@ -51,7 +51,6 @@ pub(crate) struct AttrTable {
 #[derive(Clone, Copy)]
 pub(crate) enum AccessorKind {
     GetSet,
-    Member,
     /// A fixed instance attribute without a descriptor on the class.
     Instance,
 }
@@ -102,7 +101,6 @@ pub(crate) fn set_attribute<'h>(
         value.drop_with(vm);
         let name = attr.as_str(vm.interns);
         Err(match kind {
-            AccessorKind::Member => ExcType::attribute_error_readonly(),
             AccessorKind::GetSet => ExcType::attribute_error_not_writable(name, owner.name()),
             AccessorKind::Instance => ExcType::attribute_error_no_setattr(owner.name(), name),
         })

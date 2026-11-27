@@ -2273,7 +2273,7 @@ pub(crate) struct PyDefaultDictImpl;
 impl<'heap> PyAttrs<'heap> for PyDefaultDictImpl {
     type Receiver = HeapObjectRead<'heap, Dict>;
 
-    #[pyget(DefaultFactory, member)]
+    #[pyget(DefaultFactory)]
     fn default_factory<'h>(this: &HeapObjectRead<'h, Dict>, vm: &mut VM<'h>) -> Value {
         this.get(vm.heap)
             .default_factory()

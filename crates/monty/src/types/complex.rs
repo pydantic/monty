@@ -757,12 +757,12 @@ pub(crate) struct PyComplexImpl;
 impl<'heap> PyAttrs<'heap> for PyComplexImpl {
     type Receiver = HeapObjectRead<'heap, Complex>;
 
-    #[pyget(Real, member)]
+    #[pyget(Real)]
     fn real<'h>(this: &HeapObjectRead<'h, Complex>, vm: &mut VM<'h>) -> Value {
         Value::Float(this.get(vm.heap).real)
     }
 
-    #[pyget(Imag, member)]
+    #[pyget(Imag)]
     fn imag<'h>(this: &HeapObjectRead<'h, Complex>, vm: &mut VM<'h>) -> Value {
         Value::Float(this.get(vm.heap).imag)
     }

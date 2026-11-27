@@ -399,7 +399,7 @@ pub(crate) struct PyUnionImpl;
 impl<'heap> PyAttrs<'heap> for PyUnionImpl {
     type Receiver = HeapObjectRead<'heap, Union>;
 
-    #[pyget(DunderArgs, member)]
+    #[pyget(DunderArgs)]
     fn args<'h>(this: &HeapObjectRead<'h, Union>, vm: &mut VM<'h>) -> Value {
         this.get(vm.heap).args(vm.heap)
     }

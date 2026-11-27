@@ -563,12 +563,12 @@ pub(crate) struct PyPartialImpl;
 impl<'heap> PyAttrs<'heap> for PyPartialImpl {
     type Receiver = HeapObjectRead<'heap, Partial>;
 
-    #[pyget(Func, member)]
+    #[pyget(Func)]
     fn func<'h>(this: &HeapObjectRead<'h, Partial>, vm: &mut VM<'h>) -> Value {
         this.get(vm.heap).func.clone_with_heap(vm.heap)
     }
 
-    #[pyget(Args, member)]
+    #[pyget(Args)]
     fn args<'h>(this: &HeapObjectRead<'h, Partial>, vm: &mut VM<'h>) -> RunResult<Value> {
         let args = &this.get(vm.heap).args;
         check_clone_slots(args.len(), vm.heap)?;
@@ -576,7 +576,7 @@ impl<'heap> PyAttrs<'heap> for PyPartialImpl {
         Ok(allocate_tuple(items, vm.heap))
     }
 
-    #[pyget(Keywords, member)]
+    #[pyget(Keywords)]
     fn keywords<'h>(this: &HeapObjectRead<'h, Partial>, vm: &mut VM<'h>) -> RunResult<Value> {
         let keywords = &this.get(vm.heap).keywords;
         check_clone_slots(keywords.len().saturating_mul(2), vm.heap)?;

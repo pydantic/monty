@@ -403,17 +403,17 @@ pub(crate) struct PySliceImpl;
 impl<'heap> PyAttrs<'heap> for PySliceImpl {
     type Receiver = HeapObjectRead<'heap, Slice>;
 
-    #[pyget(Start, member)]
+    #[pyget(Start)]
     fn start<'h>(this: &HeapObjectRead<'h, Slice>, vm: &mut VM<'h>) -> Value {
         option_i64_to_value(this.get(vm.heap).start)
     }
 
-    #[pyget(Stop, member)]
+    #[pyget(Stop)]
     fn stop<'h>(this: &HeapObjectRead<'h, Slice>, vm: &mut VM<'h>) -> Value {
         option_i64_to_value(this.get(vm.heap).stop)
     }
 
-    #[pyget(Step, member)]
+    #[pyget(Step)]
     fn step<'h>(this: &HeapObjectRead<'h, Slice>, vm: &mut VM<'h>) -> Value {
         option_i64_to_value(this.get(vm.heap).step)
     }

@@ -931,12 +931,12 @@ pub(crate) struct PyGenericAliasImpl;
 impl<'heap> PyAttrs<'heap> for PyGenericAliasImpl {
     type Receiver = HeapObjectRead<'heap, GenericAlias>;
 
-    #[pyget(DunderArgs, member)]
+    #[pyget(DunderArgs)]
     fn args<'h>(this: &HeapObjectRead<'h, GenericAlias>, vm: &mut VM<'h>) -> Value {
         this.dunder_args(vm)
     }
 
-    #[pyget(DunderOrigin, member)]
+    #[pyget(DunderOrigin)]
     fn origin<'h>(this: &HeapObjectRead<'h, GenericAlias>, vm: &mut VM<'h>) -> Value {
         this.get(vm.heap).origin_value(vm.heap)
     }

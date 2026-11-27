@@ -167,7 +167,7 @@ pub(crate) struct PyCsvReaderImpl;
 impl<'heap> PyAttrs<'heap> for PyCsvReaderImpl {
     type Receiver = HeapObjectRead<'heap, CsvObject>;
 
-    #[pyget(Dialect, member)]
+    #[pyget(Dialect)]
     fn dialect<'h>(this: &HeapObjectRead<'h, CsvObject>, vm: &mut VM<'h>) -> Value {
         let CsvObject::Reader(reader) = this.get(vm.heap) else {
             unreachable!("dispatched on CsvObject::Reader");
@@ -175,7 +175,7 @@ impl<'heap> PyAttrs<'heap> for PyCsvReaderImpl {
         CsvObject::Dialect(Dialect::clone(&reader.dialect)).allocate(vm)
     }
 
-    #[pyget(LineNum, member)]
+    #[pyget(LineNum)]
     fn line_num<'h>(this: &HeapObjectRead<'h, CsvObject>, vm: &mut VM<'h>) -> RunResult<Value> {
         let CsvObject::Reader(reader) = this.get(vm.heap) else {
             unreachable!("dispatched on CsvObject::Reader");
@@ -279,7 +279,7 @@ pub(crate) struct PyCsvWriterImpl;
 impl<'heap> PyAttrs<'heap> for PyCsvWriterImpl {
     type Receiver = HeapObjectRead<'heap, CsvObject>;
 
-    #[pyget(Dialect, member)]
+    #[pyget(Dialect)]
     fn dialect<'h>(this: &HeapObjectRead<'h, CsvObject>, vm: &mut VM<'h>) -> Value {
         let CsvObject::Writer(writer) = this.get(vm.heap) else {
             unreachable!("dispatched on CsvObject::Writer");

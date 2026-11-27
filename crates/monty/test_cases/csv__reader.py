@@ -138,7 +138,8 @@ for name in ('line_num', 'dialect'):
         setattr(r, name, 1)
         assert False, 'expected AttributeError'
     except AttributeError as exc:
-        assert str(exc) == 'readonly attribute'
+        expected = f"attribute '{name}' of '_csv.reader' objects is not writable" if is_monty else 'readonly attribute'
+        assert str(exc) == expected
 try:
     r.nope = 1
     assert False, 'expected AttributeError'

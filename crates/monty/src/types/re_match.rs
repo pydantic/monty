@@ -442,7 +442,7 @@ pub(crate) struct PyReMatchImpl;
 impl<'heap> PyAttrs<'heap> for PyReMatchImpl {
     type Receiver = HeapRead<'heap, ReMatch>;
 
-    #[pyget(StringAttr, member)]
+    #[pyget(StringAttr)]
     fn string<'h>(this: &HeapRead<'h, ReMatch>, vm: &mut VM<'h>) -> Value {
         this.get(vm.heap).subject.clone_with_heap(vm.heap)
     }

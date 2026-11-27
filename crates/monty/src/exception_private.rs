@@ -120,12 +120,6 @@ pub(crate) trait ExcTypeExt: Sized {
         .into()
     }
 
-    /// The `AttributeError` for assigning to a read-only data attribute such as `complex.real`.
-    #[must_use]
-    fn attribute_error_readonly() -> RunError {
-        SimpleException::new_msg(ExcType::AttributeError, "readonly attribute").into()
-    }
-
     /// Creates an AttributeError for a missing module attribute.
     ///
     /// Matches CPython's format: `AttributeError: module 'name' has no attribute 'attr'`,
@@ -3405,7 +3399,7 @@ impl<'heap> PyAttrs<'heap> for PyExceptionImpl {
         chained_value(this.get(vm.heap).context(), vm)
     }
 
-    #[pyget(DunderSuppressContext, member)]
+    #[pyget(DunderSuppressContext)]
     fn suppress_context<'h>(this: &HeapRead<'h, ExceptionValue>, vm: &mut VM<'h>) -> Value {
         Value::Bool(this.get(vm.heap).suppress_context())
     }
@@ -3426,7 +3420,7 @@ pub(crate) struct PyStopIterationImpl;
 impl<'heap> PyAttrs<'heap> for PyStopIterationImpl {
     type Receiver = HeapRead<'heap, ExceptionValue>;
 
-    #[pyget(Value, member)]
+    #[pyget(Value)]
     fn value<'h>(this: &HeapRead<'h, ExceptionValue>, vm: &mut VM<'h>) -> Value {
         this.get(vm.heap).stop_iteration_value(vm)
     }
