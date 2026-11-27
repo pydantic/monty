@@ -224,6 +224,7 @@ pub const SANDBOX_MODULE_NAMES: &[&str] = &[
     "math",
     "os",
     "pathlib",
+    "pickle",
     "posixpath",
     "random",
     "re",

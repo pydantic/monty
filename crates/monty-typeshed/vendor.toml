@@ -6,7 +6,7 @@ commit = "0e16ea31d2e188fdc126cb31e7c4fcc6b5a8da96"
 license_sha256 = "295f8538c94ae5c3043301cf7cff1c852dab6a786a8ddee471e061b40d5ecabe"
 
 # Stub-only helpers live in _typeshed; asyncio and sys replace upstream packages.
-additions = ["_typeshed/_monty.pyi", "asyncio.pyi", "sys.pyi"]
+additions = ["_typeshed/_monty.pyi", "asyncio.pyi", "pickle.pyi", "sys.pyi"]
 
 files = [
     "VERSIONS",

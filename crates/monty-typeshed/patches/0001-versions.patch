@@ -2,7 +2,7 @@ Register only Monty's selected modules and their type-checking dependencies.
 
 --- a/VERSIONS
 +++ b/VERSIONS
-@@ -1,349 +1,50 @@
+@@ -1,349 +1,51 @@
 -# The structure of this file is as follows:
 -# - Blank lines and comments starting with `#` are ignored.
 -# - Lines contain the name of a module, followed by a colon,
@@ -251,7 +251,7 @@ Register only Monty's selected modules and their type-checking dependencies.
  pathlib: 3.4-
  pathlib.types: 3.14-
 -pdb: 3.0-
--pickle: 3.0-
+ pickle: 3.0-
 -pickletools: 3.0-
 -pipes: 3.0-3.12
 -pkgutil: 3.0-

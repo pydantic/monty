@@ -993,6 +993,9 @@ pub enum StaticStrings {
     /// `defaultdict.default_factory` attribute.
     #[strum(serialize = "default_factory")]
     DefaultFactory,
+    /// `pickle.DEFAULT_PROTOCOL` constant.
+    #[strum(serialize = "DEFAULT_PROTOCOL")]
+    DefaultProtocol,
     /// The `collections.defaultdict` factory function.
     Defaultdict,
     /// `namedtuple(..., defaults=...)` keyword argument.
@@ -1862,6 +1865,9 @@ pub enum StaticStrings {
     /// `hexstr` parameter of `binascii.unhexlify()`.
     #[strum(serialize = "hexstr")]
     Hexstr,
+    /// `pickle.HIGHEST_PROTOCOL` constant.
+    #[strum(serialize = "HIGHEST_PROTOCOL")]
+    HighestProtocol,
     /// `sys.hexversion` attribute.
     Hexversion,
     /// `hi` in the bisect module.
@@ -2524,6 +2530,8 @@ pub enum StaticStrings {
     PersonSize,
     /// `math.pi` constant
     Pi,
+    /// Module name for `import pickle`.
+    Pickle,
     /// `sys.platform` attribute.
     Platform,
     /// `sys.platlibdir` attribute.
@@ -2564,6 +2572,9 @@ pub enum StaticStrings {
     /// `typing.Protocol` marker.
     #[strum(serialize = "Protocol")]
     Protocol,
+    /// `pickle.dumps()` protocol argument.
+    #[strum(serialize = "protocol")]
+    ProtocolArg,
     /// `statistics.pstdev()` function.
     Pstdev,
     /// `statistics.pvariance()` function.
