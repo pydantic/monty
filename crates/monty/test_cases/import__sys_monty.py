@@ -5,6 +5,20 @@
 
 import sys
 
+for stream in (sys.stdout, sys.stderr):
+    try:
+        stream.flush()
+    except AttributeError as exc:
+        assert str(exc) == "'_io.TextIOWrapper' object has no attribute 'flush'"
+    else:
+        assert False, 'expected flush to raise AttributeError'
+    try:
+        stream.write('x')
+    except AttributeError as exc:
+        assert str(exc) == "'_io.TextIOWrapper' object has no attribute 'write'"
+    else:
+        assert False, 'expected write to raise AttributeError'
+
 # === sys.version ===
 assert sys.version == '3.14.0 (Monty)', f'version should be 3.14.0 (Monty), got {sys.version!r}'
 

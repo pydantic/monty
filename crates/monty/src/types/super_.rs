@@ -10,6 +10,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead},
+    py_attrs::AttrDef,
     types::{BoundMethod, LazyHeapSet, PyTrait, Type, TypeRef, instance::is_method_value},
     value::{EitherStr, Value},
 };
@@ -247,7 +248,11 @@ fn lookup_class_member(receiver: TypeRef, start: TypeRef, attr: &EitherStr, vm: 
     None
 }
 
-/// Reads a native type's own attributes, not attributes inherited through its MRO.
+/// Reads value entries in a native type's own namespace, not its ancestors'.
 fn native_member(ty: Type, attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
-    ty.def().class_attr.and_then(|get| get(attr, vm))
+    let name = attr.static_string(vm.interns)?;
+    match (ty.def().attrs?.lookup)(name)? {
+        AttrDef::Value(get) => Some(get(vm)),
+        AttrDef::Method(_) | AttrDef::ClassMethod(_) => None,
+    }
 }

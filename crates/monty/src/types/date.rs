@@ -18,6 +18,7 @@ use jiff::{
         strtime::{BrokenDownTime, Config, PosixCustom},
     },
 };
+use monty_macros::pyattrs;
 use monty_types::{OsFunctionCall, ResourceTracker};
 
 use crate::{
@@ -26,14 +27,15 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
-    heap::{Heap, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    heap::{DropWithContext, Heap, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
+    py_attrs::{MethodCall, PyAttrs},
+    py_value::PyValue,
     string_builder::StringBuilder,
     types::{
         CmpOrder, LazyHeapSet, PyTrait, TimeDelta, Type, TypeRef, datetime,
         str::{allocate_string, allocate_string_no_interning},
         timedelta,
-        timedelta::DAY_MICROSECONDS,
         timezone::{format_offset_compact, format_offset_hms, tzname_string},
     },
     value::{EitherStr, Value},
@@ -55,6 +57,18 @@ impl Hash for Date {
         let previous = (weekday + 5) % 7 + 1;
         let common = i32::from(!self.0.in_leap_year()) << 3;
         ((year << 13) | (i32::from(self.0.day_of_year()) << 4) | common | previous).hash(state);
+    }
+}
+
+impl Date {
+    fn weekday(self, args: ArgValues, heap: &mut Heap) -> RunResult<Value> {
+        args.check_zero_args("date.weekday", heap)?;
+        Ok(Value::Int(i64::from(self.0.weekday().to_monday_zero_offset())))
+    }
+
+    fn isoweekday(self, args: ArgValues, heap: &mut Heap) -> RunResult<Value> {
+        args.check_zero_args("date.isoweekday", heap)?;
+        Ok(Value::Int(i64::from(self.0.weekday().to_monday_one_offset())))
     }
 }
 
@@ -182,31 +196,6 @@ struct DateInitArgs {
     year: i32,
     month: i32,
     day: i32,
-}
-
-/// `date.min`, `date.max` and `date.resolution`.
-pub(crate) fn class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
-    Some(match attr.static_string(vm.interns)? {
-        StaticStrings::Min => allocate_ymd(1, 1, 1, vm.heap),
-        StaticStrings::Max => allocate_ymd(9999, 12, 31, vm.heap),
-        StaticStrings::Resolution => timedelta::allocate_micros(DAY_MICROSECONDS, vm.heap),
-        _ => return None,
-    })
-}
-
-/// `date.today()`, `date.fromtimestamp()` and `date.fromisoformat()`.
-pub(crate) fn class_method(
-    attr: &EitherStr,
-    args: ArgValues,
-    vm: &mut VM<'_>,
-) -> Result<RunResult<CallResult>, ArgValues> {
-    Ok(match attr.static_string(vm.interns) {
-        Some(StaticStrings::Today) => class_today(vm, args),
-        Some(StaticStrings::Fromisoformat) => class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value),
-        Some(StaticStrings::Fromordinal) => class_fromordinal(vm, args).map(CallResult::Value),
-        Some(StaticStrings::Fromtimestamp) => class_fromtimestamp(vm, args).map(CallResult::Value),
-        _ => return Err(args),
-    })
 }
 
 /// Reads `date.today()` from the session's clock in the session zone. A `CallHost`
@@ -364,60 +353,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
                 py_sub_timedelta(*self.get(vm.heap), *other.get(vm.heap), vm.heap).map(Some)
             }
             _ => Ok(None),
-        }
-    }
-
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let date = *self.get(vm.heap);
-        match attr.static_string(vm.interns) {
-            Some(StaticStrings::Isoformat) => {
-                args.check_zero_args("date.isoformat", vm.heap)?;
-                let (year, month, day) = to_ymd(date);
-                Ok(CallResult::Value(allocate_string_no_interning(
-                    format!("{year:04}-{month:02}-{day:02}"),
-                    vm.heap,
-                )))
-            }
-            Some(StaticStrings::Strftime) => {
-                let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm)?;
-                defer_drop!(format, vm);
-                let formatted = format_date_strftime(date, format.as_str(vm), &vm.heap.tracker)?;
-                Ok(CallResult::Value(allocate_string(formatted, vm.heap)))
-            }
-            Some(StaticStrings::Replace) => {
-                let (year, month, day) = to_ymd(date);
-                let DateReplaceArgs {
-                    year: new_year,
-                    month: new_month,
-                    day: new_day,
-                } = DateReplaceArgs::from_args(args, vm)?;
-                let new_date = from_ymd(
-                    new_year.unwrap_or(year),
-                    new_month.unwrap_or(i32::try_from(month).expect("month in 1..=12")),
-                    new_day.unwrap_or(i32::try_from(day).expect("day in 1..=31")),
-                )?;
-                Ok(CallResult::Value(Value::allocate(new_date, vm.heap)))
-            }
-            Some(StaticStrings::Weekday) => {
-                args.check_zero_args("date.weekday", vm.heap)?;
-                Ok(CallResult::Value(Value::Int(i64::from(
-                    date.0.weekday().to_monday_zero_offset(),
-                ))))
-            }
-            Some(StaticStrings::Isoweekday) => {
-                args.check_zero_args("date.isoweekday", vm.heap)?;
-                Ok(CallResult::Value(Value::Int(i64::from(
-                    date.0.weekday().to_monday_one_offset(),
-                ))))
-            }
-            Some(StaticStrings::Toordinal) => {
-                args.check_zero_args("date.toordinal", vm.heap)?;
-                Ok(CallResult::Value(Value::Int(i64::from(to_ordinal(date)))))
-            }
-            // A classmethod, so CPython also reaches it through an instance.
-            Some(StaticStrings::Fromordinal) => class_fromordinal(vm, args).map(CallResult::Value),
-            Some(StaticStrings::Fromtimestamp) => class_fromtimestamp(vm, args).map(CallResult::Value),
-            _ => Err(ExcType::attribute_error_method(Type::Date, attr, args, vm)),
         }
     }
 
@@ -624,17 +559,177 @@ pub(crate) struct StrftimeArgs {
     pub(crate) format: StrArg,
 }
 
-/// Keyword arguments for `date.replace()`. All keyword-only; absent fields
-/// inherit the original date's component via `unwrap_or` at the call site.
+/// Optional positional-or-keyword date components; omitted fields keep their original values.
 #[derive(FromArgs)]
-#[from_args(name = "replace")]
+#[from_args(name = "replace", style = c_named, at_most_total)]
 struct DateReplaceArgs {
-    #[from_args(kw_only, default)]
+    #[from_args(default)]
     year: Option<i32>,
-    #[from_args(kw_only, default)]
+    #[from_args(default)]
     month: Option<i32>,
-    #[from_args(kw_only, default)]
+    #[from_args(default)]
     day: Option<i32>,
+}
+
+/// Adapts date descriptors to the datetime payload while preserving method-specific results.
+pub(crate) fn call_subtype_descriptor<'h>(
+    receiver: &mut PyValue<'h>,
+    attr: &EitherStr,
+    call: MethodCall,
+    args: ArgValues,
+    vm: &mut VM<'h>,
+) -> RunResult<CallResult> {
+    match receiver {
+        PyValue::DateTime(datetime) => call_datetime_descriptor(datetime, attr, call, args, vm),
+        _ => call(receiver, args, vm),
+    }
+}
+
+/// `date` descriptors read the date portion of a datetime unless the method uses its time fields.
+fn call_datetime_descriptor<'h>(
+    value: &mut HeapObjectRead<'h, datetime::DateTime>,
+    attr: &EitherStr,
+    call: MethodCall,
+    args: ArgValues,
+    vm: &mut VM<'h>,
+) -> RunResult<CallResult> {
+    let name = attr.static_string(vm.interns);
+    let date = value.get(vm.heap).date();
+    match name {
+        Some(StaticStrings::Strftime) => {
+            return datetime::PyDateTimeImpl::strftime(value, args, vm).map(CallResult::Value);
+        }
+        Some(StaticStrings::Weekday) => return date.weekday(args, vm.heap).map(CallResult::Value),
+        Some(StaticStrings::Isoweekday) => return date.isoweekday(args, vm.heap).map(CallResult::Value),
+        Some(StaticStrings::Toordinal) => return ordinal_value(date, args, vm).map(CallResult::Value),
+        _ => {}
+    }
+    let receiver = Value::allocate(date, vm.heap);
+    defer_drop!(receiver, vm);
+    let result = call(&mut receiver.py_value(vm), args, vm)?;
+    if name != Some(StaticStrings::Replace) {
+        return Ok(result);
+    }
+    let CallResult::Value(value) = &result else {
+        return Ok(result);
+    };
+    let Some((year, month, day)) = value.read_as::<Date>(vm.heap).map(|date| to_ymd(*date.get(vm.heap))) else {
+        return Ok(result);
+    };
+    result.drop_with(vm);
+    // The inherited date descriptor constructs the receiver's type from date components only.
+    Ok(CallResult::Value(datetime::allocate_naive(
+        year,
+        i32::try_from(month).expect("month in 1..=12"),
+        i32::try_from(day).expect("day in 1..=31"),
+        0,
+        0,
+        0,
+        0,
+        vm.heap,
+    )))
+}
+
+fn ordinal_value(date: Date, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
+    args.check_zero_args("date.toordinal", vm.heap)?;
+    Ok(Value::Int(i64::from(to_ordinal(date))))
+}
+
+pub(crate) struct PyDateImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyDateImpl {
+    type Receiver = HeapObjectRead<'heap, Date>;
+
+    #[pymethod(Isoformat)]
+    fn isoformat<'h>(value: &mut HeapObjectRead<'h, Date>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        args.check_zero_args("date.isoformat", vm.heap)?;
+        let (year, month, day) = to_ymd(*value.get(vm.heap));
+        Ok(allocate_string_no_interning(
+            format!("{year:04}-{month:02}-{day:02}"),
+            vm.heap,
+        ))
+    }
+
+    #[pymethod(Strftime)]
+    fn strftime<'h>(value: &mut HeapObjectRead<'h, Date>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let date = *value.get(vm.heap);
+        let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm)?;
+        defer_drop!(format, vm);
+        let formatted = format_date_strftime(date, format.as_str(vm), &vm.heap.tracker)?;
+        Ok(allocate_string(formatted, vm.heap))
+    }
+
+    #[pymethod(Replace)]
+    fn replace<'h>(value: &mut HeapObjectRead<'h, Date>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let (year, month, day) = to_ymd(*value.get(vm.heap));
+        let DateReplaceArgs {
+            year: new_year,
+            month: new_month,
+            day: new_day,
+        } = DateReplaceArgs::from_args(args, vm)?;
+        let new_date = from_ymd(
+            new_year.unwrap_or(year),
+            new_month.unwrap_or(i32::try_from(month).expect("month in 1..=12")),
+            new_day.unwrap_or(i32::try_from(day).expect("day in 1..=31")),
+        )?;
+        Ok(Value::allocate(new_date, vm.heap))
+    }
+
+    #[pymethod(Weekday)]
+    fn weekday<'h>(value: &mut HeapObjectRead<'h, Date>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        value.get(vm.heap).weekday(args, vm.heap)
+    }
+
+    #[pymethod(Isoweekday)]
+    fn isoweekday<'h>(value: &mut HeapObjectRead<'h, Date>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        value.get(vm.heap).isoweekday(args, vm.heap)
+    }
+
+    #[pymethod(Toordinal)]
+    fn toordinal<'h>(value: &mut HeapObjectRead<'h, Date>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        ordinal_value(*value.get(vm.heap), args, vm)
+    }
+
+    #[pyclassmethod(Fromordinal)]
+    fn fromordinal(_: StaticStrings, _: TypeRef, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+        class_fromordinal(vm, args).map(CallResult::Value)
+    }
+
+    #[pyclassmethod(Today)]
+    fn today(_: StaticStrings, class: TypeRef, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+        if class == Type::DateTime {
+            args.check_zero_args("datetime.today", vm.heap)?;
+            datetime::class_now(vm, ArgValues::Empty)
+        } else {
+            class_today(vm, args)
+        }
+    }
+
+    #[pyclassmethod(Fromisoformat)]
+    fn fromisoformat(_: StaticStrings, _: TypeRef, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+        class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value)
+    }
+
+    #[pyclassmethod(Fromtimestamp)]
+    fn fromtimestamp(_: StaticStrings, _: TypeRef, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+        class_fromtimestamp(vm, args).map(CallResult::Value)
+    }
+
+    #[pyvalue(Min)]
+    fn min(vm: &mut VM<'_>) -> Value {
+        allocate_ymd(1, 1, 1, vm.heap)
+    }
+
+    #[pyvalue(Max)]
+    fn max(vm: &mut VM<'_>) -> Value {
+        allocate_ymd(9999, 12, 31, vm.heap)
+    }
+
+    #[pyvalue(Resolution)]
+    fn resolution(vm: &mut VM<'_>) -> Value {
+        timedelta::allocate_micros(timedelta::DAY_MICROSECONDS, vm.heap)
+    }
 }
 
 /// Argument shape for `date.fromordinal(ordinal)` and `datetime.fromordinal(ordinal)`.
