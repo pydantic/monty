@@ -48,6 +48,25 @@ try:
 except LookupError as e:
     assert str(e) == 'unknown encoding:  Not A Real--Codec ', f'unknown encoding keeps original name: {e}'
 
+# === Latin-1 ===
+raw = bytes(range(256))
+text = ''.join(chr(b) for b in raw)
+for alias in ('latin-1', 'LATIN1', 'ISO-8859-1', 'iso8859-1', 'iso-ir-100', 'l1', 'cp819'):
+    assert raw.decode(alias) == text
+    assert text.encode(alias) == raw
+assert str(b'\x00\x80\xff', 'ISO-8859-1', 'unknown') == '\x00\x80ÿ'
+assert bytes('\x00\x80ÿ', 'ISO-8859-1', 'unknown') == b'\x00\x80\xff'
+assert 'éĀ😀ÿ'.encode('latin-1', 'ignore') == b'\xe9\xff'
+assert 'éĀ😀ÿ'.encode('latin-1', 'replace') == b'\xe9??\xff'
+assert 'éĀ😀ÿ'.encode('latin-1', 'backslashreplace') == b'\xe9\\u0100\\U0001f600\xff'
+assert 'éĀÿ'.encode('latin-1', 'xmlcharrefreplace') == b'\xe9&#256;\xff'
+assert 'éĀÿ'.encode('latin-1', 'namereplace') == b'\xe9\\N{LATIN CAPITAL LETTER A WITH MACRON}\xff'
+try:
+    'éĀ😀'.encode('ISO-8859-1')
+    assert False, 'expected UnicodeEncodeError'
+except UnicodeEncodeError as e:
+    assert str(e) == "'latin-1' codec can't encode characters in position 1-2: ordinal not in range(256)"
+
 # === utf-16 / utf-32 encode ===
 # The bare variants prepend a BOM (little-endian), even for an empty string.
 assert 'ab'.encode('utf-16') == b'\xff\xfea\x00b\x00'

@@ -1,4 +1,5 @@
 import fnmatch
+import re
 from pathlib import Path
 
 # === fnmatch() and fnmatchcase() ===
@@ -63,6 +64,19 @@ assert fnmatch.fnmatch(b'a.py', b'*.py')
 assert fnmatch.fnmatchcase(b'a.py', b'*.[px]?')
 assert not fnmatch.fnmatchcase(b'a.pyc', b'*.py')
 assert fnmatch.filter([b'a.py', b'b.txt'], b'*.py') == [b'a.py']
+
+# Compile translated byte globs through the same Latin-1 round-trip as CPython.
+for glob, yes, no in (
+    (b'?[\x80-\xff]', b'\xff\x81', b'\xc3\xbf\x81'),
+    (b'*\xff*', b'\n\xff\x00', b'\xc3\xbf'),
+    (b'[a--]', None, b'a'),
+    (b'', b'', b'a'),
+):
+    translated = fnmatch.translate(str(glob, 'ISO-8859-1'))
+    pattern = re.compile(bytes(translated, 'ISO-8859-1'))
+    if yes is not None:
+        assert pattern.match(yes) is not None
+    assert pattern.match(no) is None
 
 # === path objects go through os.fspath in fnmatch() and filter()'s pattern ===
 assert fnmatch.fnmatch(Path('/tmp/a.py'), '*.py')

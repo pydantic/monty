@@ -1,7 +1,7 @@
 //! Compiled regex pattern type for the `re` module.
 //!
 //! `RePattern` wraps a compiled `fancy_regex::Regex` with the original Python pattern
-//! string and flags. The `fancy_regex` crate supports backreferences, lookahead/lookbehind,
+//! source and flags. The `fancy_regex` crate supports backreferences, lookahead/lookbehind,
 //! and other advanced features, but uses backtracking which means patterns are susceptible
 //! to ReDoS. Monty's resource limits (time and allocation budgets) are the primary defense
 //! against catastrophic backtracking in untrusted patterns.
@@ -9,12 +9,12 @@
 //! Patterns are translated from CPython's syntax by [`re_syntax::translate`] before `fancy_regex`
 //! sees them, so CPython's errors are raised and `fancy_regex`'s own extensions are unreachable.
 //!
-//! Custom serde serializes only the pattern string and flags, recompiling the regex
+//! Custom serde serializes only the pattern source and flags, recompiling the regex
 //! on deserialization. This supports Monty's snapshot/restore feature.
 
 use std::{borrow::Cow, cell::OnceCell, cmp::Ordering, fmt::Write, iter, mem, str};
 
-use fancy_regex::{CompileError, Error as RegexError, Regex, RegexBuilder};
+use fancy_regex::{BytesMode, CompileError, Error as RegexError, Regex, RegexBuilder};
 use monty_macros::pyattrs;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use smallvec::SmallVec;
@@ -31,7 +31,8 @@ use crate::{
     resource_checks::check_estimated_size,
     types::{
         LazyHeapSet, List, PyTrait, ReMatch, Type, TypeRef, allocate_tuple, re_syntax,
-        str::{allocate_string, string_repr_fmt},
+        re_text::{ReInput, ReText},
+        str::allocate_string,
         tuple::TupleVec,
     },
     value::{EitherStr, VALUE_SIZE, Value},
@@ -39,17 +40,17 @@ use crate::{
 
 /// A compiled regular expression pattern.
 ///
-/// Wraps a `fancy_regex::Regex` with the original Python pattern string and flags.
+/// Wraps a `fancy_regex::Regex` with the original Python pattern and flags.
 /// The `fancy_regex` crate supports backtracking features like backreferences and
 /// lookaround, but this means patterns are susceptible to ReDoS — Monty's resource
 /// limits are the defense against catastrophic backtracking.
 ///
-/// Custom serde serializes only the pattern string and flags, recompiling the
+/// Custom serde serializes only the pattern source and flags, recompiling the
 /// regex on deserialization. This supports Monty's snapshot/restore feature.
 #[derive(Debug, Clone)]
 pub(crate) struct RePattern {
-    /// The original Python regex pattern string.
-    pattern: String,
+    /// The original Python regex source.
+    pattern: ReText,
     /// Python regex flags bitmask (IGNORECASE=2, MULTILINE=8, DOTALL=16, VERBOSE=64, ASCII=256).
     flags: u16,
     /// The compiled Rust regex, unanchored.
@@ -95,7 +96,7 @@ pub(crate) enum BoundedCompileError {
 }
 
 impl RePattern {
-    /// Creates a compiled pattern from a Python regex string and flags.
+    /// Creates a compiled pattern from a Python regex source and flags.
     ///
     /// Translates Python flag constants into inline regex flag prefixes and compiles
     /// the unanchored pattern. The anchored variants used by `match`/`fullmatch` are
@@ -104,8 +105,8 @@ impl RePattern {
     /// # Errors
     ///
     /// Returns `re.PatternError` if the pattern is invalid.
-    pub fn compile(pattern: String, flags: u16) -> RunResult<Self> {
-        let source = re_syntax::translate(&pattern, flags)?;
+    pub fn compile(pattern: ReText, flags: u16) -> RunResult<Self> {
+        let source = re_syntax::translate(pattern.as_input(), flags)?;
         Self::compile_inner(pattern, &source, flags, None).map_err(ExcType::re_pattern_error)
     }
 
@@ -115,11 +116,11 @@ impl RePattern {
     /// and applied to the lazily-compiled anchored `match`/`fullmatch` variants
     /// too, so a cached entry cannot pin large regexes via `.match()`/`.fullmatch()`.
     pub(crate) fn compile_bounded(
-        pattern: String,
+        pattern: ReText,
         flags: u16,
         delegate_size_limit: usize,
     ) -> Result<Self, BoundedCompileError> {
-        let source = re_syntax::translate(&pattern, flags).map_err(BoundedCompileError::Invalid)?;
+        let source = re_syntax::translate(pattern.as_input(), flags).map_err(BoundedCompileError::Invalid)?;
         Self::compile_inner(pattern, &source, flags, Some(delegate_size_limit)).map_err(|err| {
             if is_size_limit_error(&err) {
                 BoundedCompileError::TooBig
@@ -134,20 +135,20 @@ impl RePattern {
     /// Lets the `re` module's pattern cache confirm a slot on a hash hit without
     /// storing its own copy of the key — the compiled pattern already owns both,
     /// and duplicating the source text is what makes a cached entry expensive.
-    pub(crate) fn is_compiled_from(&self, pattern: &str, flags: u16) -> bool {
-        self.flags == flags && self.pattern == pattern
+    pub(crate) fn is_compiled_from(&self, pattern: ReInput<'_>, flags: u16) -> bool {
+        self.flags == flags && self.pattern.as_input() == pattern
     }
 
     /// Shared constructor for [`RePattern::compile`] / [`RePattern::compile_bounded`].
     ///
     /// `source` is `pattern` translated by [`re_syntax::translate`].
     fn compile_inner(
-        pattern: String,
+        pattern: ReText,
         source: &str,
         flags: u16,
         delegate_size_limit: Option<usize>,
     ) -> Result<Self, RegexError> {
-        let compiled = compile_regex_limited(source, flags, delegate_size_limit)?;
+        let compiled = compile_regex_limited(source, flags, delegate_size_limit, pattern.is_bytes())?;
         Ok(Self {
             pattern,
             flags,
@@ -167,9 +168,7 @@ impl RePattern {
         if let Some(regex) = self.compiled_match.get() {
             return Ok(regex);
         }
-        let source = re_syntax::translate(&self.pattern, self.flags)?;
-        let compiled = compile_regex_limited(&anchored_source(&source, ""), self.flags, self.delegate_size_limit)
-            .map_err(ExcType::re_pattern_error)?;
+        let compiled = self.compile_anchored("")?;
         // `set` only fails on a concurrent init, impossible on the single-threaded VM.
         let _ = self.compiled_match.set(compiled);
         Ok(self.compiled_match.get().expect("cell was just initialised"))
@@ -180,55 +179,111 @@ impl RePattern {
         if let Some(regex) = self.compiled_fullmatch.get() {
             return Ok(regex);
         }
-        let source = re_syntax::translate(&self.pattern, self.flags)?;
-        let compiled = compile_regex_limited(&anchored_source(&source, "\\z"), self.flags, self.delegate_size_limit)
-            .map_err(ExcType::re_pattern_error)?;
+        let compiled = self.compile_anchored("\\z")?;
         let _ = self.compiled_fullmatch.set(compiled);
         Ok(self.compiled_fullmatch.get().expect("cell was just initialised"))
     }
 
-    /// Builds a single `ReMatch` heap value from one match's spans (see
-    /// [`ReMatch::from_spans`]), keeping the subject alive by refcount
-    /// (`subject.clone_with_heap`) rather than copying its text. `all_ascii` is
-    /// precomputed by the caller (once per `finditer`).
-    fn build_match(
-        &self,
-        text: &str,
-        spans: &[Option<(usize, usize)>],
-        subject: &Value,
-        all_ascii: bool,
-        heap: &Heap,
-    ) -> Value {
-        let m = ReMatch::from_spans(text, spans, subject.clone_with_heap(heap), all_ascii, &self.compiled);
-        Value::allocate(m, heap)
+    /// Compiles an anchored variant with the same mode and limits as the original regex.
+    fn compile_anchored(&self, suffix: &str) -> RunResult<Regex> {
+        let source = re_syntax::translate(self.pattern.as_input(), self.flags)?;
+        compile_regex_limited(
+            &anchored_source(&source, suffix),
+            self.flags,
+            self.delegate_size_limit,
+            self.pattern.is_bytes(),
+        )
+        .map_err(ExcType::re_pattern_error)
     }
 
-    /// Builds the `ReMatch` for a single-match search (`search`, `match`, `fullmatch`).
-    ///
-    /// The spans sit on the stack for patterns with up to seven groups, so a search
-    /// allocates nothing beyond the match itself.
-    fn build_single_match(
+    /// Borrows a subject of the same kind as the pattern.
+    pub(crate) fn subject_input<'a>(
         &self,
-        text: &str,
-        caps: &fancy_regex::Captures<'_, str>,
+        value: &'a Value,
+        vm: &'a VM<'_>,
+        invalid_type: impl FnOnce() -> RunError,
+    ) -> RunResult<ReInput<'a>> {
+        if let Some(text) = value.as_str(vm) {
+            if self.pattern.is_bytes() {
+                Err(ExcType::re_subject_mismatch(true))
+            } else {
+                Ok(ReInput::Str(text))
+            }
+        } else if let Some(bytes) = value.as_bytes(vm) {
+            if self.pattern.is_bytes() {
+                Ok(ReInput::Bytes(bytes))
+            } else {
+                Err(ExcType::re_subject_mismatch(false))
+            }
+        } else {
+            Err(invalid_type())
+        }
+    }
+
+    /// Borrows a method subject, retaining Monty's wording for other input types.
+    fn method_subject<'a>(&self, subject: &'a Value, vm: &'a VM<'_>) -> RunResult<ReInput<'a>> {
+        self.subject_input(subject, vm, || {
+            ExcType::type_error(format!("expected string, not {}", subject.py_type_name(vm)))
+        })
+    }
+
+    /// Rejects bytes patterns for operations that still require text.
+    pub(crate) fn require_text_pattern(&self, operation: &str) -> RunResult<()> {
+        if self.pattern.is_bytes() {
+            Err(ExcType::not_implemented(format!("bytes patterns are not supported by re.{operation}()")).into())
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Finds a single match, keeping up to seven capture spans on the stack.
+    fn find_match(&self, regex: &Regex, subject: &Value, text: ReInput<'_>, heap: &Heap) -> RunResult<Value> {
+        type SmallSpans = SmallVec<[Option<(usize, usize)>; 8]>;
+        let spans: Option<SmallSpans> = match text {
+            ReInput::Str(s) => regex
+                .captures(s)
+                .map_err(ExcType::re_pattern_error)?
+                .map(|caps| caps.iter().map(|m| m.map(|m| (m.start(), m.end()))).collect()),
+            ReInput::Bytes(b) => regex
+                .captures(b)
+                .map_err(ExcType::re_pattern_error)?
+                .map(|caps| caps.iter().map(|m| m.map(|m| (m.start(), m.end()))).collect()),
+        };
+        let Some(spans) = spans else {
+            return Ok(Value::None);
+        };
+        let byte_offsets = match text {
+            ReInput::Str(s) => s.is_ascii(),
+            ReInput::Bytes(_) => true,
+        };
+        // Overlapping captures can copy the same bytes more than once.
+        let captured_len = spans
+            .iter()
+            .flatten()
+            .fold(0usize, |total, (start, end)| total.saturating_add(end - start));
+        heap.tracker.check_allocation(captured_len)?;
+        Ok(self.build_match(text, &spans, subject, byte_offsets, heap))
+    }
+
+    /// Builds a match from spans and keeps its original subject alive by refcount.
+    fn build_match(
+        &self,
+        text: ReInput<'_>,
+        spans: &[Option<(usize, usize)>],
         subject: &Value,
+        byte_offsets: bool,
         heap: &Heap,
     ) -> Value {
-        let spans: SmallVec<[Option<(usize, usize)>; 8]> =
-            caps.iter().map(|m| m.map(|m| (m.start(), m.end()))).collect();
-        self.build_match(text, &spans, subject, text.is_ascii(), heap)
+        let m = ReMatch::from_spans(text, spans, subject.clone_with_heap(heap), byte_offsets, &self.compiled);
+        Value::allocate(m, heap)
     }
 
     /// `pattern.search(string)` — find first match anywhere in the string.
     ///
     /// `subject` is the subject `Value` (stored by the match); `text` is its
     /// borrowed contents. Returns a `ReMatch` heap object, or `Value::None`.
-    pub fn search(&self, subject: &Value, text: &str, heap: &Heap) -> RunResult<Value> {
-        match self.compiled.captures(text) {
-            Ok(Some(caps)) => Ok(self.build_single_match(text, &caps, subject, heap)),
-            Ok(None) => Ok(Value::None),
-            Err(err) => Err(ExcType::re_pattern_error(err)),
-        }
+    pub fn search(&self, subject: &Value, text: ReInput<'_>, heap: &Heap) -> RunResult<Value> {
+        self.find_match(&self.compiled, subject, text, heap)
     }
 
     /// `pattern.match(string)` — match anchored at the start of the string.
@@ -238,12 +293,8 @@ impl RePattern {
     /// anchor forces the engine to try all alternatives at position 0.
     ///
     /// Returns a `ReMatch` heap object on success, or `Value::None` if no match.
-    pub fn match_start(&self, subject: &Value, text: &str, heap: &Heap) -> RunResult<Value> {
-        match self.match_regex()?.captures(text) {
-            Ok(Some(caps)) => Ok(self.build_single_match(text, &caps, subject, heap)),
-            Ok(None) => Ok(Value::None),
-            Err(err) => Err(ExcType::re_pattern_error(err)),
-        }
+    pub fn match_start(&self, subject: &Value, text: ReInput<'_>, heap: &Heap) -> RunResult<Value> {
+        self.find_match(self.match_regex()?, subject, text, heap)
     }
 
     /// `pattern.fullmatch(string)` — match the entire string.
@@ -253,12 +304,8 @@ impl RePattern {
     /// anchors force the engine to try all alternatives for a full-string match.
     ///
     /// Returns a `ReMatch` heap object on success, or `Value::None` if no match.
-    pub fn fullmatch(&self, subject: &Value, text: &str, heap: &Heap) -> RunResult<Value> {
-        match self.fullmatch_regex()?.captures(text) {
-            Ok(Some(caps)) => Ok(self.build_single_match(text, &caps, subject, heap)),
-            Ok(None) => Ok(Value::None),
-            Err(err) => Err(ExcType::re_pattern_error(err)),
-        }
+    pub fn fullmatch(&self, subject: &Value, text: ReInput<'_>, heap: &Heap) -> RunResult<Value> {
+        self.find_match(self.fullmatch_regex()?, subject, text, heap)
     }
 
     /// `pattern.findall(string)` — return all non-overlapping matches.
@@ -441,7 +488,7 @@ impl RePattern {
         let all_ascii = text.is_ascii();
         let results = spans
             .chunks_exact(stride)
-            .map(|spans| self.build_match(text, spans, subject, all_ascii, heap))
+            .map(|spans| self.build_match(ReInput::Str(text), spans, subject, all_ascii, heap))
             .collect();
         Ok(Value::allocate(List::new(results), heap))
     }
@@ -539,7 +586,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RePattern> {
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         let this = self.get(vm.heap);
         write!(f, "re.compile(")?;
-        string_repr_fmt(&this.pattern, f)?;
+        this.pattern.repr_fmt(f)?;
         if this.flags != 0 {
             let mut flag_parts = SmallVec::<[&'static str; 5]>::new();
             if this.flags & IGNORECASE != 0 {
@@ -565,7 +612,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RePattern> {
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         match attr.static_string(vm.interns) {
             Some(StaticStrings::PatternAttr) => {
-                let v = allocate_string(self.get(vm.heap).pattern.as_str(), vm.heap);
+                let v = self.get(vm.heap).pattern.to_value(vm.heap);
                 Ok(Some(CallResult::Value(v)))
             }
             Some(StaticStrings::Flags) => Ok(Some(CallResult::Value(Value::Int(i64::from(self.get(vm.heap).flags))))),
@@ -682,7 +729,12 @@ fn anchored_source(pattern: &str, suffix: &str) -> String {
 /// Returns the raw `fancy_regex` error so callers can distinguish a size-limit
 /// overflow from an invalid pattern (see [`is_size_limit_error`]) before
 /// converting to `re.PatternError`.
-fn compile_regex_limited(pattern: &str, flags: u16, delegate_size_limit: Option<usize>) -> Result<Regex, RegexError> {
+fn compile_regex_limited(
+    pattern: &str,
+    flags: u16,
+    delegate_size_limit: Option<usize>,
+    is_bytes: bool,
+) -> Result<Regex, RegexError> {
     let mut prefix = String::new();
     if flags & IGNORECASE != 0 {
         prefix.push('i');
@@ -693,10 +745,7 @@ fn compile_regex_limited(pattern: &str, flags: u16, delegate_size_limit: Option<
     if flags & DOTALL != 0 {
         prefix.push('s');
     }
-    // Note: re.ASCII (256) is accepted but has no effect on the regex compilation.
-    // `fancy_regex` doesn't support `(?-u)` to disable Unicode mode, so `\w`, `\d`, `\s`
-    // always match Unicode characters. This is a known limitation — Python 3 defaults to
-    // Unicode mode anyway, so the behavioral difference only matters for non-ASCII input.
+    // `re.ASCII` has no effect on str patterns; bytes patterns are always ASCII-mode.
 
     let full_pattern = if prefix.is_empty() {
         pattern.to_owned()
@@ -706,6 +755,9 @@ fn compile_regex_limited(pattern: &str, flags: u16, delegate_size_limit: Option<
 
     let mut builder = RegexBuilder::new(&full_pattern);
     builder.max_prog_size(MAX_PROG_SIZE);
+    if is_bytes {
+        builder.bytes_mode(BytesMode::Ascii);
+    }
     if let Some(limit) = delegate_size_limit {
         builder.delegate_size_limit(limit);
     }
@@ -863,14 +915,14 @@ fn translate_g_backref(chars: &mut iter::Peekable<str::Chars<'_>>, result: &mut 
 
 impl Serialize for RePattern {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        // Serialize only pattern string and flags; regex is recompiled on deserialize.
+        // The regex is recompiled on deserialize.
         (&self.pattern, self.flags).serialize(serializer)
     }
 }
 
 impl<'de> Deserialize<'de> for RePattern {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let (pattern, flags): (String, u16) = Deserialize::deserialize(deserializer)?;
+        let (pattern, flags): (ReText, u16) = Deserialize::deserialize(deserializer)?;
         Self::compile(pattern, flags).map_err(|e| de::Error::custom(format!("{e:?}")))
     }
 }
@@ -885,32 +937,33 @@ impl<'heap> PyAttrs<'heap> for PyRePatternImpl {
     fn search<'h>(value: &HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let arg = args.get_one_arg("Pattern.search", vm.heap)?;
         defer_drop!(arg, vm);
-        let text = arg.try_as_str(vm)?;
-        value.get(vm.heap).search(arg, text, vm.heap)
+        let pattern = value.get(vm.heap);
+        pattern.search(arg, pattern.method_subject(arg, vm)?, vm.heap)
     }
 
     #[pymethod(Match)]
     fn r#match<'h>(value: &HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let arg = args.get_one_arg("Pattern.match", vm.heap)?;
         defer_drop!(arg, vm);
-        let text = arg.try_as_str(vm)?;
-        value.get(vm.heap).match_start(arg, text, vm.heap)
+        let pattern = value.get(vm.heap);
+        pattern.match_start(arg, pattern.method_subject(arg, vm)?, vm.heap)
     }
 
     #[pymethod(Fullmatch)]
     fn fullmatch<'h>(value: &HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let arg = args.get_one_arg("Pattern.fullmatch", vm.heap)?;
         defer_drop!(arg, vm);
-        let text = arg.try_as_str(vm)?;
-        value.get(vm.heap).fullmatch(arg, text, vm.heap)
+        let pattern = value.get(vm.heap);
+        pattern.fullmatch(arg, pattern.method_subject(arg, vm)?, vm.heap)
     }
 
     #[pymethod(Findall)]
     fn findall<'h>(value: &HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let arg = args.get_one_arg("Pattern.findall", vm.heap)?;
         defer_drop!(arg, vm);
-        let text = arg.try_as_str(vm)?;
-        value.get(vm.heap).findall(text, vm.heap)
+        let pattern = value.get(vm.heap);
+        pattern.require_text_pattern("findall")?;
+        pattern.findall(arg.try_as_str(vm)?, vm.heap)
     }
 
     /// Handles `pattern.sub(repl, string, count=0)` argument extraction and dispatch.
@@ -927,6 +980,7 @@ impl<'heap> PyAttrs<'heap> for PyRePatternImpl {
         defer_drop!(string_val, vm);
 
         let count = extract_count(count_val, vm)?;
+        pattern.get(vm.heap).require_text_pattern("sub")?;
 
         // Check that repl is a string — callable replacement is not supported.
         // CPython processes the replacement template *before* its match loop, so
@@ -964,15 +1018,17 @@ impl<'heap> PyAttrs<'heap> for PyRePatternImpl {
         defer_drop!(string_val, vm);
 
         let maxsplit = extract_maxsplit(maxsplit_val, vm)?;
-        let text = string_val.try_as_str(vm)?.to_owned();
-        pattern.get(vm.heap).split(&text, maxsplit, vm.heap)
+        let pattern = pattern.get(vm.heap);
+        pattern.require_text_pattern("split")?;
+        pattern.split(string_val.try_as_str(vm)?, maxsplit, vm.heap)
     }
 
     #[pymethod(Finditer)]
     fn finditer<'h>(value: &HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let arg = args.get_one_arg("Pattern.finditer", vm.heap)?;
         defer_drop!(arg, vm);
-        let text = arg.try_as_str(vm)?;
-        value.get(vm.heap).finditer(arg, text, vm.heap)
+        let pattern = value.get(vm.heap);
+        pattern.require_text_pattern("finditer")?;
+        pattern.finditer(arg, arg.try_as_str(vm)?, vm.heap)
     }
 }

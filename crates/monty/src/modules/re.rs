@@ -16,8 +16,8 @@
 //! - `re.escape(pattern)` → `str`
 //!
 //! Like CPython's pure-Python `re` functions, all arguments are accepted
-//! positionally or by keyword, and `pattern` may be a `str` or an
-//! already-compiled `re.Pattern` (in which case non-zero `flags` raise
+//! positionally or by keyword. `pattern` may be a `str`, `bytes` (for
+//! compilation and single-match searches), or an already-compiled `re.Pattern` (in which case non-zero `flags` raise
 //! `ValueError`). Signature errors use `#[from_args(style = def)]` so their
 //! wording matches CPython's `def` binding exactly.
 //!
@@ -40,7 +40,7 @@ use crate::{
     builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, ExcTypeExt, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{ContainsHeap, DropWithContext, Heap},
     intern::StaticStrings,
     modules::ModuleFunctions,
@@ -48,6 +48,7 @@ use crate::{
     types::{
         BoundedCompileError, Module, RePattern, Type,
         re_pattern::{extract_count, extract_maxsplit, translate_replacement},
+        re_text::{ReInput, ReText},
         str::allocate_string,
     },
     value::Value,
@@ -67,7 +68,7 @@ pub(crate) const VERBOSE: u16 = 64;
 pub(crate) const ASCII: u16 = 256;
 
 /// Module-level `re` functions (`re.search(pattern, string)`, …), as opposed to the
-/// methods on a compiled `re.Pattern`. String patterns go through
+/// methods on a compiled `re.Pattern`. Uncompiled patterns go through
 /// [`RePatternCache`], so repeated calls usually avoid recompiling.
 #[monty_macros::explicit_discriminants(checksum = 0xc297_04ae_1a6d_8963)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
@@ -224,7 +225,8 @@ fn call_search(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(string, vm);
     let resolved = resolve_pattern(pattern, flags, vm)?;
     defer_drop!(resolved, vm);
-    resolved.get(vm.heap).search(string, subject_str(string, vm)?, vm.heap)
+    let pattern = resolved.get(vm.heap);
+    pattern.search(string, subject_input(pattern, string, vm)?, vm.heap)
 }
 
 /// `re.match(pattern, string, flags=0)` — match anchored at position 0, returning a
@@ -234,9 +236,8 @@ fn call_match(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(string, vm);
     let resolved = resolve_pattern(pattern, flags, vm)?;
     defer_drop!(resolved, vm);
-    resolved
-        .get(vm.heap)
-        .match_start(string, subject_str(string, vm)?, vm.heap)
+    let pattern = resolved.get(vm.heap);
+    pattern.match_start(string, subject_input(pattern, string, vm)?, vm.heap)
 }
 
 /// `re.fullmatch(pattern, string, flags=0)` — match the whole string, returning a
@@ -246,9 +247,8 @@ fn call_fullmatch(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(string, vm);
     let resolved = resolve_pattern(pattern, flags, vm)?;
     defer_drop!(resolved, vm);
-    resolved
-        .get(vm.heap)
-        .fullmatch(string, subject_str(string, vm)?, vm.heap)
+    let pattern = resolved.get(vm.heap);
+    pattern.fullmatch(string, subject_input(pattern, string, vm)?, vm.heap)
 }
 
 /// `re.findall(pattern, string, flags=0)` — all non-overlapping matches, as a list of
@@ -258,7 +258,9 @@ fn call_findall(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(string, vm);
     let resolved = resolve_pattern(pattern, flags, vm)?;
     defer_drop!(resolved, vm);
-    resolved.get(vm.heap).findall(subject_str(string, vm)?, vm.heap)
+    let pattern = resolved.get(vm.heap);
+    pattern.require_text_pattern("findall")?;
+    pattern.findall(subject_str(string, vm)?, vm.heap)
 }
 
 /// `re.sub(pattern, repl, string, count=0, flags=0)` — replace matches; `count=0`
@@ -284,6 +286,8 @@ fn call_sub(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(resolved, vm);
 
     let count = extract_count(count.take(), vm)?;
+    let pattern = resolved.get(vm.heap);
+    pattern.require_text_pattern("sub")?;
 
     // CPython parses the replacement template before its match loop, so a bad
     // replacement raises even when a negative count skips matching.
@@ -305,9 +309,7 @@ fn call_sub(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         return Ok(string.clone_with_heap(vm.heap));
     };
 
-    resolved
-        .get(vm.heap)
-        .sub(repl, subject_str(string, vm)?, count, vm.heap)
+    pattern.sub(repl, subject_str(string, vm)?, count, vm.heap)
 }
 
 /// `re.split(pattern, string, maxsplit=0, flags=0)` — split on pattern occurrences.
@@ -327,7 +329,9 @@ fn call_split(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(resolved, vm);
 
     let maxsplit = extract_maxsplit(maxsplit.take(), vm)?;
-    resolved.get(vm.heap).split(subject_str(string, vm)?, maxsplit, vm.heap)
+    let pattern = resolved.get(vm.heap);
+    pattern.require_text_pattern("split")?;
+    pattern.split(subject_str(string, vm)?, maxsplit, vm.heap)
 }
 
 /// Argument shape for `re.sub(pattern, repl, string, count=0, flags=0)`.
@@ -457,38 +461,40 @@ struct ReFinditerArgs {
 /// Validates the `string` subject and borrows its text from the heap, zero-copy.
 ///
 /// Runs *after* binding and pattern/flags resolution — CPython's `def` binds without
-/// type checks and only the C match machinery rejects a bad subject — so arity,
-/// pattern, and flags errors always win. Monty has no bytes matching: a bytes subject
-/// gets CPython's mixed-types message, anything else the `sre` wording.
+/// type checks until the pattern is known. This helper is for operations that
+/// only support text patterns.
 fn subject_str<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<&'a str> {
     if let Some(text) = value.as_str(vm) {
         Ok(text)
     } else if value.py_type_heap(vm.heap) == Type::Bytes {
-        // Monty patterns are always str, so a bytes subject is always
-        // CPython's string-pattern/bytes-subject mismatch.
-        Err(ExcType::type_error(
-            "cannot use a string pattern on a bytes-like object",
-        ))
+        Err(ExcType::re_subject_mismatch(false))
     } else {
-        // sre reports `type(x).__name__`, so `None` reads 'NoneType'.
-        Err(ExcType::type_error(format!(
-            "expected string or bytes-like object, got '{}'",
-            value.py_type_name(vm)
-        )))
+        Err(subject_type_error(value, vm))
     }
 }
 
-/// The `pattern` argument for module-level `re` functions: an owned pattern string,
-/// or a live compiled `re.Pattern` that CPython's `_compile` passes through. Anything
-/// else — including `bytes`, as Monty has no bytes patterns — gets CPython's
-/// `first argument must be …` error.
+/// Borrows a subject once compilation has succeeded and the pattern's kind is known.
+fn subject_input<'a>(pattern: &RePattern, value: &'a Value, vm: &'a VM<'_>) -> RunResult<ReInput<'a>> {
+    pattern.subject_input(value, vm, || subject_type_error(value, vm))
+}
+
+/// CPython's subject type error, using `type(value).__name__`.
+fn subject_type_error(value: &Value, vm: &VM<'_>) -> RunError {
+    ExcType::type_error(format!(
+        "expected string or bytes-like object, got '{}'",
+        value.py_type_name(vm)
+    ))
+}
+
+/// The `pattern` argument for module-level `re` functions: an owned source,
+/// or a compiled `re.Pattern` that CPython's `_compile` passes through.
 ///
 /// Coerced in the function body (via [`resolve_pattern`]), not as a `FromArgs` field
 /// type: CPython's `def` never type-checks, so failing at extraction would wrongly
 /// preempt arity errors (`re.search(123)` must report the missing `string`).
 pub(crate) enum PatternArg {
-    /// A `str` pattern, copied out because compilation stores it.
-    Str(String),
+    /// A source pattern, copied out because compilation stores it.
+    Source(ReText),
     /// An already-compiled `re.Pattern` heap value (ownership transferred in;
     /// dropped by [`resolve_pattern`]'s error path, `drop_with`, or the
     /// eventual consumer).
@@ -502,7 +508,11 @@ impl PatternArg {
         if let Some(either) = value.as_either_str(vm.heap) {
             let pattern = either.into_string(vm.interns);
             value.drop_with(vm);
-            Ok(Self::Str(pattern))
+            Ok(Self::Source(ReText::Str(pattern)))
+        } else if let Some(bytes) = value.as_bytes(vm) {
+            let pattern = bytes.to_vec();
+            value.drop_with(vm);
+            Ok(Self::Source(ReText::Bytes(pattern)))
         } else if value.py_type_heap(vm.heap) == Type::RePattern {
             Ok(Self::Compiled(value))
         } else {
@@ -559,7 +569,7 @@ impl ReFlags {
 /// A pattern ready to run: shared out of the [`RePatternCache`], or a still-live
 /// `re.Pattern` heap value (which callers keep alive with `defer_drop!`).
 enum ResolvedPattern {
-    /// Compiled from a `str` pattern and shared (`Rc`) with the pattern cache
+    /// Compiled from source and shared (`Rc`) with the pattern cache
     /// (or uncached when its compiled form exceeds [`CACHED_SIZE_LIMIT`]).
     Cached(Rc<RePattern>),
     /// A live `re.Pattern` heap value (always a `Value::Ref` to
@@ -628,18 +638,19 @@ impl RePatternCache {
     /// a miss. Nothing is retained for a compile error, or for a pattern over
     /// [`CACHED_PATTERN_LIMIT`] / [`CACHED_SIZE_LIMIT`] — those compile uncached. The
     /// backing store is allocated here, on the first cacheable call.
-    fn get_or_compile(&mut self, pattern: &str, flags: u16) -> RunResult<Rc<RePattern>> {
+    fn get_or_compile(&mut self, pattern: ReText, flags: u16) -> RunResult<Rc<RePattern>> {
+        let source = pattern.as_input();
         // Checked before the store is touched, so a run that only ever uses
         // oversized patterns never allocates the slots at all.
-        if pattern.len() > CACHED_PATTERN_LIMIT {
-            return Ok(Rc::new(RePattern::compile(pattern.to_owned(), flags)?));
+        if source.len() > CACHED_PATTERN_LIMIT {
+            return Ok(Rc::new(RePattern::compile(pattern, flags)?));
         }
 
         let (entries, hash_builder) = self
             .0
             .get_or_insert_with(|| (vec![None; CACHE_CAPACITY].into_boxed_slice(), RandomState::default()));
 
-        let hash = hash_builder.hash_one((pattern, flags));
+        let hash = hash_builder.hash_one((source, flags));
         // `hash % CACHE_CAPACITY` is < CACHE_CAPACITY, so it always fits usize.
         let hash_index = usize::try_from(hash % CACHE_CAPACITY as u64).expect("index < CACHE_CAPACITY");
 
@@ -649,7 +660,7 @@ impl RePatternCache {
         for index in hash_index..hash_index + 5 {
             match entries.get(index) {
                 Some(Some((entry_hash, compiled))) => {
-                    if *entry_hash == hash && compiled.is_compiled_from(pattern, flags) {
+                    if *entry_hash == hash && compiled.is_compiled_from(source, flags) {
                         return Ok(Rc::clone(compiled));
                     }
                 }
@@ -667,10 +678,10 @@ impl RePatternCache {
         // compiled regex. A valid pattern that compiles past the cap is
         // recompiled at default limits and returned uncached — it still works,
         // just recompiled per call.
-        let compiled = match RePattern::compile_bounded(pattern.to_owned(), flags, CACHED_SIZE_LIMIT) {
+        let compiled = match RePattern::compile_bounded(pattern.clone(), flags, CACHED_SIZE_LIMIT) {
             Ok(compiled) => compiled,
             Err(BoundedCompileError::TooBig) => {
-                return Ok(Rc::new(RePattern::compile(pattern.to_owned(), flags)?));
+                return Ok(Rc::new(RePattern::compile(pattern, flags)?));
             }
             Err(BoundedCompileError::Invalid(err)) => return Err(err),
         };
@@ -708,8 +719,8 @@ fn resolve_pattern(pattern: Value, flags: Value, vm: &mut VM<'_>) -> RunResult<R
         }
     };
     match pattern {
-        PatternArg::Str(pattern) => Ok(ResolvedPattern::Cached(
-            vm.re_pattern_cache.get_or_compile(&pattern, flags.get())?,
+        PatternArg::Source(pattern) => Ok(ResolvedPattern::Cached(
+            vm.re_pattern_cache.get_or_compile(pattern, flags.get())?,
         )),
         PatternArg::Compiled(value) => {
             if flags.get() == 0 {
@@ -734,9 +745,9 @@ fn call_finditer(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(string, vm);
     let resolved = resolve_pattern(pattern, flags, vm)?;
     defer_drop!(resolved, vm);
-    resolved
-        .get(vm.heap)
-        .finditer(string, subject_str(string, vm)?, vm.heap)
+    let pattern = resolved.get(vm.heap);
+    pattern.require_text_pattern("finditer")?;
+    pattern.finditer(string, subject_str(string, vm)?, vm.heap)
 }
 
 /// `re.escape(pattern)` — backslash-escape regex metacharacters and whitespace,
@@ -811,11 +822,15 @@ mod tests {
             .map_or(0, |(entries, _)| entries.iter().filter(|e| e.is_some()).count())
     }
 
+    fn compile_text(cache: &mut RePatternCache, pattern: &str, flags: u16) -> RunResult<Rc<RePattern>> {
+        cache.get_or_compile(ReText::Str(pattern.to_owned()), flags)
+    }
+
     #[test]
     fn hit_shares_one_entry() {
         let mut cache = RePatternCache::default();
-        let first = cache.get_or_compile(r"\s+", 0).unwrap();
-        let second = cache.get_or_compile(r"\s+", 0).unwrap();
+        let first = compile_text(&mut cache, r"\s+", 0).unwrap();
+        let second = compile_text(&mut cache, r"\s+", 0).unwrap();
         // A hit returns the *same* compiled pattern, not a recompile.
         assert!(Rc::ptr_eq(&first, &second));
         assert_eq!(occupied(&cache), 1);
@@ -824,8 +839,8 @@ mod tests {
     #[test]
     fn flags_key_the_entry() {
         let mut cache = RePatternCache::default();
-        let plain = cache.get_or_compile("abc", 0).unwrap();
-        let ignorecase = cache.get_or_compile("abc", IGNORECASE).unwrap();
+        let plain = compile_text(&mut cache, "abc", 0).unwrap();
+        let ignorecase = compile_text(&mut cache, "abc", IGNORECASE).unwrap();
         // Same pattern text but different flags are distinct entries.
         assert!(!Rc::ptr_eq(&plain, &ignorecase));
         assert_eq!(occupied(&cache), 2);
@@ -835,7 +850,7 @@ mod tests {
     fn compile_error_caches_nothing() {
         let mut cache = RePatternCache::default();
         // Unbalanced parenthesis fails to compile.
-        assert!(cache.get_or_compile("(", 0).is_err());
+        assert!(compile_text(&mut cache, "(", 0).is_err());
         assert_eq!(occupied(&cache), 0);
     }
 
@@ -846,8 +861,8 @@ mod tests {
     #[test]
     fn oversize_pattern_compiles_but_is_not_retained() {
         let mut cache = RePatternCache::default();
-        let first = cache.get_or_compile(OVERSIZE_PATTERN, 0).unwrap();
-        let second = cache.get_or_compile(OVERSIZE_PATTERN, 0).unwrap();
+        let first = compile_text(&mut cache, OVERSIZE_PATTERN, 0).unwrap();
+        let second = compile_text(&mut cache, OVERSIZE_PATTERN, 0).unwrap();
         // Both calls succeed but nothing is retained: each call recompiles.
         assert!(!Rc::ptr_eq(&first, &second));
         assert_eq!(occupied(&cache), 0);
@@ -856,9 +871,9 @@ mod tests {
     #[test]
     fn oversize_pattern_does_not_disturb_cached_entries() {
         let mut cache = RePatternCache::default();
-        let small = cache.get_or_compile("abc", 0).unwrap();
-        cache.get_or_compile(OVERSIZE_PATTERN, 0).unwrap();
-        let again = cache.get_or_compile("abc", 0).unwrap();
+        let small = compile_text(&mut cache, "abc", 0).unwrap();
+        compile_text(&mut cache, OVERSIZE_PATTERN, 0).unwrap();
+        let again = compile_text(&mut cache, "abc", 0).unwrap();
         // The small pattern's entry survives the uncached oversize compile.
         assert!(Rc::ptr_eq(&small, &again));
         assert_eq!(occupied(&cache), 1);
@@ -875,8 +890,8 @@ mod tests {
     fn long_source_pattern_compiles_but_is_not_retained() {
         let mut cache = RePatternCache::default();
         let pattern = long_source_pattern();
-        let first = cache.get_or_compile(&pattern, 0).unwrap();
-        let second = cache.get_or_compile(&pattern, 0).unwrap();
+        let first = compile_text(&mut cache, &pattern, 0).unwrap();
+        let second = compile_text(&mut cache, &pattern, 0).unwrap();
         // Both calls succeed but nothing is retained: each call recompiles.
         assert!(!Rc::ptr_eq(&first, &second));
         assert_eq!(occupied(&cache), 0);
@@ -885,9 +900,9 @@ mod tests {
     #[test]
     fn long_source_pattern_does_not_disturb_cached_entries() {
         let mut cache = RePatternCache::default();
-        let small = cache.get_or_compile("abc", 0).unwrap();
-        cache.get_or_compile(&long_source_pattern(), 0).unwrap();
-        let again = cache.get_or_compile("abc", 0).unwrap();
+        let small = compile_text(&mut cache, "abc", 0).unwrap();
+        compile_text(&mut cache, &long_source_pattern(), 0).unwrap();
+        let again = compile_text(&mut cache, "abc", 0).unwrap();
         // The small pattern's entry survives the uncached long-source compile.
         assert!(Rc::ptr_eq(&small, &again));
         assert_eq!(occupied(&cache), 1);
@@ -899,7 +914,7 @@ mod tests {
         // Far more distinct patterns than slots: LRU-on-collision must keep
         // the occupied count hard-bounded rather than growing unboundedly.
         for i in 0..CACHE_CAPACITY * 4 {
-            cache.get_or_compile(&format!("pat{i}"), 0).unwrap();
+            compile_text(&mut cache, &format!("pat{i}"), 0).unwrap();
         }
         assert!(occupied(&cache) <= CACHE_CAPACITY);
     }

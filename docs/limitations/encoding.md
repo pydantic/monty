@@ -9,6 +9,7 @@ registry, so everything below applies to them too.
 
 - `utf-8`
 - `ascii`
+- `latin-1` (`iso-8859-1`)
 - `utf-16`, `utf-16-le`, `utf-16-be`
 - `utf-32`, `utf-32-le`, `utf-32-be`
 
@@ -16,7 +17,7 @@ Names are normalized like CPython (case-insensitive; runs of spaces/hyphens
 collapse to `_`) and each codec's CPython aliases are recognized (`utf8`,
 `u16`, `646`, `us-ascii`, ...). Any other encoding name raises
 `LookupError: unknown encoding: {name}`, including names CPython recognizes
-(`latin-1`, `cp1252`, `iso-8859-1`, `big5`, ...).
+(`cp1252`, `big5`, ...).
 
 ## Byte order for bare `utf-16` / `utf-32`
 

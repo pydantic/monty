@@ -1,8 +1,8 @@
 //! Text codec registry and implementations backing `str.encode()` and
 //! `bytes.decode()`.
 //!
-//! Monty implements a fixed, small set of codecs (UTF-8, ASCII, UTF-16 and
-//! UTF-32 families) rather than CPython's full `codecs`/`encodings` registry.
+//! Monty implements a fixed, small set of codecs (UTF-8, ASCII, Latin-1,
+//! and the UTF-16/32 families) rather than CPython's full `codecs`/`encodings` registry.
 //! [`Codec::find`] resolves user-supplied encoding names using CPython's
 //! normalization rules and alias table; [`Codec::encode`] / [`Codec::decode`]
 //! implement the conversions with CPython-matching error handler semantics
@@ -22,7 +22,7 @@ pub use monty_types::utf8_error_reason;
 
 use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    string_builder::StringBuilder,
+    string_builder::BytesBuilder,
 };
 
 /// A supported text codec, resolved from a user-supplied encoding name via
@@ -31,6 +31,7 @@ use crate::{
 pub(crate) enum Codec {
     Utf8,
     Ascii,
+    Latin1,
     /// `None` is the bare `utf-16` variant: encode prepends a BOM, decode
     /// consumes one (defaulting to little-endian when absent — see
     /// `limitations/encoding.md`). `Some` variants never touch a BOM.
@@ -58,6 +59,7 @@ impl Codec {
         match name {
             "utf-8" | "utf8" => Some(Self::Utf8),
             "ascii" => Some(Self::Ascii),
+            "latin-1" | "latin1" | "ISO-8859-1" => Some(Self::Latin1),
             "utf-16" => Some(Self::Utf16(None)),
             "utf-32" => Some(Self::Utf32(None)),
             _ => Self::find_normalized(name),
@@ -71,6 +73,8 @@ impl Codec {
             "utf_8" | "utf8" | "utf" | "u8" | "cp65001" | "utf8_ucs2" | "utf8_ucs4" => Some(Self::Utf8),
             "ascii" | "646" | "us" | "us_ascii" | "cp367" | "ibm367" | "csascii" | "ansi_x3.4_1968"
             | "ansi_x3_4_1968" | "ansi_x3.4_1986" | "iso646_us" | "iso_646.irv_1991" | "iso_ir_6" => Some(Self::Ascii),
+            "latin_1" | "latin1" | "latin" | "l1" | "8859" | "cp819" | "csisolatin1" | "ibm819" | "iso8859"
+            | "iso8859_1" | "iso_8859_1" | "iso_8859_1_1987" | "iso_ir_100" => Some(Self::Latin1),
             "utf_16" | "u16" | "utf16" => Some(Self::Utf16(None)),
             "utf_16_le" | "utf_16le" | "unicodelittleunmarked" => Some(Self::Utf16(Some(Endian::Little))),
             "utf_16_be" | "utf_16be" | "unicodebigunmarked" => Some(Self::Utf16(Some(Endian::Big))),
@@ -83,19 +87,15 @@ impl Codec {
 
     /// Encodes `s` to bytes. The `errors` handler name is validated lazily —
     /// only consulted when a character actually can't be encoded, matching
-    /// CPython's `codecs.lookup_error` semantics. Only the ASCII codec can
-    /// fail: UTF-8 is the native representation, and every Monty string is
-    /// encodable as UTF-16/32 (no lone surrogates can exist).
-    ///
-    /// Like [`Codec::decode`], output is bounded by a small constant multiple
-    /// of the (already resource-tracked) input — ≤2x for UTF-16, ≤4x for
-    /// UTF-32, plus a BOM — so those paths need no tracked builder; only the
-    /// ASCII error handlers can amplify further, and they build through the
-    /// tracker.
+    /// CPython's `codecs.lookup_error` semantics. Only ASCII and Latin-1 can
+    /// fail: all Monty strings are encodable as UTF-8/16/32.
+    /// The ASCII and Latin-1 error handlers can amplify the input, so they
+    /// build through the resource tracker.
     pub(crate) fn encode(self, s: &str, errors: &str, tracker: &ResourceTracker) -> RunResult<Vec<u8>> {
         match self {
             Self::Utf8 => Ok(s.as_bytes().to_vec()),
-            Self::Ascii => encode_ascii(s, errors, tracker),
+            Self::Ascii => encode_single_byte(s, errors, tracker, "ascii", 0x7f, "ordinal not in range(128)"),
+            Self::Latin1 => encode_single_byte(s, errors, tracker, "latin-1", 0xff, "ordinal not in range(256)"),
             // Bare utf-16/utf-32 write a BOM and use little-endian (CPython
             // uses the platform's native order — identical on all LE hosts).
             Self::Utf16(endian) => Ok(encode_utf16(s, endian.unwrap_or(Endian::Little), endian.is_none())),
@@ -114,6 +114,7 @@ impl Codec {
         match self {
             Self::Utf8 => decode_utf8(bytes, errors),
             Self::Ascii => decode_ascii(bytes, errors),
+            Self::Latin1 => Ok(bytes.iter().copied().map(char::from).collect()),
             Self::Utf16(Some(endian)) => decode_utf16(bytes, 0, endian, errors),
             Self::Utf32(Some(endian)) => decode_utf32(bytes, 0, endian, errors),
             // The bare variants consume a leading BOM and adopt its byte
@@ -267,56 +268,48 @@ fn handle_decode_error(
 }
 
 // ============================================================================
-// ASCII
+// Single-byte codecs
 // ============================================================================
 
-/// Encodes `s` as ASCII bytes, applying `errors` to any non-ASCII characters.
-///
-/// `ignore`, `replace`, `backslashreplace`, `xmlcharrefreplace`, and
-/// `namereplace` substitute, while `strict`, `surrogateescape`, and
-/// `surrogatepass` raise `UnicodeEncodeError` — the latter two only
-/// special-case lone surrogates, which a Monty string (strict UTF-8) can
-/// never contain, so they re-raise exactly like `strict`, matching CPython.
-///
-/// Builds into a tracker-protected [`StringBuilder`] rather than a `Vec<u8>` —
-/// every byte pushed is itself valid ASCII, so the accumulator is always valid
-/// UTF-8 and `into_bytes()` at the end is free. The tracking matters because
-/// `namereplace` amplifies a single character into up to ~90 bytes
-/// (`\N{LONGEST UNICODE NAME...}`), so an untracked accumulator could grow
-/// far past the memory limit before the final allocation was checked.
-fn encode_ascii(s: &str, errors: &str, tracker: &ResourceTracker) -> RunResult<Vec<u8>> {
-    // Fast path for the overwhelmingly common all-ASCII case: `is_ascii` is
-    // SIMD-vectorized in std, and the output is byte-for-byte the (already
-    // tracked) input, so a bulk copy needs no StringBuilder.
+/// Encodes ASCII or Latin-1, applying `errors` to code points above `max`.
+fn encode_single_byte(
+    s: &str,
+    errors: &str,
+    tracker: &ResourceTracker,
+    encoding: &str,
+    max: u32,
+    reason: &str,
+) -> RunResult<Vec<u8>> {
+    // Both codecs leave ASCII unchanged.
     if s.is_ascii() {
         return Ok(s.as_bytes().to_vec());
     }
     let mut handler = LazyHandler::new(errors);
-    let mut out = StringBuilder::with_capacity(s.len(), tracker)?;
+    let mut out = BytesBuilder::with_capacity(s.len(), tracker)?;
+    let mut escape = String::new();
     let mut chars = s.chars().enumerate().peekable();
     while let Some((idx, c)) = chars.next() {
-        if c.is_ascii() {
-            out.push(c)?;
+        if u32::from(c) <= max {
+            let byte = u8::try_from(c).expect("single-byte codec limit fits in u8");
+            out.push_slice(&[byte])?;
             continue;
         }
         match handler.get()? {
             ErrorHandler::Ignore => {}
-            ErrorHandler::Replace => out.push('?')?,
-            // A failed `write!` stashes the tracker error on the builder and
-            // short-circuits later writes; `finish_raw` below surfaces it.
-            ErrorHandler::Backslashreplace => {
-                let _ = write_backslash_escape(&mut out, c);
-            }
-            ErrorHandler::Xmlcharrefreplace => {
-                let _ = write!(out, "&#{};", c as u32);
-            }
-            ErrorHandler::Namereplace => {
-                // Characters without a Unicode name (e.g. C1 controls) fall
-                // back to backslash escapes, matching CPython.
-                let _ = match unicode_names2::name(c) {
-                    Some(name) => write!(out, "\\N{{{name}}}"),
-                    None => write_backslash_escape(&mut out, c),
-                };
+            ErrorHandler::Replace => out.push_slice(b"?")?,
+            handler
+            @ (ErrorHandler::Backslashreplace | ErrorHandler::Xmlcharrefreplace | ErrorHandler::Namereplace) => {
+                escape.clear();
+                match handler {
+                    ErrorHandler::Xmlcharrefreplace => write!(escape, "&#{};", u32::from(c)),
+                    ErrorHandler::Namereplace => match unicode_names2::name(c) {
+                        Some(name) => write!(escape, "\\N{{{name}}}"),
+                        None => write_backslash_escape(&mut escape, c),
+                    },
+                    _ => write_backslash_escape(&mut escape, c),
+                }
+                .expect("writing to a String is infallible");
+                out.push_slice(escape.as_bytes())?;
             }
             // surrogateescape/surrogatepass only substitute lone surrogates,
             // which can't occur here, so they re-raise like strict.
@@ -326,30 +319,23 @@ fn encode_ascii(s: &str, errors: &str, tracker: &ResourceTracker) -> RunResult<V
                 // one `position start-end` range.
                 let mut end = idx + 1;
                 while let Some(&(_, next_c)) = chars.peek() {
-                    if next_c.is_ascii() {
+                    if u32::from(next_c) <= max {
                         break;
                     }
                     chars.next();
                     end += 1;
                 }
-                return Err(ExcType::unicode_encode_error(
-                    "ascii",
-                    s,
-                    c,
-                    idx,
-                    end,
-                    "ordinal not in range(128)",
-                ));
+                return Err(ExcType::unicode_encode_error(encoding, s, c, idx, end, reason));
             }
         }
     }
-    Ok(out.finish_raw()?.into_bytes())
+    Ok(out.finish())
 }
 
 /// Writes the `backslashreplace` escape for a non-ASCII character: `\xNN` for
 /// codepoints <= 0xFF, `\uNNNN` up to the BMP, `\UNNNNNNNN` beyond. Shared by
 /// the `backslashreplace` handler and `namereplace`'s unnamed-character
-/// fallback in [`encode_ascii`].
+/// fallback in [`encode_single_byte`].
 fn write_backslash_escape(out: &mut impl fmt::Write, c: char) -> fmt::Result {
     let code = c as u32;
     if code <= 0xFF {

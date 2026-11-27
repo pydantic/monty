@@ -26,11 +26,9 @@ with `re.compile(p) is p` and the `cannot process flags argument with a compiled
 signature/type error messages
 match CPython's, with these divergences:
 
-- `bytes` patterns and subjects are not supported (Monty has no bytes
-    matching). A bytes *subject* raises CPython's mixed-types message
-    (`cannot use a string pattern on a bytes-like object`); a bytes *pattern*
-    raises `first argument must be string or compiled pattern`, whereas
-    CPython supports bytes patterns.
+- `bytes` patterns and subjects are supported by `compile`, `search`, `match`, and `fullmatch`.
+    `findall`, `finditer`, `split`, and `sub` raise `NotImplementedError` for a bytes pattern.
+    `escape` only accepts `str`.
 - A non-str `repl` for `re.sub` raises `callable replacement is not yet supported in re.sub()`; CPython raises
     `decoding to str: need a bytes-like object, int found`-style errors for non-callable non-strings.
     Like CPython, the check runs even when a negative `count` means zero
@@ -54,9 +52,10 @@ match CPython's, with these divergences:
 Supported: `NOFLAG`, `IGNORECASE` / `I`, `MULTILINE` / `M`, `DOTALL` / `S`,
 `VERBOSE` / `X`, `ASCII` / `A`.
 
-`ASCII` is accepted but has no effect: `\w`, `\d` and `\s` stay Unicode-aware, with or without `(?a)`.
+`ASCII` is accepted but has no effect on `str` patterns: `\w`, `\d` and `\s` stay Unicode-aware, with or without `(?a)`.
 
-Not implemented: `LOCALE` / `L`, `DEBUG`, `UNICODE` / `U` (Unicode is always on).
+Not implemented: `LOCALE` / `L`, `DEBUG`, `UNICODE` / `U`.
+`str` patterns are always Unicode-aware; bytes patterns always use ASCII character classes and case folding.
 Unknown flag bits within the accepted `u16` range are
 silently accepted; bits above that range are rejected by the integer range
 check.
@@ -66,13 +65,16 @@ check.
 Attributes: `pattern`, `flags`.
 Methods: `search`, `match`, `fullmatch`, `findall`, `sub`, `split`,
 `finditer`.
+The methods must be called directly; reading one as a bound method (`match = p.match`) raises `AttributeError`.
 
 Not implemented: `subn`, `groups` (count), `groupindex` (named-group
 mapping), `scanner`. The `pos` / `endpos` arguments accepted by
 `Pattern.search(string, pos, endpos)` etc. in CPython are **not** supported.
 
-A non-str subject passed to a Pattern *method* raises `expected string, not {type}` rather than CPython's
-`expected string or bytes-like object, got '{type}'`. The module-level functions match CPython's wording.
+Pattern methods report `expected string, not {type}` for unsupported subject types, rather than CPython's
+`expected string or bytes-like object, got '{type}'`.
+For `search`, `match`, and `fullmatch`, mixed `str`/`bytes` inputs raise CPython's mixed-type errors.
+The module-level functions use CPython's wording for unsupported subject types.
 
 Missing arguments to `Pattern.search`, `match`, `fullmatch`, `findall`, and `finditer` use Monty's native arity wording, e.g.
 `Pattern.search() takes exactly one argument (0 given)`, rather than CPython's
@@ -104,7 +106,7 @@ These valid CPython patterns raise `re.PatternError` with a message from `fancy-
 Groups nested 64 or more deep raise `re.PatternError: pattern too deeply nested`; CPython accepts a few hundred
 levels.
 
-`\s` follows Unicode's `White_Space` property, so it does not match `\x1c`–`\x1f`, which CPython's `\s` does.
-Case-insensitive backreferences compare by Unicode case folding, so `(?i)(σ)\1` matches `Σς`, which CPython does not.
+In `str` patterns, `\s` follows Unicode's `White_Space` property, so it does not match `\x1c`–`\x1f`, which CPython's `\s` does.
+Case-insensitive backreferences in `str` patterns compare by Unicode case folding, so `(?i)(σ)\1` matches `Σς`, which CPython does not.
 
 An escape for a surrogate (`\ud800`) never matches, since Monty strings cannot contain surrogates.

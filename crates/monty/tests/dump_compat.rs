@@ -786,6 +786,42 @@ True",
     assert_eq!(checked, MontyObject::bool(true));
 }
 
+#[test]
+fn bytes_regexes_survive_a_reload() {
+    let mut repl = MontyRepl::new("regex.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        r"
+import re
+pattern = re.compile(b'(?P<high>\xff)(!)?')
+subject = bytes([97, 255])
+match = pattern.search(subject)
+valid_utf8 = re.compile(b'(ab)').match(b'ab')
+",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    let bytes = dump("regex.py", None, &[], SessionRef::Idle(&repl)).unwrap();
+    let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else {
+        panic!("dump was idle");
+    };
+    restored
+        .feed_run(
+            r"
+assert pattern.pattern == b'(?P<high>\xff)(!)?'
+assert pattern.fullmatch(b'\xff!').groups() == (b'\xff', b'!')
+assert match.string is subject
+assert match.group() == b'\xff'
+assert match.groupdict() == {'high': b'\xff'}
+assert match.span() == (1, 2)
+assert valid_utf8.groups() == (b'ab',)
+",
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+}
+
 /// The fixture for the current `DUMP_VERSION`; the name carries the version so
 /// a bump creates a new fixture while older supported fixtures remain for compatibility tests.
 fn fixture_path() -> PathBuf {

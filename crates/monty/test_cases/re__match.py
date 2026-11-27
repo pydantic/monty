@@ -169,3 +169,55 @@ assert m.span(3) == (-1, -1)
 assert m.start(2) == 16
 assert m.end(2) == 24
 assert repr(m) == "<re.Match object; span=(9, 24), match='müller@pydantic'>"
+
+# === Bytes patterns and subjects ===
+assert re.fullmatch('.', 'é').group() == 'é'
+assert re.fullmatch(b'.', b'\xc3\xa9') is None
+assert re.fullmatch(b'..', b'\xc3\xa9').group() == b'\xc3\xa9'
+assert re.match(b'\xff', b'\xc3\xbf') is None
+assert re.match(b'z|\xffz', b'\xffz').group() == b'\xffz'
+assert re.fullmatch(b'\xff|\xffz', b'\xffz').group() == b'\xffz'
+assert re.fullmatch(rb'[\x80-\xff]+', b'\x80\x90\xff').span() == (0, 3)
+assert re.fullmatch(rb'(\377)\1', b'\xff\xff').group(1) == b'\xff'
+assert re.search(rb'\b\w+\b', b'\xffABC\xe9').group() == b'ABC'
+assert re.fullmatch(rb'\s+', b'\t\v\r ') is not None
+assert re.fullmatch(rb'\s+', b'\xa0') is None
+assert re.fullmatch(rb'\d', b'\xb2') is None
+assert re.fullmatch(b'a\xe9', b'A\xe9', re.IGNORECASE) is not None
+assert re.fullmatch(b'a\xe9', b'A\xc9', re.IGNORECASE) is None
+
+p = re.compile(b'(?P<hi>[\x80-\xff])(?P<optional>!)?')
+assert p.pattern == b'(?P<hi>[\x80-\xff])(?P<optional>!)?'
+assert p.flags == 0
+assert re.compile(p) is p
+subject = bytes([97, 45, 255]) + b'rest'
+m = p.search(subject)
+assert m is not None
+assert p.match(subject) is None
+assert p.fullmatch(b'\xff!').groups() == (b'\xff', b'!')
+assert m.string is subject
+assert m.group() == b'\xff'
+assert m.group('hi', 'optional') == (b'\xff', None)
+assert m.groups() == (b'\xff', None)
+assert m.groupdict() == {'hi': b'\xff', 'optional': None}
+assert m.groupdict(b'other') == {'hi': b'\xff', 'optional': b'other'}
+assert m.span() == (2, 3)
+assert m.span(1) == (2, 3)
+assert m.start(1) == 2
+assert m.end(1) == 3
+assert m.span(2) == (-1, -1)
+assert repr(m) == "<re.Match object; span=(2, 3), match=b'\\xff'>"
+assert repr(re.compile(b'\xff')) == "re.compile(b'\\xff')"
+
+for call in (lambda: re.match(b'.', 'x'), lambda: re.compile(b'.').fullmatch('x')):
+    try:
+        call()
+        assert False, 'expected TypeError for a string subject with a bytes pattern'
+    except TypeError as e:
+        assert str(e) == 'cannot use a bytes pattern on a string-like object'
+for call in (lambda: re.match('.', b'x'), lambda: re.compile('.').search(b'x')):
+    try:
+        call()
+        assert False, 'expected TypeError for a bytes subject with a string pattern'
+    except TypeError as e:
+        assert str(e) == 'cannot use a string pattern on a bytes-like object'
