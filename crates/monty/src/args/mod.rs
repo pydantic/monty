@@ -6,7 +6,7 @@ use std::{mem, slice, vec::IntoIter};
 
 pub(crate) use bind_native::{Bound, ErrorFamily, Param, ParamKind, ParamSpec, bind};
 pub(crate) use bind_python::Signature;
-pub(crate) use from_value::{ArgErrCtx, FromValue, FromValueFail, LaxBool, StrArg, is_long_int, long_int};
+pub(crate) use from_value::{ArgErrCtx, FromValue, FromValueFail, LaxBool, StrArg};
 pub(crate) use monty_macros::FromArgs;
 use monty_types::{
     CallArgs,
@@ -63,7 +63,7 @@ impl ArgValues {
 
     /// Whether any keyword argument was passed.
     #[must_use]
-    fn has_kwargs(&self) -> bool {
+    pub(crate) fn has_kwargs(&self) -> bool {
         match self {
             Self::Empty | Self::One(_) | Self::Two(_, _) => false,
             Self::Kwargs(kwargs) | Self::ArgsKargs { kwargs, .. } => !kwargs.is_empty(),

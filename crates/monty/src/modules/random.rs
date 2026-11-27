@@ -31,12 +31,12 @@ use crate::{
     bytecode::{CallResult, VM, unpack_exact},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapReadOutput},
+    heap::{ContainsHeap, DropGuard, DropWithContext},
     intern::StaticStrings,
     modules::ModuleFunctions,
     os_dispatch::{PostConversionEffect, urandom_reply_error},
     types::{
-        List, LongInt, Module, PyTrait, Type,
+        List, LongInt, Module, PyTrait, Tuple, Type,
         bytes::allocate_bytes,
         iter::collect_owned_iterable,
         long_int::bigint_to_f64_checked,
@@ -105,15 +105,6 @@ const RANDOM_FUNCTIONS: &[(StaticStrings, RandomFunctions)] = &[
     (StaticStrings::Weibullvariate, RandomFunctions::Weibullvariate),
     (StaticStrings::Binomialvariate, RandomFunctions::Binomialvariate),
 ];
-
-impl RandomFunctions {
-    /// The function a `random.Random` attribute name refers to, if any.
-    pub(crate) fn from_static_string(name: StaticStrings) -> Option<Self> {
-        RANDOM_FUNCTIONS
-            .iter()
-            .find_map(|(attr, function)| (*attr == name).then_some(*function))
-    }
-}
 
 /// Creates the `random` module.
 pub fn create_module(vm: &mut VM<'_>) -> Module {
@@ -217,7 +208,7 @@ fn seed_from_reply(
     vm: &mut VM<'_>,
 ) -> RunResult<Value> {
     defer_drop!(reply, vm);
-    let seeded = match value_as_bytes(reply, vm) {
+    let seeded = match reply.as_bytes(vm) {
         Some(bytes) if bytes.len() == SEED_BYTES => Ok(Mt19937::from_entropy(bytes)),
         Some(bytes) => Err(urandom_reply_error(Ok(bytes.len()), SEED_BYTES)),
         None => Err(urandom_reply_error(Err(&reply.py_type_name(vm)), SEED_BYTES)),
@@ -239,18 +230,6 @@ fn seed_from_reply(
                 unreachable!("a seeded generator never suspends")
             }
         },
-    }
-}
-
-/// Borrows the bytes behind a `bytes` value, interned or heap-allocated.
-fn value_as_bytes<'a>(value: &'a Value, vm: &'a VM<'_>) -> Option<&'a [u8]> {
-    match value {
-        Value::InternBytes(id) => Some(vm.interns.get_bytes(*id)),
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Bytes(bytes) => Some(bytes.as_slice()),
-            _ => None,
-        },
-        _ => None,
     }
 }
 
@@ -407,14 +386,7 @@ fn setstate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult
     let entries: Vec<Value> = if version == 2 {
         reduce_state_words(internal, vm)?
     } else {
-        let tuple = match internal {
-            Value::Ref(id) => match vm.heap.get(*id) {
-                HeapData::Tuple(tuple) => Some(tuple),
-                _ => None,
-            },
-            _ => None,
-        };
-        let Some(tuple) = tuple else {
+        let Some(tuple) = internal.get_as::<Tuple>(vm.heap) else {
             return Err(ExcType::type_error("state vector must be a tuple"));
         };
         // Size first, so an oversized tuple is rejected before it is copied.
@@ -760,9 +732,7 @@ fn shuffle(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<
     let ShuffleArgs { x } = ShuffleArgs::from_args(args, vm)?;
     defer_drop_mut!(x, vm);
     let len = len_of(x, vm)?;
-    if let Value::Ref(id) = x
-        && let HeapReadOutput::List(list) = vm.heap.read(*id)
-    {
+    if let Some(list) = x.read_as::<List>(vm.heap) {
         return target.with_generator(vm, |random, vm| {
             for i in (1..len).rev() {
                 vm.heap.tracker.check_time_every(i)?;
@@ -1642,5 +1612,22 @@ fn to_float(value: &Value, vm: &VM<'_>) -> RunResult<f64> {
                 value.py_type_name(vm)
             ))),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use super::RANDOM_FUNCTIONS;
+    use crate::{py_attrs::PyAttrs, types::random::PyRandomImpl};
+
+    #[test]
+    fn module_and_instance_method_names_match() {
+        let module_names: HashSet<_> = RANDOM_FUNCTIONS.iter().map(|(name, _)| *name).collect();
+        let methods = <PyRandomImpl as PyAttrs<'static>>::TABLE.entries;
+        let method_names: HashSet<_> = methods.iter().map(|(name, _)| *name).collect();
+        assert_eq!(RANDOM_FUNCTIONS.len(), methods.len());
+        assert_eq!(module_names, method_names);
     }
 }

@@ -11,7 +11,7 @@ daylight: int
 tzname: tuple[str, str]
 
 @final
-class _StructTime(tuple[int | str | None, ...]):
+class _StructTime(tuple[int, int, int, int, int, int, int, int, int, int | None, str | None]):
     """What `gmtime()`, `localtime()` and `strptime()` return.
 
     Unlike CPython's, `tm_gmtoff` and `tm_zone` are tuple items too, so `len()`

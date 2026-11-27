@@ -30,7 +30,7 @@ bad_types.py:140:7: error[unresolved-attribute] Module `sys` has no member `miss
 bad_types.py:141:1: error[unresolved-attribute] Module `hashlib` has no member `file_digest`
 bad_types.py:142:16: error[invalid-argument-type] Argument to function `sha256` is incorrect: Expected `bytes`, found `Literal["text"]`
 bad_types.py:143:15: error[invalid-argument-type] Argument to function `loads` is incorrect: Expected `str`, found `Literal[b"a = 1"]`
-bad_types.py:144:14: error[invalid-argument-type] Argument to function `load` is incorrect: Expected `SupportsRead[bytes]`, found `Literal["pyproject.toml"]`
+bad_types.py:144:14: error[invalid-argument-type] Argument to function `load` is incorrect: Expected `BinaryIO`, found `Literal["pyproject.toml"]`
 bad_types.py:145:24: error[unknown-argument] Argument `parse_float` does not match any known parameter of function `loads`
 bad_types.py:150:7: error[unresolved-attribute] Module `functools` has no member `CacheInfo`
 bad_types.py:160:18: error[invalid-argument-type] Argument to bound method `_lru_cache_wrapper.__call__` is incorrect: Expected `int`, found `Literal["nope"]`

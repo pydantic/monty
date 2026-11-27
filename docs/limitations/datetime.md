@@ -48,7 +48,8 @@ raises `hour must be in 0..23, not 25` there, and
 
 Constructor: `date(year, month, day)`.
 Attributes: `year`, `month`, `day`.
-Methods: `isoformat`, `strftime`, `replace`, `weekday`, `isoweekday`, `toordinal`.
+Methods: `isoformat`, `strftime`, `replace`, `weekday`, `isoweekday`, `toordinal`, `timetuple`.
+`timetuple()` returns a `struct_time`, which has 11 items rather than 9 (see [time.md](time.md)).
 
 Class methods supported: `today()`, `fromisoformat()`, `fromtimestamp()`, `fromordinal()`.
 `fromisocalendar()` is not implemented. `strptime()`, added in CPython 3.14, is not implemented
@@ -58,8 +59,6 @@ either.
 see "Reading the clock" below.
 `fromtimestamp()` reads the [session zone](#reading-the-clock) where CPython reads the host's.
 Its errors differ as `datetime.fromtimestamp()`'s do (below).
-`today()` and `fromisoformat()` can only be called on the class: `date(2020, 1, 1).today()` raises `AttributeError`.
-`fromtimestamp()` and `fromordinal()` also work on an instance.
 No class method can be read without calling it (see [builtins.md](builtins.md)).
 
 Constructor overflow wording on Windows: CPython's `i` converter goes
@@ -81,7 +80,8 @@ Attributes: `year`, `month`, `day`, `hour`, `minute`, `second`,
 `microsecond`, `tzinfo`.
 Methods: `isoformat(sep='T', timespec='auto')`, `strftime`, `replace`,
 `weekday`, `isoweekday`, `date`, `time`, `timetz`, `timestamp`, `toordinal`, `astimezone(tz=None)`,
-`utcoffset`, `tzname`, `dst`.
+`utcoffset`, `tzname`, `dst`, `timetuple`.
+`timetuple()` returns an 11-item `struct_time`, as `date.timetuple()` does.
 
 `astimezone()` and a naive `timestamp()` read the [session zone](#reading-the-clock) where CPython uses the host's;
 as in CPython the `tzinfo` `astimezone()` attaches is a `timezone` carrying the offset and abbreviation at that
@@ -95,10 +95,10 @@ and with the offset from before a DST gap: CPython's `fold=0` reading, since `fo
 `fold` is not readable: `datetime(2020, 1, 1, fold=1).fold` raises
 `AttributeError`, where CPython returns `1`.
 
-Class methods supported: `now(tz=None)`, `fromtimestamp(timestamp, tz=None)`, `fromordinal(ordinal)`,
+Class methods supported: `today()`, `now(tz=None)`, `fromtimestamp(timestamp, tz=None)`, `fromordinal(ordinal)`,
 `strptime(date_string, format)`, `fromisoformat(date_string)`, `combine(date, time, tzinfo=self.tzinfo)`.
 
-- `now()` reads the clock — see "Reading the clock" below.
+- `today()` and `now()` read the clock — see "Reading the clock" below.
 - Host-answered `now(tz)` reconstructs `tzinfo` from its offset and name, so it equals `tz` but is a different object.
     The default sandbox answer preserves identity, as CPython does.
 - `strptime()` validates `%Z` against UTC, GMT and the session zone's standard and daylight names, rather than the
@@ -120,11 +120,8 @@ Class methods supported: `now(tz=None)`, `fromtimestamp(timestamp, tz=None)`, `f
 - A `%z` offset whose minute and second separators disagree is rejected by both, but `'+0102:03'` (a colon before
     the seconds only) raises `ValueError: Inconsistent use of : in +0102:03` in Monty, where CPython leaks
     `ValueError: invalid literal for int() with base 10: ':0'`. The mirrored `'+01:0203'` matches CPython exactly.
-- `utcnow()` (the deprecated class method) and `today()` are not
-    implemented.
-- `now()`, `strptime()`, `fromisoformat()` and `combine()` can only be called on the class:
-    `datetime(2020, 1, 1).now()` raises `AttributeError`. `fromtimestamp()` and `fromordinal()` also work on an instance.
-    No class method can be read without calling it (see [builtins.md](builtins.md)).
+- `utcnow()` (the deprecated class method) is not implemented.
+- Class methods cannot be read without calling them (see [builtins.md](builtins.md)).
 - A naive `fromtimestamp()` reads the [session zone](#reading-the-clock) where CPython reads the host's.
     Microseconds round half to even and the `time_t`, `NaN` and year errors match CPython on Linux and macOS,
     except where the platform's `gmtime()` / `localtime()` fails and CPython raises `OSError`:
@@ -141,10 +138,11 @@ Class methods supported: `now(tz=None)`, `fromtimestamp(timestamp, tz=None)`, `f
 Subclassing `datetime` is not possible, since classes inherit only from
 classes defined in Python and `object` (see [classes.md](classes.md#inheritance)).
 
-`datetime.replace()`, `date.replace()` and `time.replace()` accept **only
+`datetime.replace()` and `time.replace()` accept **only
 keyword arguments** in Monty. CPython accepts positional args too
-(`d.replace(2025)` is valid in CPython 3.14). Calling with positionals
+(`dt.replace(2025)` is valid in CPython 3.14). Calling with positionals
 in Monty raises `TypeError: replace expected at most 0 arguments, got N`.
+`date.replace()` accepts positional or keyword year, month, and day arguments, including calls with a datetime receiver.
 
 ## Reading the clock
 
@@ -185,7 +183,8 @@ The `time` module's wall clocks share the `datetime` source, and its conversion 
 Constructor: `time(hour=0, minute=0, second=0, microsecond=0, tzinfo=None, *, fold=0)`.
 Attributes: `hour`, `minute`, `second`, `microsecond`, `tzinfo`, `fold`.
 Methods: `isoformat(timespec='auto')`, `strftime`, `replace`,
-`utcoffset`, `tzname`, `dst`.
+`utcoffset`, `tzname`, `dst`, `timetuple`.
+`timetuple()` returns an 11-item `struct_time`, as `date.timetuple()` does.
 Class methods: `fromisoformat(time_string)`. `strptime(string, format)`
 — which CPython added in 3.14 — is not implemented and raises `AttributeError`.
 

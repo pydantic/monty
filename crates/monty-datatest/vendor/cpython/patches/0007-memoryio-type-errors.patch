@@ -1,0 +1,407 @@
+Type-check test_memoryio against the stdlib stubs.
+Under TYPE_CHECKING, base the mixins on TestCase with the fixture attributes their subclasses set.
+Suppress missing API diagnostics in methods excluded from Monty runtime execution (bytearray, memoryview, BufferError, pickle, gc, weakref, array, sys.getrefcount, test.support helpers and the CPython-only setstate APIs).
+
+--- a/test/test_memoryio.py
++++ b/test/test_memoryio.py
+@@ -19,6 +19,17 @@
+     from test import support
+     import _pyio as pyio
+ 
++from typing import TYPE_CHECKING, Any
++if TYPE_CHECKING:
++    # The mixins run only as TestCase bases, with the fixtures their subclasses set.
++    class _MixinBase(unittest.TestCase):
++        ioclass: Any
++        buftype: Any
++        EOF: Any
++        UnsupportedOperation: type[Exception]
++else:
++    _MixinBase = object
++
+ class IntLike:
+     def __init__(self, num):
+         self._num = num
+@@ -26,7 +37,7 @@
+         return self._num
+     __int__ = __index__
+ 
+-class MemorySeekTestMixin:
++class MemorySeekTestMixin(_MixinBase):
+ 
+     def testInit(self):
+         buf = self.buftype("1234567890")
+@@ -78,7 +89,7 @@
+         self.assertEqual(10000, bytesIo.tell())
+ 
+ 
+-class MemoryTestMixin:
++class MemoryTestMixin(_MixinBase):
+ 
+     def test_detach(self):
+         buf = self.ioclass()
+@@ -458,7 +469,7 @@
+         # little hack to allow the PickleTestMemIO class to derive from
+         # self.ioclass without having to define all combinations explicitly on
+         # the module-level.
+-        import __main__
++        import __main__  # ty: ignore[import-not-found]
+         PickleTestMemIO.__module__ = '__main__'
+         PickleTestMemIO.__qualname__ = PickleTestMemIO.__name__
+         __main__.PickleTestMemIO = PickleTestMemIO
+@@ -467,7 +478,7 @@
+ 
+         # We only support pickle protocol 2 and onward since we use extended
+         # __reduce__ API of PEP 307 to provide pickling support.
+-        import pickle
++        import pickle  # ty: ignore[import-not-found]
+         for proto in range(2, pickle.HIGHEST_PROTOCOL + 1):
+             for obj in (memio, submemio):
+                 obj2 = pickle.loads(pickle.dumps(obj, protocol=proto))
+@@ -478,7 +489,7 @@
+                 obj2.close()
+                 with self.assertRaises(ValueError):
+                     pickle.dumps(obj2, proto)
+-        delattr(__main__, 'PickleTestMemIO')
++        delattr(__main__, 'PickleTestMemIO')  # ty: ignore[unresolved-reference]
+ 
+ 
+ class PyBytesIOTest(MemoryTestMixin, MemorySeekTestMixin, unittest.TestCase):
+@@ -500,11 +511,11 @@
+         self.assertEqual(bytes(buf), b"1234567890")
+         # Trying to change the size of the BytesIO while a buffer is exported
+         # raises a BufferError.
+-        with self.assertRaises(BufferError):
++        with self.assertRaises(BufferError):  # ty: ignore[unresolved-reference]
+             memio.write(b'x' * 100)
+-        with self.assertRaises(BufferError):
++        with self.assertRaises(BufferError):  # ty: ignore[unresolved-reference]
+             memio.truncate()
+-        with self.assertRaises(BufferError):
++        with self.assertRaises(BufferError):  # ty: ignore[unresolved-reference]
+             memio.close()
+         self.assertFalse(memio.closed)
+         # Mutating the buffer updates the BytesIO
+@@ -514,7 +525,7 @@
+         # After the buffer gets released, we can resize and close the BytesIO
+         # again
+         buf = None
+-        support.gc_collect()
++        support.gc_collect()  # ty: ignore[unresolved-attribute]
+         memio.truncate()
+         memio.close()
+         with self.assertRaises(ValueError):
+@@ -526,20 +537,20 @@
+         self.assertEqual(bytes(buf), b"")
+         # Trying to change the size of the BytesIO while a buffer is exported
+         # raises a BufferError.
+-        with self.assertRaises(BufferError):
++        with self.assertRaises(BufferError):  # ty: ignore[unresolved-reference]
+             memio.write(b'x')
+         buf2 = memio.getbuffer()
+-        with self.assertRaises(BufferError):
++        with self.assertRaises(BufferError):  # ty: ignore[unresolved-reference]
+             memio.write(b'x')
+         buf.release()
+-        with self.assertRaises(BufferError):
++        with self.assertRaises(BufferError):  # ty: ignore[unresolved-reference]
+             memio.write(b'x')
+         buf2.release()
+         memio.write(b'x')
+ 
+     def test_getbuffer_gc_collect(self):
+-        import gc
+-        import weakref
++        import gc  # ty: ignore[import-not-found]
++        import weakref  # ty: ignore[import-not-found]
+ 
+         memio = self.ioclass(b"1234567890")
+         buf = memio.getbuffer()
+@@ -549,12 +560,12 @@
+         a = [buf]
+         a.append(a)
+         # The Python implementation emits an unraisable exception.
+-        with support.catch_unraisable_exception():
++        with support.catch_unraisable_exception():  # ty: ignore[unresolved-attribute]
+             memio = None
+         buf = None
+         a = None
+         # The C implementation emits an unraisable exception.
+-        with support.catch_unraisable_exception():
++        with support.catch_unraisable_exception():  # ty: ignore[unresolved-attribute]
+             gc.collect()
+         self.assertIsNone(memiowr())
+         self.assertIsNone(bufwr())
+@@ -568,24 +579,24 @@
+         buf = self.buftype("1234567890")
+         memio = self.ioclass(buf)
+ 
+-        b = bytearray(b"hello")
++        b = bytearray(b"hello")  # ty: ignore[unresolved-reference]
+         self.assertEqual(memio.readinto(b), 5)
+         self.assertEqual(b, b"12345")
+         self.assertEqual(memio.readinto(b), 5)
+         self.assertEqual(b, b"67890")
+         self.assertEqual(memio.readinto(b), 0)
+         self.assertEqual(b, b"67890")
+-        b = bytearray(b"hello world")
++        b = bytearray(b"hello world")  # ty: ignore[unresolved-reference]
+         memio.seek(0)
+         self.assertEqual(memio.readinto(b), 10)
+         self.assertEqual(b, b"1234567890d")
+-        b = bytearray(b"")
++        b = bytearray(b"")  # ty: ignore[unresolved-reference]
+         memio.seek(0)
+         self.assertEqual(memio.readinto(b), 0)
+         self.assertEqual(b, b"")
+         with self.assertRaises(TypeError):
+             memio.readinto('')
+-        import array
++        import array  # ty: ignore[import-not-found]
+         a = array.array('b', b"hello world")
+         memio = self.ioclass(buf)
+         memio.readinto(a)
+@@ -594,7 +605,7 @@
+         with self.assertRaises(ValueError):
+             memio.readinto(b)
+         memio = self.ioclass(b"123")
+-        b = bytearray()
++        b = bytearray()  # ty: ignore[unresolved-reference]
+         memio.seek(42)
+         memio.readinto(b)
+         self.assertEqual(b, b"")
+@@ -620,7 +631,7 @@
+         # Seek allows PY_SSIZE_T_MAX, read should handle that.
+         # Past end of buffer read should always return 0 (EOF).
+         self.assertEqual(sys.maxsize, memio.seek(sys.maxsize))
+-        buf = bytearray(2)
++        buf = bytearray(2)  # ty: ignore[unresolved-reference]
+         self.assertEqual(0, memio.readinto(buf))
+ 
+     def test_unicode(self):
+@@ -634,7 +645,7 @@
+ 
+     def test_bytes_array(self):
+         buf = b"1234567890"
+-        import array
++        import array  # ty: ignore[import-not-found]
+         a = array.array('b', list(buf))
+         memio = self.ioclass(a)
+         self.assertEqual(memio.getvalue(), buf)
+@@ -650,7 +661,7 @@
+         class B:
+             def __buffer__(self, flags):
+                 memio.close()
+-                return memoryview(b"A")
++                return memoryview(b"A")  # ty: ignore[unresolved-reference]
+ 
+         memio = self.ioclass()
+         with self.assertRaises(ValueError):
+@@ -664,7 +675,7 @@
+         class B:
+             def __buffer__(self, flags):
+                 memio.close()
+-                return memoryview(b"A")
++                return memoryview(b"A")  # ty: ignore[unresolved-reference]
+ 
+         memio = self.ioclass()
+         with self.assertRaises(ValueError):
+@@ -675,10 +686,10 @@
+             buf = None
+             def __buffer__(self, flags):
+                 self.buf = memio.getbuffer()
+-                return memoryview(b"A")
+-
+-        memio = self.ioclass()
+-        with self.assertRaises(BufferError):
++                return memoryview(b"A")  # ty: ignore[unresolved-reference]
++
++        memio = self.ioclass()
++        with self.assertRaises(BufferError):  # ty: ignore[unresolved-reference]
+             memio.write(B())
+ 
+     def test_writelines_concurrent_export(self):
+@@ -686,10 +697,10 @@
+             buf = None
+             def __buffer__(self, flags):
+                 self.buf = memio.getbuffer()
+-                return memoryview(b"A")
+-
+-        memio = self.ioclass()
+-        with self.assertRaises(BufferError):
++                return memoryview(b"A")  # ty: ignore[unresolved-reference]
++
++        memio = self.ioclass()
++        with self.assertRaises(BufferError):  # ty: ignore[unresolved-reference]
+             memio.writelines([B()])
+ 
+     def test_write_mutating_buffer(self):
+@@ -700,9 +711,9 @@
+             def __buffer__(self, flags):
+                 self.count += 1
+                 if self.count == 1:
+-                    return memoryview(b"AAA")
++                    return memoryview(b"AAA")  # ty: ignore[unresolved-reference]
+                 else:
+-                    return memoryview(b"BBBBBBBBB")
++                    return memoryview(b"BBBBBBBBB")  # ty: ignore[unresolved-reference]
+ 
+         memio = self.ioclass(b'0123456789')
+         memio.seek(2)
+@@ -722,7 +733,7 @@
+         stream.write(self.buftype('abc'))
+         data = self.buftype('def')
+         with self.assertRaises(MemoryError):
+-            with support.inject_memory_error_cm():
++            with support.inject_memory_error_cm():  # ty: ignore[unresolved-attribute]
+                 stream.write(data)
+         stream.write(self.buftype('123'))
+         self.assertEqual(stream.getvalue(), self.buftype('abc123'))
+@@ -732,13 +743,13 @@
+         stream = self.ioclass()
+         stream.write(data)
+         with self.assertRaises(MemoryError):
+-            with support.inject_memory_error_cm():
++            with support.inject_memory_error_cm():  # ty: ignore[unresolved-attribute]
+                 stream.truncate(5)
+         self.assertEqual(stream.getvalue(), data)
+-    test_memory_error = support.nomemtest(test_memory_error)
+-
+-
+-class TextIOTestMixin:
++    test_memory_error = support.nomemtest(test_memory_error)  # ty: ignore[invalid-argument-type]
++
++
++class TextIOTestMixin(_MixinBase):
+ 
+     def test_newlines_property(self):
+         memio = self.ioclass(newline=None)
+@@ -919,7 +930,7 @@
+     EOF = ""
+ 
+     def ioclass(self, *args, **kwargs):
+-        import pickle
++        import pickle  # ty: ignore[import-not-found]
+         return pickle.loads(pickle.dumps(pyio.StringIO(*args, **kwargs)))
+ 
+ 
+@@ -946,7 +957,7 @@
+         with self.ioclass(b'abc') as stream:
+             size = Size(stream.getbuffer)
+             try:
+-                with self.assertRaises(BufferError):
++                with self.assertRaises(BufferError):  # ty: ignore[unresolved-reference]
+                     stream.truncate(size)
+                 self.assertEqual(stream.getvalue(), b'abc')
+             finally:
+@@ -962,7 +973,7 @@
+         memio = self.ioclass()
+         state = memio.__getstate__()
+         self.assertEqual(len(state), 3)
+-        bytearray(state[0]) # Check if state[0] supports the buffer interface.
++        bytearray(state[0]) # Check if state[0] supports the buffer interface.  # ty: ignore[unresolved-reference]
+         self.assertIsInstance(state[1], int)
+         if state[2] is not None:
+             self.assertIsInstance(state[2], dict)
+@@ -974,7 +985,7 @@
+         # This checks whether __setstate__ does proper input validation.
+         memio = self.ioclass()
+         memio.__setstate__((b"no error", 0, None))
+-        memio.__setstate__((bytearray(b"no error"), 0, None))
++        memio.__setstate__((bytearray(b"no error"), 0, None))  # ty: ignore[unresolved-reference]
+         memio.__setstate__((b"no error", 0, {'spam': 3}))
+         with self.assertRaises(ValueError):
+             memio.__setstate__((b"", -1, None))
+@@ -997,34 +1008,34 @@
+     check_sizeof = support.check_sizeof
+ 
+     def test_sizeof(self):
+-        if support.Py_GIL_DISABLED:
+-            basesize = support.calcobjsize('P2n2Pni')
++        if support.Py_GIL_DISABLED:  # ty: ignore[unresolved-attribute]
++            basesize = support.calcobjsize('P2n2Pni')  # ty: ignore[unresolved-attribute]
+         else:
+-            basesize = support.calcobjsize('P2n2Pn')
++            basesize = support.calcobjsize('P2n2Pn')  # ty: ignore[unresolved-attribute]
+         check = self.check_sizeof
+         self.assertEqual(object.__sizeof__(io.BytesIO()), basesize)
+-        check(io.BytesIO(), basesize )
++        check(io.BytesIO(), basesize )  # ty: ignore[call-non-callable]
+         n = 1000  # use a variable to prevent constant folding
+-        check(io.BytesIO(b'a' * n), basesize + sys.getsizeof(b'a' * n))
+-    test_sizeof = support.cpython_only(test_sizeof)
++        check(io.BytesIO(b'a' * n), basesize + sys.getsizeof(b'a' * n))  # ty: ignore[call-non-callable, unresolved-attribute]
++    test_sizeof = support.cpython_only(test_sizeof)  # ty: ignore[invalid-argument-type]
+ 
+     # Various tests of copy-on-write behaviour for BytesIO.
+ 
+     def _test_cow_mutation(self, mutation):
+         # Common code for all BytesIO copy-on-write mutation tests.
+         imm = (' ' * 1024).encode("ascii")
+-        old_rc = sys.getrefcount(imm)
++        old_rc = sys.getrefcount(imm)  # ty: ignore[unresolved-attribute]
+         memio = self.ioclass(imm)
+-        self.assertEqual(sys.getrefcount(imm), old_rc + 1)
++        self.assertEqual(sys.getrefcount(imm), old_rc + 1)  # ty: ignore[unresolved-attribute]
+         mutation(memio)
+-        self.assertEqual(sys.getrefcount(imm), old_rc)
++        self.assertEqual(sys.getrefcount(imm), old_rc)  # ty: ignore[unresolved-attribute]
+ 
+     def test_cow_truncate(self):
+         # Ensure truncate causes a copy.
+         def mutation(memio):
+             memio.truncate(1)
+         self._test_cow_mutation(mutation)
+-    test_cow_truncate = support.cpython_only(test_cow_truncate)
++    test_cow_truncate = support.cpython_only(test_cow_truncate)  # ty: ignore[invalid-argument-type]
+ 
+     def test_cow_write(self):
+         # Ensure write that would not cause a resize still results in a copy.
+@@ -1032,7 +1043,7 @@
+             memio.seek(0)
+             memio.write(b'foo')
+         self._test_cow_mutation(mutation)
+-    test_cow_write = support.cpython_only(test_cow_write)
++    test_cow_write = support.cpython_only(test_cow_write)  # ty: ignore[invalid-argument-type]
+ 
+     def test_cow_setstate(self):
+         # __setstate__ should cause buffer to be released.
+@@ -1041,23 +1052,23 @@
+         def mutation(memio):
+             memio.__setstate__(state)
+         self._test_cow_mutation(mutation)
+-    test_cow_setstate = support.cpython_only(test_cow_setstate)
++    test_cow_setstate = support.cpython_only(test_cow_setstate)  # ty: ignore[invalid-argument-type]
+ 
+     def test_cow_mutable(self):
+         # BytesIO should accept only Bytes for copy-on-write sharing, since
+         # arbitrary buffer-exporting objects like bytearray() aren't guaranteed
+         # to be immutable.
+-        ba = bytearray(1024)
+-        old_rc = sys.getrefcount(ba)
++        ba = bytearray(1024)  # ty: ignore[unresolved-reference]
++        old_rc = sys.getrefcount(ba)  # ty: ignore[unresolved-attribute]
+         memio = self.ioclass(ba)
+-        self.assertEqual(sys.getrefcount(ba), old_rc)
+-    test_cow_mutable = support.cpython_only(test_cow_mutable)
++        self.assertEqual(sys.getrefcount(ba), old_rc)  # ty: ignore[unresolved-attribute]
++    test_cow_mutable = support.cpython_only(test_cow_mutable)  # ty: ignore[invalid-argument-type]
+ 
+     def test_write_with_export(self):
+         memio = self.ioclass(b"abcd")
+         memio.seek(2)
+         with memio.getbuffer() as view:
+-            with self.assertRaises(BufferError):
++            with self.assertRaises(BufferError):  # ty: ignore[unresolved-reference]
+                 memio.__init__(b"replacement")
+             self.assertEqual(memio.tell(), 2)
+             self.assertEqual(memio.getvalue(), b"abcd")
+@@ -1148,7 +1159,7 @@
+     UnsupportedOperation = io.UnsupportedOperation
+ 
+     def ioclass(self, *args, **kwargs):
+-        import pickle
++        import pickle  # ty: ignore[import-not-found]
+         return pickle.loads(pickle.dumps(io.StringIO(*args, **kwargs)))
+ 
+ 

@@ -9,7 +9,7 @@ use crate::{
     exception_private::{ExcType, RunResult, SimpleException},
     intern::StaticStrings,
     py_value::PyValue,
-    types::PyTrait,
+    types::{PyTrait, io::is_memory_stream, str::allocate_string},
     value::{Marker, Value},
 };
 
@@ -18,8 +18,9 @@ use crate::{
 /// Supports the following keyword arguments:
 /// - `sep`: separator between values (default: " ")
 /// - `end`: string appended after the last value (default: "\n")
-/// - `file`: `sys.stdout` (the default) or `sys.stderr`; anything else raises
-///   `TypeError`, since Monty has no file objects to write into
+/// - `file`: `sys.stdout` (the default), `sys.stderr`, or an `io.StringIO` /
+///   `io.BytesIO`, whose `write()` receives each piece in turn as in CPython;
+///   anything else raises `TypeError`
 /// - `flush`: whether to flush the stream (accepted but ignored — Monty
 ///   doesn't buffer stdout)
 pub fn builtin_print(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
@@ -39,49 +40,81 @@ pub fn builtin_print(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // that order: `print(x, sep=1, file=3)` raises about `sep`, not the file.
     let sep_str = extract_string_kwarg(sep, "sep", vm)?;
     let end_str = extract_string_kwarg(end, "end", vm)?;
-    let stream = print_stream(file, vm)?;
+    let target = print_target(file, vm)?;
 
     let mut first = true;
     for value in objects.as_slice() {
         if first {
             first = false;
-        } else if let Some(sep) = &sep_str {
-            vm.print_writer.write(stream, sep.as_str().into())?;
         } else {
-            vm.print_writer.push(stream, ' ')?;
+            target.write_or_push(sep_str.as_deref(), ' ', vm)?;
         }
         let s = value.py_str(vm)?;
         defer_drop!(s, vm);
-        // Resolve the `str` `Value` against the heap/interns tables directly so
-        // the `&str` borrow stays disjoint from the `&mut vm.print_writer` write.
-        vm.print_writer.write(
-            stream,
-            s.as_str_heap(vm.heap, vm.interns).expect("py_str returns str").into(),
-        )?;
+        match &target {
+            // Resolve the `str` `Value` against the heap/interns tables directly so
+            // the `&str` borrow stays disjoint from the `&mut vm.print_writer` write.
+            PrintTarget::Output(stream) => vm.print_writer.write(
+                *stream,
+                s.as_str_heap(vm.heap, vm.interns).expect("py_str returns str").into(),
+            )?,
+            PrintTarget::Stream(stream) => write_to_stream(stream, s.clone_with_heap(vm.heap), vm)?,
+        }
     }
-
-    if let Some(end) = end_str {
-        vm.print_writer.write(stream, end.into())?;
-    } else {
-        vm.print_writer.push(stream, '\n')?;
-    }
-
+    target.write_or_push(end_str.as_deref(), '\n', vm)?;
     Ok(Value::None)
 }
 
-/// Resolves the `file` kwarg to the stream `print()` should write to.
+/// Where `print()` writes: the host's output streams, or an in-memory stream.
+enum PrintTarget<'a> {
+    /// `sys.stdout` or `sys.stderr`, written through the print writer.
+    Output(PrintStream),
+    /// An `io.StringIO` / `io.BytesIO`, borrowed from the `file` argument.
+    Stream(&'a Value),
+}
+
+impl PrintTarget<'_> {
+    /// Writes a `sep` / `end` piece: the given text, or `default` when it is
+    /// `None`, which the host's writer receives as a single pushed char.
+    fn write_or_push(&self, text: Option<&str>, default: char, vm: &mut VM<'_>) -> RunResult<()> {
+        match (self, text) {
+            (Self::Output(stream), Some(text)) => Ok(vm.print_writer.write(*stream, text.into())?),
+            (Self::Output(stream), None) => Ok(vm.print_writer.push(*stream, default)?),
+            (Self::Stream(stream), Some(text)) => write_to_stream(stream, allocate_string(text, vm.heap), vm),
+            (Self::Stream(stream), None) => {
+                write_to_stream(stream, allocate_string(default.encode_utf8(&mut [0; 4]), vm.heap), vm)
+            }
+        }
+    }
+}
+
+/// Calls an in-memory stream's `write()` with an owned `str`, discarding what it returns.
+///
+/// A `BytesIO` raises the `TypeError` CPython's `print()` meets on its first write.
+fn write_to_stream(stream: &Value, text: Value, vm: &mut VM<'_>) -> RunResult<()> {
+    let name = vm.interns.intern_static(StaticStrings::Write);
+    let written = vm
+        .call_attr(stream.clone_with_heap(vm.heap), name, ArgValues::One(text))?
+        .require_synchronous(vm)?;
+    written.drop_with(vm);
+    Ok(())
+}
+
+/// Resolves the `file` kwarg to where `print()` should write.
 ///
 /// `sys.stdout` and `sys.stderr` are opaque markers rather than file objects
-/// (see `limitations/sys.md`), so they are matched by identity. Any other
-/// value, including a class defining `write()`, has nothing to write into.
-fn print_stream(file: &Value, vm: &VM<'_>) -> RunResult<PrintStream> {
+/// (see `limitations/sys.md`), so they are matched by identity. The in-memory
+/// streams are the only objects whose `write()` Monty calls; anything else,
+/// including an `open()` file or a class defining `write()`, raises `TypeError`.
+fn print_target<'a>(file: &'a Value, vm: &VM<'_>) -> RunResult<PrintTarget<'a>> {
     match file {
-        Value::None | Value::Marker(Marker(StaticStrings::Stdout)) => Ok(PrintStream::Stdout),
-        Value::Marker(Marker(StaticStrings::Stderr)) => Ok(PrintStream::Stderr),
+        Value::None | Value::Marker(Marker(StaticStrings::Stdout)) => Ok(PrintTarget::Output(PrintStream::Stdout)),
+        Value::Marker(Marker(StaticStrings::Stderr)) => Ok(PrintTarget::Output(PrintStream::Stderr)),
+        file if is_memory_stream(file, vm.heap) => Ok(PrintTarget::Stream(file)),
         _ => Err(SimpleException::new_msg(
             ExcType::TypeError,
             format!(
-                "print() 'file' argument must be sys.stdout or sys.stderr, not {}",
+                "print() 'file' argument must be sys.stdout, sys.stderr, io.StringIO or io.BytesIO, not {}",
                 file.py_type_name(vm)
             ),
         )

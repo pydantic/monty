@@ -517,6 +517,31 @@ assert datetime.date(2024, 6, 10).weekday() == 0
 assert datetime.date(2024, 6, 10).isoweekday() == 1
 assert datetime.datetime(2024, 6, 15, 12, 0).weekday() == 5
 
+# === date.timetuple / datetime.timetuple ===
+
+tt = datetime.date(2024, 2, 29).timetuple()
+assert tt[:9] == (2024, 2, 29, 0, 0, 0, 3, 60, -1)
+assert (tt.tm_year, tt.tm_mon, tt.tm_mday, tt.tm_wday, tt.tm_yday, tt.tm_isdst) == (2024, 2, 29, 3, 60, -1)
+assert tt.tm_gmtoff is None
+assert tt.tm_zone is None
+assert datetime.date(1, 1, 1).timetuple()[:9] == (1, 1, 1, 0, 0, 0, 0, 1, -1)
+assert datetime.date(9999, 12, 31).timetuple().tm_yday == 365
+aware = datetime.datetime(2024, 2, 29, 13, 45, 7, 999, tzinfo=datetime.timezone(datetime.timedelta(hours=5), 'X'))
+assert aware.timetuple()[:9] == (2024, 2, 29, 13, 45, 7, 3, 60, -1)
+assert aware.timetuple().tm_zone is None
+assert datetime.datetime(2024, 12, 31, 23, 59, 59).timetuple()[:9] == (2024, 12, 31, 23, 59, 59, 1, 366, -1)
+assert datetime.date.timetuple(datetime.datetime(2024, 1, 2, 3, 4, 5))[:9] == (2024, 1, 2, 0, 0, 0, 1, 2, -1)
+try:
+    aware.timetuple(1)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == 'datetime.timetuple() takes no arguments (1 given)'
+try:
+    datetime.date(2024, 1, 1).timetuple(1)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == 'date.timetuple() takes no arguments (1 given)'
+
 # === datetime.date() method ===
 
 assert datetime.datetime(2024, 6, 15, 10, 30).date() == datetime.date(2024, 6, 15)
@@ -1238,7 +1263,7 @@ except TypeError as e:
 # replace(); that divergence pre-dates the FromArgs migration and is not
 # regression-tested here because it is CPython-incompatible.
 
-# date.replace: kw_only day as wrong type
+# date.replace: day as wrong type
 base_date = datetime.date(2024, 6, 15)
 try:
     base_date.replace(day='last')

@@ -12,8 +12,10 @@ use crate::{
     frozen::{self, FrozenFunctions},
     heap::{HeapData, HeapId},
     intern::StaticStrings,
+    types::builtin_descriptor::DescriptorMethod,
 };
 
+pub(crate) mod _io;
 pub(crate) mod annotationlib;
 pub(crate) mod asyncio;
 pub(crate) mod base64;
@@ -25,6 +27,7 @@ pub(crate) mod csv;
 pub(crate) mod dataclasses;
 pub(crate) mod datetime;
 pub(crate) mod decimal;
+pub(crate) mod errno;
 pub(crate) mod fnmatch;
 pub(crate) mod functools;
 #[cfg(feature = "test-hooks")]
@@ -49,6 +52,8 @@ pub(crate) mod vendored;
 /// Built-in modules that can be imported.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StandardLib {
+    /// Linux error numbers and their symbolic names.
+    Errno,
     /// The `sys` module providing system-specific parameters and functions.
     Sys,
     /// The `typing` module providing type hints support.
@@ -111,6 +116,9 @@ pub(crate) enum StandardLib {
     Annotationlib,
     /// The `statistics` module: means, medians, modes, variances and quantiles.
     Statistics,
+    /// The `_io` module, the native half of `io`: `StringIO`, `BytesIO`, the file classes,
+    /// `open` and the io exceptions. `io` itself is CPython's vendored `io.py`.
+    UnderIo,
     /// The `gc` module exposing a single `collect()` for tests. Only present
     /// under the `test-hooks` feature so production sandboxes never see it.
     ///
@@ -122,6 +130,7 @@ impl StandardLib {
     /// Resolves a module name without depending on enum discriminant order.
     pub fn from_static(name: StaticStrings) -> Option<Self> {
         match name {
+            StaticStrings::Errno => Some(Self::Errno),
             StaticStrings::Sys => Some(Self::Sys),
             StaticStrings::Typing => Some(Self::Typing),
             StaticStrings::Asyncio => Some(Self::Asyncio),
@@ -150,6 +159,7 @@ impl StandardLib {
             StaticStrings::Fnmatch => Some(Self::Fnmatch),
             StaticStrings::Annotationlib => Some(Self::Annotationlib),
             StaticStrings::Statistics => Some(Self::Statistics),
+            StaticStrings::UnderIo => Some(Self::UnderIo),
             #[cfg(feature = "test-hooks")]
             StaticStrings::Gc => Some(Self::Gc),
             _ => None,
@@ -168,6 +178,7 @@ impl StandardLib {
     /// when CPython's module defines one.
     pub fn create(self, vm: &mut VM<'_>) -> HeapId {
         let mut module = match self {
+            Self::Errno => errno::create_module(vm),
             Self::Sys => sys::create_module(vm),
             Self::Typing => typing::create_module(vm),
             Self::Asyncio => asyncio::create_module(vm),
@@ -196,6 +207,7 @@ impl StandardLib {
             Self::Fnmatch => fnmatch::create_module(vm),
             Self::Annotationlib => annotationlib::create_module(vm),
             Self::Statistics => statistics::create_module(vm),
+            Self::UnderIo => _io::create_module(vm),
             #[cfg(feature = "test-hooks")]
             Self::Gc => gc::create_module(vm),
         };
@@ -217,7 +229,9 @@ impl StandardLib {
             | Self::Binascii
             | Self::Time
             | Self::Bisect
-            | Self::Decimal => None,
+            | Self::Decimal
+            | Self::Errno
+            | Self::UnderIo => None,
             #[cfg(feature = "test-hooks")]
             Self::Gc => None,
             Self::Base64 => Some(&[StaticStrings::MaxBinSize, StaticStrings::MaxLineSize]),
@@ -249,7 +263,7 @@ impl StandardLib {
 /// Every dump reaches these through `Value::ModuleFunction`, encoded by variant
 /// name, so renaming a variant needs `#[serde(alias)]` (see `DUMP_VERSION`).
 /// Explicit discriminants are permanent module identity codes; never change or reuse them.
-#[monty_macros::explicit_discriminants(checksum = 0x372d_a81d_21f2_6e14)]
+#[monty_macros::explicit_discriminants(checksum = 0xd95b_d548_e8bd_d94c)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, strum::EnumDiscriminants)]
 #[repr(u8)]
 pub(crate) enum ModuleFunctions {
@@ -280,6 +294,8 @@ pub(crate) enum ModuleFunctions {
     Typing(typing::TypingFunctions) = 23,
     Annotationlib(annotationlib::AnnotationlibFunctions) = 24,
     Statistics(statistics::StatisticsFunctions) = 25,
+    /// `_io` module functions, which the vendored `io` re-exports.
+    Io(_io::IoFunctions) = 28,
     /// `gc` module functions — only present under the `test-hooks` feature.
     /// See [`gc`] for why it is gated; test-only variants are grouped last.
     #[cfg(feature = "test-hooks")]
@@ -290,6 +306,7 @@ pub(crate) enum ModuleFunctions {
     /// CPython. See [`sys`] for the rationale.
     #[cfg(feature = "test-hooks")]
     Sys(sys::SysFunctions) = 27,
+    Descriptor(DescriptorMethod) = 29,
 }
 
 impl fmt::Display for ModuleFunctions {
@@ -310,6 +327,7 @@ impl fmt::Display for ModuleFunctions {
             Self::Binascii(func) => write!(f, "{func}"),
             Self::Random(func) => write!(f, "{func}"),
             Self::Copy(func) => write!(f, "{func}"),
+            Self::Descriptor(method) => write!(f, "{method}"),
             Self::Frozen(func) => write!(f, "{func}"),
             Self::Time(func) => write!(f, "{func}"),
             Self::Hashlib(func) => write!(f, "{func}"),
@@ -321,6 +339,7 @@ impl fmt::Display for ModuleFunctions {
             Self::Typing(func) => write!(f, "{func}"),
             Self::Annotationlib(func) => write!(f, "{func}"),
             Self::Statistics(func) => write!(f, "{func}"),
+            Self::Io(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
             Self::Gc(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
@@ -351,6 +370,7 @@ impl ModuleFunctions {
             Self::Binascii(functions) => binascii::call(vm, functions, args).map(CallResult::Value),
             Self::Random(functions) => random::call(vm, functions, args),
             Self::Copy(functions) => copy::call(vm, functions, args).map(CallResult::Value),
+            Self::Descriptor(method) => method.call(vm, args),
             Self::Frozen(functions) => frozen::call_helper(functions, args, vm),
             Self::Time(functions) => time::call(vm, functions, args),
             Self::Hashlib(functions) => hashlib::call(vm, functions, args).map(CallResult::Value),
@@ -362,6 +382,7 @@ impl ModuleFunctions {
             Self::Typing(functions) => typing::call(vm, functions, args),
             Self::Annotationlib(functions) => annotationlib::call(vm, functions, args),
             Self::Statistics(functions) => statistics::call(vm, functions, args).map(CallResult::Value),
+            Self::Io(functions) => _io::call(vm, functions, args),
             #[cfg(feature = "test-hooks")]
             Self::Gc(functions) => gc::call(vm, functions, args).map(CallResult::Value),
             #[cfg(feature = "test-hooks")]

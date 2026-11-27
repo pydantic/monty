@@ -482,7 +482,7 @@ fn suspend_or_apply(vm: &mut VM<'_>, caller: TimeCaller, reading: ClockReading) 
 /// The `str` at position `position` of a `time` function's arguments,
 /// with `_PyArg_BadArgument`'s positional wording.
 fn string_arg(value: &Value, name: &str, position: usize, vm: &VM<'_>) -> RunResult<String> {
-    match value.try_to_str(vm) {
+    match value.try_as_str(vm) {
         Ok(text) => Ok(text.to_owned()),
         Err(_) => Err(ExcType::type_error(format!(
             "{name}() argument {position} must be str, not {}",
@@ -692,6 +692,12 @@ fn is_daylight(sandbox_zone: &SandboxTimeZone, utc: DateTime, at: &MontyTimeZone
     sandbox_zone
         .constants(Some(i32::from(utc.year())))
         .is_some_and(|constants| constants.daylight && at.offset_seconds == constants.daylight_zone.offset_seconds)
+}
+
+/// The zone-less `struct_time` for `wall`, as `date.timetuple()` returns:
+/// `tm_isdst` is -1 and the two zone fields are `None`.
+pub(crate) fn naive_struct_time(wall: DateTime, vm: &mut VM<'_>) -> Value {
+    struct_time_value(&TimeFields::naive(wall), vm)
 }
 
 /// Builds a `time.struct_time`.

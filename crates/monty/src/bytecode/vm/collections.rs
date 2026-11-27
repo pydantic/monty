@@ -161,10 +161,7 @@ impl VM<'_> {
         let list_ref = this.pop();
         defer_drop!(list_ref, this);
 
-        let Value::Ref(id) = list_ref else {
-            return Err(RunError::internal("ListToTuple: expected list ref"));
-        };
-        let HeapData::List(list) = this.heap.get(*id) else {
+        let Some(list) = list_ref.get_as::<List>(this.heap) else {
             return Err(RunError::internal("ListToTuple: expected list"));
         };
         let items = list.items().cloned(this.heap).collect();
@@ -238,15 +235,10 @@ impl VM<'_> {
         let (dict_ref, this) = dict_ref_guard.as_parts();
 
         // Check that mapping is a dict (Ref pointing to Dict) and clone key-value pairs
-        let copied_items: Vec<(Value, Value)> = if let Value::Ref(id) = mapping {
-            if let HeapData::Dict(dict) = this.heap.get(*id) {
-                dict.iter()
-                    .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
-                    .collect()
-            } else {
-                let type_name = mapping.py_type_name(this).to_string();
-                return Err(ExcType::type_error_kwargs_not_mapping(func_name, &type_name));
-            }
+        let copied_items: Vec<(Value, Value)> = if let Some(dict) = mapping.get_as::<Dict>(this.heap) {
+            dict.iter()
+                .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
+                .collect()
         } else {
             let type_name = mapping.py_type_name(this).to_string();
             return Err(ExcType::type_error_kwargs_not_mapping(func_name, &type_name));
@@ -312,15 +304,10 @@ impl VM<'_> {
         defer_drop!(mapping, this);
 
         // Clone all key/value pairs out of the mapping before mutating the target dict
-        let copied_items: Vec<(Value, Value)> = if let Value::Ref(id) = mapping {
-            if let HeapData::Dict(dict) = this.heap.get(*id) {
-                dict.iter()
-                    .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
-                    .collect()
-            } else {
-                let type_ = mapping.py_type_name(this);
-                return Err(ExcType::type_error_not_mapping(&type_));
-            }
+        let copied_items: Vec<(Value, Value)> = if let Some(dict) = mapping.get_as::<Dict>(this.heap) {
+            dict.iter()
+                .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
+                .collect()
         } else {
             let type_ = mapping.py_type_name(this);
             return Err(ExcType::type_error_not_mapping(&type_));
@@ -375,22 +362,15 @@ impl VM<'_> {
         }
         let copied_items: Vec<Value> = collect_iterable(iterable, this)?;
 
-        // The target set sits at `depth` positions below TOS (which is now gone after pop)
-        let stack_len = this.stack.len();
-        let set_pos = stack_len - 1 - depth;
-        // SAFETY: the compiler always emits BuildSet before SetExtend, so the
-        // target is always a Value::Ref.  This is a VM invariant: reaching this else
-        // arm means a compiler bug.
-        let Value::Ref(set_id) = this.stack[set_pos] else {
-            unreachable!("SetExtend: target is always a Ref — compiler invariant")
-        };
-
         let copied_items = copied_items.into_iter();
         defer_drop_mut!(copied_items, this);
+
+        // BuildSet leaves the target `depth` slots below the new stack top.
+        let set_pos = this.stack.len() - 1 - depth;
+        let Some(set) = this.stack[set_pos].read_as::<Set>(this.heap) else {
+            unreachable!("SetExtend: expected a set target")
+        };
         for item in copied_items {
-            let HeapReadOutput::Set(set) = this.heap.read(set_id) else {
-                unreachable!("SetExtend: heap entry is always a Set — compiler invariant")
-            };
             set.add(item, this)?;
         }
 
@@ -412,12 +392,7 @@ impl VM<'_> {
         let list_pos = stack_len - 1 - depth;
 
         // Get the list reference
-        let Value::Ref(list_id) = self.stack[list_pos] else {
-            value.drop_with(self);
-            return Err(RunError::internal("ListAppend: expected list ref on stack"));
-        };
-
-        let HeapReadOutput::List(list) = self.heap.read(list_id) else {
+        let Some(list) = self.stack[list_pos].read_as::<List>(self.heap) else {
             value.drop_with(self);
             return Err(RunError::internal("ListAppend: expected list on heap"));
         };
@@ -435,12 +410,7 @@ impl VM<'_> {
         let set_pos = stack_len - 1 - depth;
 
         // Get the set reference
-        let Value::Ref(set_id) = self.stack[set_pos] else {
-            value.drop_with(self);
-            return Err(RunError::internal("SetAdd: expected set ref on stack"));
-        };
-
-        let HeapReadOutput::Set(set) = self.heap.read(set_id) else {
+        let Some(set) = self.stack[set_pos].read_as::<Set>(self.heap) else {
             value.drop_with(self);
             return Err(RunError::internal("SetAdd: expected set on heap"));
         };
@@ -461,13 +431,7 @@ impl VM<'_> {
         let dict_pos = stack_len - 1 - depth;
 
         // Get the dict reference
-        let Value::Ref(dict_id) = self.stack[dict_pos] else {
-            key.drop_with(self);
-            value.drop_with(self);
-            return Err(RunError::internal("DictSetItem: expected dict ref on stack"));
-        };
-
-        let HeapReadOutput::Dict(dict) = self.heap.read(dict_id) else {
+        let Some(dict) = self.stack[dict_pos].read_as::<Dict>(self.heap) else {
             key.drop_with(self);
             value.drop_with(self);
             return Err(RunError::internal("DictSetItem: expected dict on heap"));
@@ -608,13 +572,7 @@ pub(crate) fn unpack_exact(value: &Value, count: usize, vm: &mut VM<'_>) -> RunR
     }
     // Dicts also report their total size in the "too many" error; other
     // iterables stop at the first surplus item without reporting a total.
-    let total = match value {
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Dict(dict) => Some(dict.len()),
-            _ => None,
-        },
-        _ => None,
-    };
+    let total = value.get_as::<Dict>(vm.heap).map(Dict::len);
     // Pull one past `count` so a too-long iterable is detected without
     // draining it — CPython stops consuming there too, which is why every
     // other type has no total to report.

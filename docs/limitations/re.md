@@ -52,13 +52,11 @@ match CPython's, with these divergences:
 ## Flags
 
 Supported: `NOFLAG`, `IGNORECASE` / `I`, `MULTILINE` / `M`, `DOTALL` / `S`,
-`ASCII` / `A`.
+`VERBOSE` / `X`, `ASCII` / `A`.
 
 `ASCII` is accepted but has no effect: `\w`, `\d` and `\s` stay Unicode-aware, with or without `(?a)`.
 
-Not implemented: `VERBOSE` / `X`, `LOCALE` / `L`, `DEBUG`, `UNICODE` / `U`
-(Unicode is always on). `re.VERBOSE` / `re.X` are not exposed, but the inline `(?x)` flag and the bit value `64`
-enable verbose mode.
+Not implemented: `LOCALE` / `L`, `DEBUG`, `UNICODE` / `U` (Unicode is always on).
 Unknown flag bits within the accepted `u16` range are
 silently accepted; bits above that range are rejected by the integer range
 check.
@@ -76,10 +74,15 @@ mapping), `scanner`. The `pos` / `endpos` arguments accepted by
 A non-str subject passed to a Pattern *method* raises `expected string, not {type}` rather than CPython's
 `expected string or bytes-like object, got '{type}'`. The module-level functions match CPython's wording.
 
+Missing arguments to `Pattern.search`, `match`, `fullmatch`, `findall`, and `finditer` use Monty's native arity wording, e.g.
+`Pattern.search() takes exactly one argument (0 given)`, rather than CPython's
+`search() missing required argument 'string' (pos 1)`.
+
 ## `re.Match` objects
 
 Attributes: `re`, `string`.
 Methods: `group`, `groups`, `groupdict`, `start`, `end`, `span`.
+`groups()` does not accept CPython's optional `default` argument; unmatched groups always produce `None`.
 
 Not implemented: `lastindex`, `lastgroup`, `expand`, `pos`, `endpos`,
 `regs`. Indexing (`m[0]`, `m["name"]`) is not supported; use `.group()`.

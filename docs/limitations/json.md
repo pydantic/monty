@@ -36,6 +36,7 @@ been loaded yet by a read, `seek()` or iteration step (see [open.md](open.md)).
 It sees the same errors as `fp.read()` (`ValueError` on a closed file,
 `io.UnsupportedOperation: not readable` on a write-only one).
 
+An `io.StringIO` or `io.BytesIO` has its `read()` called as usual.
 Any other object has its `read` attribute called synchronously, with the
 restrictions of a synchronous call (see [classes.md](classes.md)): a `read`
 that calls an external function or does host I/O raises `NotImplementedError`.
@@ -70,7 +71,8 @@ what is observable when something fails:
 
 A file from `open()` or `Path.open()` takes a single host write, with the same
 checks as `fp.write(str)`: `TypeError: a bytes-like object is required, not 'str'` in binary mode, `ValueError` on a closed file,
-`io.UnsupportedOperation: not writable` on a read-only one. Any other object
+`io.UnsupportedOperation: not writable` on a read-only one. An `io.StringIO` or
+`io.BytesIO` gets one `write()` call. Any other object
 has its `write` attribute called synchronously, under the same restrictions as
 `load`'s `read` above.
 

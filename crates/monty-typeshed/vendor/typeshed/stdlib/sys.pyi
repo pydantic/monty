@@ -9,6 +9,7 @@ stdout: TextIO | MaybeNone
 stderr: TextIO | MaybeNone
 
 argv: list[str]
+platform: Literal['monty']
 
 version: str
 hexversion: int

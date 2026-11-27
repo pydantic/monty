@@ -20,19 +20,22 @@ use strum::VariantNames;
 use crate::{
     args::ArgValues,
     builtins::{
-        filter::builtin_filter, iter::builtin_iter, map::builtin_map, object::object_class_attr, type_::builtin_type,
+        filter::builtin_filter, iter::builtin_iter, map::builtin_map, object::PyObjectImpl, type_::builtin_type,
     },
     bytecode::{CallResult, VM},
     exception_private::{ExcType, RunResult, exc_new},
     modules::{collections, csv, hashlib, itertools},
+    py_attrs::{AttrTable, PyAttrs, SubtypeCall},
     types::{
         Bytes, Deque, Dict, ForwardRef, FrozenSet, List, Partial, Path, Random, Range, Set, Slice, TimeZone, Tuple,
-        bytes, complex, date, datetime, decimal, dict, numeric, path,
+        builtin_descriptor, complex, date, datetime, decimal,
+        io::{BytesIo, PyBytesIoImpl, PyStringIoImpl, StringIo},
+        numeric,
         str::PyStr,
-        time, timedelta, timezone,
+        time, timedelta,
         r#type::{bool_init, float_init, int_init, union_init},
     },
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// Facts about one native type, read through [`Type::def`].
@@ -62,21 +65,13 @@ pub(crate) struct TypeDef {
     pub iterator: bool,
     /// How calling the type constructs an instance.
     pub ctor: Constructor,
-    /// Class-level attributes beyond `__name__` (`date.max`, `timezone.utc`).
-    pub class_attr: Option<ClassAttrFn>,
-    /// Class-level methods called in place (`dict.fromkeys(...)`).
-    pub class_method: Option<ClassMethodFn>,
+    /// Attributes defined in this native namespace.
+    pub attrs: Option<AttrTable>,
+    /// Calls this type's descriptors on native subtypes with different payloads.
+    pub subtype_call: Option<SubtypeCall>,
     /// The boundary exception type, for exception classes.
     pub exc: Option<ExcType>,
 }
-
-/// Resolves a class attribute, returning `None` when the type has no such member.
-pub(crate) type ClassAttrFn = for<'h> fn(&EitherStr, &mut VM<'h>) -> Option<Value>;
-
-/// Calls a class method in place, handing `args` back as `Err` when the type has
-/// no method of that name so the caller can fall back to attribute lookup.
-pub(crate) type ClassMethodFn =
-    for<'h> fn(&EitherStr, ArgValues, &mut VM<'h>) -> Result<RunResult<CallResult>, ArgValues>;
 
 /// How calling a native type builds its instance.
 #[derive(Clone, Copy)]
@@ -104,8 +99,8 @@ impl TypeDef {
             sequence_repeat: false,
             iterator: false,
             ctor: Constructor::None,
-            class_attr: None,
-            class_method: None,
+            attrs: None,
+            subtype_call: None,
             exc: None,
         }
     }
@@ -158,15 +153,15 @@ impl TypeDef {
         self
     }
 
-    /// Class-level attributes resolve through `f`.
-    const fn class_attr(mut self, f: ClassAttrFn) -> Self {
-        self.class_attr = Some(f);
+    /// Registers the attributes defined by this type.
+    const fn attrs(mut self, attrs: AttrTable) -> Self {
+        self.attrs = Some(attrs);
         self
     }
 
-    /// Class methods called in place dispatch through `f`.
-    const fn class_method(mut self, f: ClassMethodFn) -> Self {
-        self.class_method = Some(f);
+    /// Adapts this type's descriptors to native subtypes with different payloads.
+    const fn subtype_call(mut self, call: SubtypeCall) -> Self {
+        self.subtype_call = Some(call);
         self
     }
 
@@ -441,6 +436,11 @@ impl Type {
             Self::Filter => 164,
             Self::Task => 165,
             Self::InvalidStateError => 166,
+            Self::StringIo => 167,
+            Self::BytesIo => 168,
+            Self::BlockingIOError => 169,
+            Self::ClassMethod => 170,
+            Self::StaticMethod => 171,
         }
     }
 
@@ -594,7 +594,7 @@ native_types! {
     Type("type")
         .builtin()
         .class_getitem()
-        .ctor(Constructor::Value(builtin_type)),
+        .ctor(Constructor::Call(builtin_type)),
     NoneType("NoneType"),
     Bool("bool", Int)
         .builtin()
@@ -607,12 +607,12 @@ native_types! {
         .builtin()
         .basetype()
         .ctor(Constructor::Value(float_init))
-        .class_method(numeric::float_class_method),
+        .attrs(numeric::PyFloatImpl::TABLE),
     Complex("complex")
+        .attrs(<super::complex::PyComplexImpl as PyAttrs<'static>>::TABLE)
         .builtin()
         .basetype()
-        .ctor(Constructor::Value(complex::init))
-        .class_method(complex::class_method),
+        .ctor(Constructor::Value(complex::init)),
     Range("range")
         .builtin()
         .ctor(Constructor::Value(Range::init)),
@@ -624,75 +624,83 @@ native_types! {
     /// spelling its reprs and type-naming error messages use. `__name__`
     /// reports the bare name, see `dunder_name`.
     Date("datetime.date")
+        .subtype_call(date::call_subtype_descriptor)
+        .attrs(<super::date::PyDateImpl as PyAttrs<'static>>::TABLE)
         .basetype()
-        .ctor(Constructor::Value(date::init))
-        .class_attr(date::class_attr)
-        .class_method(date::class_method),
+        .ctor(Constructor::Value(date::init)),
     DateTime("datetime.datetime", Date)
+        .attrs(<super::datetime::PyDateTimeImpl as PyAttrs<'static>>::TABLE)
         .basetype()
-        .ctor(Constructor::Value(datetime::init))
-        .class_attr(datetime::class_attr)
-        .class_method(datetime::class_method),
+        .ctor(Constructor::Value(datetime::init)),
     TimeDelta("datetime.timedelta")
+        .attrs(<super::timedelta::PyTimeDeltaImpl as PyAttrs<'static>>::TABLE)
         .basetype()
-        .ctor(Constructor::Value(timedelta::init))
-        .class_attr(timedelta::class_attr),
+        .ctor(Constructor::Value(timedelta::init)),
     TimeZone("datetime.timezone")
-        .ctor(Constructor::Value(TimeZone::init))
-        .class_attr(timezone::class_attr),
+        .attrs(<super::timezone::PyTimeZoneImpl as PyAttrs<'static>>::TABLE)
+        .ctor(Constructor::Value(TimeZone::init)),
     Str("str")
+        .attrs(<super::str::PyStr<'static> as PyAttrs<'static>>::TABLE)
         .builtin()
         .basetype()
         .sequence_repeat()
         .ctor(Constructor::Value(PyStr::init)),
     Bytes("bytes")
+        .attrs(<super::bytes::PyBytes<'static> as PyAttrs<'static>>::TABLE)
         .builtin()
         .basetype()
         .sequence_repeat()
-        .ctor(Constructor::Value(Bytes::init))
-        .class_method(bytes::bytes_class_method),
+        .ctor(Constructor::Value(Bytes::init)),
     List("list")
+        .attrs(<super::list::PyListImpl as PyAttrs<'static>>::TABLE)
         .builtin()
         .basetype()
         .class_getitem()
         .sequence_repeat()
         .ctor(Constructor::Value(List::init)),
     Tuple("tuple")
+        .subtype_call(super::namedtuple::call_tuple_descriptor)
+        .attrs(<super::tuple::PyTupleImpl as PyAttrs<'static>>::TABLE)
         .builtin()
         .basetype()
         .class_getitem()
         .sequence_repeat()
         .ctor(Constructor::Value(Tuple::init)),
     NamedTuple("namedtuple", Tuple)
+        .attrs(<super::namedtuple::PyNamedTupleImpl as PyAttrs<'static>>::TABLE)
         .sequence_repeat(),
     Dict("dict")
+        .attrs(<super::dict::PyDictImpl as PyAttrs<'static>>::TABLE)
         .builtin()
         .basetype()
         .class_getitem()
-        .ctor(Constructor::Value(Dict::init))
-        .class_method(dict::dict_class_method),
+        .ctor(Constructor::Value(Dict::init)),
     /// `collections.defaultdict` — a `dict` with a `default_factory` (stored as
     /// a `DictKind` on the `Dict`, not a separate heap type).
     DefaultDict("collections.defaultdict", Dict)
+        .attrs(<super::dict::PyDefaultDictImpl as PyAttrs<'static>>::TABLE)
         .basetype()
         .class_getitem()
-        .ctor(Constructor::Value(collections::defaultdict_init))
-        .class_method(collections::defaultdict_class_method),
+        .ctor(Constructor::Value(collections::defaultdict_init)),
     /// `collections.Counter` — a `dict` subclass (also a `DictKind`).
     Counter("Counter", Dict)
+        .attrs(<super::dict::PyCounterImpl as PyAttrs<'static>>::TABLE)
         .basetype()
         .class_getitem()
-        .ctor(Constructor::Value(collections::counter_init))
-        .class_method(collections::counter_class_method),
-    DictKeys("dict_keys"),
-    DictItems("dict_items"),
+        .ctor(Constructor::Value(collections::counter_init)),
+    DictKeys("dict_keys")
+        .attrs(<super::dict_view::PyDictKeysViewImpl as PyAttrs<'static>>::TABLE),
+    DictItems("dict_items")
+        .attrs(<super::dict_view::PyDictItemsViewImpl as PyAttrs<'static>>::TABLE),
     DictValues("dict_values"),
     Set("set")
+        .attrs(<super::set::PySetImpl as PyAttrs<'static>>::TABLE)
         .builtin()
         .basetype()
         .class_getitem()
         .ctor(Constructor::Value(Set::init)),
     FrozenSet("frozenset")
+        .attrs(<super::set::PyFrozenSetImpl as PyAttrs<'static>>::TABLE)
         .builtin()
         .basetype()
         .class_getitem()
@@ -711,34 +719,55 @@ native_types! {
     Coroutine("coroutine"),
     Module("module"),
     /// Marker types like stdout/stderr - displays as "_io.TextIOWrapper"
-    TextIOWrapper("_io.TextIOWrapper"),
+    TextIOWrapper("_io.TextIOWrapper")
+        .attrs(<super::file::PyFileImpl as PyAttrs<'static>>::TABLE),
     /// Binary file object returned by `open(..., "rb")`.
-    BufferedReader("_io.BufferedReader"),
+    BufferedReader("_io.BufferedReader")
+        .attrs(<super::file::PyFileImpl as PyAttrs<'static>>::TABLE),
     /// Binary file object returned by write-only binary modes.
-    BufferedWriter("_io.BufferedWriter"),
+    BufferedWriter("_io.BufferedWriter")
+        .attrs(<super::file::PyFileImpl as PyAttrs<'static>>::TABLE),
     /// Binary file object returned by read/write binary modes.
-    BufferedRandom("_io.BufferedRandom"),
+    BufferedRandom("_io.BufferedRandom")
+        .attrs(<super::file::PyFileImpl as PyAttrs<'static>>::TABLE),
+    /// `io.StringIO`, an in-memory text stream.
+    StringIo("_io.StringIO")
+        .basetype()
+        .iterator()
+        .ctor(Constructor::Value(StringIo::init))
+        .attrs(<PyStringIoImpl as PyAttrs<'static>>::TABLE),
+    /// `io.BytesIO`, an in-memory binary stream.
+    BytesIo("_io.BytesIO")
+        .basetype()
+        .iterator()
+        .ctor(Constructor::Value(BytesIo::init))
+        .attrs(<PyBytesIoImpl as PyAttrs<'static>>::TABLE),
     /// typing module special forms (Any, Optional, Union, etc.) - displays as "typing._SpecialForm"
     SpecialForm("typing._SpecialForm"),
     /// A filesystem path from `pathlib.Path` - displays as "PosixPath"
     Path("PosixPath")
+        .attrs(<super::path::PyPathImpl as PyAttrs<'static>>::TABLE)
         .basetype()
-        .ctor(Constructor::Value(Path::init))
-        .class_method(path::class_method),
+        .ctor(Constructor::Value(Path::init)),
     /// A property descriptor - displays as "property"
     Property("property")
+        .ctor(Constructor::Value(builtin_descriptor::property_init))
         .builtin()
         .basetype(),
     /// A compiled regex pattern from `re.compile()` - displays as "re.Pattern"
     RePattern("re.Pattern")
+        .attrs(<super::re_pattern::PyRePatternImpl as PyAttrs<'static>>::TABLE)
         .class_getitem(),
     /// A regex match result from `re.match()` / `re.search()` etc. - displays as "re.Match"
     ReMatch("re.Match")
+        .attrs(<super::re_match::PyReMatchImpl as PyAttrs<'static>>::TABLE)
         .class_getitem(),
     /// An `os.DirEntry` from `os.scandir()`.
-    DirEntry("posix.DirEntry"),
+    DirEntry("posix.DirEntry")
+        .attrs(<super::dir_scan::PyDirEntryImpl as PyAttrs<'static>>::TABLE),
     /// The iterator `os.scandir()` returns.
     ScandirIterator("posix.ScandirIterator")
+        .attrs(<super::dir_scan::PyScandirImpl as PyAttrs<'static>>::TABLE)
         .iterator(),
     /// The iterator `os.walk()` and `Path.walk()` return; CPython's is a generator.
     WalkGenerator("generator")
@@ -774,6 +803,7 @@ native_types! {
     /// the name matches CPython's `repr` and error messages; `__name__` reports
     /// the bare `'deque'`, see `dunder_name`.
     Deque("collections.deque")
+        .attrs(<super::deque::PyDequeImpl as PyAttrs<'static>>::TABLE)
         .basetype()
         .class_getitem()
         .sequence_repeat()
@@ -791,10 +821,10 @@ native_types! {
         .iterator()
         .ctor(Constructor::Typed(itertools::construct)),
     ItertoolsChain("itertools.chain")
+        .attrs(<itertools::PyChainImpl as PyAttrs<'static>>::TABLE)
         .class_getitem()
         .iterator()
-        .ctor(Constructor::Typed(itertools::construct))
-        .class_attr(itertools::chain_class_attr),
+        .ctor(Constructor::Typed(itertools::construct)),
     ItertoolsCycle("itertools.cycle")
         .iterator()
         .ctor(Constructor::Typed(itertools::construct)),
@@ -819,15 +849,14 @@ native_types! {
     /// `__init_subclass__`, `__setattr__`) are inherited by every class, but
     /// `object()` itself cannot be built (see `limitations/classes.md`).
     Object("object")
+        .attrs(<PyObjectImpl as PyAttrs<'static>>::TABLE)
         .root()
         .builtin()
-        .basetype()
-        .class_attr(object_class_attr),
+        .basetype(),
     Time("datetime.time")
+        .attrs(<super::time::PyTimeImpl as PyAttrs<'static>>::TABLE)
         .basetype()
-        .ctor(Constructor::Value(time::init))
-        .class_attr(time::class_attr)
-        .class_method(time::class_method),
+        .ctor(Constructor::Value(time::init)),
     /// `functools.partial` — qualified like `collections.deque`, so
     /// `type(p)` reads `<class 'functools.partial'>`.
     Partial("functools.partial")
@@ -884,53 +913,62 @@ native_types! {
     /// `random.Random`, qualified like `collections.deque` so `type(rng)`
     /// reads `<class 'random.Random'>`.
     Random("random.Random")
+        .attrs(<super::random::PyRandomImpl as PyAttrs<'static>>::TABLE)
         .basetype()
         .ctor(Constructor::Value(Random::init)),
     /// The wrapper returned by caching decorators. Monty exposes this type
     /// through `type(f)`, but not as a `functools` module attribute.
-    LruCacheWrapper("functools._lru_cache_wrapper"),
+    LruCacheWrapper("functools._lru_cache_wrapper")
+        .attrs(<super::lru_cache::PyLruCacheImpl as PyAttrs<'static>>::TABLE),
     /// The OpenSSL-backed `hashlib` hash object, `_hashlib.HASH`.
-    HashlibHash("_hashlib.HASH"),
+    HashlibHash("_hashlib.HASH")
+        .attrs(<super::hashlib::PyHashImpl as PyAttrs<'static>>::TABLE),
     /// The `shake_128` / `shake_256` hash object, `_hashlib.HASHXOF`.
-    HashlibHashXof("_hashlib.HASHXOF"),
+    HashlibHashXof("_hashlib.HASHXOF")
+        .attrs(<super::hashlib::PyHashXofImpl as PyAttrs<'static>>::TABLE),
     /// `hashlib.blake2b`, a type in CPython and so callable here.
     Blake2b("_blake2.blake2b")
-        .ctor(Constructor::Value(hashlib::blake2b_init))
-        .class_attr(hashlib::blake2b_class_attr),
+        .attrs(<super::hashlib::PyBlake2Impl<64, 16> as PyAttrs<'static>>::TABLE)
+        .ctor(Constructor::Value(hashlib::blake2b_init)),
     /// `hashlib.blake2s`, a type in CPython and so callable here.
     Blake2s("_blake2.blake2s")
-        .ctor(Constructor::Value(hashlib::blake2s_init))
-        .class_attr(hashlib::blake2s_class_attr),
+        .attrs(<super::hashlib::PyBlake2Impl<32, 8> as PyAttrs<'static>>::TABLE)
+        .ctor(Constructor::Value(hashlib::blake2s_init)),
     /// The iterator `csv.reader()` returns, CPython's `_csv.reader`.
     CsvReader("_csv.reader")
         .iterator(),
     /// The object `csv.writer()` returns, CPython's `_csv.writer`.
-    CsvWriter("_csv.writer"),
+    CsvWriter("_csv.writer")
+        .attrs(<super::csv::PyCsvWriterImpl as PyAttrs<'static>>::TABLE),
     /// `csv.DictReader`, a class in CPython and so callable here.
     CsvDictReader("csv.DictReader")
         .iterator()
         .ctor(Constructor::Call(csv::dict_reader_call)),
     /// `csv.DictWriter`, a class in CPython and so callable here.
     CsvDictWriter("csv.DictWriter")
+        .attrs(<super::csv::PyCsvDictWriterImpl as PyAttrs<'static>>::TABLE)
         .ctor(Constructor::Value(csv::dict_writer_init)),
     /// A resolved `csv` dialect, CPython's `_csv.Dialect`.
     CsvDialect("_csv.Dialect")
         .ctor(Constructor::Value(csv::dialect_init)),
     /// `decimal.Decimal`.
     Decimal("decimal.Decimal")
+        .attrs(<super::decimal::py::PyDecimalImpl as PyAttrs<'static>>::TABLE)
         .basetype()
-        .ctor(Constructor::Value(decimal::py::init))
-        .class_method(decimal::py::class_method),
+        .ctor(Constructor::Value(decimal::py::init)),
     /// `decimal.Context`.
     DecimalContext("decimal.Context")
+        .attrs(<super::decimal::py_context::PyContextImpl as PyAttrs<'static>>::TABLE)
         .ctor(Constructor::Value(decimal::py_context::init)),
     /// The type of a context's `flags` / `traps`; CPython defines it in Python, so
     /// its name carries no module.
-    DecimalSignalDict("SignalDict"),
+    DecimalSignalDict("SignalDict")
+        .attrs(<super::decimal::py_context::PySignalDictImpl as PyAttrs<'static>>::TABLE),
     /// The manager `decimal.localcontext()` returns.
     DecimalContextManager("decimal.ContextManager"),
     /// `annotationlib.ForwardRef`, an unevaluated annotation.
     ForwardRef("annotationlib.ForwardRef")
+        .attrs(<super::forward_ref::PyForwardRefImpl as PyAttrs<'static>>::TABLE)
         .ctor(Constructor::Value(ForwardRef::init)),
     /// The base of every ordinary exception.
     Exception("Exception", BaseException)
@@ -1052,6 +1090,10 @@ native_types! {
     TimeoutError("TimeoutError", OSError)
         .builtin()
         .exc(ExcType::TimeoutError),
+    /// Subclass of OSError, also exported as `io.BlockingIOError`.
+    BlockingIOError("BlockingIOError", OSError)
+        .builtin()
+        .exc(ExcType::BlockingIOError),
     AssertionError("AssertionError", Exception)
         .builtin()
         .exc(ExcType::AssertionError),
@@ -1171,6 +1213,8 @@ native_types! {
     /// `asyncio.InvalidStateError`, raised by `Task.result()` / `Task.exception()` on a pending task.
     InvalidStateError("asyncio.exceptions.InvalidStateError", Exception)
         .exc(ExcType::InvalidStateError),
+    ClassMethod("classmethod").builtin().basetype().ctor(Constructor::Value(builtin_descriptor::classmethod_init)),
+    StaticMethod("staticmethod").builtin().basetype().ctor(Constructor::Value(builtin_descriptor::staticmethod_init)),
 }
 
 #[cfg(test)]

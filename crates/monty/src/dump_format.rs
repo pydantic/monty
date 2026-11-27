@@ -66,7 +66,7 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 /// source-body changes do not require one; restored sessions retain their captured code.
 /// Older releases reject dumps with newer versions, and this build rejects dumps
 /// below [`MIN_SUPPORTED_DUMP_VERSION`].
-pub const DUMP_VERSION: u16 = 17;
+pub const DUMP_VERSION: u16 = 18;
 
 /// The oldest dump version this build loads. `Dump::load` runs `dump_upgrade`
 /// over an older dump, rebuilding what the newer versions changed.
@@ -396,7 +396,7 @@ mod tests {
             .collect();
         assert_eq!(
             variant_name_fingerprint(&type_names),
-            0x9ad0_e4fb_60c6_4bc7,
+            0x68f4_d782_9a07_ab7d,
             "Type variants changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(variant_name_fingerprint(&type_names))
         );
