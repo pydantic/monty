@@ -257,6 +257,7 @@ assert len(flags) == 9
 assert list(flags) == all_signals
 assert list(flags.keys()) == all_signals
 assert list(flags.values()) == [False] * 9
+assert list(flags.items()) == [(signal, False) for signal in all_signals]
 assert Rounded in flags
 assert ConversionSyntax not in flags
 assert flags.get(Rounded) is False
@@ -306,6 +307,14 @@ try:
     assert False, 'expected ValueError'
 except ValueError as e:
     assert str(e) == 'signal keys cannot be deleted'
+for remove in [lambda: flags.__delitem__(Rounded), lambda: flags.popitem(), lambda: flags.clear()]:
+    try:
+        remove()
+    except ValueError as e:
+        assert str(e) == 'signal keys cannot be deleted'
+    else:
+        assert False, 'signal key removed'
+assert list(flags) == all_signals
 c.clear_traps()
 assert repr(c).endswith('traps=[])')
 assert str(c.divide(D(1), D(0))) == 'Infinity'
@@ -539,6 +548,30 @@ for call, kind, message in [
         assert False, f'expected {kind.__name__}: {message}'
     except kind as e:
         assert str(e) == message
+
+# === Context classification, ordering and precision-dependent operations ===
+c = Context(prec=3, Emin=-2)
+assert c.is_canonical(D('sNaN'))
+assert c.is_infinite(D('-Inf'))
+assert c.is_signed(D('-0'))
+assert c.is_qnan(D('NaN')) and not c.is_snan(D('NaN'))
+assert c.is_snan(D('sNaN')) and not c.is_qnan(D('sNaN'))
+assert c.is_normal(D('0.01')) and c.is_subnormal(D('0.001'))
+assert c.copy_negate(D('-1.2345')) == D('1.2345')
+assert c.compare_signal(-2, 1) == -1
+assert c.compare_total(D('-0'), D('0')) == -1
+assert c.compare_total_mag(D('-0'), D('0')) == 0
+assert c.min(-8, 7) == -8
+assert c.max_mag(-8, 7) == -8
+assert c.next_minus(1) == D('0.999')
+assert c.to_integral_value(D('3.5')) == 4
+assert c.logical_invert(101) == 10
+assert c.logical_and(101, 110) == 100
+assert c.logical_or(101, 110) == 111
+assert c.logical_xor(101, 110) == 11
+assert c.rotate(123, 1) == 231
+assert c.shift(123, 1) == 230
+assert c.radix() == 10
 
 # === copying contexts ===
 c = Context(prec=12)

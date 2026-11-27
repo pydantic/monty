@@ -32,15 +32,30 @@ use crate::{
         file::unloaded_iteration_error,
         float::PyFloat,
         long_int::{PyInt, arithmetic::float_binary},
-        numeric::{float_as_integer_ratio, float_fromhex, float_hex, float_is_integer, round_digits, round_float},
+        numeric::{round_digits, round_float},
         py_trait::PyObjectIdentity,
         str::{PyStr, string_repr_fmt},
     },
     value::{EitherStr, Marker, Value, float_divmod_tuple, float_pow_value, py_float_divmod, py_float_mod},
 };
 
+/// Projects an existing heap handle from a logical value without acquiring another reader.
+pub(crate) trait PyValuePayload<'h>: Sized {
+    fn from_py_value<'a>(value: &'a mut PyValue<'h>) -> Option<&'a mut HeapObjectRead<'h, Self>>;
+}
+
 /// Normalizes multi-representation scalars and keeps every other heap type flat.
 macro_rules! define_py_value {
+    (@view $variant:ident, $view:ident, $payload:ty) => {
+        impl<'h> PyValuePayload<'h> for $payload {
+            fn from_py_value<'a>(value: &'a mut PyValue<'h>) -> Option<&'a mut HeapObjectRead<'h, Self>> {
+                match value {
+                    PyValue::$variant($view::Heap(value)) => Some(value),
+                    _ => None,
+                }
+            }
+        }
+    };
     (@collect [$($variant:ident($payload:ty),)*]) => {
         /// A scoped Python-type view retaining the original object's identity.
         /// Drop it before releasing the owning `Value`, so no heap reader survives cleanup.
@@ -61,6 +76,15 @@ macro_rules! define_py_value {
             Property(Property),
             $($variant(HeapObjectRead<'h, $payload>),)*
         }
+
+        $(impl<'h> PyValuePayload<'h> for $payload {
+            fn from_py_value<'a>(value: &'a mut PyValue<'h>) -> Option<&'a mut HeapObjectRead<'h, Self>> {
+                match value {
+                    PyValue::$variant(value) => Some(value),
+                    _ => None,
+                }
+            }
+        })*
 
         impl<'h> PyValue<'h> {
             /// Normalizes heap scalars while retaining the guards that carry their identity.
@@ -111,15 +135,18 @@ macro_rules! define_py_value {
         }
     };
     (@collect [$($out:tt)*] $(#[$meta:meta])* Str($storage:ident $payload:ty), $($rest:tt)*) => {
+        define_py_value!(@view Str, PyStr, $payload);
         define_py_value!(@collect [$($out)*] $($rest)*);
     };
     (@collect [$($out:tt)*] $(#[$meta:meta])* Bytes($storage:ident $payload:ty), $($rest:tt)*) => {
+        define_py_value!(@view Bytes, PyBytes, $payload);
         define_py_value!(@collect [$($out)*] $($rest)*);
     };
     (@collect [$($out:tt)*] $(#[$meta:meta])* Float($storage:ident $payload:ty), $($rest:tt)*) => {
         define_py_value!(@collect [$($out)*] $($rest)*);
     };
     (@collect [$($out:tt)*] $(#[$meta:meta])* LongInt($storage:ident $payload:ty), $($rest:tt)*) => {
+        define_py_value!(@view Int, PyInt, $payload);
         define_py_value!(@collect [$($out)*] $($rest)*);
     };
     (@collect [$($out:tt)*] $(#[$meta:meta])* $variant:ident($storage:ident $payload:ty), $($rest:tt)*) => {
@@ -292,6 +319,57 @@ impl<'h> PyValue<'h> {
         Ok(Some(
             usize::try_from(count.max(0)).map_err(|_| ExcType::overflow_index_sized_int())?,
         ))
+    }
+
+    /// Handles dynamic namespaces and callable attributes after a native table miss.
+    pub(crate) fn call_dynamic_attr(
+        &mut self,
+        vm: &mut VM<'h>,
+        attr: &EitherStr,
+        args: ArgValues,
+    ) -> RunResult<CallResult> {
+        forward_py_value!(self, |value| value.py_call_attr(vm, attr, args), {
+            Self::Module(value) => value.py_call_attr(vm, attr, args),
+            Self::Task(value) => task_call_method(value, attr, args, vm),
+            Self::Builtin(Builtins::Type(ty)) => ty.call_class_method(attr, args, vm),
+            Self::Bool(value) => {
+                match attr.static_string(vm.interns) {
+                    Some(StaticStrings::BitLength) => {
+                        args.check_zero_args("int.bit_length", vm.heap)?;
+                        Ok(CallResult::Value(Value::Int(i64::from(*value))))
+                    }
+                    Some(StaticStrings::BitCount) => {
+                        args.check_zero_args("int.bit_count", vm.heap)?;
+                        Ok(CallResult::Value(Value::Int(i64::from(*value))))
+                    }
+                    Some(StaticStrings::AsIntegerRatio) => {
+                        args.check_zero_args("int.as_integer_ratio", vm.heap)?;
+                        Ok(CallResult::Value(allocate_tuple(
+                            smallvec![Value::Int(i64::from(*value)), Value::Int(1)],
+                            vm.heap,
+                        )))
+                    }
+                    Some(StaticStrings::IsInteger) => {
+                        args.check_zero_args("int.is_integer", vm.heap)?;
+                        Ok(CallResult::Value(Value::Bool(true)))
+                    }
+                    _ => {
+                        args.drop_with(vm);
+                        Err(ExcType::attribute_error("bool", attr.as_str(vm.interns)))
+                    }
+                }
+            }
+            Self::DefFunction(func_id) => {
+                match annotations::function_call_attr(*func_id, None, attr.as_str(vm.interns), args, vm) {
+                    Some(result) => result,
+                    None => Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns))),
+                }
+            }
+            _ => {
+                args.drop_with(vm);
+                Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns)))
+            }
+        })
     }
 
     /// Includes the mutating `defaultdict.__missing__` path outside `PyTrait`.
@@ -841,69 +919,18 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        forward_py_value!(self, |value| value.py_call_attr(vm, attr, args), {
-            Self::Module(value) => value.py_call_attr(vm, attr, args),
-            Self::Task(value) => task_call_method(value, attr, args, vm),
-            Self::Builtin(Builtins::Type(ty)) => ty.call_class_method(attr, args, vm),
-            Self::DefFunction(func_id) => {
-                match annotations::function_call_attr(*func_id, None, attr.as_str(vm.interns), args, vm) {
-                    Some(result) => result,
-                    None => Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns))),
-                }
-            }
-            Self::Bool(value) => {
-                match attr.static_string(vm.interns) {
-                    Some(StaticStrings::BitLength) => {
-                        args.check_zero_args("int.bit_length", vm.heap)?;
-                        Ok(CallResult::Value(Value::Int(i64::from(*value))))
-                    }
-                    Some(StaticStrings::BitCount) => {
-                        args.check_zero_args("int.bit_count", vm.heap)?;
-                        Ok(CallResult::Value(Value::Int(i64::from(*value))))
-                    }
-                    Some(StaticStrings::AsIntegerRatio) => {
-                        args.check_zero_args("int.as_integer_ratio", vm.heap)?;
-                        Ok(CallResult::Value(allocate_tuple(
-                            smallvec![Value::Int(i64::from(*value)), Value::Int(1)],
-                            vm.heap,
-                        )))
-                    }
-                    Some(StaticStrings::IsInteger) => {
-                        args.check_zero_args("int.is_integer", vm.heap)?;
-                        Ok(CallResult::Value(Value::Bool(true)))
-                    }
-                    _ => {
-                        args.drop_with(vm);
-                        Err(ExcType::attribute_error("bool", attr.as_str(vm.interns)))
-                    }
-                }
-            }
-            Self::Float(value) => {
-                match attr.static_string(vm.interns) {
-                    Some(StaticStrings::AsIntegerRatio) => {
-                        args.check_zero_args("float.as_integer_ratio", vm.heap)?;
-                        float_as_integer_ratio(value.value(), vm.heap).map(CallResult::Value)
-                    }
-                    Some(StaticStrings::IsInteger) => {
-                        args.check_zero_args("float.is_integer", vm.heap)?;
-                        Ok(CallResult::Value(Value::Bool(float_is_integer(value.value()))))
-                    }
-                    Some(StaticStrings::Hex) => {
-                        args.check_zero_args("float.hex", vm.heap)?;
-                        Ok(CallResult::Value(allocate_string(float_hex(value.value()), vm.heap)))
-                    }
-                    Some(StaticStrings::Fromhex) => float_fromhex(args, vm).map(CallResult::Value),
-                    _ => {
-                        args.drop_with(vm);
-                        Err(ExcType::attribute_error("float", attr.as_str(vm.interns)))
-                    }
-                }
-            }
-            _ => {
-                args.drop_with(vm);
-                Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns)))
-            }
-        })
+        let ty = match self {
+            // These markers report TextIOWrapper for type(), but carry no file methods.
+            Self::Marker(Marker(StaticStrings::Stdout | StaticStrings::Stderr)) => None,
+            // Namedtuple instances report their class in TypeRef but share native tuple storage.
+            Self::NamedTuple(_) => Some(Type::NamedTuple),
+            _ => self.py_type(vm).native(),
+        };
+        if let Some(ty) = ty {
+            ty.call_attr(self, attr, args, vm)
+        } else {
+            self.call_dynamic_attr(vm, attr, args)
+        }
     }
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {

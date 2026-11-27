@@ -1,5 +1,6 @@
 //! Numeric helpers shared by immediate and heap-allocated numbers.
 
+use monty_macros::pyattrs;
 use num_bigint::BigInt;
 use num_integer::Integer;
 use num_traits::{Pow, ToPrimitive, float::FloatCore};
@@ -12,8 +13,9 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     heap::Heap,
     intern::StaticStrings,
-    types::{LongInt, allocate_tuple, long_int::bigint_true_divide},
-    value::{EitherStr, Value},
+    py_attrs::PyAttrs,
+    types::{LongInt, TypeRef, allocate_string, allocate_tuple, long_int::bigint_true_divide},
+    value::Value,
 };
 
 /// Resolves numeric rounding precision through `__index__`, clamping huge integers.
@@ -243,15 +245,33 @@ pub(crate) fn float_as_integer_ratio(value: f64, heap: &Heap) -> RunResult<Value
     Ok(allocate_tuple(smallvec![num_val, den_val], heap))
 }
 
-/// Class methods on `float` (`fromhex`).
-pub(crate) fn float_class_method(
-    attr: &EitherStr,
-    args: ArgValues,
-    vm: &mut VM<'_>,
-) -> Result<RunResult<CallResult>, ArgValues> {
-    match attr.static_string(vm.interns) {
-        Some(StaticStrings::Fromhex) => Ok(float_fromhex(args, vm).map(CallResult::Value)),
-        _ => Err(args),
+pub(crate) struct PyFloatImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyFloatImpl {
+    type Receiver = f64;
+
+    #[pymethod(AsIntegerRatio)]
+    fn as_integer_ratio(value: f64, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
+        args.check_zero_args("float.as_integer_ratio", vm.heap)?;
+        float_as_integer_ratio(value, vm.heap)
+    }
+
+    #[pymethod(IsInteger)]
+    fn is_integer(value: f64, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
+        args.check_zero_args("float.is_integer", vm.heap)?;
+        Ok(Value::Bool(float_is_integer(value)))
+    }
+
+    #[pymethod(Hex)]
+    fn hex(value: f64, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
+        args.check_zero_args("float.hex", vm.heap)?;
+        Ok(allocate_string(float_hex(value), vm.heap))
+    }
+
+    #[pyclassmethod(Fromhex)]
+    fn fromhex(_: StaticStrings, _: TypeRef, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+        float_fromhex(args, vm).map(CallResult::Value)
     }
 }
 
