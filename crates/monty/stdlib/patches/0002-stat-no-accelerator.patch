@@ -1,0 +1,16 @@
+Use the pure-Python stat implementation without importing _stat.
+Permanent: Importing stat must not ask the host for an optional accelerator.
+
+--- a/stat.py
++++ b/stat.py
+@@ -203,10 +203,3 @@
+ FILE_ATTRIBUTE_SYSTEM = 4
+ FILE_ATTRIBUTE_TEMPORARY = 256
+ FILE_ATTRIBUTE_VIRTUAL = 65536
+-
+-
+-# If available, use C implementation
+-try:
+-    from _stat import *
+-except ImportError:
+-    pass

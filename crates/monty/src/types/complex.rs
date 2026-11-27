@@ -9,6 +9,7 @@
 
 use std::fmt::Write;
 
+use monty_macros::pyattrs;
 use monty_types::FormatComplex;
 
 use crate::{
@@ -19,6 +20,7 @@ use crate::{
     hash::{HashValue, hash_f64},
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead},
     intern::StaticStrings,
+    py_attrs::PyAttrs,
     py_value::PyValue,
     types::{
         LazyHeapSet, PyTrait, Type, TypeRef,
@@ -58,7 +60,7 @@ impl Complex {
 
     /// Allocates this complex on the heap, handing back the owning value.
     pub(crate) fn into_value(self, heap: &Heap) -> Value {
-        Value::Ref(heap.allocate(HeapData::Complex(self)))
+        Value::allocate(self, heap)
     }
 
     /// `-z`.
@@ -452,19 +454,6 @@ impl FromValue for Part {
     }
 }
 
-/// `complex.from_number(...)`.
-pub(crate) fn class_method<'h>(
-    attr: &PyStr<'h>,
-    args: ArgValues,
-    vm: &mut VM<'h>,
-) -> Result<RunResult<CallResult>, ArgValues> {
-    if attr.static_string(vm) == Some(StaticStrings::FromNumber) {
-        Ok(class_from_number(vm, args).map(CallResult::Value))
-    } else {
-        Err(args)
-    }
-}
-
 /// `complex.from_number(x)`: a number or complex, never a string.
 pub(crate) fn class_from_number(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("complex.from_number", vm.heap)?;
@@ -604,7 +593,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let c = *self.get(vm.heap);
         Ok(match other {
-            Value::Ref(id) if let HeapData::Complex(o) = vm.heap.get(*id) => Some(c.eq(*o)),
+            value if let Some(o) = value.get_as::<Complex>(vm.heap) => Some(c.eq(*o)),
             _ => eq_f64(c.real, other, vm).map(|real_eq| real_eq && c.imag == 0.0),
         })
     }
@@ -761,15 +750,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
         Ok(Some(widen(base).pow(c)?.into_value(vm.heap)))
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
-        if attr.static_string(vm) == Some(StaticStrings::Conjugate) {
-            let c = *self.get(vm.heap);
-            args.check_zero_args("complex.conjugate", vm.heap)?;
-            return Ok(CallResult::Value(c.conjugate().into_value(vm.heap)));
-        }
-        Err(ExcType::attribute_error_method(Type::Complex, attr, args, vm))
-    }
-
     fn py_getattr(&self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let c = *self.get(vm.heap);
         Ok(match attr.static_string(vm) {
@@ -787,5 +767,24 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
             Some(StaticStrings::Real | StaticStrings::Imag) => ExcType::attribute_error_readonly(),
             _ => ExcType::attribute_error_no_setattr(&self.py_type_name(vm), name.as_str(vm)),
         })
+    }
+}
+
+pub(crate) struct PyComplexImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyComplexImpl {
+    type Receiver = HeapObjectRead<'heap, Complex>;
+
+    #[pymethod(Conjugate)]
+    fn conjugate<'h>(value: &mut HeapObjectRead<'h, Complex>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let c = *value.get(vm.heap);
+        args.check_zero_args("complex.conjugate", vm.heap)?;
+        Ok(c.conjugate().into_value(vm.heap))
+    }
+
+    #[pyclassmethod(FromNumber)]
+    fn from_number(_: StaticStrings, _: TypeRef, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+        class_from_number(vm, args).map(CallResult::Value)
     }
 }

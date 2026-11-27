@@ -13,7 +13,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{DropGuard, Heap, HeapData, HeapId, HeapReadMut},
+    heap::{DropGuard, Heap, HeapId, HeapReadMut},
     types::{
         CsvObject, List,
         csv::dialect::{Dialect, Quoting},
@@ -67,7 +67,7 @@ impl Reader {
 /// One record as a `list` of fields, or `None` once the source is exhausted.
 pub(super) fn next<'h>(obj: &HeapReadMut<'h, CsvObject>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
     let fields = next_fields(obj, vm)?;
-    Ok(fields.map(|fields| Value::Ref(vm.heap.allocate(HeapData::List(List::new(fields))))))
+    Ok(fields.map(|fields| Value::allocate(List::new(fields), vm.heap)))
 }
 
 /// The fields of the next record, or `None` once the source is exhausted. `DictReader`

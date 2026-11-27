@@ -1,19 +1,20 @@
 use std::{fmt::Write, mem};
 
+use monty_macros::pyattrs;
 use smallvec::smallvec;
 
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
+    exception_private::{RunError, RunResult},
     heap::{ContainsHeap, DropGuard, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
-    intern::StaticStrings,
+    py_attrs::PyAttrs,
     types::{
         Dict, FrozenSet, LazyHeapSet, PyTrait, Set, Type, TypeRef, allocate_tuple,
         dict::{DictItemIterator, DictKeyIterator, DictValueIterator},
         iter::checked_preallocation_hint,
-        str::PyStr,
+        sequence::SequenceItems,
     },
     value::Value,
 };
@@ -131,7 +132,7 @@ impl<'h> HeapRead<'h, DictKeysView> {
         let rhs = self.to_set(vm)?;
         defer_drop!(rhs, vm);
         let result = operation(lhs, rhs, vm)?;
-        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Set(result)))))
+        Ok(Some(Value::allocate(result, vm.heap)))
     }
 }
 
@@ -229,18 +230,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DictKeysView> {
         write_dict_keys_contents(f, &self.dict(vm), vm, heap_ids)?;
         Ok(f.write_str("])")?)
     }
-
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
-        match attr.static_string(vm) {
-            Some(StaticStrings::Isdisjoint) => {
-                let other = args.get_one_arg("dict_keys.isdisjoint", vm.heap)?;
-                defer_drop!(other, vm);
-                let disjoint = view_isdisjoint(self.set_like(vm), self.id(), other, vm)?;
-                Ok(CallResult::Value(Value::Bool(disjoint)))
-            }
-            _ => Err(ExcType::attribute_error_method(Type::DictKeys, attr, args, vm)),
-        }
-    }
 }
 
 impl HeapItem for DictKeysView {
@@ -333,7 +322,7 @@ impl<'h> HeapRead<'h, DictItemsView> {
         let rhs = self.to_set(vm)?;
         defer_drop!(rhs, vm);
         let result = operation(lhs, rhs, vm)?;
-        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Set(result)))))
+        Ok(Some(Value::allocate(result, vm.heap)))
     }
 }
 
@@ -423,18 +412,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DictItemsView> {
         f.write_str("dict_items([")?;
         write_dict_items_contents(f, &self.dict(vm), vm, heap_ids)?;
         Ok(f.write_str("])")?)
-    }
-
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
-        match attr.static_string(vm) {
-            Some(StaticStrings::Isdisjoint) => {
-                let other = args.get_one_arg("dict_items.isdisjoint", vm.heap)?;
-                defer_drop!(other, vm);
-                let disjoint = view_isdisjoint(self.set_like(vm), self.id(), other, vm)?;
-                Ok(CallResult::Value(Value::Bool(disjoint)))
-            }
-            _ => Err(ExcType::attribute_error_method(Type::DictItems, attr, args, vm)),
-        }
     }
 }
 
@@ -755,7 +732,7 @@ fn view_intersection(view: SetLikeView, other: &Value, vm: &mut VM<'_>) -> RunRe
         }
     }
     let (result, vm) = result_guard.into_parts();
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Set(result))))
+    Ok(Value::allocate(result, vm.heap))
 }
 
 /// `view.isdisjoint(other)`, as CPython's `dictviews_isdisjoint`.
@@ -815,8 +792,7 @@ fn dict_view_binary_op_value(
     defer_drop!(rhs_set, vm);
 
     let result = operation(lhs_set, rhs_set, vm)?;
-    let result_id = vm.heap.allocate(HeapData::Set(result));
-    Ok(Some(Value::Ref(result_id)))
+    Ok(Some(Value::allocate(result, vm.heap)))
 }
 
 /// Computes dictionary-view union.
@@ -879,33 +855,54 @@ pub(crate) fn collect_iterable_to_set(value: Value, vm: &mut VM<'_>) -> Result<S
     Ok(set_guard.into_inner())
 }
 
-/// Extracts and clones the `(key, value)` probe accepted by `dict_items.__contains__`.
-///
-/// CPython treats only 2-tuples as valid probes for items-view membership. Monty
-/// also accepts namedtuples of length two so tuple-like runtime values behave
-/// sensibly even though namedtuples are not modeled as a true tuple subclass.
+/// Clones the key and value of a two-element tuple or named tuple for item membership.
 pub(crate) fn cloned_items_view_candidate(item: &Value, heap: &impl ContainsHeap) -> Option<(Value, Value)> {
-    let Value::Ref(heap_id) = item else {
+    let heap = heap.heap();
+    let items = SequenceItems::from_tuple(heap.get(item.ref_id()?))?;
+    if items.len() != 2 {
         return None;
-    };
+    }
+    Some((items.clone_item(0, heap), items.clone_item(1, heap)))
+}
 
-    match heap.heap().get(*heap_id) {
-        HeapData::Tuple(tuple) => {
-            let items = tuple.as_slice();
-            if items.len() == 2 {
-                Some((items[0].clone_with_heap(heap), items[1].clone_with_heap(heap)))
-            } else {
-                None
-            }
+pub(crate) struct PyDictItemsViewImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyDictItemsViewImpl {
+    type Receiver = HeapObjectRead<'heap, DictItemsView>;
+
+    #[pymethod(Isdisjoint)]
+    fn isdisjoint<'h>(
+        this: &mut HeapObjectRead<'h, DictItemsView>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        {
+            let other = args.get_one_arg("dict_items.isdisjoint", vm.heap)?;
+            defer_drop!(other, vm);
+            let disjoint = view_isdisjoint(this.set_like(vm), this.id(), other, vm)?;
+            Ok(CallResult::Value(Value::Bool(disjoint)))
         }
-        HeapData::NamedTuple(namedtuple) => {
-            let items = namedtuple.as_vec();
-            if items.len() == 2 {
-                Some((items[0].clone_with_heap(heap), items[1].clone_with_heap(heap)))
-            } else {
-                None
-            }
+    }
+}
+
+pub(crate) struct PyDictKeysViewImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyDictKeysViewImpl {
+    type Receiver = HeapObjectRead<'heap, DictKeysView>;
+
+    #[pymethod(Isdisjoint)]
+    fn isdisjoint<'h>(
+        this: &mut HeapObjectRead<'h, DictKeysView>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        {
+            let other = args.get_one_arg("dict_keys.isdisjoint", vm.heap)?;
+            defer_drop!(other, vm);
+            let disjoint = view_isdisjoint(this.set_like(vm), this.id(), other, vm)?;
+            Ok(CallResult::Value(Value::Bool(disjoint)))
         }
-        _ => None,
     }
 }

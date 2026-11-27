@@ -25,6 +25,7 @@ pub(crate) mod csv;
 pub(crate) mod dataclasses;
 pub(crate) mod datetime;
 pub(crate) mod decimal;
+pub(crate) mod errno;
 pub(crate) mod fnmatch;
 pub(crate) mod functools;
 #[cfg(feature = "test-hooks")]
@@ -44,10 +45,13 @@ pub(crate) mod time;
 pub(crate) mod tomllib;
 pub(crate) mod typing;
 pub(crate) mod unicodedata;
+pub(crate) mod vendored;
 
 /// Built-in modules that can be imported.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StandardLib {
+    /// Linux error numbers and their symbolic names.
+    Errno,
     /// The `sys` module providing system-specific parameters and functions.
     Sys,
     /// The `typing` module providing type hints support.
@@ -121,6 +125,7 @@ impl StandardLib {
     /// Resolves a module name without depending on enum discriminant order.
     pub fn from_static(name: StaticStrings) -> Option<Self> {
         match name {
+            StaticStrings::Errno => Some(Self::Errno),
             StaticStrings::Sys => Some(Self::Sys),
             StaticStrings::Typing => Some(Self::Typing),
             StaticStrings::Asyncio => Some(Self::Asyncio),
@@ -167,6 +172,7 @@ impl StandardLib {
     /// when CPython's module defines one.
     pub fn create(self, vm: &mut VM<'_>) -> HeapId {
         let mut module = match self {
+            Self::Errno => errno::create_module(vm),
             Self::Sys => sys::create_module(vm),
             Self::Typing => typing::create_module(vm),
             Self::Asyncio => asyncio::create_module(vm),
@@ -216,7 +222,8 @@ impl StandardLib {
             | Self::Binascii
             | Self::Time
             | Self::Bisect
-            | Self::Decimal => None,
+            | Self::Decimal
+            | Self::Errno => None,
             #[cfg(feature = "test-hooks")]
             Self::Gc => None,
             Self::Base64 => Some(&[StaticStrings::MaxBinSize, StaticStrings::MaxLineSize]),

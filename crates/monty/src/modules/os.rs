@@ -20,13 +20,13 @@
 //! as one would there (see [`PathArgError`]).
 
 use monty_types::{GetenvArgs, MkdirCallArgs, MontyObject, MontyPath, OsFunctionCall, RenameCallArgs, UrandomArgs};
+use num_traits::Signed;
 
 use crate::{
     args::{ArgValues, FromArgs, LaxBool},
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::HeapData,
     intern::{StaticStrings, StringId},
     modules::{ModuleFunctions, StandardLib},
     object_bridge::MontyObjectExt,
@@ -272,7 +272,7 @@ fn getcwd(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 fn getcwdb(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     args.check_zero_args("getcwdb", vm.heap)?;
     let bytes = Bytes::new(vm.env.cwd.as_bytes().to_vec());
-    Ok(CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::Bytes(bytes)))))
+    Ok(CallResult::Value(Value::allocate(bytes, vm.heap)))
 }
 
 /// `os.chdir(path)` accepts a positional or keyword path, with CPython's total-count check.
@@ -702,8 +702,8 @@ fn fd_argument(value: &Value, vm: &VM<'_>) -> Option<PathArgError> {
             Err(_) => PathArgError::FdOverflow { above: *fd > 0 },
         }),
         // Big ints (`LongInt`) are outside i64, so far outside C int.
-        _ => (value.py_type_heap(vm.heap) == Type::Int).then(|| PathArgError::FdOverflow {
-            above: !value.long_int_is_negative(vm),
+        _ => value.as_long_int(vm).map(|n| PathArgError::FdOverflow {
+            above: !n.is_negative(),
         }),
     }
 }

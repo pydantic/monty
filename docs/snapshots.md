@@ -147,8 +147,9 @@ Python snapshots expose [`trace_context()`][pydantic_monty.FunctionSnapshot.trac
 `traceContext()`.
 Both return a standard OpenTelemetry `Context`, preserving baggage and other entries captured at feed/load entry and
 replacing its span with the suspension's span when Monty tracing is enabled.
+Without Monty tracing, the span is replaced with the one a remote server named for the suspension, if it named one.
 The returned context does not depend on which thread or task later calls the method.
-Without Monty tracing, including on Browser/WASM, the methods return the captured context unchanged.
+Without either, including on Browser/WASM, the methods return the captured context unchanged.
 If JavaScript context composition fails, `traceContext()` returns the captured context and reports the error through
 OpenTelemetry's `diag.warn`; disabled tracing does not produce a warning.
 Python's method requires `opentelemetry-api` and raises `ImportError` if it is not installed.
@@ -392,6 +393,8 @@ Calling a loader after a feed or a previous load is rejected before restoration,
     A release that breaks compatibility in either direction, including a patch release, uses a new dump version and
     notes the change in its release notes.
     Older releases reject the new dumps even if the new release can still read older dumps.
+    Version 18 adds bytecode support for relative imports: Monty 1.7.0 rejects version 18 dumps, but workers using
+    version 18 can still resume version 17 dumps.
     Where the old data still holds everything the new meaning needs, the newer build upgrades older dumps as it loads
     them: version 14 builds load version 13 dumps from 1.0 and 1.1, generating the methods their dataclasses lack, and
     version 15 builds rebase the source positions of `eval()` code in version 13 and 14 dumps.
@@ -400,11 +403,14 @@ Calling a loader after a feed or a previous load is rejected before restoration,
     Version 16 builds also load version 13–15 dumps, restoring copied class and namedtuple names as Python strings.
     Otherwise it refuses them as too old, and the session has to be rebuilt by replaying its feeds.
     The same bytes load in-process, in a subprocess and over gRPC.
+- **Restoring a dump does not pin builtin behavior.** For example, `map` and `filter` calls executed after restore now return lazy iterators, even in previously compiled functions.
+    Lists those calls produced before the dump remain lists.
 
 ## Async
 
 [`AsyncMonty`][pydantic_monty.AsyncMonty] sessions expose the same `feed_start`, `load_session`, `load_snapshot` and `dump`, with awaitable
 `resume(...)` and `resume_auto()`.
+Creating a resume coroutine does not claim the snapshot; the first resume to start running claims it after validation.
 A coroutine host function, or a coroutine answer to `asyncio.sleep()` under `os_policy={'sleep': 'call_host'}`, is awaited directly by `resume_auto()` when the
 snapshot's `allow_eager_await` is true,
 which it is for a call that is awaited immediately while no other sandbox task can run and no external future is pending.

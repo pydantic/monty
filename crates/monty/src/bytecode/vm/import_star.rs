@@ -14,7 +14,7 @@ use crate::{
     name_map::namespace_overflow_message,
     namespace::NamespaceId,
     parse::CodeRange,
-    types::{Dict, List, Module, PyTrait, str::PyStr},
+    types::{Dict, Instance, List, Module, PyTrait, str::PyStr},
     value::Value,
 };
 
@@ -50,7 +50,7 @@ impl VM<'_> {
                 .map(|(key, _)| key.clone_with_heap(self.heap))
                 .collect(),
         };
-        Ok(Value::Ref(self.heap.allocate(HeapData::List(List::new(names)))))
+        Ok(Value::allocate(List::new(names), self.heap))
     }
 
     /// The entries of a module's `__all__`, read as CPython reads them: by
@@ -87,14 +87,13 @@ impl VM<'_> {
             }
         }
         let (names, this) = names_guard.into_parts();
-        Ok(Value::Ref(this.heap.allocate(HeapData::List(List::new(names)))))
+        Ok(Value::allocate(List::new(names), this.heap))
     }
 
     /// Whether `value` is an instance whose class defines `__getitem__`, which
     /// gives it CPython's `sq_item`.
     fn has_getitem_method(&self, value: &Value) -> bool {
-        let Value::Ref(id) = value else { return false };
-        let HeapData::Instance(instance) = self.heap.get(*id) else {
+        let Some(instance) = value.get_as::<Instance>(self.heap) else {
             return false;
         };
         matches!(
@@ -163,13 +162,9 @@ impl VM<'_> {
     /// The module object `depth` values below the stack top; `ImportError`
     /// for a host value that is not a module, so has no namespace to list.
     fn import_star_module(&self, depth: usize) -> RunResult<&Module> {
-        match &self.stack[self.stack.len() - 1 - depth] {
-            Value::Ref(id) => match self.heap.get(*id) {
-                HeapData::Module(module) => Ok(module),
-                _ => Err(ExcType::import_star_without_namespace()),
-            },
-            _ => Err(ExcType::import_star_without_namespace()),
-        }
+        self.stack[self.stack.len() - 1 - depth]
+            .get_as::<Module>(self.heap)
+            .ok_or_else(ExcType::import_star_without_namespace)
     }
 }
 

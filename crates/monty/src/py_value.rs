@@ -8,10 +8,12 @@ use std::{
 };
 
 use num_bigint::BigInt;
+use smallvec::smallvec;
 
 use crate::{
     annotations,
     args::ArgValues,
+    asyncio::TaskFutureState,
     builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop,
@@ -19,24 +21,40 @@ use crate::{
     expressions::CmpOperator,
     fstring::FormatFloat,
     hash::{HashValue, identity_hash},
-    heap::{DropWithContext, Heap, HeapData, HeapId, HeapObjectRead, HeapReadOutput, HeapReader},
+    heap::{DropWithContext, Heap, HeapId, HeapObjectRead, HeapReadOutput, HeapReader},
     heap_data::heap_payloads,
     identity::Identity,
     intern::{FunctionId, StaticStrings},
-    modules::{ModuleFunctions, collections::defaultdict::defaultdict_missing},
+    modules::{ModuleFunctions, asyncio::task_call_method, collections::defaultdict::defaultdict_missing},
     types::{
-        GenericAlias, LazyHeapSet, LongInt, Property, PyTrait, Type, TypeRef, Union, allocate_string,
+        GenericAlias, LazyHeapSet, LongInt, Property, PyTrait, Type, TypeRef, Union, allocate_string, allocate_tuple,
         bytes::PyBytes,
+        file::unloaded_iteration_error,
         long_int::{PyInt, arithmetic::float_binary},
         numeric::{round_digits, round_float},
         py_trait::PyObjectIdentity,
-        str::PyStr,
+        str::{PyStr, string_repr_fmt},
     },
     value::{Marker, Value, float_divmod_tuple, float_pow_value, py_float_divmod, py_float_mod},
 };
 
+/// Projects an existing heap handle from a logical value without acquiring another reader.
+pub(crate) trait PyValuePayload<'h>: Sized {
+    fn from_py_value<'a>(value: &'a mut PyValue<'h>) -> Option<&'a mut HeapObjectRead<'h, Self>>;
+}
+
 /// Normalizes the three multi-representation types and keeps every other heap type flat.
 macro_rules! define_py_value {
+    (@view $variant:ident, $view:ident, $payload:ty) => {
+        impl<'h> PyValuePayload<'h> for $payload {
+            fn from_py_value<'a>(value: &'a mut PyValue<'h>) -> Option<&'a mut HeapObjectRead<'h, Self>> {
+                match value {
+                    PyValue::$variant($view::Heap(value)) => Some(value),
+                    _ => None,
+                }
+            }
+        }
+    };
     (@collect [$($variant:ident($payload:ty),)*]) => {
         /// A scoped Python-type view retaining the original object's identity.
         /// Drop it before releasing the owning `Value`, so no heap reader survives cleanup.
@@ -57,6 +75,15 @@ macro_rules! define_py_value {
             Property(Property),
             $($variant(HeapObjectRead<'h, $payload>),)*
         }
+
+        $(impl<'h> PyValuePayload<'h> for $payload {
+            fn from_py_value<'a>(value: &'a mut PyValue<'h>) -> Option<&'a mut HeapObjectRead<'h, Self>> {
+                match value {
+                    PyValue::$variant(value) => Some(value),
+                    _ => None,
+                }
+            }
+        })*
 
         impl<'h> From<HeapReadOutput<'h>> for PyValue<'h> {
             fn from(value: HeapReadOutput<'h>) -> Self {
@@ -105,12 +132,15 @@ macro_rules! define_py_value {
         }
     };
     (@collect [$($out:tt)*] $(#[$meta:meta])* Str($storage:ident $payload:ty), $($rest:tt)*) => {
+        define_py_value!(@view Str, PyStr, $payload);
         define_py_value!(@collect [$($out)*] $($rest)*);
     };
     (@collect [$($out:tt)*] $(#[$meta:meta])* Bytes($storage:ident $payload:ty), $($rest:tt)*) => {
+        define_py_value!(@view Bytes, PyBytes, $payload);
         define_py_value!(@collect [$($out)*] $($rest)*);
     };
     (@collect [$($out:tt)*] $(#[$meta:meta])* LongInt($storage:ident $payload:ty), $($rest:tt)*) => {
+        define_py_value!(@view Int, PyInt, $payload);
         define_py_value!(@collect [$($out)*] $($rest)*);
     };
     (@collect [$($out:tt)*] $(#[$meta:meta])* $variant:ident($storage:ident $payload:ty), $($rest:tt)*) => {
@@ -142,6 +172,7 @@ macro_rules! forward_py_value {
             Self::DictValueIterator($value) => $body,
             Self::SetIterator($value) => $body,
             Self::CallableIterator($value) => $body,
+            Self::MapFilter($value) => $body,
             Self::Itertools($value) => $body,
             Self::DirScan($value) => $body,
             Self::Csv($value) => $body,
@@ -216,6 +247,45 @@ macro_rules! numeric_binary {
 }
 
 impl<'h> PyValue<'h> {
+    /// Borrows an iterator whose advancement never calls Python or suspends.
+    /// Select this path before consuming anything; other sources must use a continuation.
+    pub(crate) fn native_iterator(value: &Value, vm: &VM<'h>) -> Option<Self> {
+        value.read_heap(vm).map(PyValue::from).filter(|source| {
+            matches!(
+                source,
+                PyValue::ListIterator(_)
+                    | PyValue::DequeIterator(_)
+                    | PyValue::TupleIterator(_)
+                    | PyValue::StringIterator(_)
+                    | PyValue::BytesIterator(_)
+                    | PyValue::RangeIterator(_)
+                    | PyValue::DictKeyIterator(_)
+                    | PyValue::DictItemIterator(_)
+                    | PyValue::DictValueIterator(_)
+                    | PyValue::SetIterator(_)
+            )
+        })
+    }
+
+    /// Completes advancement for a native consumer that cannot retain a continuation.
+    pub(crate) fn next_sync(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        if let Self::OpenFile(file) = self
+            && file.needs_buffer_load(vm)
+        {
+            return Err(unloaded_iteration_error(file.get(vm.heap).file_type()));
+        }
+        let result = match self.py_next(vm) {
+            Ok(Some(CallResult::Value(value))) => return Ok(Some(value)),
+            Ok(None) => return Ok(None),
+            Ok(Some(call)) => call.require_synchronous(vm),
+            Err(error) => Err(error),
+        };
+        match result {
+            Err(error) if error.is_stop_iteration() => Ok(None),
+            result => result.map(Some),
+        }
+    }
+
     /// Reads a heap object once and opens its normalized Python-type view.
     #[inline]
     pub(crate) fn from_heap(id: HeapId, heap: &HeapReader<'h>) -> Self {
@@ -240,6 +310,57 @@ impl<'h> PyValue<'h> {
         Ok(Some(
             usize::try_from(count.max(0)).map_err(|_| ExcType::overflow_index_sized_int())?,
         ))
+    }
+
+    /// Handles dynamic namespaces and callable attributes after a native table miss.
+    pub(crate) fn call_dynamic_attr(
+        &mut self,
+        vm: &mut VM<'h>,
+        attr: &PyStr<'h>,
+        args: ArgValues,
+    ) -> RunResult<CallResult> {
+        forward_py_value!(self, |value| value.py_call_attr(vm, attr, args), {
+            Self::Module(value) => value.py_call_attr(vm, attr, args),
+            Self::Task(value) => task_call_method(value, attr, args, vm),
+            Self::Builtin(Builtins::Type(ty)) => ty.call_class_method(attr, args, vm),
+            Self::Bool(value) => {
+                match attr.static_string(vm) {
+                    Some(StaticStrings::BitLength) => {
+                        args.check_zero_args("int.bit_length", vm.heap)?;
+                        Ok(CallResult::Value(Value::Int(i64::from(*value))))
+                    }
+                    Some(StaticStrings::BitCount) => {
+                        args.check_zero_args("int.bit_count", vm.heap)?;
+                        Ok(CallResult::Value(Value::Int(i64::from(*value))))
+                    }
+                    Some(StaticStrings::AsIntegerRatio) => {
+                        args.check_zero_args("int.as_integer_ratio", vm.heap)?;
+                        Ok(CallResult::Value(allocate_tuple(
+                            smallvec![Value::Int(i64::from(*value)), Value::Int(1)],
+                            vm.heap,
+                        )))
+                    }
+                    Some(StaticStrings::IsInteger) => {
+                        args.check_zero_args("int.is_integer", vm.heap)?;
+                        Ok(CallResult::Value(Value::Bool(true)))
+                    }
+                    _ => {
+                        args.drop_with(vm);
+                        Err(ExcType::attribute_error("bool", attr.as_str(vm)))
+                    }
+                }
+            }
+            Self::DefFunction(func_id) => {
+                match annotations::function_call_attr(*func_id, None, attr, args, vm) {
+                    Some(result) => result,
+                    None => Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm))),
+                }
+            }
+            _ => {
+                args.drop_with(vm);
+                Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm)))
+            }
+        })
     }
 
     /// Includes the mutating `defaultdict.__missing__` path outside `PyTrait`.
@@ -287,6 +408,18 @@ impl<'h> PyValue<'h> {
             }
             Self::GatherFuture(gather) => Ok(write!(f, "<gather({})>", gather.get(vm.heap).item_count())?),
             Self::ExternalFuture(fut) => Ok(write!(f, "<coroutine external_future({})>", fut.get(vm.heap).call_id.raw())?),
+            Self::Task(task) => {
+                let task = task.get(vm.heap);
+                let status = match &task.state {
+                    TaskFutureState::Pending => "pending",
+                    TaskFutureState::Completed(_) => "finished",
+                    TaskFutureState::Failed(_) => "finished",
+                };
+                write!(f, "<Task {status} name=")?;
+                string_repr_fmt(&task.name, f)?;
+                Ok(f.write_str(">")?)
+            }
+            Self::WaitFuture(_) => Ok(f.write_str("<coroutine object wait>")?),
         })
     }
 }
@@ -424,6 +557,9 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
         forward_py_value!(self, |value| value.py_hash(vm), {
             Self::Cell(value) => Ok(Some(identity_hash(value.id()))),
             Self::Module(value) => Ok(Some(identity_hash(value.id()))),
+            Self::Task(value) => Ok(Some(identity_hash(value.id()))),
+            Self::GatherFuture(value) => Ok(Some(identity_hash(value.id()))),
+            Self::ExternalFuture(value) => Ok(Some(identity_hash(value.id()))),
             Self::Undefined => Value::Undefined.py_hash(vm),
             Self::Ellipsis => Value::Ellipsis.py_hash(vm),
             Self::NotImplemented => Value::NotImplemented.py_hash(vm),
@@ -444,7 +580,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
             else Err(ExcType::type_error_not_iterable(&self.py_type_name(vm))))
     }
 
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         forward_py_value!(self, |value| value.py_next(vm),
             else Err(ExcType::type_error_not_iterator(&self.py_type_name(vm))))
     }
@@ -466,6 +602,8 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
             Self::Exception(e) => e.py_type(vm),
             Self::Module(_) => Type::Module.into(),
             Self::Coroutine(_) | Self::GatherFuture(_) | Self::ExternalFuture(_) => Type::Coroutine.into(),
+            Self::Task(_) => Type::Task.into(),
+            Self::WaitFuture(_) => Type::Coroutine.into(),
         })
     }
 
@@ -773,36 +911,18 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
-        forward_py_value!(self, |value| value.py_call_attr(vm, attr, args), {
-            Self::Module(value) => value.py_call_attr(vm, attr, args),
-            Self::Builtin(Builtins::Type(ty)) => ty.call_class_method(attr, args, vm),
-            Self::DefFunction(func_id) => {
-                match annotations::function_call_attr(*func_id, None, attr, args, vm) {
-                    Some(result) => result,
-                    None => Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm))),
-                }
-            }
-            Self::Bool(value) => {
-                match attr.static_string(vm) {
-                    Some(StaticStrings::BitLength) => {
-                        args.check_zero_args("int.bit_length", vm.heap)?;
-                        Ok(CallResult::Value(Value::Int(i64::from(*value))))
-                    }
-                    Some(StaticStrings::BitCount) => {
-                        args.check_zero_args("int.bit_count", vm.heap)?;
-                        Ok(CallResult::Value(Value::Int(i64::from(*value))))
-                    }
-                    _ => {
-                        args.drop_with(vm);
-                        Err(ExcType::attribute_error("bool", attr.as_str(vm)))
-                    }
-                }
-            }
-            _ => {
-                args.drop_with(vm);
-                Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm)))
-            }
-        })
+        let ty = match self {
+            // These markers report TextIOWrapper for type(), but carry no file methods.
+            Self::Marker(Marker(StaticStrings::Stdout | StaticStrings::Stderr)) => None,
+            // Namedtuple instances report their class in TypeRef but share native tuple storage.
+            Self::NamedTuple(_) => Some(Type::NamedTuple),
+            _ => self.py_type(vm).native(),
+        };
+        if let Some(ty) = ty {
+            ty.call_attr(self, attr, args, vm)
+        } else {
+            self.call_dynamic_attr(vm, attr, args)
+        }
     }
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
@@ -839,11 +959,12 @@ impl<'a> PythonIdDisplay<'a> {
     fn new(value: &'a Value, heap: &'a Heap) -> Self {
         match value {
             Value::Int(value) => Self::Int(*value),
-            Value::Ref(id) => match heap.get(*id) {
-                HeapData::LongInt(value) => Self::LongInt(value.inner()),
-                _ => unreachable!("identity values are integers"),
-            },
-            _ => unreachable!("identity values are integers"),
+            _ => Self::LongInt(
+                value
+                    .get_as::<LongInt>(heap)
+                    .expect("identity values are integers")
+                    .inner(),
+            ),
         }
     }
 }
@@ -865,7 +986,7 @@ mod tests {
     use crate::{
         builtins::BuiltinsFunctions,
         defer_drop_mut,
-        heap::{DropGuard, HeapReader},
+        heap::{DropGuard, HeapData, HeapReader},
         heap_data::CellValue,
         intern::{BytesId, CompileInterns, LongIntId, StringId},
         modules::math::MathFunctions,
@@ -939,7 +1060,7 @@ mod tests {
                 Value::InlineString(InlineStr::new("aé🐍b").unwrap()),
                 allocate_string_on_heap("aé🐍b", vm.heap),
                 Value::InternBytes(ids.bytes),
-                Value::Ref(vm.heap.allocate(HeapData::Bytes(Bytes::new(b"a\0\xff".to_vec())))),
+                Value::allocate(Bytes::new(b"a\0\xff".to_vec()), vm.heap),
             ];
             defer_drop!(values, vm);
             for value in values {
@@ -957,10 +1078,7 @@ mod tests {
             defer_drop!(cell, vm);
             assert_eq!(cell.py_value(vm).py_hash(vm).unwrap(), Some(identity_hash(cell_id)));
 
-            let exception = Value::Ref(
-                vm.heap
-                    .allocate(HeapData::Exception(SimpleException::new(ExcType::ValueError, None))),
-            );
+            let exception = Value::allocate(SimpleException::new(ExcType::ValueError, None), vm.heap);
             defer_drop!(exception, vm);
             assert_eq!(exception.py_value(vm).py_hash(vm).unwrap(), None);
         });
@@ -974,7 +1092,7 @@ mod tests {
                 Value::InlineString(InlineStr::new("aé🐍b").unwrap()),
                 allocate_string_on_heap("aé🐍b", vm.heap),
                 Value::InternBytes(ids.bytes),
-                Value::Ref(vm.heap.allocate(HeapData::Bytes(Bytes::new(b"a\0\xff".to_vec())))),
+                Value::allocate(Bytes::new(b"a\0\xff".to_vec()), vm.heap),
             ];
             defer_drop_mut!(values, vm);
             while let Some(value) = values.pop() {
@@ -1004,7 +1122,7 @@ mod tests {
                 assert_eq!(iterator.py_type(vm), iterator_type);
                 assert!(iterator.py_is_iterator(vm));
                 let mut actual = Vec::new();
-                while let Some(item) = iterator.py_next(vm).unwrap() {
+                while let Some(item) = iterator.read(vm).py_next(vm).unwrap() {
                     defer_drop!(item, vm);
                     actual.push(if bytes {
                         let Value::Int(byte) = item else {

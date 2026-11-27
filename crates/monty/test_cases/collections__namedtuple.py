@@ -1,12 +1,12 @@
 # Tests for `collections.namedtuple`.
 #
-# Every expectation here is derived from CPython 3.14. This file is dual-run
-# against CPython and Monty, so both must agree exactly.
+# This file runs against CPython 3.14 and Monty.
 #
 # NOTE: construction arity/keyword errors are reported against the generated
 # `__new__` (e.g. `Point.__new__() missing ...`), matching CPython 3.14 (see
 # the `=== Construction errors ===` section).
 
+import sys
 from collections import namedtuple
 
 Point = namedtuple('Point', ['x', 'y'])
@@ -56,11 +56,20 @@ assert repr(Point('a', 'b')) == "Point(x='a', y='b')", 'repr uses element repr'
 # === Tuple semantics ===
 assert p == (11, 22), 'namedtuple equals equivalent plain tuple'
 assert (11, 22) == p, 'plain tuple equals equivalent namedtuple'
+assert p in {11: 22}.items()
+assert [11, 22] not in {11: 22}.items()
+try:
+    (first,) = p
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    counts = 'expected 1, got 2' if sys.platform == 'monty' else 'expected 1'
+    assert str(exc) == f'too many values to unpack ({counts})'
 assert Point(1, 2) == Point(1, 2), 'namedtuples with equal fields are equal'
 assert Point(1, 2) != Point(1, 3), 'namedtuples with differing fields are unequal'
 assert len(p) == 2, 'len is the field count'
 assert list(p) == [11, 22], 'iteration yields values in field order'
 assert tuple(p) == (11, 22), 'tuple() round-trips the values'
+assert sorted(Point(22, 11)) == [11, 22]
 Empty = namedtuple('Empty', [])
 assert bool(Empty()) is False, 'empty namedtuple is falsey'
 assert bool(p) is True, 'non-empty namedtuple is truthy'

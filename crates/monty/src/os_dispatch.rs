@@ -100,8 +100,7 @@ impl PendingEffect {
             // The reading still has to become a `struct_time` or a string, which
             // a future defers past the point the sandbox needs it.
             Self::Post(PostConversionEffect::ClockReading { .. }) => Some("time.time"),
-            // The load answers a `ForIter` or `next()` that is waiting for the
-            // buffer; a future would land on the stack where the file is expected.
+            // Advancing the iterator needs a line, not a future for the raw buffer.
             Self::Post(PostConversionEffect::BufferLoad { .. } | PostConversionEffect::FileNext { .. }) => {
                 Some("file iteration")
             }
@@ -110,7 +109,7 @@ impl PendingEffect {
             Self::Post(PostConversionEffect::FileSeekEnd { .. }) => Some("file.seek"),
             // A future strands these instead: the awaited value is the raw host reply.
             Self::Post(PostConversionEffect::BufferStore { .. } | PostConversionEffect::WritePosition { .. }) => None,
-            // `asyncio.sleep` wants the future: `resume_with_result` moves the
+            // The sleeps want the future: `resume_with_result` moves the
             // result onto the pending awaitable instead.
             Self::Post(PostConversionEffect::SleepResult { .. }) => None,
         }
@@ -321,9 +320,9 @@ pub(crate) fn invalid_reply(operation: &str, expected: &str, value: &MontyObject
 
 /// Applies the converted host value to VM state. The file variants and
 /// `SeedRandom`'s instance target own a reference to their heap object across
-/// the host yield (see `inc_ref_for_pending_oscall`) and `SleepResult` owns its
-/// value; each is released exactly once — on apply, or via [`Self::release`]
-/// when the effect is discarded.
+/// the host yield (see `inc_ref_for_pending_oscall`), and `SleepResult` owns its
+/// result (plus the wait future when routed to a wait); each is released exactly
+/// once — on apply, or via [`Self::release`] when the effect is discarded.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum PostConversionEffect {
     /// Store a full-file read result into the file buffer, then compute the
@@ -332,13 +331,14 @@ pub(crate) enum PostConversionEffect {
     /// [`BufferStore`](Self::BufferStore), then parse the rest of the file as
     /// JSON: `json.load(fp)` on a file whose buffer is not loaded yet.
     JsonLoad { file_id: HeapId },
-    /// Store a full-file read result into the file buffer and push nothing:
-    /// the `ForIter` that found the file unloaded re-dispatches against it.
+    /// Pre-v17 file loops replay the saved `ForIter` after installing the buffer, without pushing an item.
     BufferLoad { file_id: HeapId },
-    /// Store a full-file read result into the file buffer, then answer
-    /// `next(file, default)`: the first line, `default` at EOF, or
-    /// `StopIteration`. Owns `default`'s reference across the yield.
-    FileNext { file_id: HeapId, default: Option<Value> },
+    /// Answer a file advancement; only pre-v17 `next(file, default)` stores its default here.
+    FileNext {
+        file_id: HeapId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        default: Option<Value>,
+    },
     /// Refresh a write-only file's unknown length before seeking from EOF.
     FileSeekEnd { file_id: HeapId, offset: i64 },
     /// Advance the file's logical position by the successful write result.
@@ -391,12 +391,27 @@ pub(crate) enum PostConversionEffect {
     /// asked for it returns — a `struct_time`, a formatted string or
     /// nanoseconds. Holds no heap reference, so nothing to release.
     ClockReading { reading: ClockReading },
-    /// Drop the host's answer and produce `result` from an awaitable, so
-    /// `asyncio.sleep(delay, result)` is awaitable whether the host answered
-    /// immediately (a settled awaitable) or with a future (the pending
-    /// awaitable takes `result` over; see `ExternalFuture::sleep_result`).
-    /// Owns `result`'s reference; released by [`release_pending_effect`].
-    SleepResult { result: Value },
+    /// Drop the host's answer and produce an awaitable from a sleep call.
+    /// `asyncio.sleep` resolves with `result`; `asyncio.wait` installs it as
+    /// the timeout timer and returns the wait future instead. Owns `result`,
+    /// plus the wait future on `SleepDestination::Wait`; released by
+    /// [`release_pending_effect`].
+    SleepResult {
+        result: Value,
+        #[serde(default)]
+        destination: SleepDestination,
+    },
+}
+
+/// Where the awaitable produced by a host sleep reply goes.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+pub(crate) enum SleepDestination {
+    /// `asyncio.sleep`: the awaitable becomes the call's value.
+    #[default]
+    Value,
+    /// `asyncio.wait`: the awaitable is installed as the wait's timeout
+    /// timer, and the wait future becomes the call's value.
+    Wait(Value),
 }
 
 impl PostConversionEffect {
@@ -405,16 +420,16 @@ impl PostConversionEffect {
     /// and a sleep's result. The single place that knows which variants carry a refcount.
     pub(crate) fn release(self, heap: &mut impl ContainsHeap) {
         match self {
+            Self::FileNext { file_id, default } => {
+                heap.heap_mut().dec_ref(file_id);
+                default.drop_with(heap);
+            }
             Self::BufferStore { file_id }
             | Self::JsonLoad { file_id }
             | Self::BufferLoad { file_id }
             | Self::FileSeekEnd { file_id, .. }
             | Self::WritePosition { file_id, .. } => {
                 heap.heap_mut().dec_ref(file_id);
-            }
-            Self::FileNext { file_id, default } => {
-                heap.heap_mut().dec_ref(file_id);
-                default.drop_with(heap);
             }
             Self::LoadThenCall {
                 file_id,
@@ -426,7 +441,12 @@ impl PostConversionEffect {
                 args.drop_with(heap);
             }
             Self::OpenName { .. } | Self::DiscardResult | Self::ClockReading { .. } => {}
-            Self::SleepResult { result } => result.drop_with(heap),
+            Self::SleepResult { result, destination } => {
+                result.drop_with(heap);
+                if let SleepDestination::Wait(wait) = destination {
+                    wait.drop_with(heap);
+                }
+            }
             Self::SeedRandom { target, retry } => {
                 if let RandomTarget::Instance(id) = target {
                     heap.heap_mut().dec_ref(id);
@@ -601,34 +621,6 @@ fn directory_entries(value: MontyObject, receiver: Option<(&str, &ResourceTracke
 // Path-method dispatcher (used by `types/path.rs`).
 // =============================================================================
 
-/// Pre-flight check for [`build_path_os_call`]: lets the caller decide whether
-/// to commit ownership of the path/args to the builder.
-#[must_use]
-pub(crate) fn is_path_os_method(method: StaticStrings) -> bool {
-    matches!(
-        method,
-        StaticStrings::Exists
-            | StaticStrings::IsFile
-            | StaticStrings::IsDir
-            | StaticStrings::IsSymlink
-            | StaticStrings::ReadText
-            | StaticStrings::ReadBytes
-            | StaticStrings::StatMethod
-            | StaticStrings::Iterdir
-            | StaticStrings::Resolve
-            | StaticStrings::Absolute
-            | StaticStrings::Unlink
-            | StaticStrings::Rmdir
-            | StaticStrings::WriteText
-            | StaticStrings::AppendText
-            | StaticStrings::WriteBytes
-            | StaticStrings::AppendBytes
-            | StaticStrings::Mkdir
-            | StaticStrings::Rename
-            | StaticStrings::Replace
-    )
-}
-
 /// Builds a host request and its resume action for a `pathlib.Path` OS method.
 /// Owns `args` and cleans up its references on every error path.
 pub(crate) fn build_path_os_call(
@@ -707,7 +699,7 @@ pub(crate) fn build_path_os_call(
         }
         _ => {
             args.drop_with(vm.heap);
-            unreachable!("is_path_os_method gates the call");
+            unreachable!("the registered Path method selects the call");
         }
     };
     Ok(CallResult::OsCall(call))
@@ -724,7 +716,7 @@ fn extract_str_data(
 ) -> RunResult<PathStringDataArgs> {
     let data = arg_or_missing_data(method, args, heap)?;
     // Only `str`: a path-like is not text, so CPython refuses `Path` and `DirEntry` here.
-    let data_str = data.try_to_str_heap(heap, interns).ok().map(str::to_owned);
+    let data_str = data.try_as_str_heap(heap, interns).ok().map(str::to_owned);
 
     // CPython names the type by its `__name__`: no module (`DirEntry`, not
     // `posix.DirEntry`), but a class's own name (`Point` for a named tuple).
@@ -751,7 +743,7 @@ fn extract_bytes_data(
     interns: &Interns,
 ) -> RunResult<PathBytesDataArgs> {
     let data = arg_or_missing_data(method, args, heap)?;
-    let bytes = value_to_owned_bytes(&data, heap, interns);
+    let bytes = data.as_bytes_heap(heap, interns).map(<[u8]>::to_vec);
 
     let py_type = data.py_type_name_heap(heap, interns);
     data.drop_with(heap);
@@ -904,23 +896,6 @@ pub(crate) fn value_as_path_str<'a>(value: &'a Value, heap: &'a Heap, interns: &
         Value::Ref(id) => match heap.get(*id) {
             HeapData::Path(p) => Some(p.as_str()),
             HeapData::DirScan(scan) => scan.fspath(),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// Owned `Vec<u8>` if `value` is a `bytes` (interned or heap), else `None`.
-pub(crate) fn value_to_owned_bytes(value: &Value, heap: &Heap, interns: &Interns) -> Option<Vec<u8>> {
-    value_as_bytes(value, heap, interns).map(<[u8]>::to_vec)
-}
-
-/// The bytes of a `bytes` `value` (interned or heap), borrowed, else `None`.
-pub(crate) fn value_as_bytes<'a>(value: &Value, heap: &'a Heap, interns: &'a Interns) -> Option<&'a [u8]> {
-    match value {
-        Value::InternBytes(id) => Some(interns.get_bytes(*id)),
-        Value::Ref(id) => match heap.get(*id) {
-            HeapData::Bytes(b) => Some(b.as_slice()),
             _ => None,
         },
         _ => None,

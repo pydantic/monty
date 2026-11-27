@@ -378,14 +378,7 @@ fn snippet_source(name: &str, source: &Value, vm: &mut VM<'_>) -> RunResult<Arc<
         return Ok(Arc::from(text));
     }
 
-    let bytes: &[u8] = match source {
-        Value::InternBytes(id) => vm.interns.get_bytes(*id),
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Bytes(b) => b.as_slice(),
-            _ => return Err(source_type_error(name)),
-        },
-        _ => return Err(source_type_error(name)),
-    };
+    let bytes = source.as_bytes(vm).ok_or_else(|| source_type_error(name))?;
     match str::from_utf8(bytes) {
         Ok(text) => Ok(Arc::from(text)),
         Err(err) => {

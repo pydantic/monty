@@ -8,6 +8,7 @@
 
 use std::{cell::Cell, fmt::Write, mem::take};
 
+use monty_macros::pyattrs;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -21,6 +22,7 @@ use crate::{
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StaticStrings,
     modules::ModuleFunctions,
+    py_attrs::PyAttrs,
     types::{
         Dict, LazyHeapSet, NamedTuple, PyTrait, Type, TypeRef,
         hash_table::{PyHashTable, Slot, TableEntry, TableProbe, TableSource},
@@ -159,7 +161,7 @@ pub(crate) fn call(cache_id: HeapId, args: ArgValues, vm: &mut VM<'_>) -> RunRes
     } else {
         cache.get_mut(vm.heap).misses += 1;
         let kwargs = Dict::from_pairs(take(keywords), vm)?;
-        let kwargs = Value::Ref(vm.heap.allocate(HeapData::Dict(kwargs)));
+        let kwargs = Value::allocate(kwargs, vm.heap);
         let args = allocate_tuple(TupleVec::from_vec(take(positional)), vm.heap);
         let store = Value::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::Store));
         let function = func.clone_with_heap(vm);
@@ -204,7 +206,7 @@ fn decorate(maxsize: Option<u64>, typed: bool, args: ArgValues, vm: &mut VM<'_>)
 pub(crate) fn allocate(func: Option<Value>, maxsize: Option<u64>, typed: bool, vm: &mut VM<'_>) -> RunResult<Value> {
     if func.as_ref().is_none_or(|func| func.is_callable(vm)) {
         let cache = LruCache::new(func, maxsize, typed);
-        Ok(Value::Ref(vm.heap.allocate(HeapData::LruCache(Box::new(cache)))))
+        Ok(Value::allocate(cache, vm.heap))
     } else {
         func.drop_with(vm);
         Err(ExcType::partial_not_callable())
@@ -411,34 +413,15 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LruCache> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
-        let value = match attr.static_string(vm) {
-            Some(StaticStrings::CacheInfo) => {
-                args.check_zero_args("_lru_cache_wrapper.cache_info", vm.heap)?;
-                self.cache_info(vm)
-            }
-            Some(StaticStrings::CacheClear) => {
-                args.check_zero_args("_lru_cache_wrapper.cache_clear", vm.heap)?;
-                self.cache_clear(vm);
-                Value::None
-            }
-            Some(StaticStrings::CacheParameters) => {
-                args.check_zero_args("_lru_cache_wrapper.cache_parameters", vm.heap)?;
-                self.cache_parameters(vm)?
-            }
-            // `f.__wrapped__(...)` is an ordinary call of the attribute's
-            // value, not a method of the wrapper, so hand it straight on —
-            // uncached, which is the point of reaching for `__wrapped__`.
-            Some(StaticStrings::DunderWrapped) if let Some(func) = self.get(vm.heap).func.as_ref() => {
-                let func = func.clone_with_heap(vm);
-                defer_drop!(func, vm);
-                return vm.call_function(func, args);
-            }
-            _ => {
-                args.drop_with(vm);
-                return Err(ExcType::attribute_error(Type::LruCacheWrapper, attr.as_str(vm)));
-            }
-        };
-        Ok(CallResult::Value(value))
+        // __wrapped__ is a stored callable, so it bypasses the native method table.
+        if attr.static_string(vm) == Some(StaticStrings::DunderWrapped)
+            && let Some(func) = self.get(vm.heap).func.as_ref()
+        {
+            let func = func.clone_with_heap(vm);
+            defer_drop!(func, vm);
+            return vm.call_function(func, args);
+        }
+        Err(ExcType::attribute_error_method(Type::LruCacheWrapper, attr, args, vm))
     }
 }
 
@@ -462,7 +445,7 @@ impl<'h> HeapObjectRead<'h, LruCache> {
             ],
             items,
         );
-        Value::Ref(vm.heap.allocate(HeapData::NamedTuple(Box::new(info))))
+        Value::allocate(info, vm.heap)
     }
 
     /// Empties the cache and resets the hit/miss counters, as CPython does.
@@ -488,7 +471,7 @@ impl<'h> HeapObjectRead<'h, LruCache> {
             ),
         ];
         let dict = Dict::from_pairs(pairs, vm)?;
-        Ok(Value::Ref(vm.heap.allocate(HeapData::Dict(dict))))
+        Ok(Value::allocate(dict, vm.heap))
     }
 }
 
@@ -554,4 +537,40 @@ fn count_value(count: u64) -> Value {
 /// `maxsize` as Python sees it: an `int`, or `None` when unbounded.
 fn maxsize_value(maxsize: Option<u64>) -> Value {
     maxsize.map_or(Value::None, count_value)
+}
+
+pub(crate) struct PyLruCacheImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyLruCacheImpl {
+    type Receiver = HeapObjectRead<'heap, LruCache>;
+
+    #[pymethod(CacheInfo)]
+    fn cache_info<'h>(this: &mut HeapObjectRead<'h, LruCache>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        Ok({
+            args.check_zero_args("_lru_cache_wrapper.cache_info", vm.heap)?;
+            this.cache_info(vm)
+        })
+    }
+
+    #[pymethod(CacheClear)]
+    fn cache_clear<'h>(this: &mut HeapObjectRead<'h, LruCache>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        Ok({
+            args.check_zero_args("_lru_cache_wrapper.cache_clear", vm.heap)?;
+            this.cache_clear(vm);
+            Value::None
+        })
+    }
+
+    #[pymethod(CacheParameters)]
+    fn cache_parameters<'h>(
+        this: &mut HeapObjectRead<'h, LruCache>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Value> {
+        Ok({
+            args.check_zero_args("_lru_cache_wrapper.cache_parameters", vm.heap)?;
+            this.cache_parameters(vm)?
+        })
+    }
 }

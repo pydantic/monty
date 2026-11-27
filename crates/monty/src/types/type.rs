@@ -19,9 +19,11 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropWithContext, Heap},
     intern::StaticStrings,
+    modules::collections,
+    py_attrs::{self, AttrDef},
     py_value::PyValue,
     types::{
-        GenericAlias, LongInt, PyTrait, allocate_tuple,
+        GenericAlias, LongInt, PyTrait, TypeRef, allocate_tuple,
         bytes::bytes_repr,
         instance::BoundMethod,
         long_int::INT_MAX_STR_DIGITS,
@@ -86,6 +88,29 @@ impl Type {
         CALLABLE_TYPES.get(usize::from(id)).copied()
     }
 
+    /// Returns the first definition in the MRO and the native namespace that owns it.
+    /// The owner validates descriptors; class methods bind to the accessing class.
+    pub(crate) fn lookup_attr<'h>(self, attr: &PyStr<'h>, vm: &VM<'h>) -> Option<(Self, AttrDef)> {
+        let name = attr.static_string(vm)?;
+        self.mro()
+            .find_map(|owner| (owner.def().attrs?.lookup)(name).map(|definition| (owner, definition)))
+    }
+
+    /// Calls registered methods on existing views, binding class methods to the receiver's class.
+    pub(crate) fn call_attr<'h>(
+        self,
+        obj: &mut PyValue<'h>,
+        attr: &PyStr<'h>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        match self.lookup_attr(attr, vm) {
+            Some((owner, AttrDef::Method(call))) => py_attrs::call_method(owner, obj, attr, call, args, vm),
+            Some((_, AttrDef::ClassMethod(classmethod))) => classmethod(obj.py_type(vm), args, vm),
+            _ => obj.call_dynamic_attr(vm, attr, args),
+        }
+    }
+
     /// Dispatches calls on a type object's attribute (`dict.fromkeys(...)`).
     ///
     /// A type's own class methods run first, then `__class_getitem__`; any
@@ -97,13 +122,18 @@ impl Type {
         args: ArgValues,
         vm: &mut VM<'h>,
     ) -> RunResult<CallResult> {
-        let args = match self.def().class_method {
-            Some(class_method) => match class_method(attr, args, vm) {
-                Ok(result) => return result,
-                Err(args) => args,
-            },
-            None => args,
-        };
+        match self.lookup_attr(attr, vm) {
+            Some((_, AttrDef::ClassMethod(classmethod))) => {
+                return classmethod(TypeRef::Native(self), args, vm);
+            }
+            Some((Self::Counter, AttrDef::Method(call))) => {
+                return collections::counter::call_unbound(attr, call, args, vm);
+            }
+            Some((owner, AttrDef::Method(call))) => {
+                return py_attrs::call_unbound(owner, attr, call, args, vm);
+            }
+            _ => {}
+        }
         if self.has_class_getitem() && attr.static_string(vm) == Some(StaticStrings::ClassGetitem) {
             // `list.__class_getitem__(int)` is `list[int]`; the error names the
             // bare type as CPython does (`deque.__class_getitem__()`).
@@ -153,9 +183,10 @@ impl Type {
     /// Every lookup allocates a fresh object, so `date.min is date.min` is
     /// `False` where CPython caches (see limitations/datetime.md).
     pub(crate) fn class_constant<'h>(self, attr: &PyStr<'h>, vm: &mut VM<'h>) -> Option<Value> {
-        // Native ancestors' members are inherited too: `int.__init__` is `object`'s.
-        self.mro()
-            .find_map(|ty| ty.def().class_attr.and_then(|class_attr| class_attr(attr, vm)))
+        match self.lookup_attr(attr, vm) {
+            Some((_, AttrDef::Value(get))) => Some(get(vm)),
+            _ => None,
+        }
     }
 
     /// The `AttributeError` for a name missing from this type object.
@@ -190,7 +221,7 @@ pub(crate) fn bind_init_subclass(class: Value, hook: Value, heap: &Heap) -> Valu
 /// The types the `CallBuiltinType` opcode can name, indexed by operand.
 ///
 /// Append-only: the index is a bytecode operand persisted in dumps.
-const CALLABLE_TYPES: [Type; 15] = [
+const CALLABLE_TYPES: [Type; 17] = [
     Type::Bool,
     Type::Int,
     Type::Float,
@@ -206,6 +237,8 @@ const CALLABLE_TYPES: [Type; 15] = [
     Type::Iterator,
     Type::Path,
     Type::Complex,
+    Type::Map,
+    Type::Filter,
 ];
 
 /// `float(x=0.0, /)`: numeric coercion, then str/bytes parsing.

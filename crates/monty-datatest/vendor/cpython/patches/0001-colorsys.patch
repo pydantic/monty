@@ -1,0 +1,17 @@
+Make the input generator eager because Monty does not support generators.
+The upstream inputs, assertions and tolerances are unchanged.
+
+--- a/test/test_colorsys.py
++++ b/test/test_colorsys.py
+@@ -2,8 +2,10 @@
+ import colorsys
+ 
+ def frange(start, stop, step):
++    values = []
+     while start <= stop:
+-        yield start
++        values.append(start)
+         start += step
++    return values
+ 
+ class ColorsysTest(unittest.TestCase):

@@ -6,6 +6,7 @@
 //! path and codec the pool dials — so nothing here depends on generated code.
 
 use std::{
+    collections::VecDeque,
     convert::Infallible,
     future::Future,
     mem,
@@ -54,8 +55,8 @@ pub struct MockServer {
     url: String,
     /// Streams the service admitted, in order, for scripts to `accept`.
     incoming: mpsc::Receiver<MockStream>,
-    /// A status the next stream is refused with, before any event.
-    refuse: Arc<Mutex<Option<Status>>>,
+    /// Statuses to refuse successive streams with, before any event.
+    refuse: Arc<Mutex<VecDeque<Status>>>,
     task: JoinHandle<()>,
     shutdown: Option<oneshot::Sender<()>>,
     /// The forwarder in front of the server, when started with one.
@@ -83,7 +84,7 @@ impl MockServer {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let port = listener.local_addr().expect("addr").port();
         let (tx, incoming) = mpsc::channel();
-        let refuse = Arc::new(Mutex::new(None));
+        let refuse = Arc::new(Mutex::new(VecDeque::new()));
         let service = MockService {
             incoming: tx,
             refuse: Arc::clone(&refuse),
@@ -175,7 +176,7 @@ impl MockServer {
     /// Refuses the next stream with `status` before admitting it — what a
     /// server at capacity, or one rejecting the caller's credentials, does.
     pub fn refuse_next(&self, status: Status) {
-        *self.refuse.lock().expect("refusal lock") = Some(status);
+        self.refuse.lock().expect("refusal lock").push_back(status);
     }
 }
 
@@ -345,7 +346,7 @@ impl MockStream {
 #[derive(Clone)]
 struct MockService {
     incoming: mpsc::Sender<MockStream>,
-    refuse: Arc<Mutex<Option<Status>>>,
+    refuse: Arc<Mutex<VecDeque<Status>>>,
 }
 
 impl NamedService for MockService {
@@ -381,7 +382,7 @@ impl StreamingService<Bytes> for MockService {
     type Future = Pin<Box<dyn Future<Output = Result<Response<Self::ResponseStream>, Status>> + Send>>;
 
     fn call(&mut self, request: Request<Streaming<Bytes>>) -> Self::Future {
-        let refusal = self.refuse.lock().expect("refusal lock").take();
+        let refusal = self.refuse.lock().expect("refusal lock").pop_front();
         let incoming = self.incoming.clone();
         Box::pin(async move {
             if let Some(status) = refusal {

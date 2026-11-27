@@ -18,14 +18,11 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_one},
-    heap::{
-        ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapPayload,
-        HeapReadOutput,
-    },
+    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapPayload},
     intern::StaticStrings,
     types::{
-        LazyHeapSet, PyTrait, Type, TypeRef, generic_alias::repr_type_arg, list::repr_should_truncate, str::PyStr,
-        tuple::allocate_tuple,
+        LazyHeapSet, PyTrait, Tuple, Type, TypeRef, generic_alias::repr_type_arg, list::repr_should_truncate,
+        str::PyStr, tuple::allocate_tuple,
     },
     value::{VALUE_SIZE, Value},
 };
@@ -147,7 +144,7 @@ impl Union {
             Ok(flat.remove(0))
         } else {
             let args = allocate_tuple(SmallVec::from_vec(flat), vm.heap);
-            Ok(Value::Ref(vm.heap.allocate(HeapData::Union(Self { args }))))
+            Ok(Value::allocate(Self { args }, vm.heap))
         }
     }
 
@@ -289,7 +286,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Union> {
 
     /// Two unions are equal when they have the same members in any order.
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        let Some(HeapReadOutput::Union(other)) = other.read_heap(vm) else {
+        let Some(other) = other.read_as::<Union>(vm.heap) else {
             return Ok(None);
         };
         let args = self.get(vm.heap).args(vm.heap);
@@ -356,7 +353,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Union> {
         let vm = &mut *guard;
         let args = self.get(vm.heap).args(vm.heap);
         defer_drop!(args, vm);
-        let Some(HeapReadOutput::Tuple(args)) = args.read_heap(vm) else {
+        let Some(args) = args.read_as::<Tuple>(vm.heap) else {
             unreachable!("Union::args is always a tuple")
         };
         let count = args.get(vm.heap).as_slice().len();

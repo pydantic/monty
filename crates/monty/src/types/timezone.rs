@@ -8,23 +8,25 @@ use std::{
     hash::{Hash, Hasher},
 };
 
+use monty_macros::pyattrs;
 // The bounds live in `monty-types` so the wire decoder shares them; re-exported
 // here because this is where the sandbox-side constructor enforces them.
 pub(crate) use monty_types::{MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS};
 
 use crate::{
     args::{ArgValues, FromArgs},
-    bytecode::{CallResult, VM},
+    bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
-    heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
-    intern::{Interns, StaticStrings},
+    heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead},
+    intern::Interns,
+    py_attrs::PyAttrs,
     types::{
         LazyHeapSet, PyTrait, Type, TypeRef,
-        str::{PyStr, StringRepr, allocate_string},
+        str::{StringRepr, allocate_string},
         timedelta,
-        timedelta::{MICROSECONDS_PER_SECOND, SECONDS_PER_HOUR, SECONDS_PER_MINUTE},
+        timedelta::{MICROSECONDS_PER_SECOND, SECONDS_PER_HOUR, SECONDS_PER_MINUTE, TimeDelta},
     },
     value::Value,
 };
@@ -92,7 +94,7 @@ impl TimeZone {
         }
 
         let tz = Self::new(offset_seconds, name_str)?;
-        Ok(Value::Ref(vm.heap.allocate(HeapData::TimeZone(tz))))
+        Ok(Value::allocate(tz, vm.heap))
     }
 }
 
@@ -138,10 +140,7 @@ fn extract_offset_seconds(offset_arg: &Value, heap: &Heap, interns: &Interns) ->
             offset_arg.py_type_heap(heap).cpython_arg_name(heap, interns),
         ))
     };
-    let Value::Ref(offset_id) = offset_arg else {
-        return Err(bad_type());
-    };
-    let HeapData::TimeDelta(delta) = heap.get(*offset_id) else {
+    let Some(delta) = offset_arg.get_as::<TimeDelta>(heap) else {
         return Err(bad_type());
     };
 
@@ -229,23 +228,13 @@ pub(crate) fn utcoffset_value(offset_seconds: Option<i32>, heap: &Heap) -> Value
     }
 }
 
-/// `timezone.utc`, `timezone.min` and `timezone.max`.
-pub(crate) fn class_attr<'h>(attr: &PyStr<'h>, vm: &mut VM<'h>) -> Option<Value> {
-    Some(match attr.static_string(vm)? {
-        StaticStrings::Utc => vm.heap.get_timezone_utc(),
-        StaticStrings::Min => allocate_offset(-MAX_TIMEZONE_CONSTANT_SECONDS, vm.heap),
-        StaticStrings::Max => allocate_offset(MAX_TIMEZONE_CONSTANT_SECONDS, vm.heap),
-        _ => return None,
-    })
-}
-
 /// Allocates an unnamed `timezone` for an offset known to be in range.
 ///
 /// For the `timezone.min` / `timezone.max` class constants; anything derived
 /// from user input must go through [`TimeZone::new`] so the bounds are checked.
 pub(crate) fn allocate_offset(offset_seconds: i32, heap: &Heap) -> Value {
     let tz = TimeZone::new(offset_seconds, None).expect("caller guarantees an in-range offset");
-    Value::Ref(heap.allocate(HeapData::TimeZone(tz)))
+    Value::allocate(tz, heap)
 }
 
 /// Validates the `dt` argument every `tzinfo` method takes.
@@ -275,7 +264,7 @@ pub(crate) fn format_offset_timedelta_repr(offset_seconds: i32) -> String {
 
 fn extract_name(name_arg: &Value, heap: &Heap, interns: &Interns) -> RunResult<Option<String>> {
     name_arg
-        .try_to_str_heap(heap, interns)
+        .try_as_str_heap(heap, interns)
         .map(|name| Some(name.to_owned()))
         .map_err(|_| bad_name_arg(name_arg, heap, interns))
 }
@@ -305,7 +294,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeZone> {
     }
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        let Some(HeapReadOutput::TimeZone(other)) = other.read_heap(vm) else {
+        let Some(other) = other.read_as::<TimeZone>(vm.heap) else {
             return Ok(None);
         };
         Ok(Some(
@@ -344,30 +333,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeZone> {
         let s = tzname_string(tz.offset_seconds, tz.name.as_deref());
         Ok(allocate_string(s, vm.heap))
     }
-
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
-        // Each method takes the `dt` it would need to resolve a DST rule. A fixed
-        // offset has no such rule, so `take_dt_arg` validates and discards it.
-        match attr.static_string(vm) {
-            Some(StaticStrings::Utcoffset) => {
-                take_dt_arg("timezone.utcoffset", args, vm)?;
-                let offset_seconds = self.get(vm.heap).offset_seconds;
-                Ok(CallResult::Value(utcoffset_value(Some(offset_seconds), vm.heap)))
-            }
-            Some(StaticStrings::Tzname) => {
-                take_dt_arg("timezone.tzname", args, vm)?;
-                let tz = self.get(vm.heap);
-                let name = tzname_string(tz.offset_seconds, tz.name.as_deref());
-                Ok(CallResult::Value(allocate_string(name, vm.heap)))
-            }
-            Some(StaticStrings::Dst) => {
-                take_dt_arg("timezone.dst", args, vm)?;
-                // A fixed offset never observes daylight saving.
-                Ok(CallResult::Value(Value::None))
-            }
-            _ => Err(ExcType::attribute_error_method(Type::TimeZone, attr, args, vm)),
-        }
-    }
 }
 
 /// Consumes the single `dt` argument shared by `utcoffset` / `tzname` / `dst`.
@@ -382,4 +347,47 @@ fn take_dt_arg(qualified_name: &'static str, args: ArgValues, vm: &mut VM<'_>) -
         .split_once('.')
         .expect("tzinfo method names are qualified as `timezone.<method>`");
     check_tzinfo_dt_arg(method, dt, vm.heap, vm.interns)
+}
+
+pub(crate) struct PyTimeZoneImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyTimeZoneImpl {
+    type Receiver = HeapObjectRead<'heap, TimeZone>;
+
+    #[pymethod(Utcoffset)]
+    fn utcoffset<'h>(value: &mut HeapObjectRead<'h, TimeZone>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        take_dt_arg("timezone.utcoffset", args, vm)?;
+        let offset_seconds = value.get(vm.heap).offset_seconds;
+        Ok(utcoffset_value(Some(offset_seconds), vm.heap))
+    }
+
+    #[pymethod(Tzname)]
+    fn tzname<'h>(value: &mut HeapObjectRead<'h, TimeZone>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        take_dt_arg("timezone.tzname", args, vm)?;
+        let tz = value.get(vm.heap);
+        let name = tzname_string(tz.offset_seconds, tz.name.as_deref());
+        Ok(allocate_string(name, vm.heap))
+    }
+
+    #[pymethod(Dst)]
+    fn dst<'h>(_: &mut HeapObjectRead<'h, TimeZone>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        take_dt_arg("timezone.dst", args, vm)?;
+        Ok(Value::None)
+    }
+
+    #[pyvalue(Utc)]
+    fn utc(vm: &mut VM<'_>) -> Value {
+        vm.heap.get_timezone_utc()
+    }
+
+    #[pyvalue(Min)]
+    fn min(vm: &mut VM<'_>) -> Value {
+        allocate_offset(-MAX_TIMEZONE_CONSTANT_SECONDS, vm.heap)
+    }
+
+    #[pyvalue(Max)]
+    fn max(vm: &mut VM<'_>) -> Value {
+        allocate_offset(MAX_TIMEZONE_CONSTANT_SECONDS, vm.heap)
+    }
 }

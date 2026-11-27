@@ -178,6 +178,18 @@ fn path_read_bytes() {
 }
 
 #[test]
+fn path_append_methods_forward_the_path_and_data() {
+    let path = MontyObject::path("/log".to_owned());
+    let (func, args) = run_to_oscall("from pathlib import Path; Path('/log').append_text('more')");
+    assert_eq!(func, "Path.append_text");
+    assert_eq!(args, vec![path.clone(), MontyObject::string("more".to_owned())]);
+
+    let (func, args) = run_to_oscall("from pathlib import Path; Path.append_bytes(Path('/log'), b'more')");
+    assert_eq!(func, "Path.append_bytes");
+    assert_eq!(args, vec![path, MontyObject::bytes(b"more".to_vec())]);
+}
+
+#[test]
 fn path_stat() {
     let (func, args) = run_to_oscall("from pathlib import Path; Path('/tmp/file.txt').stat()");
     assert_eq!(func, "Path.stat");

@@ -21,6 +21,7 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
+use monty_macros::pyattrs;
 use monty_types::ResourceTracker;
 use serde::{Deserialize, Serialize};
 
@@ -36,8 +37,9 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
-    heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead},
+    heap::{DropWithContext, Heap, HeapId, HeapItem, HeapObjectRead, HeapRead},
     intern::StaticStrings,
+    py_attrs::PyAttrs,
     py_value::PyValue,
     types::{
         LazyHeapSet, PyTrait, Type, TypeRef, allocate_string, bytes::allocate_bytes, py_trait::PyObjectIdentity,
@@ -368,7 +370,7 @@ impl HashObject {
     }
 
     pub(crate) fn allocate(self, heap: &Heap) -> Value {
-        Value::Ref(heap.allocate(HeapData::HashObject(Box::new(self))))
+        Value::allocate(self, heap)
     }
 }
 
@@ -502,59 +504,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HashObject> {
             Err(ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm)))
         }
     }
-
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
-        let algorithm = self.get(vm.heap).algorithm;
-        let method = |name: &str| format!("{}.{name}", algorithm.method_prefix());
-        match attr.static_string(vm) {
-            Some(StaticStrings::Update) => {
-                if matches!(args, ArgValues::Kwargs(_) | ArgValues::ArgsKargs { .. }) {
-                    args.drop_with(vm);
-                    return Err(ExcType::type_error_no_kwargs(&method("update")));
-                }
-                let data = args.get_one_arg(&method("update"), vm.heap)?;
-                defer_drop!(data, vm);
-                let data = data.py_value(vm);
-                // The input borrows the heap, so the state is lifted out while
-                // it is absorbed and put back on every path.
-                let mut hash = mem::take(self.get_mut(vm.heap));
-                let absorbed = hash_input(&data, vm).and_then(|input| hash.update(input, &vm.heap.tracker));
-                *self.get_mut(vm.heap) = hash;
-                absorbed.map(|()| CallResult::Value(Value::None))
-            }
-            Some(StaticStrings::Digest) if algorithm.is_xof() => {
-                let XofDigestArgs { length } = XofDigestArgs::from_args(args, vm)?;
-                let length = xof_length(length, 1, vm)?;
-                let digest = self.get(vm.heap).digest_xof(length, &vm.heap.tracker)?;
-                Ok(CallResult::Value(allocate_bytes(digest, vm.heap)))
-            }
-            Some(StaticStrings::Hexdigest) if algorithm.is_xof() => {
-                let XofHexdigestArgs { length } = XofHexdigestArgs::from_args(args, vm)?;
-                // The raw digest stays live while its hex is built.
-                let length = xof_length(length, 3, vm)?;
-                let digest = self.get(vm.heap).digest_xof(length, &vm.heap.tracker)?;
-                Ok(CallResult::Value(allocate_string(hex_string(&digest), vm.heap)))
-            }
-            Some(StaticStrings::Digest) => {
-                args.check_zero_args(&method("digest"), vm.heap)?;
-                let digest = self.get(vm.heap).digest();
-                Ok(CallResult::Value(allocate_bytes(digest.to_vec(), vm.heap)))
-            }
-            Some(StaticStrings::Hexdigest) => {
-                args.check_zero_args(&method("hexdigest"), vm.heap)?;
-                let digest = self.get(vm.heap).digest();
-                Ok(CallResult::Value(allocate_string(hex_string(&digest), vm.heap)))
-            }
-            Some(StaticStrings::Copy) => {
-                args.check_zero_args(&method("copy"), vm.heap)?;
-                Ok(CallResult::Value(self.allocate_like(vm)))
-            }
-            _ => {
-                args.drop_with(vm);
-                Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm)))
-            }
-        }
-    }
 }
 
 impl<'h> HeapRead<'h, HashObject> {
@@ -586,5 +535,187 @@ pub(crate) fn hash_input<'a, 'h>(value: &'a PyValue<'h>, vm: &'a VM<'h>) -> RunR
         PyValue::Str(_) => Err(ExcType::type_error("Strings must be encoded before hashing")),
         PyValue::Bytes(bytes) => Ok(bytes.as_slice(vm)),
         _ => Err(ExcType::type_error("object supporting the buffer API required")),
+    }
+}
+
+pub(crate) struct PyHashImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyHashImpl {
+    type Receiver = HeapObjectRead<'heap, HashObject>;
+
+    #[pymethod(Update)]
+    fn update<'h>(
+        this: &mut HeapObjectRead<'h, HashObject>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        let algorithm = this.get(vm.heap).algorithm;
+        let method = |name: &str| format!("{}.{name}", algorithm.method_prefix());
+        {
+            if matches!(args, ArgValues::Kwargs(_) | ArgValues::ArgsKargs { .. }) {
+                args.drop_with(vm);
+                return Err(ExcType::type_error_no_kwargs(&method("update")));
+            }
+            let data = args.get_one_arg(&method("update"), vm.heap)?;
+            defer_drop!(data, vm);
+            let data = data.py_value(vm);
+            // The input borrows the heap, so the state is lifted out while
+            // it is absorbed and put back on every path.
+            let mut hash = mem::take(this.get_mut(vm.heap));
+            let absorbed = hash_input(&data, vm).and_then(|input| hash.update(input, &vm.heap.tracker));
+            *this.get_mut(vm.heap) = hash;
+            absorbed.map(|()| CallResult::Value(Value::None))
+        }
+    }
+
+    #[pymethod(Digest)]
+    fn digest<'h>(
+        this: &mut HeapObjectRead<'h, HashObject>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        let algorithm = this.get(vm.heap).algorithm;
+        let method = |name: &str| format!("{}.{name}", algorithm.method_prefix());
+        {
+            args.check_zero_args(&method("digest"), vm.heap)?;
+            let digest = this.get(vm.heap).digest();
+            Ok(CallResult::Value(allocate_bytes(digest.to_vec(), vm.heap)))
+        }
+    }
+
+    #[pymethod(Hexdigest)]
+    fn hexdigest<'h>(
+        this: &mut HeapObjectRead<'h, HashObject>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        let algorithm = this.get(vm.heap).algorithm;
+        let method = |name: &str| format!("{}.{name}", algorithm.method_prefix());
+        {
+            args.check_zero_args(&method("hexdigest"), vm.heap)?;
+            let digest = this.get(vm.heap).digest();
+            Ok(CallResult::Value(allocate_string(hex_string(&digest), vm.heap)))
+        }
+    }
+
+    #[pymethod(Copy)]
+    fn copy<'h>(this: &mut HeapObjectRead<'h, HashObject>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let algorithm = this.get(vm.heap).algorithm;
+        let method = |name: &str| format!("{}.{name}", algorithm.method_prefix());
+        {
+            args.check_zero_args(&method("copy"), vm.heap)?;
+            Ok(CallResult::Value(this.allocate_like(vm)))
+        }
+    }
+}
+
+pub(crate) struct PyHashXofImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyHashXofImpl {
+    type Receiver = HeapObjectRead<'heap, HashObject>;
+
+    #[pymethod(Update)]
+    fn update<'h>(
+        this: &mut HeapObjectRead<'h, HashObject>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        PyHashImpl::update(this, args, vm)
+    }
+
+    #[pymethod(Digest)]
+    fn digest<'h>(
+        this: &mut HeapObjectRead<'h, HashObject>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        {
+            let XofDigestArgs { length } = XofDigestArgs::from_args(args, vm)?;
+            let length = xof_length(length, 1, vm)?;
+            let digest = this.get(vm.heap).digest_xof(length, &vm.heap.tracker)?;
+            Ok(CallResult::Value(allocate_bytes(digest, vm.heap)))
+        }
+    }
+
+    #[pymethod(Hexdigest)]
+    fn hexdigest<'h>(
+        this: &mut HeapObjectRead<'h, HashObject>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        {
+            let XofHexdigestArgs { length } = XofHexdigestArgs::from_args(args, vm)?;
+            // The raw digest stays live while its hex is built.
+            let length = xof_length(length, 3, vm)?;
+            let digest = this.get(vm.heap).digest_xof(length, &vm.heap.tracker)?;
+            Ok(CallResult::Value(allocate_string(hex_string(&digest), vm.heap)))
+        }
+    }
+
+    #[pymethod(Copy)]
+    fn copy<'h>(this: &mut HeapObjectRead<'h, HashObject>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        PyHashImpl::copy(this, args, vm)
+    }
+}
+
+/// The two BLAKE2 classes share methods and differ in their size limits.
+pub(crate) struct PyBlake2Impl<const MAX_SIZE: i64, const SALT_SIZE: i64>;
+
+#[pyattrs]
+impl<'h, const MAX_SIZE: i64, const SALT_SIZE: i64> PyAttrs<'h> for PyBlake2Impl<MAX_SIZE, SALT_SIZE> {
+    type Receiver = HeapObjectRead<'h, HashObject>;
+
+    #[pymethod(Update)]
+    fn update<'a>(
+        this: &mut HeapObjectRead<'a, HashObject>,
+        args: ArgValues,
+        vm: &mut VM<'a>,
+    ) -> RunResult<CallResult> {
+        PyHashImpl::update(this, args, vm)
+    }
+
+    #[pymethod(Digest)]
+    fn digest<'a>(
+        this: &mut HeapObjectRead<'a, HashObject>,
+        args: ArgValues,
+        vm: &mut VM<'a>,
+    ) -> RunResult<CallResult> {
+        PyHashImpl::digest(this, args, vm)
+    }
+
+    #[pymethod(Hexdigest)]
+    fn hexdigest<'a>(
+        this: &mut HeapObjectRead<'a, HashObject>,
+        args: ArgValues,
+        vm: &mut VM<'a>,
+    ) -> RunResult<CallResult> {
+        PyHashImpl::hexdigest(this, args, vm)
+    }
+
+    #[pymethod(Copy)]
+    fn copy<'a>(this: &mut HeapObjectRead<'a, HashObject>, args: ArgValues, vm: &mut VM<'a>) -> RunResult<CallResult> {
+        PyHashImpl::copy(this, args, vm)
+    }
+
+    #[pyvalue(MaxDigestSize)]
+    fn max_digest_size(_vm: &mut VM<'_>) -> Value {
+        Value::Int(MAX_SIZE)
+    }
+
+    #[pyvalue(MaxKeySize)]
+    fn max_key_size(_vm: &mut VM<'_>) -> Value {
+        Value::Int(MAX_SIZE)
+    }
+
+    #[pyvalue(SaltSize)]
+    fn salt_size(_vm: &mut VM<'_>) -> Value {
+        Value::Int(SALT_SIZE)
+    }
+
+    #[pyvalue(PersonSize)]
+    fn person_size(_vm: &mut VM<'_>) -> Value {
+        Value::Int(SALT_SIZE)
     }
 }

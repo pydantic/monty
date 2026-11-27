@@ -15,13 +15,13 @@
 //! `WrongType` lets the extraction site pick CPython's wording, `Raise`
 //! surfaces a fully-formed error unchanged.
 
-use num_bigint::{BigInt, Sign};
+use num_bigint::Sign;
 use num_traits::ToPrimitive;
 
 use crate::{
     bytecode::VM,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{ContainsHeap, DropWithContext, HeapData},
+    heap::{ContainsHeap, DropWithContext},
     types::PyTrait,
     value::Value,
 };
@@ -203,15 +203,8 @@ impl FromValue for i32 {
             // Overflow is a *value* failure: the argument is a genuine int,
             // so a bad-arg rewrite ("must be int, not int") would be wrong.
             // CPython's `i` format range-checks with sign-aware wording.
-            Value::Int(i) => Self::try_from(i).map_err(|_| {
-                let msg = if i < 0 {
-                    "signed integer is less than minimum"
-                } else {
-                    "signed integer is greater than maximum"
-                };
-                FromValueFail::Raise(SimpleException::new_msg(ExcType::OverflowError, msg).into())
-            }),
-            _ if is_long_int(&value, vm) => {
+            Value::Int(i) => Self::try_from(i).map_err(|_| FromValueFail::Raise(ExcType::overflow_signed_c_int(i))),
+            _ if value.as_long_int(vm).is_some() => {
                 value.drop_with(vm);
                 Err(FromValueFail::Raise(ExcType::overflow_c_long()))
             }
@@ -233,7 +226,7 @@ impl FromValue for i64 {
         match value {
             Value::Bool(b) => Ok(Self::from(b)),
             Value::Int(i) => Ok(i),
-            _ if is_long_int(&value, vm) => {
+            _ if value.as_long_int(vm).is_some() => {
                 value.drop_with(vm);
                 Err(FromValueFail::Raise(ExcType::overflow_c_long()))
             }
@@ -258,7 +251,7 @@ impl FromValue for isize {
                 value.drop_with(vm);
                 FromValueFail::Raise(ExcType::overflow_c_ssize_t())
             }),
-            _ if is_long_int(&value, vm) => {
+            _ if value.as_long_int(vm).is_some() => {
                 value.drop_with(vm);
                 Err(FromValueFail::Raise(ExcType::overflow_c_ssize_t()))
             }
@@ -296,28 +289,6 @@ fn resolve_index_dunder(value: Value, vm: &mut VM<'_>) -> Result<Value, FromValu
     }
 }
 
-/// True when `value` is a Python int wider than i64 (heap or interned
-/// `LongInt`). Such values are genuine ints, so fixed-width int impls
-/// must raise `OverflowError` rather than report `WrongType` — a bad-arg
-/// rewrite would produce the absurd "must be int, not int". Also used by
-/// consumer-specific int impls (e.g. `timedelta`'s component extraction).
-pub(crate) fn is_long_int(value: &Value, vm: &VM<'_>) -> bool {
-    long_int(value, vm).is_some()
-}
-
-/// The big integer behind an `int` too wide for `Value::Int`, if that is
-/// what `value` is; the one lookup for every C-width converter.
-pub(crate) fn long_int<'a>(value: &'a Value, vm: &'a VM<'_>) -> Option<&'a BigInt> {
-    match value {
-        Value::InternLongInt(id) => Some(vm.interns.get_long_int(*id)),
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::LongInt(big) => Some(big.inner()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
 impl FromValue for u64 {
     const EXPECTED_TYPE_NAME: Option<&'static str> = Some("int");
 
@@ -329,7 +300,7 @@ impl FromValue for u64 {
         match value {
             Value::Bool(b) => Ok(Self::from(b)),
             Value::Int(i) => Self::try_from(i).map_err(|_| FromValueFail::Raise(ExcType::value_error_negative_int())),
-            _ => match long_int(&value, vm) {
+            _ => match value.as_long_int(vm) {
                 Some(big) if big.sign() == Sign::Minus => {
                     value.drop_with(vm);
                     Err(FromValueFail::Raise(ExcType::value_error_negative_int()))
@@ -404,7 +375,7 @@ impl StrArg {
     /// Borrows the text. Infallible: the constructor validated str-ness and a
     /// live value's type cannot change.
     pub fn as_str<'a>(&'a self, vm: &'a VM<'_>) -> &'a str {
-        match self.0.try_to_str(vm) {
+        match self.0.try_as_str(vm) {
             Ok(s) => s,
             Err(_) => unreachable!("StrArg always holds a str"),
         }

@@ -573,7 +573,6 @@ dependencies = [
  "iana-time-zone",
  "js-sys",
  "num-traits",
- "serde",
  "wasm-bindgen",
  "windows-link",
 ]
@@ -1927,9 +1926,9 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "jiff"
-version = "0.2.43"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "26699905cc795a23e3949585cc7ba3ee8ade090872a27e4316304a777297894a"
+checksum = "ed5d126d72eb017f10b302e73bdeca446bea405ee449af4d9e7866d6b082d83e"
 dependencies = [
  "jiff-core",
  "jiff-static",
@@ -1942,30 +1941,30 @@ dependencies = [
 
 [[package]]
 name = "jiff-core"
-version = "0.1.5"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ffe6854081f5ac0a3046a9b223729ccd7a20b1e0e8277e44dc0660eedf67dfe2"
+checksum = "b6b46a105a9874634dd96231021526bf24ca04955a5998c59a9c7666e634b7b8"
 dependencies = [
  "log",
 ]
 
 [[package]]
 name = "jiff-static"
-version = "0.2.43"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b4ff49b2887190c760b86207b55cdcaabbdecaf7a0660d68aa2ed6f652abf0a"
+checksum = "c0127e9bde3c6130d6169e7d8d68676e4be69c4bf7573c308b6f960a5089c428"
 dependencies = [
  "jiff-core",
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.9",
 ]
 
 [[package]]
 name = "jiff-tzdb"
-version = "0.1.9"
+version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fa8377070c6bae868759445e5a77f66d84f0b72f3a054bfb00e6d038b8282da7"
+checksum = "12e71a1b68a875a44a33bb7a1dd84392cb77145a3367a552a3cfe6a4f5cf3afc"
 
 [[package]]
 name = "jiter"
@@ -2370,11 +2369,10 @@ dependencies = [
 
 [[package]]
 name = "monty"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "ahash",
  "bytecount",
- "chrono",
  "cpu-time",
  "fancy-regex 0.20.0",
  "getrandom 0.4.3",
@@ -2382,6 +2380,7 @@ dependencies = [
  "indexmap",
  "insta",
  "itoa",
+ "jiff",
  "jiter",
  "libm",
  "memchr",
@@ -2408,18 +2407,19 @@ dependencies = [
  "unicode-general-category",
  "unicode-normalization",
  "unicode_names2",
+ "wide",
 ]
 
 [[package]]
 name = "monty-alloc"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "monty-types",
 ]
 
 [[package]]
 name = "monty-apidoc"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "insta",
  "rustdoc-types",
@@ -2428,7 +2428,7 @@ dependencies = [
 
 [[package]]
 name = "monty-bench"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "codspeed-criterion-compat",
  "criterion",
@@ -2448,23 +2448,27 @@ dependencies = [
 
 [[package]]
 name = "monty-datatest"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "ahash",
  "datatest-stable",
  "monty",
  "monty-fixture",
  "monty-fs",
+ "monty-type-checking",
  "monty-types",
  "pyo3",
  "pyo3-build-config",
+ "regex-syntax",
+ "serde",
  "similar 3.2.1",
  "tempfile",
+ "toml",
 ]
 
 [[package]]
 name = "monty-doctest"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "monty",
  "monty-pool",
@@ -2474,7 +2478,7 @@ dependencies = [
 
 [[package]]
 name = "monty-fixture"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "insta",
  "serde",
@@ -2483,7 +2487,7 @@ dependencies = [
 
 [[package]]
 name = "monty-fs"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "ahash",
  "cap-std",
@@ -2496,7 +2500,7 @@ dependencies = [
 
 [[package]]
 name = "monty-fuzz"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "arbitrary",
  "libfuzzer-sys",
@@ -2506,7 +2510,7 @@ dependencies = [
 
 [[package]]
 name = "monty-js"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "monty-pool",
  "monty-types",
@@ -2523,7 +2527,7 @@ dependencies = [
 
 [[package]]
 name = "monty-macros"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "insta",
  "proc-macro2",
@@ -2533,7 +2537,7 @@ dependencies = [
 
 [[package]]
 name = "monty-pgo"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "monty-pool",
  "monty-types",
@@ -2542,7 +2546,7 @@ dependencies = [
 
 [[package]]
 name = "monty-pool"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "bytes",
  "cpu-time",
@@ -2579,13 +2583,14 @@ dependencies = [
 
 [[package]]
 name = "monty-proto"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "allocation-counter",
  "bytes",
  "heck",
  "insta",
  "monty",
+ "monty-alloc",
  "monty-proto",
  "monty-type-checking",
  "monty-types",
@@ -2601,7 +2606,7 @@ dependencies = [
 
 [[package]]
 name = "monty-runtime"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "anstream",
  "anstyle",
@@ -2620,7 +2625,7 @@ dependencies = [
 
 [[package]]
 name = "monty-type-checking"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "codspeed-criterion-compat",
  "criterion",
@@ -2641,9 +2646,8 @@ dependencies = [
 
 [[package]]
 name = "monty-types"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
- "chrono",
  "cpu-time",
  "jiff",
  "minicbor-serde",
@@ -2662,7 +2666,7 @@ dependencies = [
 
 [[package]]
 name = "monty-typeshed"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "path-slash",
  "ruff_db",
@@ -2672,7 +2676,7 @@ dependencies = [
 
 [[package]]
 name = "monty-wasm-runtime"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "monty-alloc",
  "monty-proto",
@@ -3442,11 +3446,11 @@ dependencies = [
 
 [[package]]
 name = "pydantic-monty-client"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "ahash",
- "chrono",
  "futures-util",
+ "jiff",
  "monty-fs",
  "monty-pool",
  "monty-proto",
@@ -4279,6 +4283,15 @@ name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
+name = "safe_arch"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42c6efa15875e6ecb39ca61fb0b0c1a40b84fac5a5ffe71eef7d1000c8eb3f5f"
+dependencies = [
+ "bytemuck",
+]
 
 [[package]]
 name = "salsa"
@@ -5559,6 +5572,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "58ec80e73fd8baf57bf0d9615554c75348bda990d6d5bbeab964dd068319fecb"
 dependencies = [
  "rustls-pki-types",
+]
+
+[[package]]
+name = "wide"
+version = "1.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d920ac99c3c8edce110cb8d07dbb324d6d026011dce85b1e9355b70f0adacc4f"
+dependencies = [
+ "bytemuck",
+ "safe_arch",
 ]
 
 [[package]]

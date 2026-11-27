@@ -42,8 +42,7 @@ pub fn builtin_reversed(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // Reverse in place
     items.reverse();
 
-    let heap_id = vm.heap.allocate(HeapData::List(List::new(items)));
-    Ok(Value::Ref(heap_id))
+    Ok(Value::allocate(List::new(items), vm.heap))
 }
 
 /// Whether `reversed()` accepts this value, mirroring CPython's requirement of

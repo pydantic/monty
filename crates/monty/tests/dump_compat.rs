@@ -9,8 +9,10 @@
 use std::{env, fs, path::PathBuf, thread, time::Duration};
 
 use insta::assert_snapshot;
-use monty::{DUMP_VERSION, Dump, MontyRepl, ReplProgress, Session, SessionRef, dump};
-use monty_types::{CompileOptions, ExecutionClock, MontyObject, NameLookupResult, PrintWriter, ResourceTracker};
+use monty::{DUMP_VERSION, Dump, MontyRepl, MontyRun, ReplProgress, Session, SessionRef, dump};
+use monty_types::{
+    CompileOptions, ExecutionClock, MontyObject, MontyType, NameLookupResult, PrintWriter, ResourceTracker,
+};
 use serde::{Deserialize, Serialize};
 
 /// Environment variable that rewrites the fixture instead of checking it.
@@ -42,12 +44,6 @@ fs = frozenset({'x', 'y'})
 dq = collections.deque([1, 2, 3], maxlen=5)
 Point = collections.namedtuple('Point', ['x', 'y'])
 p = Point(1, 2)
-shared_name = ''.join(['Shared', 'LongIdentityName'])
-Dynamic = type(shared_name, (), {})
-Named = collections.namedtuple(shared_name, [shared_name])
-named = Named(5)
-Dynamic.self_ref = Dynamic
-
 
 @dataclasses.dataclass
 class Item:
@@ -120,6 +116,13 @@ next(di_it)
 s_it = iter(st)
 next(s_it)
 call_it = iter(lambda: 7, 0)
+rows = map(next, [iter([3]), iter([]), iter([5])])
+
+
+def consume_rows():
+    return [value for value in rows]
+
+
 joined = '-'.join(['x', 'y'])
 str_it = iter('abc')
 next(str_it)
@@ -134,6 +137,8 @@ next(counter)
 alias = list[int]
 opt = int | None
 where = pathlib.Path('/data') / 'file.txt'
+relative_globals = {'__package__': 'os'}
+exec('def leaf(path):\n    from .path import basename\n    return basename(path)', relative_globals)
 
 
 def with_default(x, y=[1]):
@@ -173,11 +178,6 @@ assert d == {'a': 1, 'b': [2, 3], 3: 'int key'}
 assert st == {1, 2, 3} and fs == frozenset({'x', 'y'})
 assert list(dq) == [1, 2, 3] and dq.maxlen == 5
 assert p == Point(1, 2) and p.x == 1
-assert Dynamic.__name__ is shared_name
-assert Dynamic.self_ref is Dynamic
-assert Named.__name__ is shared_name
-assert named._fields[0] is shared_name
-assert getattr(named, shared_name) == 5
 assert item == Item('widget', 3)
 assert c.value == 11 and c.bump() == 12 and Counter.total == 0
 assert add5(1) == 6 and part() == 6
@@ -198,15 +198,52 @@ assert rnd.random() == fresh.random()
 assert list(dq_it) == [2, 3] and list(t_it) == ['two'] and list(b_it) == [8, 9]
 assert list(di_it) == [('b', [2, 3]), (3, 'int key')] and len(list(s_it)) == 2
 assert next(call_it) == 7
+assert consume_rows() == [3] and consume_rows() == [5]
 assert pending_log == ['finally']
 assert joined == 'x-y' and list(str_it) == ['b', 'c'] and list(range_it) == [1, 2]
 assert list(dk_it) == ['b', 3] and list(dv_it) == [[2, 3], 'int key'] and next(counter) == 6
 assert alias == list[int] and opt == (int | None) and str(where) == '/data/file.txt'
 assert with_default(1) == 2
+assert relative_globals['leaf']('/data/file.txt') == 'file.txt'
 assert functools.reduce(lambda a, b: a + b, [1, 2, 3]) == 6
 assert add5(2) == 7
 (result, c.value)
 ";
+
+/// Retained name identities, also present in this branch's permanent v16 fixture.
+const OWNED_NAME_CHECK: &str = r"
+assert Dynamic.__name__ is shared_name
+assert Dynamic.self_ref is Dynamic
+assert Named.__name__ is shared_name
+assert named._fields[0] is shared_name
+assert getattr(named, shared_name) == 5
+";
+
+/// Retained heap names survive snapshots written by the current producer.
+#[test]
+fn owned_name_identities_survive_dump_restore() {
+    let mut repl = MontyRepl::new("names.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        r"
+import collections
+shared_name = ''.join(['Shared', 'LongIdentityName'])
+Dynamic = type(shared_name, (), {})
+Named = collections.namedtuple(shared_name, [shared_name])
+named = Named(5)
+Dynamic.self_ref = Dynamic
+",
+        vec![],
+        PrintWriter::Disabled,
+    )
+    .unwrap();
+    let bytes = dump("names.py", None, &[], SessionRef::Idle(&repl)).unwrap();
+    let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else {
+        panic!("expected an idle session");
+    };
+    restored
+        .feed_run(OWNED_NAME_CHECK, vec![], PrintWriter::Disabled)
+        .unwrap();
+}
 
 /// Checks that the current-version fixture still loads and runs.
 /// If the format changed, check both compatibility directions against published releases
@@ -286,16 +323,12 @@ fn fixture_dump_loads_and_resumes() {
     );
 }
 
-/// Upstream fixtures remain readable after names become heap references.
-/// Its independent v16 fixture is kept alongside this branch's v16; never regenerate it.
+/// Older fixtures, including the independent upstream v16, retain usable namedtuple names.
 #[test]
 fn upstream_fixtures_load_after_name_ownership_bump() {
-    for path in [
-        fixture_path_for(14),
-        fixture_path_for(15),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dump_v16_main.bin"),
-    ] {
-        let bytes = fs::read(path).expect("the permanent fixture exists");
+    let upstream_v16 = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dump_v16_main.bin");
+    for path in (14..DUMP_VERSION).map(fixture_path_for).chain([upstream_v16]) {
+        let bytes = fs::read(&path).expect("the permanent fixture exists");
         let loaded = Dump::load(&bytes).expect("older dumps remain supported");
         assert_eq!(loaded.script_name, "fixture.py");
         let Session::Suspended(progress) = loaded.state else {
@@ -305,6 +338,9 @@ fn upstream_fixtures_load_after_name_ownership_bump() {
         let progress = call.resume(MontyObject::int(41), PrintWriter::Stdout).unwrap();
         let (mut repl, value) = progress.into_complete().expect("host_call resumed to completion");
         assert_eq!(value, MontyObject::int(42));
+        if path == fixture_path_for(16) {
+            repl.feed_run(OWNED_NAME_CHECK, vec![], PrintWriter::Disabled).unwrap();
+        }
         repl.feed_run(
             "assert p.x == 1\nassert p._fields == ('x', 'y')\nassert p._replace(x=3).x == 3\nassert Point.__name__ == 'Point'",
             vec![],
@@ -774,6 +810,77 @@ fn builtin_ids_are_stable() {
     assert_snapshot!(ids.py_repr(), @"(2097610, 2098122, 2105898, 2105642, 2113706, 2114058)");
 }
 
+/// Date and timedelta hashes must survive the storage-library migration because
+/// dicts and sets persist them. Expected values come from the former storage types.
+#[test]
+fn persisted_calendar_hashes_are_stable() {
+    let mut repl = MontyRepl::new("hashes.py", ResourceTracker::default(), CompileOptions::default());
+    let hashes = repl
+        .feed_run(
+            "from datetime import date, timedelta\n\
+         values = [date(1, 1, 1), date(1900, 3, 1), date(2000, 2, 29), date(2024, 6, 15), date.max, \
+         timedelta(), timedelta(microseconds=-1), timedelta(days=-2, seconds=86399, microseconds=1), \
+         timedelta(days=1, microseconds=1), timedelta.max]\n\
+         tuple(hash(value) for value in values)",
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_snapshot!(hashes.py_repr(), @"(5726848817805768197, -5905029044664614831, 8287707130111363081, -7491674403021461934, -4854198610469465321, 2435999049025295583, -7668848667738911443, 8954133621882991626, 1789700847611459173, -7132049192933483870)");
+    repl.feed_run(
+        "values.append(timedelta.min)\nby_value = {value: index for index, value in enumerate(values)}",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    let bytes = dump("hashes.py", None, &[], SessionRef::Idle(&repl)).unwrap();
+    let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else {
+        panic!("dump was idle");
+    };
+    let lookups = restored
+        .feed_run(
+            "tuple(by_value[value + timedelta(0)] for value in values)",
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_snapshot!(lookups.py_repr(), @"(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10)");
+}
+
+/// Parsed timezones retain their Python identity and ownership across a dump.
+#[test]
+fn parsed_datetime_retains_timezone_identity() {
+    let mut repl = MontyRepl::new("zones.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        "from datetime import datetime, timedelta\n\
+         parsed = [datetime.strptime('2024-01-01 ' + offset, '%Y-%m-%d %z') \
+         for offset in ['+0100', '-0530', '+0000']]\n\
+         zones = [value.tzinfo for value in parsed]\n\
+         identities = [id(zone) for zone in zones]",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    let bytes = dump("zones.py", None, &[], SessionRef::Idle(&repl)).unwrap();
+    let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else {
+        panic!("dump was idle");
+    };
+    let checked = restored
+        .feed_run(
+            r"for value, zone, identity in zip(parsed, zones, identities):
+    assert value.tzinfo is zone
+    assert id(value.tzinfo) == identity
+    assert value.replace().tzinfo is zone
+    assert value.timetz().tzinfo is zone
+    assert (value + timedelta(days=1)).tzinfo is zone
+True",
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_eq!(checked, MontyObject::bool(true));
+}
+
 /// The fixture for the current `DUMP_VERSION`; the name carries the version so
 /// a bump creates a new fixture while older supported fixtures remain for compatibility tests.
 fn fixture_path() -> PathBuf {
@@ -1007,4 +1114,36 @@ fn fresh_location_tracebacks() -> Vec<String> {
                 .to_string()
         })
         .collect()
+}
+
+#[test]
+fn table_forward_ref_evaluation_can_suspend_and_restore() {
+    let run = MontyRun::new(
+        "from annotationlib import ForwardRef\nForwardRef.evaluate(ForwardRef('f()'), globals={'f': f})".to_owned(),
+        "test.py",
+        vec!["f".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let progress = run
+        .start(
+            vec![MontyObject::function("fetch", None)],
+            ResourceTracker::default(),
+            PrintWriter::Disabled,
+        )
+        .unwrap();
+    let bytes = dump("test.py", None, &[], SessionRef::Running(&progress)).unwrap();
+    let Session::Running(restored) = Dump::load(&bytes).unwrap().state else {
+        panic!("expected a running session")
+    };
+    for progress in [progress, *restored] {
+        let call = progress.into_function_call().expect("expected the fetch call");
+        assert_eq!(call.function_name, "fetch");
+        let result = call
+            .resume(MontyObject::type_object(MontyType::Int), PrintWriter::Disabled)
+            .unwrap()
+            .into_complete()
+            .unwrap();
+        assert_eq!(result, MontyObject::type_object(MontyType::Int));
+    }
 }

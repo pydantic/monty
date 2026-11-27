@@ -9,6 +9,7 @@ use std::{
     mem,
 };
 
+use monty_macros::pyattrs;
 /// Python named tuple type, combining tuple-like indexing with named attribute access.
 ///
 /// Named tuples are like regular tuples but with field names, providing two ways
@@ -40,13 +41,16 @@ use crate::{
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
     intern::{Interns, StaticStrings, StringId},
     modules::copy::{Memo, PyDeepCopy, deep_copy_slots},
+    py_attrs::{MethodCall, PyAttrs},
+    py_value::PyValue,
     resource_checks::{check_repeat_size, repeated_len},
     types::{
-        Dict, Type, TypeRef, Union, allocate_tuple,
+        Dict, Slice, Type, TypeRef, Union, allocate_tuple,
         instance::BoundMethod,
         iter::collect_owned_iterable,
         key_hash::hash_or_culprit,
         py_trait::LazyHeapSet,
+        sequence::SequenceItems,
         slice::{normalize_sequence_index, slice_collect_iterator, value_to_i64_bound},
         str::{PyStr, allocate_string},
         tuple::TupleVec,
@@ -231,7 +235,7 @@ impl<'h> HeapRead<'h, NamedTuple> {
             vm.heap.inc_ref(class_id);
         }
         let named = NamedTuple::with_class(name, field_names, items, class_id);
-        Value::Ref(vm.heap.allocate(HeapData::NamedTuple(Box::new(named))))
+        Value::allocate(named, vm.heap)
     }
 
     /// Returns `Some(value)` if the index is in bounds, `None` otherwise.
@@ -422,9 +426,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTuple> {
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         // A slice degrades to a plain tuple, as in CPython — the field names
         // describe the original instance only, so they cannot survive a slice.
-        if let Value::Ref(key_id) = key
-            && let HeapData::Slice(slice_obj) = vm.heap.get(*key_id)
-        {
+        if let Some(slice_obj) = key.get_as::<Slice>(vm.heap) {
             let items = slice_collect_iterator(vm, slice_obj, self.get(vm.heap).as_vec().iter(), |v| {
                 v.clone_with_heap(vm)
             })?;
@@ -613,36 +615,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTuple> {
             ))
         }
     }
-
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
-        // The `_`-prefixed namedtuple methods. Field names cannot start with `_`,
-        // so these never collide with a real field. Only instances built from a
-        // `collections.namedtuple` class have them — see the note in `py_getattr`.
-        let from_factory = self.get(vm.heap).class_id().is_some();
-        // `count`/`index` are inherited from `tuple`, so unlike the `_`-prefixed
-        // methods they are available on structseqs too (`sys.version_info.count(0)`
-        // works in CPython).
-        match attr.static_string(vm) {
-            Some(StaticStrings::Count) => return self.method_count(vm, args).map(CallResult::Value),
-            Some(StaticStrings::Index) => return self.method_index(vm, args).map(CallResult::Value),
-            Some(StaticStrings::DunderGetnewargs) => {
-                return self.method_getnewargs(vm, args, from_factory).map(CallResult::Value);
-            }
-            _ => {}
-        }
-        match attr.static_string(vm).filter(|_| from_factory) {
-            Some(StaticStrings::UnderAsdict) => self.method_asdict(vm, args).map(CallResult::Value),
-            Some(StaticStrings::UnderReplace) => self.method_replace(vm, args).map(CallResult::Value),
-            Some(StaticStrings::UnderMake) => self.method_make(vm, args).map(CallResult::Value),
-            _ => {
-                args.drop_with(vm);
-                Err(ExcType::attribute_error(
-                    self.get(vm.heap).name(vm.heap, vm.interns),
-                    attr.as_str(vm),
-                ))
-            }
-        }
-    }
 }
 
 impl StoredNames for NamedTuple {
@@ -774,7 +746,7 @@ impl<'h> HeapRead<'h, NamedTuple> {
             pairs.push((key, value));
         }
         let dict = Dict::from_pairs(pairs, vm)?;
-        Ok(Value::Ref(vm.heap.allocate(HeapData::Dict(dict))))
+        Ok(Value::allocate(dict, vm.heap))
     }
 
     /// `p._replace(**kwargs)` — a copy with the named fields overridden.
@@ -1031,7 +1003,7 @@ impl<'h> HeapRead<'h, NamedTupleClass> {
             pairs.push((key, value));
         }
         let dict = Dict::from_pairs(pairs, vm)?;
-        Ok(Value::Ref(vm.heap.allocate(HeapData::Dict(dict))))
+        Ok(Value::allocate(dict, vm.heap))
     }
 }
 
@@ -1161,26 +1133,8 @@ pub(crate) fn cmp_item_seqs(a: Vec<Value>, b: Vec<Value>, vm: &mut VM<'_>) -> Ru
 /// Shared by named-tuple concatenation (`+`), whose result is always a plain
 /// tuple regardless of which operand is the namedtuple.
 fn cloned_tuple_like_items(value: &Value, vm: &VM<'_>) -> RunResult<Option<Vec<Value>>> {
-    let Value::Ref(id) = value else {
-        return Ok(None);
-    };
-    let id = *id;
-    let len = match vm.heap.get(id) {
-        HeapData::Tuple(t) => t.as_slice().len(),
-        HeapData::NamedTuple(nt) => nt.as_vec().len(),
-        _ => return Ok(None),
-    };
-    vm.heap.tracker.check_allocation(len.saturating_mul(VALUE_SIZE))?;
-    let mut items = Vec::with_capacity(len);
-    for i in 0..len {
-        let item = match vm.heap.get(id) {
-            HeapData::Tuple(t) => t.as_slice()[i].clone_with_heap(vm.heap),
-            HeapData::NamedTuple(nt) => nt.as_vec()[i].clone_with_heap(vm.heap),
-            _ => unreachable!("length branch already matched a tuple-like variant"),
-        };
-        items.push(item);
-    }
-    Ok(Some(items))
+    let items = value.ref_id().and_then(|id| SequenceItems::from_tuple(vm.heap.get(id)));
+    items.map(|items| items.to_vec(vm.heap)).transpose()
 }
 
 /// Builds the synthesised class docstring, e.g. `Point(x, y)`.
@@ -1405,5 +1359,97 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, NamedTuple> {
             self.clone_item(index, vm)
         })?;
         Ok(self.allocate_like(items, vm))
+    }
+}
+
+pub(crate) struct PyNamedTupleImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyNamedTupleImpl {
+    type Receiver = HeapObjectRead<'heap, NamedTuple>;
+
+    #[pymethod(Count)]
+    fn count<'h>(this: &mut HeapObjectRead<'h, NamedTuple>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        this.method_count(vm, args)
+    }
+
+    #[pymethod(Index)]
+    fn index<'h>(this: &mut HeapObjectRead<'h, NamedTuple>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        this.method_index(vm, args)
+    }
+
+    #[pymethod(DunderGetnewargs)]
+    fn __getnewargs__<'h>(
+        this: &mut HeapObjectRead<'h, NamedTuple>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Value> {
+        this.method_getnewargs(vm, args, this.get(vm.heap).class_id().is_some())
+    }
+
+    #[pymethod(UnderAsdict)]
+    fn under_asdict<'h>(
+        this: &mut HeapObjectRead<'h, NamedTuple>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Value> {
+        if this.get(vm.heap).class_id().is_none() {
+            args.drop_with(vm);
+            return Err(ExcType::attribute_error(
+                this.get(vm.heap).name(vm.heap, vm.interns),
+                "_asdict",
+            ));
+        }
+        this.method_asdict(vm, args)
+    }
+
+    #[pymethod(UnderReplace)]
+    fn under_replace<'h>(
+        this: &mut HeapObjectRead<'h, NamedTuple>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Value> {
+        if this.get(vm.heap).class_id().is_none() {
+            args.drop_with(vm);
+            return Err(ExcType::attribute_error(
+                this.get(vm.heap).name(vm.heap, vm.interns),
+                "_replace",
+            ));
+        }
+        this.method_replace(vm, args)
+    }
+
+    #[pymethod(UnderMake)]
+    fn under_make<'h>(this: &mut HeapObjectRead<'h, NamedTuple>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        if this.get(vm.heap).class_id().is_none() {
+            args.drop_with(vm);
+            return Err(ExcType::attribute_error(
+                this.get(vm.heap).name(vm.heap, vm.interns),
+                "_make",
+            ));
+        }
+        this.method_make(vm, args)
+    }
+}
+
+/// Tuple descriptors use the namedtuple's existing item storage.
+pub(crate) fn call_tuple_descriptor<'h>(
+    receiver: &mut PyValue<'h>,
+    attr: &PyStr<'h>,
+    call: MethodCall,
+    args: ArgValues,
+    vm: &mut VM<'h>,
+) -> RunResult<CallResult> {
+    if let PyValue::NamedTuple(tuple) = receiver {
+        match attr.static_string(vm) {
+            Some(StaticStrings::Count) => tuple.method_count(vm, args).map(CallResult::Value),
+            Some(StaticStrings::Index) => tuple.method_index(vm, args).map(CallResult::Value),
+            _ => {
+                args.drop_with(vm);
+                Err(ExcType::attribute_error("tuple", attr.as_str(vm)))
+            }
+        }
+    } else {
+        call(receiver, args, vm)
     }
 }

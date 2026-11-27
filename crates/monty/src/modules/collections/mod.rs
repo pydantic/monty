@@ -28,16 +28,15 @@ use self::counter::counter_update;
 use crate::{
     args::{ArgValues, FromArgs},
     builtins::Builtins,
-    bytecode::{CallResult, VM},
+    bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropGuard, DropWithContext, HeapData, HeapReadOutput},
+    heap::{DropGuard, DropWithContext, HeapReadOutput},
     intern::StaticStrings,
     types::{
         Dict, Module, NamedTupleClass, PyTrait, Type,
-        dict::{DictKind, dict_fromkeys},
         iter::collect_owned_iterable,
-        str::{PyStr, StringRepr, str_isidentifier},
+        str::{StringRepr, str_isidentifier},
     },
     value::{EitherStr, Value},
 };
@@ -84,37 +83,6 @@ pub(super) fn call(vm: &mut VM<'_>, function: CollectionsFunctions, args: ArgVal
     }
 }
 
-/// `Counter.fromkeys`, which CPython deliberately disables.
-pub(crate) fn counter_class_method<'h>(
-    attr: &PyStr<'h>,
-    args: ArgValues,
-    vm: &mut VM<'h>,
-) -> Result<RunResult<CallResult>, ArgValues> {
-    if attr.static_string(vm) == Some(StaticStrings::Fromkeys) {
-        args.drop_with(vm);
-        Ok(Err(ExcType::not_implemented(
-            "Counter.fromkeys() is undefined.  Use Counter(iterable) instead.",
-        )
-        .into()))
-    } else {
-        Err(args)
-    }
-}
-
-/// `defaultdict.fromkeys(...)` builds `cls()`, a defaultdict with no factory,
-/// matching CPython's inherited `dict.fromkeys` classmethod.
-pub(crate) fn defaultdict_class_method<'h>(
-    attr: &PyStr<'h>,
-    args: ArgValues,
-    vm: &mut VM<'h>,
-) -> Result<RunResult<CallResult>, ArgValues> {
-    if attr.static_string(vm) == Some(StaticStrings::Fromkeys) {
-        Ok(dict_fromkeys(args, DictKind::defaultdict(None), vm).map(CallResult::Value))
-    } else {
-        Err(args)
-    }
-}
-
 /// The `collections.Counter(iterable_or_mapping=None, /, **kwargs)` constructor.
 /// Construction is `Counter().update(...)`: a mapping adds its counts, any
 /// other iterable counts occurrences, and keyword arguments add counts.
@@ -142,7 +110,7 @@ pub(crate) fn counter_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>
 
     let mut dict = Dict::new();
     dict.make_counter();
-    let value = Value::Ref(vm.heap.allocate(HeapData::Dict(dict)));
+    let value = Value::allocate(dict, vm.heap);
     let Value::Ref(dict_id) = value else {
         unreachable!("just allocated a ref");
     };
@@ -285,7 +253,7 @@ fn namedtuple(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let type_name = type_name.clone_either_str(vm.heap).expect("py_str returns a string");
     let (field_names, vm) = names_guard.into_parts();
     let class = NamedTupleClass::new(type_name, field_names, default_values, module);
-    Ok(Value::Ref(vm.heap.allocate(HeapData::NamedTupleClass(Box::new(class)))))
+    Ok(Value::allocate(class, vm.heap))
 }
 
 /// Parses field names, retaining existing string identities where possible.

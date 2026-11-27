@@ -4,12 +4,12 @@ use super::VM;
 use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapReadOutput},
+    heap::{DropGuard, DropWithContext, HeapData, HeapReadOutput},
     intern::StringId,
     resource_checks::check_estimated_size,
     types::{
         Dict, List, PyTrait, Set, Slice, allocate_tuple, collect_iterable, collect_iterable_bounded,
-        instance::instance_defines_iter, slice::value_to_option_i64,
+        instance::instance_defines_iter, sequence::SequenceItems, slice::value_to_option_i64,
     },
     value::{VALUE_SIZE, Value},
 };
@@ -19,8 +19,7 @@ impl VM<'_> {
     pub(super) fn build_list(&mut self, count: usize) {
         let items = self.pop_n(count);
         let list = List::new(items);
-        let heap_id = self.heap.allocate(HeapData::List(list));
-        self.push(Value::Ref(heap_id));
+        self.push(Value::allocate(list, self.heap));
     }
 
     /// Builds a tuple from the top n stack values.
@@ -61,8 +60,7 @@ impl VM<'_> {
             }
         }
         let (dict, this) = dict_guard.into_parts();
-        let heap_id = this.heap.allocate(HeapData::Dict(dict));
-        this.push(Value::Ref(heap_id));
+        this.push(Value::allocate(dict, this.heap));
         Ok(())
     }
 
@@ -84,8 +82,7 @@ impl VM<'_> {
             set.add(item, this)?;
         }
         let (set, this) = set_guard.into_parts();
-        let heap_id = this.heap.allocate(HeapData::Set(set));
-        this.push(Value::Ref(heap_id));
+        this.push(Value::allocate(set, this.heap));
         Ok(())
     }
 
@@ -108,8 +105,7 @@ impl VM<'_> {
         let step = value_to_option_i64(step_val, this)?;
 
         let slice = Slice::new(start, stop, step);
-        let heap_id = this.heap.allocate(HeapData::Slice(slice));
-        this.push(Value::Ref(heap_id));
+        this.push(Value::allocate(slice, this.heap));
         Ok(())
     }
 
@@ -142,24 +138,12 @@ impl VM<'_> {
         }
 
         {
-            let copied_items: Vec<Value> = collect_iterable(iterable, this)?;
-            defer_drop_mut!(copied_items, this);
-
-            // Check if any copied items are refs (for updating contains_refs)
-            let has_refs = copied_items.iter().any(|v| matches!(v, Value::Ref(_)));
-
-            // Extend the list
-            if let Value::Ref(id) = list_ref {
-                let HeapReadOutput::List(list) = this.heap.read(*id) else {
-                    panic!("list_extend: expected List on heap");
-                };
-                let list = list.get_mut(this.heap);
-                // Update contains_refs before extending
-                if has_refs {
-                    list.set_contains_refs();
-                }
-                list.as_vec_mut().append(copied_items);
-            }
+            let list = list_ref
+                .ref_id()
+                .and_then(|id| this.heap.read_as::<List>(id))
+                .ok_or_else(|| RunError::internal("ListExtend: expected list on stack"))?;
+            let items = collect_iterable(iterable, this)?;
+            list.get_mut(this.heap).extend_owned(items);
         }
 
         // Push list_ref back on the stack (don't drop it)
@@ -183,7 +167,7 @@ impl VM<'_> {
         let HeapData::List(list) = this.heap.get(*id) else {
             return Err(RunError::internal("ListToTuple: expected list"));
         };
-        let items = list.as_slice().iter().map(|v| v.clone_with_heap(this.heap)).collect();
+        let items = list.items().cloned(this.heap).collect();
         let value = allocate_tuple(items, this.heap);
         this.push(value);
         Ok(())
@@ -197,8 +181,32 @@ impl VM<'_> {
     /// Uses `defer_drop!` for `mapping` (always dropped) and `DropGuard` for
     /// `dict_ref` (pushed back on success, dropped on error).
     pub(super) fn dict_merge(&mut self, func_name_id: u16) -> Result<(), RunError> {
-        let func_name = func_name_for_dict_merge(func_name_id, self);
+        // CPython names the function object being called, not the expression that called it:
+        // after `g = f`, `g(a=1, **{'a': 2})` reports `f()`, and a lambda reports `<lambda>()`.
+        // The callable sits 4 slots below TOS: `[callable, args_tuple, kwargs_dict, mapping]`.
+        let callable_name = self
+            .stack
+            .len()
+            .checked_sub(4)
+            .and_then(|index| self.def_function_name(&self.stack[index]));
+        let func_name = callable_name.unwrap_or_else(|| func_name_for_dict_merge(func_name_id, self));
         self.dict_merge_inner(&func_name)
+    }
+
+    /// The `def`/`lambda` name of a Python function value (`<lambda>` for a lambda);
+    /// `None` for any other callable (builtin, class, bound method, ...).
+    fn def_function_name(&self, value: &Value) -> Option<String> {
+        let func_id = match value {
+            Value::DefFunction(func_id) => *func_id,
+            Value::Ref(id) => match self.heap.get(*id) {
+                HeapData::FunctionDefaults(function) => function.func_id,
+                HeapData::Closure(closure) => closure.func_id,
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let name_id = self.interns.get_function(func_id).name.name_id;
+        Some(self.interns.get_str(name_id).to_string())
     }
 
     /// Method-call variant of [`Self::dict_merge`]. Qualifies the error wording
@@ -230,15 +238,10 @@ impl VM<'_> {
         let (dict_ref, this) = dict_ref_guard.as_parts();
 
         // Check that mapping is a dict (Ref pointing to Dict) and clone key-value pairs
-        let copied_items: Vec<(Value, Value)> = if let Value::Ref(id) = mapping {
-            if let HeapData::Dict(dict) = this.heap.get(*id) {
-                dict.iter()
-                    .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
-                    .collect()
-            } else {
-                let type_name = mapping.py_type_name(this).to_string();
-                return Err(ExcType::type_error_kwargs_not_mapping(func_name, &type_name));
-            }
+        let copied_items: Vec<(Value, Value)> = if let Some(dict) = mapping.get_as::<Dict>(this.heap) {
+            dict.iter()
+                .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
+                .collect()
         } else {
             let type_name = mapping.py_type_name(this).to_string();
             return Err(ExcType::type_error_kwargs_not_mapping(func_name, &type_name));
@@ -304,15 +307,10 @@ impl VM<'_> {
         defer_drop!(mapping, this);
 
         // Clone all key/value pairs out of the mapping before mutating the target dict
-        let copied_items: Vec<(Value, Value)> = if let Value::Ref(id) = mapping {
-            if let HeapData::Dict(dict) = this.heap.get(*id) {
-                dict.iter()
-                    .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
-                    .collect()
-            } else {
-                let type_ = mapping.py_type_name(this);
-                return Err(ExcType::type_error_not_mapping(&type_));
-            }
+        let copied_items: Vec<(Value, Value)> = if let Some(dict) = mapping.get_as::<Dict>(this.heap) {
+            dict.iter()
+                .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
+                .collect()
         } else {
             let type_ = mapping.py_type_name(this);
             return Err(ExcType::type_error_not_mapping(&type_));
@@ -488,8 +486,8 @@ impl VM<'_> {
         let value = this.pop();
         defer_drop!(value, this);
 
-        // Fast path: tuple, list, push onto stack without a temporary vector.
-        if let Some(items) = exact_sequence_items(value, this.heap) {
+        // Push built-in sequence items onto the stack without a temporary vector.
+        if let Some(items) = SequenceItems::from_value(value, this.heap) {
             if items.len() != count {
                 return Err(ExcType::unpack_size_error(count, items.len()));
             }
@@ -500,8 +498,7 @@ impl VM<'_> {
                     .check_allocation(capacity.saturating_mul(VALUE_SIZE))?;
                 this.stack.reserve_exact(count);
             }
-            this.stack
-                .extend(items.iter().rev().map(|item| item.clone_with_heap(this.heap)));
+            this.stack.extend(items.cloned(this.heap).rev());
             return Ok(());
         }
         let items = unpack_exact(value, count, this)?;
@@ -560,8 +557,7 @@ impl VM<'_> {
 
         // Middle items as a list (starred target)
         let middle_list: Vec<Value> = items.drain(before..).collect();
-        let list_id = this.heap.allocate(HeapData::List(List::new(middle_list)));
-        this.push(Value::Ref(list_id));
+        this.push(Value::allocate(List::new(middle_list), this.heap));
 
         // Before items
         for item in items.drain(..).rev() {
@@ -586,31 +582,23 @@ fn unpack_ex_too_few_error(min_needed: usize, actual: usize) -> RunError {
     SimpleException::new_msg(ExcType::ValueError, message).into()
 }
 
-/// `a, b, c = value` as owned items: exactly `count` of them, with CPython's
-/// unpack errors. Shared by `UNPACK_SEQUENCE` and native code that mirrors a
+/// `a, b, c = value` as owned items, with `ValueError` if the length differs.
+/// Shared by `UNPACK_SEQUENCE` and native code that mirrors a
 /// Python unpack (`random.setstate`). Consumes at most `count + 1` items, so an
 /// endless iterable still fails.
 pub(crate) fn unpack_exact(value: &Value, count: usize, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
-    // Fast path: tuple, list; unpack without iterator.
-    if let Some(items) = exact_sequence_items(value, vm.heap) {
+    if let Some(items) = SequenceItems::from_value(value, vm.heap) {
         if items.len() != count {
             return Err(ExcType::unpack_size_error(count, items.len()));
         }
-        vm.heap.tracker.check_allocation(count.saturating_mul(VALUE_SIZE))?;
-        return Ok(items.iter().map(|item| item.clone_with_heap(vm.heap)).collect());
+        return items.to_vec(vm.heap);
     }
     if !value.py_is_iterable(vm) {
         return Err(unpack_type_error(value, vm));
     }
     // Dicts also report their total size in the "too many" error; other
     // iterables stop at the first surplus item without reporting a total.
-    let total = match value {
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Dict(dict) => Some(dict.len()),
-            _ => None,
-        },
-        _ => None,
-    };
+    let total = value.get_as::<Dict>(vm.heap).map(Dict::len);
     // Pull one past `count` so a too-long iterable is detected without
     // draining it — CPython stops consuming there too, which is why every
     // other type has no total to report.
@@ -630,18 +618,6 @@ pub(crate) fn unpack_exact(value: &Value, count: usize, vm: &mut VM<'_>) -> RunR
         };
         items.drop_with(vm);
         Err(err)
-    }
-}
-
-/// Returns borrowed items for built-in tuples and lists so unpacking can bypass the iterator protocol.
-fn exact_sequence_items<'a>(value: &Value, heap: &'a Heap) -> Option<&'a [Value]> {
-    let Value::Ref(id) = value else {
-        return None;
-    };
-    match heap.get(*id) {
-        HeapData::Tuple(tuple) => Some(tuple.as_slice()),
-        HeapData::List(list) => Some(list.as_slice()),
-        _ => None,
     }
 }
 

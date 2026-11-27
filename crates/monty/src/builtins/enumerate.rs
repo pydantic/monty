@@ -7,7 +7,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
-    heap::{DropGuard, DropWithContext, HeapData},
+    heap::{DropGuard, DropWithContext},
     types::{List, allocate_tuple},
     value::Value,
 };
@@ -52,8 +52,7 @@ pub fn builtin_enumerate(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     }
 
     let (result, vm) = result_guard.into_parts();
-    let heap_id = vm.heap.allocate(HeapData::List(List::new(result)));
-    Ok(Value::Ref(heap_id))
+    Ok(Value::allocate(List::new(result), vm.heap))
 }
 
 /// Extracts `enumerate(iterable, start=0)` arguments, faithfully mirroring

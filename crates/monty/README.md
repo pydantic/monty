@@ -20,6 +20,10 @@ This crate is the pure-Rust core. Most users want one of the bindings built on t
 
 See the [documentation](https://pydantic.dev/docs/monty/) for the motivation, latency measurements, comparison to alternatives and the supported Python subset.
 
+Monty's code is MIT-licensed.
+The crate also includes selected CPython standard library modules under the upstream licence.
+See `stdlib/LICENSE` and `stdlib/NOTICE` in the crate archive.
+
 ## Basic usage
 
 `MontyRun` parses and compiles code once; `run` executes it with input values and returns the value of the final expression as a `MontyObject`:
@@ -98,7 +102,7 @@ The dump includes the interpreter state and the supplied script name, type-check
 Published releases with the same dump version can read and resume each other's dumps.
 This guarantee does not extend to unreleased Git revisions.
 A release that breaks compatibility in either direction uses a new dump version, even if it is a patch release.
-Current builds write dump format 16 and load formats 13–16, upgrading older state as needed:
+Current builds write dump format 18 and load formats 13–18, upgrading older state as needed:
 
 ```rust
 use monty::{Dump, MontyRepl, Session, SessionRef, dump};
@@ -139,6 +143,10 @@ The sandbox runs the file as the module and caches it for the session.
 The worker requests module type stubs through `OsFunctionCall::ImportStubs`; the interpreter never raises it.
 `typing.get_type_hints()` of a host function or class suspends with `OsFunctionCall::GetTypeHints`; the host's dict
 answer is the call's result, and running without a host gives `{}`.
+
+The built-in `errno` module provides 134 Linux error-number names and the `errorcode` reverse lookup dictionary.
+Its constants and aliases are identical on Linux, macOS, and Windows; importing it requires no host handler.
+The reverse mappings follow CPython on Linux, including `EDEADLOCK` for 35 and `ENOTSUP` for 95.
 
 ## Other pieces
 

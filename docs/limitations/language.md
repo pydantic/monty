@@ -33,22 +33,25 @@ any code runs.
 
 - **Template strings (t-strings)** — PEP 750.
 
-## Starred unpacking
+## Unpacking
 
 Anything Monty can iterate may follow a `*`, matching CPython: `[*xs]`,
 `(*xs,)`, `{*xs}`, `f(*xs)`, `a, b = xs` and `a, *b = xs` all accept whatever
 `list(xs)` accepts.
 
-One message divergence: passing a non-iterable to a call, `f(*1)`, reports
+Passing a non-iterable to a call, `f(*1)`, reports
 `TypeError: Value after * must be an iterable, not int`, the same wording as a
 list literal. CPython instead names the callable by its module-qualified
 `__qualname__`: `__main__.f() argument after * must be an iterable, not int`,
 and correspondingly `__main__.C.m()`, `__main__.<lambda>()` or
 `__main__.outer.<locals>.inner()`. Monty has neither function `__qualname__`
 nor module-qualified names (see the class-name note in [collections.md](collections.md)), so
-it reports the generic form. Every other unpacking form matches CPython
-exactly, except for the comprehension target restriction in
-[comprehensions.md](comprehensions.md).
+it reports the generic form.
+
+Unpacking a named tuple into too few targets reports its total length, for example
+`ValueError: too many values to unpack (expected 1, got 2)`. CPython omits `got 2` for named tuples.
+
+See [comprehensions.md](comprehensions.md) for the comprehension target restriction.
 
 ## Source nesting depth
 
@@ -96,11 +99,26 @@ exactly, except for the comprehension target restriction in
 
 ## Imports
 
-- Only the bundled stdlib modules listed in [modules.md](modules.md) can be
-    imported. Importing anything else raises `ModuleNotFoundError`.
-- Relative imports (`from . import x`) raise `ImportError: "attempted relative import with no known parent package"`;
-    there is no package
-    system.
+- Imports can load bundled modules, [host modules](modules.md#host-modules) and
+    [modules from files](modules.md#modules-from-files).
+    Monty does not search the host Python installation.
+- Relative imports (`from . import x`, `from ..pkg import y`) resolve against the importing module's `__package__`,
+    else its `__name__` (less the last component unless `__path__` is set), as CPython does, with these differences:
+    - `__spec__` is never consulted, and falling back on `__name__` issues no `ImportWarning`.
+    - The main script and REPL feeds have no package, even if they assign `__package__`, so a relative import there
+        raises `ImportError: attempted relative import with no known parent package`.
+        `exec()` with an explicit globals dict reads that dict's `__package__` and `__name__`.
+    - Each component of the resolved package name must be a Python identifier and not a keyword.
+        For example, with `__package__ = 'my-plugin'`, `from . import x` raises `ModuleNotFoundError` even if the
+        package exists; CPython can import it.
+    - If neither `pkg` nor `pkg.sub` is loaded, `exec('from . import x', {'__package__': 'pkg.sub'})` raises
+        `ModuleNotFoundError` naming `pkg.sub` instead of importing `pkg` first as CPython does.
+        This can fail even when both packages exist, including when a previous import of those packages raised.
+    - If `pkg/__init__.py` imports `pkg.sibling` and then raises, a later `from .sibling import x` in a surviving
+        module of `pkg` can rerun the initializer, repeating its side effects or raising again.
+        CPython uses the cached `pkg.sibling` without rerunning the initializer.
+    - With `__package__ = 'os.path'`, `from .missing import x` reports `No module named 'posixpath.missing'` instead
+        of naming `os.path.missing` as CPython does.
 - `__import__` is not defined.
 
 ## `__future__` imports

@@ -140,7 +140,7 @@ fn uni_name(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 fn uni_lookup(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("lookup", vm.heap)?;
     defer_drop!(value, vm);
-    let name = value.try_to_str(vm)?;
+    let name = value.try_as_str(vm)?;
     match unicode_names2::character(name) {
         Some(c) => Ok(allocate_string(c.to_string(), vm.heap)),
         None => Err(SimpleException::new_msg(ExcType::KeyError, format!("undefined character name '{name}'")).into()),

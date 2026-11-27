@@ -21,8 +21,7 @@ use crate::{
     hash::HashValue,
     heap::{
         BorrowedHeapRead, BorrowedHeapReadMut, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem,
-        HeapObjectRead, HeapRead, HeapReadMut, HeapReadOutput, HeapReader, heap_read_ref_as_field,
-        heap_read_ref_as_field_mut,
+        HeapObjectRead, HeapRead, HeapReadMut, HeapReader, heap_read_ref_as_field, heap_read_ref_as_field_mut,
     },
     intern::Interns,
     types::{Type, TypeRef, Union, str::PyStr},
@@ -163,7 +162,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
     }
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        let Some(HeapReadOutput::HostClass(other)) = other.read_heap(vm) else {
+        let Some(other) = other.read_as::<HostClass>(vm.heap) else {
             return Ok(None);
         };
         // Equal only for the same class (one type entry per class uuid, so the
@@ -444,8 +443,9 @@ impl HostClassType {
             host_defined: true,
             is_dataclass: self.is_dataclass,
             attrs: Vec::new(),
-            // A host proxy of a host class compares by identity: the sandbox
-            // never learns how the host's class compares.
+            // A host proxy of a host class compares and hashes by identity,
+            // deliberately unlike the sandbox (attrs `==`, unhashable): those
+            // rules approximate a host class whose real `__eq__` it never sees.
             eq: ClassEq::Identity,
             hash: ClassHash::Identity,
         }
@@ -517,7 +517,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClassType> {
     }
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        let Some(HeapReadOutput::HostClassType(other)) = other.read_heap(vm) else {
+        let Some(other) = other.read_as::<HostClassType>(vm.heap) else {
             return Ok(None);
         };
         // Same class identity — uuids are collision-free, so no name gate

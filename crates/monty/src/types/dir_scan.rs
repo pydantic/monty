@@ -11,6 +11,7 @@
 
 use std::{borrow::Cow, fmt::Write};
 
+use monty_macros::pyattrs;
 use monty_types::{
     MontyObject, MontyPath, OsFunctionCall, ResourceError, ResourceTracker, ScanArgs, StringRepr,
     scan::{
@@ -31,6 +32,7 @@ use crate::{
     identity::Identity,
     intern::StaticStrings,
     os_dispatch::value_as_path_str,
+    py_attrs::PyAttrs,
     types::{
         LazyHeapSet, List, Path, PyTrait, Type, TypeRef, allocate_tuple,
         list::ListIterator,
@@ -212,7 +214,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DirScan> {
         }
     }
 
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         match self.get_mut(vm.heap) {
             DirScan::Entry(_) => Err(ExcType::type_error_not_iterator(&self.py_type_name(vm))),
             DirScan::Scandir(iter) => {
@@ -222,10 +224,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DirScan> {
                 iter.position += 1;
                 let path = os_path_join(&iter.dir, &name);
                 let entry = DirScan::Entry(DirEntry { name, path, info });
-                Ok(Some(Value::Ref(vm.heap.allocate(HeapData::DirScan(Box::new(entry))))))
+                Ok(Some(Value::allocate(entry, vm.heap)))
             }
             DirScan::Walk(_) => walk_next(self, vm),
         }
+        .map(|item| item.map(CallResult::Value))
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
@@ -289,24 +292,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DirScan> {
             ))
         }
     }
-
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
-        let method = attr.static_string(vm);
-        match (self.get(vm.heap), method) {
-            (DirScan::Entry(entry), Some(method)) if ENTRY_METHODS.contains(&method) => {
-                let (info, path) = (entry.info, entry.path.clone());
-                entry_method(method, info, path, args, vm)
-            }
-            (DirScan::Scandir(_), Some(StaticStrings::Close)) => {
-                args.check_zero_args("ScandirIterator.close", vm.heap)?;
-                if let DirScan::Scandir(iter) = self.get_mut(vm.heap) {
-                    iter.position = iter.entries.len();
-                }
-                Ok(CallResult::Value(Value::None))
-            }
-            _ => Err(ExcType::attribute_error_method(self.py_type_name(vm), attr, args, vm)),
-        }
-    }
 }
 
 impl DirScan {
@@ -319,58 +304,6 @@ impl DirScan {
             Self::Walk(walk) => format!("<generator object {}>", walk.qualname()),
         }
     }
-}
-
-/// The `DirEntry` methods [`entry_method`] answers.
-const ENTRY_METHODS: [StaticStrings; 6] = [
-    StaticStrings::IsDir,
-    StaticStrings::IsFile,
-    StaticStrings::IsSymlink,
-    StaticStrings::IsJunction,
-    StaticStrings::StatMethod,
-    StaticStrings::Fspath,
-];
-
-/// Runs a `DirEntry` method from what the scan saw; only `stat()` asks the host.
-fn entry_method(
-    method: StaticStrings,
-    info: EntryInfo,
-    path: String,
-    args: ArgValues,
-    vm: &mut VM<'_>,
-) -> RunResult<CallResult> {
-    let value = match method {
-        StaticStrings::IsDir => {
-            let IsDirArgs { follow_symlinks } = IsDirArgs::from_args(args, vm)?;
-            Value::Bool(info.is_dir && (follow_symlinks.bool() || !info.is_symlink))
-        }
-        StaticStrings::IsFile => {
-            let IsFileArgs { follow_symlinks } = IsFileArgs::from_args(args, vm)?;
-            Value::Bool(info.is_file && (follow_symlinks.bool() || !info.is_symlink))
-        }
-        StaticStrings::IsSymlink => {
-            args.check_zero_args("is_symlink", vm.heap)?;
-            Value::Bool(info.is_symlink)
-        }
-        StaticStrings::IsJunction => {
-            args.check_zero_args("is_junction", vm.heap)?;
-            Value::Bool(false)
-        }
-        StaticStrings::StatMethod => {
-            let StatArgs { follow_symlinks } = StatArgs::from_args(args, vm)?;
-            // `lstat` of anything but a link is its `stat`.
-            return if follow_symlinks.bool() || !info.is_symlink {
-                Ok(CallResult::OsCall(OsFunctionCall::Stat(MontyPath::new(path))))
-            } else {
-                Err(ExcType::not_implemented_os_arg(Some("stat"), "follow_symlinks"))
-            };
-        }
-        _ => {
-            args.check_zero_args("__fspath__", vm.heap)?;
-            allocate_string(path, vm.heap)
-        }
-    };
-    Ok(CallResult::Value(value))
 }
 
 /// `DirEntry.is_dir(*, follow_symlinks=True)`.
@@ -442,7 +375,7 @@ fn walk_step<'h>(this: &mut HeapObjectRead<'h, DirScan>, vm: &mut VM<'h>) -> Run
                     let RunError::Exc(raise) = error else {
                         return Err(error);
                     };
-                    let exc = Value::Ref(vm.heap.allocate(HeapData::Exception(raise.exc)));
+                    let exc = Value::allocate(raise.exc, vm.heap);
                     let result = vm.evaluate_function(onerror, ArgValues::One(exc))?;
                     result.drop_with(vm);
                 }
@@ -455,7 +388,7 @@ fn walk_step<'h>(this: &mut HeapObjectRead<'h, DirScan>, vm: &mut VM<'h>) -> Run
             } => {
                 let path_flavor = walk_mut(this, vm).path_flavor;
                 let dirpath = if path_flavor {
-                    Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(spelled.clone()))))
+                    Value::allocate(Path::new(spelled.clone()), vm.heap)
                 } else {
                     allocate_string(spelled.as_str(), vm.heap)
                 };
@@ -502,23 +435,21 @@ fn descend_into_dirnames<'h>(
     };
     // Each name is copied, then joined onto the directory and spelled for its
     // step; charged first, since a list can repeat one long name many times.
-    let mut total = 0_usize;
-    for item in list.as_slice() {
-        let Some(name) = value_as_path_str(item, vm.heap, vm.interns) else {
-            return Err(ExcType::type_error(format!(
-                "join() argument must be str, bytes, or os.PathLike object, not '{}'",
-                item.py_type_name_heap(vm.heap, vm.interns)
-            )));
-        };
-        let step = name.len() * 3 + relative.len() + spelled.len() + size_of::<WalkStep>();
-        total = total.saturating_add(step);
-    }
+    let items = list.items();
+    let total = items
+        .map(|item| {
+            let Some(name) = value_as_path_str(item, vm.heap, vm.interns) else {
+                return Err(ExcType::type_error(format!(
+                    "join() argument must be str, bytes, or os.PathLike object, not '{}'",
+                    item.py_type_name_heap(vm.heap, vm.interns)
+                )));
+            };
+            Ok(name.len() * 3 + relative.len() + spelled.len() + size_of::<WalkStep>())
+        })
+        .try_fold(0_usize, |total, size| size.map(|size| total.saturating_add(size)))?;
     vm.heap.tracker.check_allocation(total)?;
-    let names: Vec<String> = list
-        .as_slice()
-        .iter()
-        .filter_map(|item| value_as_path_str(item, vm.heap, vm.interns))
-        .map(str::to_owned)
+    let names: Vec<String> = items
+        .filter_map(|item| value_as_path_str(item, vm.heap, vm.interns).map(str::to_owned))
         .collect();
     let walk = walk_mut(this, vm);
     for name in names.iter().rev() {
@@ -563,7 +494,7 @@ fn walk_mut<'a, 'h>(this: &'a mut HeapObjectRead<'h, DirScan>, vm: &'a mut VM<'h
 /// Allocates a list of `str`.
 fn string_list(items: Vec<String>, vm: &VM<'_>) -> Value {
     let items = items.into_iter().map(|item| allocate_string(item, vm.heap)).collect();
-    Value::Ref(vm.heap.allocate(HeapData::List(List::new(items))))
+    Value::allocate(List::new(items), vm.heap)
 }
 
 /// What [`WalkIterator::step`] decided, carried out once its borrow ends.
@@ -816,7 +747,7 @@ impl ScanEffect {
                     entries,
                     position: 0,
                 });
-                Ok(Value::Ref(vm.heap.allocate(HeapData::DirScan(Box::new(iter)))))
+                Ok(Value::allocate(iter, vm.heap))
             }
             Self::Walk(setup) => {
                 let (tree, root_error) = match reply {
@@ -842,7 +773,7 @@ impl ScanEffect {
                     root_error,
                     running: false,
                 });
-                Ok(Value::Ref(vm.heap.allocate(HeapData::DirScan(Box::new(walk)))))
+                Ok(Value::allocate(walk, vm.heap))
             }
             Self::Glob(setup) => {
                 let matches = match reply {
@@ -854,12 +785,10 @@ impl ScanEffect {
                 vm.heap.tracker.check_allocation(total)?;
                 let paths = matches
                     .into_iter()
-                    .map(|path| Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(path)))))
+                    .map(|path| Value::allocate(Path::new(path), vm.heap))
                     .collect();
                 let list = vm.heap.allocate(HeapData::List(List::new(paths)));
-                Ok(Value::Ref(
-                    vm.heap.allocate(HeapData::ListIterator(ListIterator::new(list))),
-                ))
+                Ok(Value::allocate(ListIterator::new(list), vm.heap))
             }
         }
     }
@@ -1055,4 +984,125 @@ pub(crate) fn glob_call(
         })
         .into(),
     })
+}
+
+pub(crate) struct PyDirEntryImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyDirEntryImpl {
+    type Receiver = HeapObjectRead<'heap, DirScan>;
+
+    #[pymethod(IsDir)]
+    fn is_dir<'h>(this: &mut HeapObjectRead<'h, DirScan>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let DirScan::Entry(entry) = this.get(vm.heap) else {
+            unreachable!("DirEntry table receiver")
+        };
+        let info = entry.info;
+        let value = {
+            let IsDirArgs { follow_symlinks } = IsDirArgs::from_args(args, vm)?;
+            Value::Bool(info.is_dir && (follow_symlinks.bool() || !info.is_symlink))
+        };
+        Ok(CallResult::Value(value))
+    }
+
+    #[pymethod(IsFile)]
+    fn is_file<'h>(this: &mut HeapObjectRead<'h, DirScan>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let DirScan::Entry(entry) = this.get(vm.heap) else {
+            unreachable!("DirEntry table receiver")
+        };
+        let info = entry.info;
+        let value = {
+            let IsFileArgs { follow_symlinks } = IsFileArgs::from_args(args, vm)?;
+            Value::Bool(info.is_file && (follow_symlinks.bool() || !info.is_symlink))
+        };
+        Ok(CallResult::Value(value))
+    }
+
+    #[pymethod(IsSymlink)]
+    fn is_symlink<'h>(
+        this: &mut HeapObjectRead<'h, DirScan>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        let DirScan::Entry(entry) = this.get(vm.heap) else {
+            unreachable!("DirEntry table receiver")
+        };
+        let info = entry.info;
+        let value = {
+            args.check_zero_args("is_symlink", vm.heap)?;
+            Value::Bool(info.is_symlink)
+        };
+        Ok(CallResult::Value(value))
+    }
+
+    #[pymethod(IsJunction)]
+    fn is_junction<'h>(
+        this: &mut HeapObjectRead<'h, DirScan>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        let DirScan::Entry(_) = this.get(vm.heap) else {
+            unreachable!("DirEntry table receiver")
+        };
+        let value = {
+            args.check_zero_args("is_junction", vm.heap)?;
+            Value::Bool(false)
+        };
+        Ok(CallResult::Value(value))
+    }
+
+    #[pymethod(StatMethod)]
+    fn stat_method<'h>(
+        this: &mut HeapObjectRead<'h, DirScan>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        let DirScan::Entry(entry) = this.get(vm.heap) else {
+            unreachable!("DirEntry table receiver")
+        };
+        let info = entry.info;
+        let path = entry.path.clone();
+        {
+            let StatArgs { follow_symlinks } = StatArgs::from_args(args, vm)?;
+            // `lstat` of anything but a link is its `stat`.
+            if follow_symlinks.bool() || !info.is_symlink {
+                Ok(CallResult::OsCall(OsFunctionCall::Stat(MontyPath::new(path))))
+            } else {
+                Err(ExcType::not_implemented_os_arg(Some("stat"), "follow_symlinks"))
+            }
+        }
+    }
+
+    #[pymethod(Fspath)]
+    fn __fspath__<'h>(
+        this: &mut HeapObjectRead<'h, DirScan>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        let DirScan::Entry(entry) = this.get(vm.heap) else {
+            unreachable!("DirEntry table receiver")
+        };
+        let path = entry.path.clone();
+        let value = {
+            args.check_zero_args("__fspath__", vm.heap)?;
+            allocate_string(path, vm.heap)
+        };
+        Ok(CallResult::Value(value))
+    }
+}
+
+pub(crate) struct PyScandirImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyScandirImpl {
+    type Receiver = HeapObjectRead<'heap, DirScan>;
+
+    #[pymethod(Close)]
+    fn close<'h>(this: &mut HeapObjectRead<'h, DirScan>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        args.check_zero_args("ScandirIterator.close", vm.heap)?;
+        if let DirScan::Scandir(iter) = this.get_mut(vm.heap) {
+            iter.position = iter.entries.len();
+        }
+        Ok(CallResult::Value(Value::None))
+    }
 }

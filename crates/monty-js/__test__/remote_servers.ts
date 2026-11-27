@@ -121,6 +121,46 @@ export function relay(stream: Stream): void {
   })()
 }
 
+/**
+ * A relay standing in for a server that records spans: it pushes the `traceparent`
+ * of each turn-starting request onto `sent`, and names a span of its own, in that
+ * request's trace, on every suspension it forwards.
+ */
+export function tracingRelay(sent: (string | undefined)[]): (stream: Stream) => void {
+  return (stream) => {
+    admit(stream)
+    const child = new ChildFrames()
+    let traceId = '0'.repeat(28) + 'feed'
+    let spans = 0
+    stream.on('data', (data: Buffer) => {
+      const fields = protoFields(data)
+      if (TURN_STARTS.some((field) => fields.has(field))) {
+        const traceparent = fields.get(REQUEST_TRACEPARENT)?.toString()
+        sent.push(traceparent)
+        traceId = traceparent?.split('-')[1] ?? traceId
+      }
+      child.send(data)
+    })
+    stream.on('end', () => child.endInput())
+    stream.on('close', () => child.kill())
+    void (async () => {
+      for (;;) {
+        const frame = await child.next()
+        if (frame === null) break
+        const kind = Math.min(...[...protoFields(frame).keys()].filter((field) => field < FIRST_EVENT_FIELD))
+        if (SUSPENSIONS.includes(kind)) {
+          spans += 1
+          const traceparent = `00-${traceId}-${spans.toString(16).padStart(16, '0')}-01`
+          stream.write(Buffer.concat([frame, bytesField(EVENT_TRACEPARENT, Buffer.from(traceparent))]))
+        } else {
+          stream.write(frame)
+        }
+      }
+      stream.end()
+    })()
+  }
+}
+
 /** A relay that drops the stream, with an `UNAVAILABLE` status, on its `dropAt`-th request. */
 export function droppingRelay(dropAt: number): (stream: Stream) => Promise<void> {
   return async (stream) => {
@@ -159,6 +199,13 @@ const EVENT_SHUTDOWN = 12
 const EVENT_PING = 13
 const EVENT_SESSION_REFUSED = 14
 // `WorkerEvent`'s message-level fields:
+const REQUEST_FEED = 3
+const REQUEST_TRACEPARENT = 20
+/** The requests that start a turn, a `Configure` standing for the first request it carries. */
+const TURN_STARTS = [REQUEST_CONFIGURE, REQUEST_FEED, REQUEST_LOAD]
+/** `FunctionCall`, `OsCall`, `NameLookup` and `ResolveFutures`. */
+const SUSPENSIONS = [2, 3, 4, 5]
+const EVENT_TRACEPARENT = 31
 const FIRST_EVENT_FIELD = 20
 const EVENT_SESSION_ID = 28
 // Fields of the messages those arms carry:

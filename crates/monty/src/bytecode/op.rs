@@ -11,9 +11,9 @@
 //! - Compound (multiple operands): `CallFunctionKw` (u8 + u8), `MakeClosure` (u16 + u8 + u8),
 //!   `LoadName` (u16 + u16 + u8)
 
+use strum::FromRepr;
 #[cfg(test)]
 use strum::IntoEnumIterator;
-use strum::{EnumIter, FromRepr};
 
 use crate::{bytecode::builder::RelativeOffset, expressions::CmpOperator};
 
@@ -93,8 +93,10 @@ pub fn decode_assert_flags(flags: u8) -> Option<Option<CmpOperator>> {
 /// Opcode bytes are part of Monty's serialized `Code` format. Explicit
 /// discriminants prevent source reordering or removal from changing that format
 /// accidentally; intentional renumbering requires a dump-format version bump.
+#[monty_macros::explicit_discriminants(checksum = 0xcfa6_6168_5f74_b86e)]
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumIter, FromRepr)]
+#[cfg_attr(test, derive(strum::EnumIter))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromRepr)]
 pub enum Opcode {
     // === Stack Operations (no operand) ===
     /// Discard top of stack.
@@ -457,6 +459,7 @@ pub enum Opcode {
     // === Module Operations ===
     /// Load a top-level module. Operand: u16 module-name StringId.
     /// Pushes a built-in module or suspends with an import OS call for the host's value.
+    /// A name of only dots (`..`) loads a relative import's package, found from `__package__` or `__name__`.
     LoadModule = 106,
     /// Pop a module, push its submodule. Operands: u16 attribute ID, u16 dotted-path ID.
     /// Missing submodules raise `ModuleNotFoundError`; built-ins add "is not a package".
@@ -1103,9 +1106,9 @@ impl Opcode {
     }
 }
 
-/// Computes an FNV-1a hash over the canonical opcode table.
+/// Pins the operand layout for each opcode byte independently of the discriminant check.
 #[cfg(test)]
-pub(crate) fn opcode_fingerprint() -> u64 {
+pub(crate) fn opcode_operand_shapes_fingerprint() -> u64 {
     const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0100_0000_01b3;
 
@@ -1113,12 +1116,7 @@ pub(crate) fn opcode_fingerprint() -> u64 {
     let mut opcodes = Opcode::iter().collect::<Vec<_>>();
     opcodes.sort_unstable_by_key(|opcode| *opcode as u8);
     for opcode in opcodes {
-        let byte = opcode as u8;
-        for value in [byte]
-            .into_iter()
-            .chain(format!("{opcode:?}").bytes())
-            .chain([0, opcode.operand_shape() as u8])
-        {
+        for value in [opcode as u8, opcode.operand_shape() as u8] {
             hash ^= u64::from(value);
             hash = hash.wrapping_mul(PRIME);
         }

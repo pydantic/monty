@@ -18,8 +18,8 @@ objects except `tee`, which is a plain function — so `isinstance(x, count)`,
     `tuple()`, but does not expose it as a Python-visible attribute.
 - **`count` and `repeat` objects are unhashable.** `hash(itertools.count())`
     raises `TypeError: unhashable type: 'itertools.count'`, where CPython falls
-    back to identity hashing. This applies to Monty's iterators generally, not
-    just these two.
+    back to identity hashing.
+    The other `itertools` adaptors and built-in container iterators are also unhashable.
 - **`count` accepts only `int`, `float`, `complex` and `bool`.** CPython accepts anything
     satisfying `PyNumber_Check` (e.g. `Decimal`, `Fraction`). Monty has
     no other numeric types, so the same `TypeError: a number is required` covers
@@ -122,24 +122,17 @@ objects except `tee`, which is a plain function — so `isinstance(x, count)`,
 
 ## Infinite iterators and the eager builtins
 
-`map()`, `filter()` and `enumerate()` are **eager** in Monty: each drains its
-source into a list and returns a concrete result, rather than the lazy iterator
-CPython returns. Applied to an infinite `itertools` iterator they therefore
-never return, where CPython yields lazily:
+`enumerate()` is eager in Monty: it drains its source into a list rather than returning a lazy iterator.
+Applied to an infinite `itertools` iterator it therefore never returns until a resource limit trips:
 
 ```python test="skip"
 import itertools
 
-map(str, itertools.count())  # CPython: lazy. Monty: runs until a limit trips.
-filter(bool, itertools.repeat(1))  # likewise
-enumerate(itertools.count())  # likewise
+enumerate(itertools.count())
 ```
 
-`zip()` stops at the shortest input, so `zip(itertools.count(), 'ab')` behaves
-as in CPython, as does slicing an infinite iterator by hand via `next()`. This
-is a pre-existing property of those builtins rather than something `itertools`
-introduces, but `count()`/`repeat()` are the first easy way for sandboxed code
-to reach it.
+`zip()` is also eager, but stops at the shortest input, so `zip(itertools.count(), 'ab')` stays bounded.
+See [builtins.md](builtins.md) for the other consequences of eager iteration.
 
 ## Resource limits
 

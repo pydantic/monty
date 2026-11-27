@@ -20,3 +20,18 @@ for value in [obj, C, list[int]]:
         assert False
     except AttributeError:
         pass
+
+# === Native attribute tables accept heap-backed names ===
+attribute = ''.join(['__init', '_subclass__'])
+hook = getattr(dict, attribute)
+attribute = None
+assert hook() is None
+values = {1, 2}
+assert set.symmetric_difference(values, {2, 3}) == {1, 3}
+
+missing = ''.join(['missing_native', '_attribute_name'])
+try:
+    getattr(values, missing)
+    assert False, 'expected AttributeError'
+except AttributeError as exc:
+    assert str(exc) == "'set' object has no attribute 'missing_native_attribute_name'"

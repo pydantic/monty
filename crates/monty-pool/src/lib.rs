@@ -13,12 +13,15 @@ pub mod telemetry;
 pub use telemetry as telemetry_adapter;
 mod worker;
 
-use std::{borrow::Cow, error, fmt, io, num::NonZero, path::PathBuf, process::ExitStatus, thread, time::Duration};
+use std::{
+    borrow::Cow, error, fmt, future::Future, io, num::NonZero, path::PathBuf, pin::Pin, process::ExitStatus, sync::Arc,
+    thread, time::Duration,
+};
 
 use monty_proto::DEFAULT_MAX_DECODE_BYTES;
-pub use monty_proto::DEFAULT_PRINT_FLUSH_INTERVAL;
 /// Why a remote server ended a session's stream; see [`RemoteDisconnect::cause`].
 pub use monty_proto::grpc::Cause as RemoteCause;
+pub use monty_proto::{DEFAULT_PRINT_FLUSH_INTERVAL, Traceparent};
 use monty_types::{ExecutionClock, MontyException};
 
 #[cfg(feature = "telemetry")]
@@ -26,7 +29,7 @@ use crate::telemetry::Metrics;
 pub use crate::{
     checkout::{
         Checkout, CheckoutOptions, MountSpec, MountSpecMode, OnPrint, OnRawEvent, OnStreamedCall, Persistence,
-        PrintFuture, ReplConfig, ResumeValue, StreamedCall, TurnEvent, on_print_sync,
+        PrintFuture, ReplConfig, ResumeValue, StreamedCall, TurnEvent, TurnOptions, on_print_sync,
     },
     pool::Pool,
 };
@@ -50,7 +53,7 @@ pub enum MontyTransport {
 
 impl MontyTransport {
     /// Whether this is the remote transport, whose workers are single-use (a
-    /// stream opened per checkout, never pooled idle or reused).
+    /// stream serves one checkout and is never reused).
     pub(crate) fn is_remote(&self) -> bool {
         matches!(self, Self::Remote(_))
     }
@@ -71,12 +74,13 @@ pub const DEFAULT_KEEP_ALIVE: Duration = Duration::from_mins(5);
 pub const DEFAULT_MAX_CHECKOUTS_PER_WORKER: u32 = 1000;
 
 /// Configuration for a [`Pool`].
+#[expect(clippy::struct_excessive_bools, reason = "independent on/off options")]
 #[derive(Debug, Clone)]
 pub struct PoolConfig {
     /// Floor on live workers: spawned at pool creation, and replaced in the
-    /// background whenever one is recycled, crashes or is discarded. Forced to
-    /// 0 for the [`MontyTransport::Remote`] transport (streams are opened
-    /// per-checkout, not pre-warmed).
+    /// background whenever one is recycled, crashes or is discarded. Unused by
+    /// the [`MontyTransport::Remote`] transport, whose sessions are single-use;
+    /// see [`Self::pre_warm`] for a floor on ready workers.
     pub min_processes: usize,
     /// Hard cap on live workers; checkouts beyond this wait. For the remote
     /// transport, a cap on concurrent streams.
@@ -89,6 +93,9 @@ pub struct PoolConfig {
     pub execution_clock: ExecutionClock,
     /// How long [`Pool::checkout`] waits for a free worker before
     /// [`PoolError::Exhausted`]. `None` waits forever.
+    /// On the remote transport this deadline also bounds an automatic
+    /// admission retry, including its wait and the new stream open.
+    /// A retry timeout returns the original [`PoolError::Refused`].
     pub checkout_timeout: Option<Duration>,
     /// How often the remote transport sends an HTTP/2 `PING` on its
     /// connection while a stream is open, to notice a dead TCP peer on the
@@ -137,6 +144,28 @@ pub struct PoolConfig {
     /// Saves a round trip per call, which matters most over the network, but moves
     /// call-time errors to the `await`. On by default for [`Self::remote`], off for [`Self::subprocess`].
     pub stream_async_calls: bool,
+    /// Have each worker build a type checker that has already resolved the builtins
+    /// between checkouts, so a session's first type-checked feed skips that work
+    /// (a checkout arriving mid-build waits for it). Costs about 6 MiB per worker,
+    /// outside every session's `max_memory`, wasted if sessions do not type-check.
+    /// Subprocess transport only; off by default.
+    pub prewarm_type_checker: bool,
+    /// Floor on ready (idle) workers, 0 by default, sharing `max_processes` with
+    /// those checked out: each one a checkout takes is replaced in the background,
+    /// and a checkout waits for one already starting rather than starting another.
+    /// A remote checkout takes only a session dialed with its own metadata.
+    pub pre_warm: usize,
+    /// [`Pool::new`] starts the [`Self::pre_warm`] workers itself (the larger of
+    /// that and a subprocess pool's `min_processes`), failing if one cannot start,
+    /// rather than in the background, where a failed start is retried with a
+    /// backoff. On by default.
+    pub pre_warm_wait: bool,
+    /// Remote transport only: called for the request metadata of each
+    /// [`Self::pre_warm`] session the pool dials; `None` sends none. A checkout whose
+    /// [`CheckoutOptions::metadata`] differs closes those sessions and dials for itself
+    /// (at `max_processes`, after waiting for the server to end one of them), so
+    /// leave `pre_warm` at 0 when checkouts send different metadata.
+    pub pre_warm_metadata: Option<MetadataFn>,
     /// Where pool and turn metrics are recorded, from
     /// [`TelemetryAdapterHandle::metrics`](telemetry::TelemetryAdapterHandle::metrics).
     /// `None` records nothing at all. Independent of tracing: metrics cover
@@ -156,7 +185,7 @@ impl PoolConfig {
     }
 
     /// Creates a remote-transport config for the gRPC server at `url`, with a
-    /// stream opened per checkout. `min_processes` is 0 (no pre-warming) and
+    /// stream opened per checkout unless `pre_warm` keeps some ready.
     /// `stream_async_calls` is on.
     pub fn remote(url: impl Into<String>) -> Self {
         let mut config = Self::with_transport(MontyTransport::Remote(url.into()));
@@ -180,10 +209,46 @@ impl PoolConfig {
             max_checkouts_per_worker: Some(DEFAULT_MAX_CHECKOUTS_PER_WORKER),
             auto_resume: true,
             stream_async_calls: false,
+            pre_warm: 0,
+            pre_warm_wait: true,
+            pre_warm_metadata: None,
             max_decode_bytes: DEFAULT_MAX_DECODE_BYTES,
+            prewarm_type_checker: false,
             #[cfg(feature = "telemetry")]
             metrics: None,
         }
+    }
+}
+
+/// Produces the request metadata for one pre-warmed remote session; see
+/// [`PoolConfig::pre_warm_metadata`]. An `Err` fails that session's dial.
+#[derive(Clone)]
+pub struct MetadataFn(Arc<dyn Fn() -> MetadataFuture + Send + Sync>);
+
+/// Request metadata, or why it could not be produced.
+type MetadataResult = Result<Vec<(String, String)>, String>;
+type MetadataFuture = Pin<Box<dyn Future<Output = MetadataResult> + Send>>;
+
+impl MetadataFn {
+    /// Wraps `f`, which the pool calls from its runtime's threads, so it must
+    /// return promptly; the future it returns is awaited for at most the time
+    /// the pool allows a dial.
+    pub fn new<Fut>(f: impl Fn() -> Fut + Send + Sync + 'static) -> Self
+    where
+        Fut: Future<Output = MetadataResult> + Send + 'static,
+    {
+        Self(Arc::new(move || Box::pin(f())))
+    }
+
+    /// Calls the function, reporting its failure as [`PoolError::Configuration`].
+    pub(crate) async fn call(&self) -> Result<Vec<(String, String)>, PoolError> {
+        (self.0)().await.map_err(PoolError::Configuration)
+    }
+}
+
+impl fmt::Debug for MetadataFn {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("MetadataFn(..)")
     }
 }
 
@@ -329,8 +394,8 @@ pub struct RemoteDisconnect {
     /// The transport or protocol error for this failure; absent when the
     /// server sent a status.
     pub transport_error: Option<String>,
-    /// The server's valid `Retry-After` delay on a refusal; always `None`
-    /// for a connection failure or disconnect.
+    /// The server's delay when a refusal has a single valid `Retry-After`.
+    /// Always `None` for a connection failure or disconnect.
     pub retry_after: Option<Duration>,
 }
 

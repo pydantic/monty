@@ -16,6 +16,7 @@ use std::{
 };
 
 use ahash::AHasher;
+use monty_macros::pyattrs;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -26,12 +27,14 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     frozen::{FrozenFunction, FrozenFunctions},
     hash::{HashValue, identity_hash},
-    heap::{ContainsHeap, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    heap::{ContainsHeap, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead},
     intern::StaticStrings,
     modules::{ModuleFunctions, StandardLib, typing},
+    py_attrs::PyAttrs,
     types::{
         Dict, LazyHeapSet, PyTrait, Type, TypeRef, Union,
         generic_alias::repr_type_arg,
+        sequence::SequenceItems,
         str::{PyStr, StringRepr, allocate_string},
     },
     value::{VALUE_SIZE, Value},
@@ -198,9 +201,7 @@ impl ForwardRef {
             precedence,
             globals: None,
         };
-        Ok(Value::Ref(
-            vm.heap.allocate(HeapData::ForwardRef(Box::new(forward_ref))),
-        ))
+        Ok(Value::allocate(forward_ref, vm.heap))
     }
 
     /// The stringifier a `FORWARDREF` evaluation against `globals` loads for the
@@ -340,7 +341,7 @@ impl<'h> HeapObjectRead<'h, ForwardRef> {
             precedence,
             globals: this.globals,
         };
-        Value::Ref(vm.heap.allocate(HeapData::ForwardRef(Box::new(composed))))
+        Value::allocate(composed, vm.heap)
     }
 
     /// `self op other` (or `other op self` when `reflected`) as composed text,
@@ -504,7 +505,7 @@ fn bundled_module_dict(bundled: StandardLib, vm: &mut VM<'_>) -> RunResult<Value
         .map(|(name, value)| (name.clone_with_heap(vm.heap), value.clone_with_heap(vm.heap)))
         .collect();
     let dict = Dict::from_pairs(pairs, vm)?;
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Dict(dict))))
+    Ok(Value::allocate(dict, vm.heap))
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, ForwardRef> {
@@ -520,7 +521,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ForwardRef> {
     /// owner, composed against the same globals (so a reference an evaluation
     /// made never equals a constructed one); `is_argument` is not compared, as in CPython.
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        let Some(HeapReadOutput::ForwardRef(other)) = other.read_heap(vm) else {
+        let Some(other) = other.read_as::<ForwardRef>(vm.heap) else {
             return Ok(None);
         };
         // The owner may itself be a reference, so a deep chain recurses.
@@ -650,11 +651,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ForwardRef> {
         Ok(Some(CallResult::Value(value)))
     }
 
-    /// `evaluate(...)`; any other method composes `Later.method(...)` on a stringifier.
+    /// Unknown methods compose `Later.method(...)` on a stringifier.
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &PyStr<'h>, args: ArgValues) -> RunResult<CallResult> {
-        if attr.static_string(vm) == Some(StaticStrings::Evaluate) {
-            self.evaluate(args, vm)
-        } else if self.composes(vm) {
+        if self.composes(vm) {
             let mut text = String::new();
             self.write_operand(Precedence::Atom, vm, &mut text);
             text.push('.');
@@ -693,7 +692,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ForwardRef> {
             // A tuple key lists its items bare, as `ast.unparse` writes a subscript,
             // keeping the `()` and trailing comma that make `Later[()]` and `Later[int,]` tuples.
             Value::Ref(id) if let HeapData::Tuple(tuple) = vm.heap.get(*id) => {
-                let items = clone_items(tuple.as_slice(), vm)?;
+                let items = SequenceItems::from_slice(tuple.as_slice()).to_vec(vm.heap)?;
                 defer_drop!(items, vm);
                 if items.is_empty() {
                     text.push_str("()");
@@ -831,8 +830,8 @@ fn render_operand(value: &Value, demanded: Precedence, vm: &mut VM<'_>, text: &m
                 }
                 return Ok(());
             }
-            HeapData::Tuple(tuple) => Container::Tuple(clone_items(tuple.as_slice(), vm)?),
-            HeapData::List(list) => Container::List(clone_items(list.as_slice(), vm)?),
+            HeapData::Tuple(tuple) => Container::Tuple(SequenceItems::from_slice(tuple.as_slice()).to_vec(vm.heap)?),
+            HeapData::List(list) => Container::List(list.items().to_vec(vm.heap)?),
             HeapData::Set(set) => {
                 let items: Vec<&Value> = set.iter().collect();
                 vm.heap
@@ -912,14 +911,6 @@ impl<C: ContainsHeap> DropWithContext<C> for Container {
     }
 }
 
-/// Owned clones of `items`, preflighted against the memory limit.
-fn clone_items(items: &[Value], vm: &VM<'_>) -> RunResult<Vec<Value>> {
-    vm.heap
-        .tracker
-        .check_allocation(items.len().saturating_mul(VALUE_SIZE))?;
-    Ok(items.iter().map(|item| item.clone_with_heap(vm.heap)).collect())
-}
-
 /// The `Format` member `value` names, `None` for anything else. CPython compares
 /// with `==`, so a bool or a whole float (`4.0`) names the member too.
 pub(crate) fn format_code(value: &Value) -> Option<i64> {
@@ -943,4 +934,17 @@ fn is_identifier(text: &str) -> bool {
     let mut chars = text.chars();
     chars.next().is_some_and(|first| first == '_' || first.is_alphabetic())
         && chars.all(|c| c == '_' || c.is_alphanumeric())
+}
+
+/// Python entry point for annotation evaluation.
+pub(crate) struct PyForwardRefImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyForwardRefImpl {
+    type Receiver = HeapObjectRead<'heap, ForwardRef>;
+
+    #[pymethod(Evaluate)]
+    fn evaluate<'h>(value: &HeapObjectRead<'h, ForwardRef>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        value.evaluate(args, vm)
+    }
 }

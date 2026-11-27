@@ -396,10 +396,9 @@ pub(crate) fn generated_fields(class_id: HeapId, dunder: &str, vm: &VM<'_>) -> O
 
 /// Whether `value` is a generated `__init__`, which construction calls directly.
 pub(crate) fn is_generated_init(value: &Value, vm: &VM<'_>) -> bool {
-    matches!(value, Value::Ref(id) if matches!(
-        vm.heap.get(*id),
-        HeapData::DataclassMethod(method) if matches!(method.kind, MethodKind::Init(_))
-    ))
+    value
+        .get_as::<DataclassMethod>(vm.heap)
+        .is_some_and(|method| matches!(method.kind, MethodKind::Init(_)))
 }
 
 /// The error assigning `name` raises on an instance of `class_id`, or `None`

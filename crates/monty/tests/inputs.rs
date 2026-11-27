@@ -4,7 +4,7 @@
 //! and can be used in Python code execution.
 
 use monty::MontyRun;
-use monty_types::{CompileOptions, ExcType, MontyObject, MontyUuid};
+use monty_types::{CompileOptions, ExcType, MontyObject, MontyTime, MontyTimeDelta, MontyTimeZone, MontyUuid};
 
 // === Immediate Value Tests ===
 
@@ -196,6 +196,60 @@ fn input_tuple() {
         result,
         MontyObject::tuple([MontyObject::int(1), MontyObject::string("two".to_string())])
     );
+}
+
+#[test]
+fn input_set_and_frozenset() {
+    let mut ex = MontyRun::new(
+        "s, frozen = x\ns.add(2)\ntype(frozen) is frozenset and frozen == {1} and s == {1, 2}".to_owned(),
+        "test.py",
+        vec!["x".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let x = MontyObject::tuple([
+        MontyObject::set([MontyObject::int(1)]),
+        MontyObject::frozenset([MontyObject::int(1)]),
+    ]);
+    assert_eq!(ex.run_no_limits(vec![x]).unwrap(), MontyObject::bool(true));
+}
+
+#[test]
+fn input_time_delta_and_timezone() {
+    let code = r"
+t, delta, tz = x
+assert (t.hour, t.minute, t.second, t.microsecond, t.fold) == (12, 30, 45, 123456, 1)
+assert tz.utcoffset(None) == delta
+tz.tzname(None)
+";
+    let mut ex = MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec!["x".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let x = MontyObject::tuple([
+        MontyObject::time(MontyTime {
+            hour: 12,
+            minute: 30,
+            second: 45,
+            microsecond: 123_456,
+            offset_seconds: None,
+            timezone_name: None,
+            fold: 1,
+        }),
+        MontyObject::timedelta(MontyTimeDelta {
+            days: 0,
+            seconds: 5400,
+            microseconds: 0,
+        }),
+        MontyObject::timezone(MontyTimeZone {
+            offset_seconds: 5400,
+            name: Some("East".to_owned()),
+        }),
+    ]);
+    assert_eq!(ex.run_no_limits(vec![x]).unwrap(), MontyObject::string("East"));
 }
 
 #[test]
@@ -944,4 +998,11 @@ fn host_class_repr_formats_non_string_attribute_keys() {
         runner.run_no_limits(vec![object]).unwrap(),
         MontyObject::string("Odd(42=7)")
     );
+}
+
+#[test]
+fn builtin_method_values_are_not_exposed() {
+    let code = "for owner, name in [(str, 'upper'), (list, 'append'), (tuple, 'count')]:\n    try:\n        getattr(owner, name)\n    except AttributeError:\n        pass\n    else:\n        assert False, 'method unexpectedly exposed as a value'\nTrue";
+    let mut run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    assert_eq!(run.run_no_limits(vec![]).unwrap(), MontyObject::bool(true));
 }

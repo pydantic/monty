@@ -1,5 +1,8 @@
 import base64
 import binascii
+import sys
+
+memoryview_prefix = '' if sys.platform == 'monty' else 'memoryview: '
 
 # === b64encode / b64decode ===
 assert base64.b64encode(b'') == b''
@@ -25,6 +28,17 @@ assert base64.b64encode(b'\xfb\xef', altchars=b'-_') == b'--8='
 assert base64.b64decode(b'--8=', altchars=b'-_') == b'\xfb\xef'
 assert base64.b64decode('--8=', altchars='-_') == b'\xfb\xef'
 assert base64.b64encode(b'\xfb\xef', b'-_') == b'--8='
+
+# Translation runs before strict padding checks. Duplicate altchars use the last mapping.
+assert base64.b64decode(b'!!!!', altchars=b'!!', validate=True) == b'\xff' * 3
+assert base64.b64decode(b'====', altchars=b'!=', validate=True) == b'\xff' * 3
+
+# The invalid input wins before the decoder truth-tests its validate flag.
+try:
+    base64.b64decode('é', validate=NotImplemented)
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == 'string argument should contain only ASCII characters'
 
 # === standard_b64 / urlsafe_b64 ===
 assert base64.standard_b64encode(b'\xfb\xef') == b'++8='
@@ -199,9 +213,12 @@ assert base64.b32decode('MFRGG===') == b'abc'
 assert base64.b32decode(base64.b32encode(every_byte)) == every_byte
 
 # === b32 casefold and map01 ===
-assert base64.b32decode(b'mfrggzdf', casefold=True) == b'abcde'
+assert base64.b32decode(b'mFrGgZdF', casefold=True) == b'abcde'
 assert base64.b32decode(b'MFRGG0DF', map01=b'L') == base64.b32decode(b'MFRGGODF')
 assert base64.b32decode(b'MFRGG1DF', map01=b'L') == base64.b32decode(b'MFRGGLDF')
+
+assert base64.b32decode(b'ME111111', map01=b'=') == b'a'
+assert base64.b32decode(b'M1======', map01=b'e', casefold=True) == b'a'
 
 try:
     base64.b32decode(b'mfrggzdf')
@@ -257,20 +274,20 @@ try:
 except binascii.Error as exc:
     assert str(exc) == 'Incorrect padding'
 
-# the base32 encoders coerce through `memoryview`, so their TypeError is prefixed
+# CPython prefixes the error for encoders that go through memoryview.
 try:
     base64.b32encode('abc')
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == "memoryview: a bytes-like object is required, not 'str'"
+    assert str(exc) == memoryview_prefix + "a bytes-like object is required, not 'str'"
 
 try:
     base64.b32hexencode(5)
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == "memoryview: a bytes-like object is required, not 'int'"
+    assert str(exc) == memoryview_prefix + "a bytes-like object is required, not 'int'"
 
-# b16encode reaches binascii directly, so it keeps the unprefixed wording
+# Both interpreters use the same wording for b16encode.
 try:
     base64.b16encode('abc')
     assert False, 'expected TypeError'
@@ -283,7 +300,7 @@ assert base64.b16encode(b'abc') == b'616263'
 assert base64.b16encode(b'\xde\xad') == b'DEAD'
 assert base64.b16decode(b'DEAD') == b'\xde\xad'
 assert base64.b16decode('616263') == b'abc'
-assert base64.b16decode(b'dead', casefold=True) == b'\xde\xad'
+assert base64.b16decode(b'dEaD', casefold=True) == b'\xde\xad'
 assert base64.b16decode(base64.b16encode(every_byte)) == every_byte
 
 try:
@@ -297,6 +314,14 @@ try:
     assert False, 'expected binascii.Error'
 except binascii.Error as exc:
     assert str(exc) == 'Odd-length string'
+
+# An invalid digit takes precedence over odd length, even in the trailing nibble.
+for data, casefold in [(b'ABf', False), (b'Abg', True), (b'!AB', True)]:
+    try:
+        base64.b16decode(data, casefold=casefold)
+        assert False, 'expected binascii.Error'
+    except binascii.Error as exc:
+        assert str(exc) == 'Non-base16 digit found'
 
 # === b85encode / b85decode ===
 assert base64.b85encode(b'') == b''
@@ -334,7 +359,7 @@ try:
     base64.b85encode('abc')
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == "memoryview: a bytes-like object is required, not 'str'"
+    assert str(exc) == memoryview_prefix + "a bytes-like object is required, not 'str'"
 
 try:
     base64.b85decode(5)
@@ -361,6 +386,12 @@ try:
     assert False, 'expected ValueError'
 except ValueError as exc:
     assert str(exc) == 'z85 overflow in hunk starting at byte 0'
+
+try:
+    base64.z85encode('abc')
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == memoryview_prefix + "a bytes-like object is required, not 'str'"
 
 # === a85encode / a85decode ===
 assert base64.a85encode(b'') == b''
@@ -403,6 +434,7 @@ assert base64.a85decode(b'<~BOu!rD]j7BEbo7~>', adobe=True) == b'hello world'
 # only the terminator is required, so a PDF stream without `<~` still decodes
 assert base64.a85decode(b'BOu!rD]j7BEbo7~>', adobe=True) == b'hello world'
 assert base64.a85decode(b'<~~>', adobe=True) == b''
+assert base64.a85decode(b'<~>', adobe=True) == b''
 
 # === a85 line wrapping ===
 assert base64.a85encode(b'hello world foo bar', wrapcol=5) == b'BOu!r\nD]j7B\nEbo8/\nAoDT1\n@UX9'
@@ -418,7 +450,7 @@ try:
     base64.a85encode('abc')
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == "memoryview: a bytes-like object is required, not 'str'"
+    assert str(exc) == memoryview_prefix + "a bytes-like object is required, not 'str'"
 
 try:
     base64.a85decode(5)

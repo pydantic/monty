@@ -228,7 +228,10 @@ fn a_submodule_is_asked_with_the_package_path() {
         ("/proj/pkg/__init__.py", ""),
         ("/proj/pkg/sub.py", "value = 3\n"),
         ("/proj/pkg/other.py", "value = 4\n"),
-        ("/proj/far/__init__.py", "__path__ = ['elsewhere']\n"),
+        (
+            "/proj/far/__init__.py",
+            "from collections import namedtuple\n__path__ = namedtuple('SearchPath', 'directory')('elsewhere')\n",
+        ),
         ("/proj/elsewhere/mod.py", "value = 5\n"),
     ];
     let mut imports = Vec::new();
@@ -263,6 +266,15 @@ fn a_long_package_path_is_capped() {
     assert_eq!(search_path.len(), MAX_SEARCH_DIRS);
     assert_eq!(search_path[0], "/d0");
     assert_eq!(search_path.last().unwrap(), &format!("/d{}", MAX_SEARCH_DIRS - 1));
+}
+
+#[test]
+fn a_non_sequence_package_path_sends_no_search_directories() {
+    let files = &[("/proj/pkg/__init__.py", "__path__ = 42\n"), ("/proj/pkg/sub.py", "")];
+    let mut imports = Vec::new();
+    let (_, result) = feed_logged(repl(), "import pkg.sub", files, &mut imports);
+    assert_eq!(result.unwrap_err(), "ModuleNotFoundError: No module named 'pkg.sub'");
+    assert_eq!(asked(&imports), [("pkg", vec!["/proj"]), ("pkg.sub", vec![])]);
 }
 
 #[test]

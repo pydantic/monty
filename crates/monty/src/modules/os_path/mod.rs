@@ -26,16 +26,13 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{Heap, HeapData},
+    heap::Heap,
     intern::{StaticStrings, StringId},
     modules::{
         ModuleFunctions,
         os::{PathAccepts, PathArgError, extract_accepted_path, extract_os_path},
     },
-    os_dispatch::{
-        PreConversionEffect, Reshaped, bool_reply, invalid_reply, stat_result_field, value_to_owned_bytes,
-        value_to_owned_string,
-    },
+    os_dispatch::{PreConversionEffect, Reshaped, bool_reply, invalid_reply, stat_result_field, value_to_owned_string},
     types::{Bytes, Module, PyTrait, Slice, Type, TypeRef, allocate_tuple, collect_iterable, str::allocate_string},
     value::Value,
     virtual_path::posix_join,
@@ -527,10 +524,10 @@ fn common_leading_slice(s1: &Value, s2: &Value, vm: &mut VM<'_>) -> RunResult<Va
             })
         }
         (Some(Type::Bytes), Some(Type::Bytes)) => {
-            let a = value_to_owned_bytes(s1, vm.heap, vm.interns).expect("checked bytes");
-            let b = value_to_owned_bytes(s2, vm.heap, vm.interns).expect("checked bytes");
-            Ok(match a.iter().zip(&b).position(|(x, y)| x != y) {
-                Some(end) => Value::Ref(vm.heap.allocate(HeapData::Bytes(Bytes::new(a[..end].to_vec())))),
+            let a = s1.as_bytes(vm).expect("checked bytes");
+            let b = s2.as_bytes(vm).expect("checked bytes");
+            Ok(match a.iter().zip(b).position(|(x, y)| x != y) {
+                Some(end) => Value::allocate(Bytes::new(a[..end].to_vec()), vm.heap),
                 None => s1.clone_with_heap(vm),
             })
         }
@@ -549,7 +546,7 @@ fn common_leading_slice(s1: &Value, s2: &Value, vm: &mut VM<'_>) -> RunResult<Va
             match mismatch {
                 Some(end) => {
                     let stop = i64::try_from(end).expect("sequence index fits i64");
-                    let slice = Value::Ref(vm.heap.allocate(HeapData::Slice(Slice::new(None, Some(stop), None))));
+                    let slice = Value::allocate(Slice::new(None, Some(stop), None), vm.heap);
                     defer_drop!(slice, vm);
                     s1.py_getitem(slice, vm)
                 }
@@ -1184,8 +1181,11 @@ impl PathText {
                 bytes: text.into_bytes(),
                 is_bytes: false,
             })
-        } else if let Some(bytes) = value_to_owned_bytes(value, vm.heap, vm.interns) {
-            Ok(Self { bytes, is_bytes: true })
+        } else if let Some(bytes) = value.as_bytes(vm) {
+            Ok(Self {
+                bytes: bytes.to_vec(),
+                is_bytes: true,
+            })
         } else {
             Err(type_error(&value.py_type_name_heap(vm.heap, vm.interns)))
         }
@@ -1224,7 +1224,7 @@ impl PathText {
 /// `bytes` as a `bytes` value, or as the `str` it was sliced from.
 fn allocate_text(bytes: Vec<u8>, is_bytes: bool, heap: &Heap) -> Value {
     if is_bytes {
-        Value::Ref(heap.allocate(HeapData::Bytes(Bytes::new(bytes))))
+        Value::allocate(Bytes::new(bytes), heap)
     } else {
         let text = String::from_utf8(bytes).expect("path algorithms split at ASCII separators, preserving UTF-8");
         allocate_string(text, heap)

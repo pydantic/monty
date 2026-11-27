@@ -29,7 +29,7 @@ use crate::{
     py_value::PyValue,
     resource_checks::check_estimated_size,
     types::{
-        Dict, Instance, PyTrait, Type, TypeRef,
+        Dict, Instance, PyTrait, Tuple, Type, TypeRef,
         instance::{class_defines, class_lookup},
         str::PyStr,
     },
@@ -50,6 +50,8 @@ pub(crate) enum CallResult {
     /// A defined function became the VM's current frame.
     /// Propagate or require synchronous completion; dropping this result does not pop the frame.
     FramePushed,
+    /// A private continuation finished by restoring its caller without delivering an operand.
+    CallerRestored,
     /// External function call requested - VM should pause and return to caller.
     External {
         /// The external function's name, materialized for the host boundary.
@@ -117,6 +119,12 @@ pub(crate) enum CallResult {
     },
 }
 
+impl From<Value> for CallResult {
+    fn from(value: Value) -> Self {
+        Self::Value(value)
+    }
+}
+
 impl CallResult {
     /// Completes a call at a Rust boundary that cannot yield to the host.
     /// Python frames still run; unsupported suspensions are raised inside them and cleaned up.
@@ -180,7 +188,7 @@ impl<C: ContainsHeap> DropWithContext<C> for CallResult {
             }
             Self::OsCall(call) => call.drop_with(heap),
             Self::AttrLookup { effect, .. } => effect.drop_with(heap),
-            Self::FramePushed => {}
+            Self::FramePushed | Self::CallerRestored => {}
             Self::OsCallWithEffect { call, effect } => {
                 call.drop_with(heap);
                 // Discarded before it ever became a `FrameExit`.
@@ -492,7 +500,9 @@ impl<'h> VM<'h> {
                 return error;
             }
             CallResult::AwaitValue(_) => ExcType::not_implemented("cannot await a value in this synchronous context"),
-            CallResult::Value(_) | CallResult::FramePushed => unreachable!("completed calls are handled above"),
+            CallResult::Value(_) | CallResult::FramePushed | CallResult::CallerRestored => {
+                unreachable!("completed calls are handled above")
+            }
         };
         result.drop_with(self);
         error.into()
@@ -651,10 +661,7 @@ impl<'h> VM<'h> {
     /// Panics if `args_tuple` is not a tuple. This indicates a compiler bug since
     /// the compiler always emits `ListToTuple` before `CallFunctionExtended`.
     fn extract_args_tuple(&mut self, args_tuple: &Value) -> RunResult<Vec<Value>> {
-        let Value::Ref(id) = args_tuple else {
-            unreachable!("CallFunctionExtended: args_tuple must be a Ref")
-        };
-        let HeapData::Tuple(tuple) = self.heap.get(*id) else {
+        let Some(tuple) = args_tuple.get_as::<Tuple>(self.heap) else {
             unreachable!("CallFunctionExtended: args_tuple must be a Tuple")
         };
         clone_args_from_tuple(tuple.as_slice(), self)
@@ -670,10 +677,7 @@ impl<'h> VM<'h> {
         defer_drop!(kwargs_ref, this);
 
         // Extract kwargs dict items
-        let Value::Ref(id) = kwargs_ref else {
-            unreachable!("CallFunctionExtended: kwargs must be a Ref")
-        };
-        let HeapData::Dict(dict) = this.heap.get(*id) else {
+        let Some(dict) = kwargs_ref.get_as::<Dict>(this.heap) else {
             unreachable!("CallFunctionExtended: kwargs must be a Dict")
         };
         let copied_kwargs: Vec<(Value, Value)> = dict
@@ -718,10 +722,7 @@ impl<'h> VM<'h> {
     /// Panics if `args_tuple` is not a tuple. This indicates a compiler bug since
     /// the compiler always emits `ListToTuple` before `CallAttrExtended`.
     fn extract_args_tuple_for_attr(&mut self, args_tuple: &Value) -> RunResult<Vec<Value>> {
-        let Value::Ref(id) = args_tuple else {
-            unreachable!("CallAttrExtended: args_tuple must be a Ref")
-        };
-        let HeapData::Tuple(tuple) = self.heap.get(*id) else {
+        let Some(tuple) = args_tuple.get_as::<Tuple>(self.heap) else {
             unreachable!("CallAttrExtended: args_tuple must be a Tuple")
         };
         clone_args_from_tuple(tuple.as_slice(), self)
@@ -741,10 +742,7 @@ impl<'h> VM<'h> {
         defer_drop!(kwargs_ref, this);
 
         // Extract kwargs dict items
-        let Value::Ref(id) = kwargs_ref else {
-            unreachable!("CallAttrExtended: kwargs must be a Ref")
-        };
-        let HeapData::Dict(dict) = this.heap.get(*id) else {
+        let Some(dict) = kwargs_ref.get_as::<Dict>(this.heap) else {
             unreachable!("CallAttrExtended: kwargs must be a Dict")
         };
         let copied_kwargs: Vec<(Value, Value)> = dict
@@ -834,8 +832,7 @@ impl<'h> VM<'h> {
         debug_assert_exact_callable(&callable, func_id);
 
         let coroutine = Coroutine::new(func_id, namespace, None);
-        let coroutine_id = self.heap.allocate(HeapData::Coroutine(coroutine));
-        CallResult::Value(Value::Ref(coroutine_id))
+        CallResult::Value(Value::allocate(coroutine, self.heap))
     }
 
     /// Calls an internal function, compiling it on first use.
@@ -848,17 +845,7 @@ impl<'h> VM<'h> {
         let mut args_guard = DropGuard::new(args, self);
         let (_, vm) = args_guard.as_parts_mut();
         let interns = vm.interns;
-        let (function_id, overlay) = if let Some(id) = interns.frozen_function(function) {
-            (id, None)
-        } else {
-            let (id, overlay) = function.compile(interns)?;
-            (id, Some(overlay))
-        };
-        // No fallible operation or Python execution may intervene between publication and frame installation.
-        if let Some(overlay) = overlay {
-            overlay.commit();
-            interns.set_frozen_function(function, function_id);
-        }
+        let function_id = function.resolve(interns)?;
         let (args, vm) = args_guard.into_parts();
         let func = interns.get_function(function_id);
         assert_eq!(func.signature.exact_positional_count(), Some(N));

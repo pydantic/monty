@@ -45,7 +45,7 @@ pub(crate) fn issubclass_check(cls: &Value, classinfo: &Value, vm: &mut VM<'_>) 
         Value::Ref(id) if let HeapData::Union(union) = vm.heap.get(*id) => {
             let args = union.args(vm.heap);
             defer_drop!(args, vm);
-            let Some(HeapReadOutput::Tuple(members)) = args.read_heap(vm) else {
+            let Some(members) = args.read_as::<Tuple>(vm.heap) else {
                 unreachable!("Union::args is always a tuple")
             };
             issubclass_check_tuple(cls, &members, vm)

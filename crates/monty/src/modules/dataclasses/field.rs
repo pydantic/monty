@@ -198,7 +198,7 @@ pub(super) fn field(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     }
     let ((spec, flags), vm) = guard.into_parts();
     flags.drop_with(vm);
-    Ok(vm.heap.allocate_as(spec).into_value())
+    Ok(Value::allocate(spec, vm.heap))
 }
 
 /// Whether an argument was left at the `MISSING` sentinel `field()` defaults to.

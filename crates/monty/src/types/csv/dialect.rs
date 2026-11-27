@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData},
+    heap::{ContainsHeap, DropGuard, DropWithContext},
     intern::StaticStrings,
     types::{
         CsvObject, PyTrait, Type,
@@ -154,10 +154,7 @@ impl Dialect {
             Some(value) if let Some(name) = value.as_str(vm) => {
                 Base::Dialect(Self::by_name(name).ok_or_else(ExcType::csv_unknown_dialect)?)
             }
-            Some(Value::Ref(id))
-                if let HeapData::Csv(csv) = vm.heap.get(*id)
-                    && let CsvObject::Dialect(dialect) = &**csv =>
-            {
+            Some(value) if let Some(CsvObject::Dialect(dialect)) = value.get_as::<CsvObject>(vm.heap) => {
                 Base::Dialect(dialect.clone())
             }
             Some(value) => Base::Object(value),

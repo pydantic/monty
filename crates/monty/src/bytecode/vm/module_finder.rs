@@ -1,16 +1,24 @@
 //! Imports of modules from `.py` files.
 //!
-//! An import the sandbox neither bundles nor caches is one `import` OS call
+//! A vendored CPython module (see `modules::vendored`) is compiled from the
+//! source embedded in the binary, with no OS call.
+//! Any other import the sandbox neither provides nor caches is one `import` OS call
 //! carrying the module's dotted name and the directories its file may be in:
 //! the working directory for a top-level name, the package's `__path__` for a
 //! submodule. The host does the whole search, checking its own modules first
 //! as CPython checks built-in modules before `sys.path`, and answers with a
 //! host module, the [`ModuleFile`] it found, or not-found. A found file is
 //! compiled and run here as the module, so each module costs one round trip.
+//! A relative import names its package by its dots alone (`..`); the package is
+//! resolved here from the frame's `__package__`, and its submodules then load by
+//! absolute name like any other.
 
-use std::sync::Arc;
+use std::{str::FromStr, sync::Arc};
 
-use monty_types::{ExcType, ExtFunctionResult, ImportArgs, MAX_SEARCH_DIRS, ModuleFile, OsFunctionCall};
+use monty_types::{
+    ExcType, ExtFunctionResult, ImportArgs, MAX_SEARCH_DIRS, ModuleFile, OsFunctionCall, SANDBOX_MODULE_NAMES,
+    is_identifier,
+};
 
 use super::{
     FrameExit, FrameNamespace, VM,
@@ -19,12 +27,17 @@ use super::{
 use crate::{
     builtins::eval_exec::{SnippetSource, compile_and_push},
     bytecode::CallResult,
+    defer_drop,
     exception_private::{ExcTypeExt, ExceptionRaise, RunError, RunResult, SimpleException},
     heap::{DropWithContext, HeapData, HeapId, HeapReadOutput},
-    intern::StringId,
+    intern::{StaticStrings, StringId},
+    modules::{
+        StandardLib,
+        vendored::{VENDORED_PREFIX, VendoredSource},
+    },
     os_dispatch::PendingEffect,
     prepare::SnippetNames,
-    types::{Dict, List, Module, str::allocate_string},
+    types::{Dict, List, Module, sequence::SequenceItems, str::allocate_string},
     value::Value,
     virtual_path::posix_join,
 };
@@ -92,38 +105,124 @@ struct FileParent {
     origin: String,
     /// Whether its body is still running, as in a circular import.
     initializing: bool,
+    /// Whether it is a vendored CPython module, whose submodules are all vendored too.
+    vendored: bool,
     /// The package's `__path__`; `None` for a plain module, which has no submodules.
     search_path: Option<Vec<String>>,
 }
 
 impl VM<'_> {
-    /// `import name` for a name that is not bundled: the cached file module,
-    /// else the host's `import` call, searching [`SEARCH_PATH`].
-    pub(super) fn import_top_level(&mut self, name: &str) -> CallResult {
-        if let Some(module) = self.modules.get(name, self.heap) {
-            CallResult::Value(module)
-        } else {
-            let search_path = SEARCH_PATH
-                .iter()
-                .map(|entry| match entry {
-                    SearchEntry::Cwd => self.env.cwd.to_string(),
-                })
-                .collect();
-            PendingImport::top_level(name.to_owned()).suspend(search_path)
+    /// `import name` for a name that is not a native module: the cached or
+    /// vendored module, else the host's `import` call, searching [`SEARCH_PATH`].
+    pub(super) fn import_top_level(&mut self, name: &str) -> RunResult<CallResult> {
+        self.find_module(name.to_owned(), OnMiss::ModuleNotFound, |vm| {
+            Some(
+                SEARCH_PATH
+                    .iter()
+                    .map(|entry| match entry {
+                        SearchEntry::Cwd => vm.env.cwd.to_string(),
+                    })
+                    .collect(),
+            )
+        })
+    }
+
+    /// `from .. import name` and the head of `from ..pkg import name`: the package
+    /// `level` dots name, counted up from the frame's `__package__` as CPython does.
+    pub(super) fn import_relative_package(&mut self, level: usize) -> RunResult<CallResult> {
+        let base = self.relative_base(level)?;
+        // `exec()` globals can name anything, but only dotted identifiers may reach the host
+        if let Some(invalid) = invalid_prefix(&base) {
+            return Err(ExcType::module_not_found_error(invalid, None));
+        }
+        // A built-in (`os`, or the dotted `os.path`) or top-level name loads as `import base` would.
+        let static_name = StaticStrings::from_str(&base).ok();
+        match base.rsplit_once('.') {
+            Some((parent, _)) if static_name.and_then(StandardLib::from_static).is_none() => {
+                match self.modules.get(&base, self.heap) {
+                    Some(module) => Ok(CallResult::Value(module)),
+                    None => self.reimport_package(&base, parent),
+                }
+            }
+            _ => self.import_absolute(&base, static_name),
         }
     }
 
-    /// `import pkg.sub` past a file module: the cached submodule, else the
+    /// A dotted package missing from the cache, which a failed import of it removed:
+    /// imported again as a submodule of `parent` when that is cached.
+    /// CPython would import a missing `parent` too, but one instruction can run only one
+    /// import, so an uncached file parent raises `ModuleNotFoundError` naming `base`.
+    fn reimport_package(&mut self, base: &str, parent: &str) -> RunResult<CallResult> {
+        let this = self;
+        let Some(parent_module) = this.modules.get(parent, this.heap) else {
+            let builtin = StaticStrings::from_str(parent).ok().and_then(StandardLib::from_static);
+            return Err(ExcType::module_not_found_error(base, builtin.map(|_| parent)));
+        };
+        defer_drop!(parent_module, this);
+        this.import_file_submodule(parent_module, base)
+            .expect("the module cache holds only file modules")
+    }
+
+    /// The absolute name of the package `level` dots name from the current frame's package.
+    fn relative_base(&self, level: usize) -> RunResult<String> {
+        let package = self.frame_package()?;
+        let mut base = package.as_str();
+        for _ in 1..level {
+            base = base
+                .rsplit_once('.')
+                .ok_or_else(ExcType::relative_import_beyond_top_level)?
+                .0;
+        }
+        Ok(base.to_owned())
+    }
+
+    /// The package a relative import in the current frame resolves against, as CPython's
+    /// `_calc___package__` finds it: `__package__`, else `__name__`, less its last
+    /// component unless `__path__` is set. Slot globals (the main script) have none.
+    fn frame_package(&self) -> RunResult<String> {
+        let globals = self
+            .current_frame
+            .namespace
+            .as_deref()
+            .and_then(FrameNamespace::dict_globals)
+            .map(|globals| self.heap.get(globals));
+        let Some(HeapData::Dict(globals)) = globals else {
+            return Err(ExcType::relative_import_no_parent());
+        };
+        let get = |key| globals.get_by_str(key, self.heap, self.interns);
+        let package = match get("__package__") {
+            Some(package) if !matches!(package, Value::None) => package
+                .as_str_heap(self.heap, self.interns)
+                .ok_or_else(|| SimpleException::new_msg(ExcType::TypeError, "package must be a string"))?
+                .to_owned(),
+            _ => {
+                let name = get("__name__")
+                    .ok_or_else(|| SimpleException::new_msg(ExcType::KeyError, "'__name__' not in globals"))?
+                    .as_str_heap(self.heap, self.interns)
+                    .ok_or_else(|| SimpleException::new_msg(ExcType::TypeError, "__name__ must be a string"))?;
+                match get("__path__") {
+                    Some(_) => name,
+                    None => name.rsplit_once('.').map_or("", |(parent, _)| parent),
+                }
+                .to_owned()
+            }
+        };
+        if package.is_empty() {
+            Err(ExcType::relative_import_no_parent())
+        } else {
+            Ok(package)
+        }
+    }
+
+    /// `import pkg.sub` past a file module: the cached submodule `name`, else the
     /// host's `import` call searching the package's `__path__`. `None` when
     /// `parent` is not a file module.
-    pub(super) fn import_file_submodule(&mut self, parent: &Value, path_id: StringId) -> Option<RunResult<CallResult>> {
+    pub(super) fn import_file_submodule(&mut self, parent: &Value, name: &str) -> Option<RunResult<CallResult>> {
         let parent = self.file_parent(parent)?;
-        let name = self.interns.get_str(path_id);
         Some(match parent.search_path {
             None => Err(ExcType::module_not_found_error(name, Some(&parent.name))),
-            Some(dirs) => Ok(match self.modules.get(name, self.heap) {
-                Some(module) => CallResult::Value(module),
-                None => PendingImport::top_level(name.to_owned()).suspend(dirs),
+            Some(dirs) => self.find_module(name.to_owned(), OnMiss::ModuleNotFound, |_| {
+                (!parent.vendored).then_some(dirs)
             }),
         })
     }
@@ -137,17 +236,36 @@ impl VM<'_> {
             None => Err(cannot_import(attr, &parent.name, &parent.origin, parent.initializing)),
             Some(dirs) => {
                 let name = format!("{}.{attr}", parent.name);
-                Ok(if let Some(module) = self.modules.get(&name, self.heap) {
-                    CallResult::Value(module)
-                } else {
-                    let on_miss = OnMiss::CannotImport {
-                        origin: parent.origin,
-                        partial: parent.initializing,
-                    };
-                    PendingImport { name, on_miss }.suspend(dirs)
-                })
+                let on_miss = OnMiss::CannotImport {
+                    origin: parent.origin,
+                    partial: parent.initializing,
+                };
+                self.find_module(name, on_miss, |_| (!parent.vendored).then_some(dirs))
             }
         })
+    }
+
+    /// Looks up a cached or vendored module before asking the host.
+    /// Reserved names and a `None` search path never reach the host.
+    fn find_module(
+        &mut self,
+        name: String,
+        on_miss: OnMiss,
+        search_path: impl FnOnce(&Self) -> Option<Vec<String>>,
+    ) -> RunResult<CallResult> {
+        if let Some(module) = self.modules.get(&name, self.heap) {
+            Ok(CallResult::Value(module))
+        } else if let Some(vendored) = VendoredSource::find(&name) {
+            // TODO(#1275): compile vendored modules once rather than in every session.
+            self.run_file_module(name, &vendored.path(), &Arc::from(vendored.source()))?;
+            Ok(CallResult::FramePushed)
+        } else if !SANDBOX_MODULE_NAMES.contains(&name.as_str())
+            && let Some(dirs) = search_path(self)
+        {
+            Ok(PendingImport { name, on_miss }.suspend(dirs))
+        } else {
+            Err(missed_import(&name, on_miss))
+        }
     }
 
     /// Takes the armed `import` call, if the paused OS call is one.
@@ -292,10 +410,7 @@ impl VM<'_> {
         ];
         if let Some(dir) = package_dir {
             let dir = allocate_string(dir, self.heap);
-            entries.push((
-                "__path__",
-                Value::Ref(self.heap.allocate(HeapData::List(List::new(vec![dir])))),
-            ));
+            entries.push(("__path__", Value::allocate(List::new(vec![dir]), self.heap)));
         }
         let mut dict = Dict::new();
         for (key, value) in entries {
@@ -321,29 +436,29 @@ impl VM<'_> {
             .get_by_str("__path__", self.heap, self.interns)
             .map(|path| self.search_path(path));
         let name = module.name_str(self.interns);
+        let origin = module.origin().unwrap_or_default();
         Some(FileParent {
             initializing: self.modules.is_initializing(name, id),
+            vendored: origin.starts_with(VENDORED_PREFIX),
             name: name.to_owned(),
-            origin: module.origin().unwrap_or_default().to_owned(),
+            origin: origin.to_owned(),
             search_path,
         })
     }
 
-    /// A package's `__path__` (a list or tuple) as directories joined to the
+    /// A package's `__path__` as directories joined to the
     /// working directory, skipping anything that is not a `str` or that holds
     /// a NUL byte (the host skips those too), up to the [`MAX_SEARCH_DIRS`] it searches.
     fn search_path(&self, path: &Value) -> Vec<String> {
-        let dirs = match path.ref_id().map(|id| self.heap.get(id)) {
-            Some(HeapData::List(list)) => list.as_slice(),
-            Some(HeapData::Tuple(tuple)) => tuple.as_slice(),
-            _ => return Vec::new(),
+        let Some(dirs) = SequenceItems::from_value(path, self.heap) else {
+            return Vec::new();
         };
-        dirs.iter()
-            .filter_map(|dir| dir.as_str_heap(self.heap, self.interns))
-            .filter(|dir| !dir.contains('\0'))
-            .take(MAX_SEARCH_DIRS)
-            .map(|dir| posix_join(&self.env.cwd, dir))
-            .collect()
+        dirs.filter_map(|dir| {
+            let dir = dir.as_str_heap(self.heap, self.interns)?;
+            (!dir.contains('\0')).then(|| posix_join(&self.env.cwd, dir))
+        })
+        .take(MAX_SEARCH_DIRS)
+        .collect()
     }
 
     /// The file module on top of the operand stack, where an import pushes it
@@ -381,4 +496,18 @@ fn cannot_import(attr: &str, parent: &str, origin: &str, partial: bool) -> RunEr
     } else {
         ExcType::cannot_import_name(attr, parent, Some(origin))
     }
+}
+
+/// `name` up to its first component that is not an identifier, the module CPython fails to find;
+/// `None` when every component is one.
+fn invalid_prefix(name: &str) -> Option<&str> {
+    let mut end = 0;
+    for part in name.split('.') {
+        end += part.len();
+        if !is_identifier(part) {
+            return Some(&name[..end]);
+        }
+        end += 1;
+    }
+    None
 }

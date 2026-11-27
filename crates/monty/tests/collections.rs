@@ -4,10 +4,8 @@
 //! whole point is that Monty *diverges* from CPython here — CPython imports
 //! `OrderedDict` / `ChainMap` / `UserDict` fine, whereas Monty raises
 //! `ImportError` because it implements only `deque`, `Counter`, `defaultdict`,
-//! and `namedtuple`. The narrowed typeshed stub
-//! (`crates/monty-typeshed/custom/collections/__init__.pyi`) makes the same
-//! names a type error; these tests pin the matching *runtime* behaviour so the
-//! two stay in agreement.
+//! and `namedtuple`. The narrowed typeshed stub makes the same names a type
+//! error; these tests pin the matching *runtime* behaviour.
 //!
 //! The cycle-collection tests at the bottom likewise can't be `test_cases`:
 //! they drive `gc.collect()`, which is a `test-hooks`-only module deliberately

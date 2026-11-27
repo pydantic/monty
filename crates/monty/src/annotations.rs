@@ -102,7 +102,7 @@ pub(crate) fn function_annotate(func_id: FunctionId, globals: Option<HeapId>, vm
                 defaults: Vec::new(),
                 globals: Some(dict),
             };
-            Value::Ref(vm.heap.allocate(HeapData::FunctionDefaults(function)))
+            Value::allocate(function, vm.heap)
         }
     }
 }
@@ -190,7 +190,7 @@ pub(crate) fn class_namespace_copy(class_id: HeapId, vm: &mut VM<'_>) -> RunResu
         .map(|(name, value)| (name.clone_with_heap(vm.heap), value.clone_with_heap(vm.heap)))
         .collect();
     let dict = Dict::from_pairs(pairs, vm)?;
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Dict(dict))))
+    Ok(Value::allocate(dict, vm.heap))
 }
 
 /// Frozen helper: calls `annotate(format)` under `classdict` for `owner`, with
@@ -307,5 +307,5 @@ fn set_class_attr(class_id: HeapId, name: StaticStrings, value: Value, vm: &mut 
 
 /// A fresh, empty heap dict.
 pub(crate) fn empty_dict(vm: &VM<'_>) -> Value {
-    Value::Ref(vm.heap.allocate(HeapData::Dict(Dict::new())))
+    Value::allocate(Dict::new(), vm.heap)
 }

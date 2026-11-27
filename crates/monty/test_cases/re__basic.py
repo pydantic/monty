@@ -1002,3 +1002,24 @@ assert len(matches) == 2
 assert matches[0].group(1) == 'a'
 assert matches[0].group(2) == '1'
 assert matches[1].group(1) == 'b'
+
+# === Flags: VERBOSE ===
+assert re.X == re.VERBOSE == 64
+pattern = re.compile(
+    r"""
+    (\d+)   # digits
+    \s*     # optional space
+    ([a-z]+)
+    """,
+    re.VERBOSE,
+)
+m = pattern.match('12 abc')
+assert m is not None
+assert m.groups() == ('12', 'abc')
+assert re.search('a b', 'ab', re.X) is not None
+assert re.search('a b', 'a b', re.X) is None
+assert repr(re.compile('a', re.X)) == "re.compile('a', re.VERBOSE)"
+assert (
+    repr(re.compile('a', re.I | re.M | re.S | re.X | re.A))
+    == "re.compile('a', re.IGNORECASE|re.MULTILINE|re.DOTALL|re.VERBOSE|re.ASCII)"
+)

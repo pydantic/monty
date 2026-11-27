@@ -10,14 +10,8 @@ types and error messages match CPython 3.14 subject to the divergences below.
 
 ## Not implemented
 
-- `base64.encode(input, output)` and `base64.decode(input, output)`, which read
-    and write binary file objects. These are pure Python in CPython, so they call
-    `read`/`readline`/`write` on whatever they are handed; a Monty builtin
-    reaching back into Python runs the call to completion and cannot pause, and
-    reading a real file is a suspension out to the host. They would therefore
-    work on a duck-typed object and fail on the file `open()` returns — the same
-    restriction `filter` and `sorted(key=)` carry. Accessing them raises
-    `AttributeError`.
+- `base64.encode(input, output)` and `base64.decode(input, output)`, which read and write binary file objects.
+    Accessing them raises `AttributeError`.
 - The `python -m base64` command line interface.
 
 ## `a85encode` / `a85decode`
@@ -37,6 +31,10 @@ types and error messages match CPython 3.14 subject to the divergences below.
 Encoders take `bytes`; decoders take `bytes` or an ASCII-only `str`. Monty has
 no `bytearray`, `memoryview` or `array`, so the "bytes-like object" the CPython
 docs describe is always `bytes` here.
+
+For invalid encoder inputs, Monty uses the standard bytes-like `TypeError` message.
+CPython prefixes that message with `memoryview: ` for `b32encode`, `b32hexencode`,
+`b85encode`, `z85encode` and `a85encode`.
 
 ## Module attributes
 

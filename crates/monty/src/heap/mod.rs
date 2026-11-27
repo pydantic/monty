@@ -22,7 +22,7 @@ use serde::{de::Error as _, ser::SerializeStruct};
 #[cfg(feature = "ref-count-return")]
 use crate::types::TypeRef;
 use crate::{
-    asyncio::{Awaiter, ExternalFutureState, GatherState},
+    asyncio::{Awaiter, ExternalFutureState, GatherState, TaskFutureState, WaitFutureState},
     types::{ExtFunction, HostClassType, TimeZone, Tuple, decimal::py_context::DecimalSlot},
     value::Value,
 };
@@ -257,6 +257,9 @@ pub(crate) trait HeapPayload: Sized {
     /// Wraps this payload in its corresponding `HeapData` variant.
     fn into_heap_data(self) -> HeapData;
 
+    /// Borrows this payload from its matching heap variant.
+    fn from_heap_data(data: &HeapData) -> Option<&Self>;
+
     /// Extracts this payload's typed handle from a dynamic heap read.
     fn try_from_read(read: HeapReadOutput<'_>) -> Result<HeapObjectRead<'_, Self>, HeapReadOutput<'_>>;
 }
@@ -289,6 +292,11 @@ macro_rules! define_heap_read_support {
                 #[inline]
                 fn into_heap_data(self) -> HeapData {
                     HeapData::$variant(heap_storage_value!($storage self))
+                }
+
+                #[inline]
+                fn from_heap_data(data: &HeapData) -> Option<&Self> {
+                    if let HeapData::$variant(payload) = data { Some(payload) } else { None }
                 }
 
                 #[inline]
@@ -1871,17 +1879,7 @@ impl Drop for Heap {
 /// freeing/decref paths; the two must stay in sync.
 fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
     match data {
-        HeapData::List(list) => {
-            // Skip iteration if no refs - major GC optimization for lists of primitives
-            if !list.contains_refs() {
-                return;
-            }
-            for value in list.as_slice() {
-                if let Value::Ref(id) = value {
-                    on_child(*id);
-                }
-            }
-        }
+        HeapData::List(list) => list.for_each_child_id(on_child),
         // MUST report exactly the same ids as `Deque::py_dec_ref_ids` — reporting
         // fewer leaks, reporting more is a use-after-free.
         HeapData::Deque(deque) => {
@@ -2125,6 +2123,7 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
         HeapData::DictValueIterator(iter) => on_child(iter.source_id()),
         HeapData::SetIterator(iter) => on_child(iter.source_id()),
         HeapData::CallableIterator(iter) => iter.for_each_child_id(on_child),
+        HeapData::MapFilter(iter) => iter.for_each_child_id(on_child),
         HeapData::DirScan(scan) => scan.for_each_child_id(on_child),
         HeapData::Itertools(iter) => iter.for_each_child_id(on_child),
         HeapData::Csv(csv) => csv.for_each_child_id(on_child),
@@ -2159,8 +2158,8 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
             // heap refs.
             match &gather.state {
                 GatherState::Awaited(awaited) => {
-                    if let Awaiter::GatherSlot { gather, .. } = &awaited.awaiter {
-                        on_child(*gather);
+                    if let Some(id) = awaited.awaiter.heap_ref() {
+                        on_child(id);
                     }
                     for result in awaited.results.iter().flatten() {
                         if let Value::Ref(id) = result {
@@ -2173,21 +2172,58 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
             }
         }
         HeapData::ExternalFuture(fut) => {
-            // `Pending { awaiter: Some(GatherSlot { gather, .. }) }` owns an
-            // inc_ref on `gather`. `Awaiter::Task` / `None` and the `Failed`
-            // state carry no heap refs. `Resolved` owns the cached value, and
-            // a pending sleep owns the `result` it will resolve with.
+            // `Pending`'s awaiter may own an inc_ref on a gather, wait
+            // future or task. `Resolved` owns the cached value, and a pending
+            // sleep owns the `result` it will resolve with.
             if let Some(Value::Ref(id)) = &fut.sleep_result {
                 on_child(*id);
             }
             match &fut.state {
                 ExternalFutureState::Resolved(Value::Ref(id)) => on_child(*id),
-                ExternalFutureState::Pending {
-                    awaiter: Some(Awaiter::GatherSlot { gather, .. }),
-                } => on_child(*gather),
+                ExternalFutureState::Pending { awaiter: Some(awaiter) } => {
+                    if let Some(id) = awaiter.heap_ref() {
+                        on_child(id);
+                    }
+                }
                 _ => {}
             }
         }
+        HeapData::Task(task) => {
+            on_child(task.coroutine_id);
+            for awaiter in &task.awaiters {
+                if let Some(id) = awaiter.heap_ref() {
+                    on_child(id);
+                }
+            }
+            if let TaskFutureState::Completed(Value::Ref(id)) = &task.state {
+                on_child(*id);
+            }
+        }
+        HeapData::WaitFuture(wait) => match &wait.state {
+            WaitFutureState::Unawaited(unawaited) => {
+                if let Value::Ref(id) = &unawaited.fs {
+                    on_child(*id);
+                }
+                if let Some(Value::Ref(id)) = &unawaited.return_when {
+                    on_child(*id);
+                }
+                if let Some(timer) = unawaited.timer {
+                    on_child(timer);
+                }
+            }
+            WaitFutureState::Pending(pending) => {
+                for input in &pending.inputs {
+                    on_child(*input);
+                }
+                if let Some(id) = pending.awaiter.as_ref().and_then(Awaiter::heap_ref) {
+                    on_child(id);
+                }
+                if let Some(timer) = pending.timer {
+                    on_child(timer);
+                }
+            }
+            WaitFutureState::Consumed => {}
+        },
         HeapData::DateTime(dt) => {
             // Aware datetimes retain a heap reference to the tzinfo object so that
             // `dt.tzinfo is tz` identity is preserved across attribute lookups.
@@ -2280,6 +2316,7 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         HeapData::DictValueIterator(iter) => iter.py_dec_ref_ids(stack),
         HeapData::SetIterator(iter) => iter.py_dec_ref_ids(stack),
         HeapData::CallableIterator(iter) => iter.py_dec_ref_ids(stack),
+        HeapData::MapFilter(iter) => iter.py_dec_ref_ids(stack),
         HeapData::DirScan(scan) => scan.py_dec_ref_ids(stack),
         HeapData::Itertools(iter) => iter.py_dec_ref_ids(stack),
         HeapData::Csv(csv) => csv.py_dec_ref_ids(stack),
@@ -2307,8 +2344,8 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
             // heap refs.
             match &mut gather.state {
                 GatherState::Awaited(awaited) => {
-                    if let Awaiter::GatherSlot { gather, .. } = &awaited.awaiter {
-                        stack.push(*gather);
+                    if let Some(id) = awaited.awaiter.heap_ref() {
+                        stack.push(id);
                     }
                     for result in awaited.results.iter_mut().flatten() {
                         result.py_dec_ref_ids(stack);
@@ -2325,15 +2362,32 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
             }
             match &mut fut.state {
                 ExternalFutureState::Resolved(value) => value.py_dec_ref_ids(stack),
-                ExternalFutureState::Pending {
-                    awaiter: Some(Awaiter::GatherSlot { gather, .. }),
-                } => stack.push(*gather),
-                ExternalFutureState::Pending {
-                    awaiter: None | Some(Awaiter::Task(_)),
-                }
-                | ExternalFutureState::Failed(_) => {}
+                ExternalFutureState::Pending { awaiter: Some(awaiter) } => stack.extend(awaiter.heap_ref()),
+                ExternalFutureState::Pending { awaiter: None } | ExternalFutureState::Failed(_) => {}
             }
         }
+        HeapData::Task(task) => {
+            stack.push(task.coroutine_id);
+            stack.extend(task.awaiters.iter().filter_map(Awaiter::heap_ref));
+            if let TaskFutureState::Completed(value) = &mut task.state {
+                value.py_dec_ref_ids(stack);
+            }
+        }
+        HeapData::WaitFuture(wait) => match &mut wait.state {
+            WaitFutureState::Unawaited(unawaited) => {
+                unawaited.fs.py_dec_ref_ids(stack);
+                if let Some(return_when) = &mut unawaited.return_when {
+                    return_when.py_dec_ref_ids(stack);
+                }
+                stack.extend(unawaited.timer);
+            }
+            WaitFutureState::Pending(pending) => {
+                stack.extend(pending.inputs.iter().copied());
+                stack.extend(pending.awaiter.as_ref().and_then(Awaiter::heap_ref));
+                stack.extend(pending.timer);
+            }
+            WaitFutureState::Consumed => {}
+        },
         HeapData::DateTime(dt) => {
             // Mirror `for_each_child_id`: when an aware datetime is freed we must
             // also drop the retained tzinfo reference so its refcount is balanced.
@@ -2423,8 +2477,7 @@ mod tests {
         let data = unsafe { &mut *entry.data.0.get() };
         match data {
             HeapData::List(list) => {
-                list.set_contains_refs();
-                list.as_vec_mut().push(Value::Ref(id));
+                list.extend_owned([Value::Ref(id)]);
             }
             _ => unreachable!(),
         }
@@ -2460,10 +2513,7 @@ mod tests {
             let data = unsafe { &mut *entry.data.0.get() };
             match data {
                 HeapData::List(list) => {
-                    list.set_contains_refs();
-                    for r in refs {
-                        list.as_vec_mut().push(Value::Ref(*r));
-                    }
+                    list.extend_owned(refs.iter().copied().map(Value::Ref));
                 }
                 _ => unreachable!(),
             }
@@ -2579,7 +2629,7 @@ mod tests {
             heap.dec_ref(id);
             // Read through the now-invalidated `SharedReadWrite` raw pointer.
             // Miri's aliasing model fails here.
-            let _ = list.get(heap).as_slice().len();
+            let _ = list.get(heap).len();
         });
     }
 
@@ -2774,8 +2824,7 @@ mod tests {
                 unreachable!("just allocated a list")
             };
             let l = l.get_mut(reader);
-            l.set_contains_refs();
-            l.as_vec_mut().push(Value::Ref(iter));
+            l.extend_owned([Value::Ref(iter)]);
         });
         // list.rc = 2, iter.rc = 2, sentinel.rc = 2.
 

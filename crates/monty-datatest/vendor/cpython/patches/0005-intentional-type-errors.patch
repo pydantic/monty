@@ -1,0 +1,172 @@
+Keep upstream runtime probes that intentionally violate stdlib stubs: keyword lists, invalid arguments, and the integer textwrap flag.
+Suppress missing API diagnostics in fnmatch methods excluded from Monty runtime execution.
+Declare the textwrap fixture attribute initialized by subclasses.
+
+--- a/test/test_fnmatch.py
++++ b/test/test_fnmatch.py
+@@ -56,10 +56,10 @@
+         check('a' * 50 + 'b', '*a*a*a*a*a*a*a*a*a*a', False)
+ 
+     def test_mix_bytes_str(self):
+-        self.assertRaises(TypeError, fnmatch, 'test', b'*')
+-        self.assertRaises(TypeError, fnmatch, b'test', '*')
+-        self.assertRaises(TypeError, fnmatchcase, 'test', b'*')
+-        self.assertRaises(TypeError, fnmatchcase, b'test', '*')
++        self.assertRaises(TypeError, fnmatch, 'test', b'*')  # ty: ignore[invalid-argument-type]
++        self.assertRaises(TypeError, fnmatch, b'test', '*')  # ty: ignore[invalid-argument-type]
++        self.assertRaises(TypeError, fnmatchcase, 'test', b'*')  # ty: ignore[invalid-argument-type]
++        self.assertRaises(TypeError, fnmatchcase, b'test', '*')  # ty: ignore[invalid-argument-type]
+ 
+     def test_fnmatchcase(self):
+         check = self.check_match
+@@ -93,7 +93,7 @@
+         check('usr\\bin', 'usr\\bin')
+ 
+     def test_char_set(self):
+-        import string
++        import string  # ty: ignore[import-not-found]
+ 
+         check = self.check_match
+         tescases = string.ascii_lowercase + string.digits + string.punctuation
+@@ -121,7 +121,7 @@
+         check('[!]', '[!]')
+ 
+     def test_range(self):
+-        import string
++        import string  # ty: ignore[import-not-found]
+ 
+         check = self.check_match
+         tescases = string.ascii_lowercase + string.digits + string.punctuation
+@@ -205,10 +205,10 @@
+         check('a[Z-/]b', r'a[Z-\]b', False)
+ 
+     def test_warnings(self):
+-        import warnings
++        import warnings  # ty: ignore[import-not-found]
+ 
+         with warnings.catch_warnings():
+-            warnings.simplefilter('error', Warning)
++            warnings.simplefilter('error', Warning)  # ty: ignore[unresolved-reference]
+             check = self.check_match
+             check('[', '[[]')
+             check('&', '[a&&b]')
+@@ -309,7 +309,7 @@
+                 self.assertEqual(translated, expect, pattern)
+ 
+     def test_star_indices_locations(self):
+-        from fnmatch import _translate
++        from fnmatch import _translate  # ty: ignore[import-not-found]
+ 
+         blocks = ['a^b', '***', '?', '?', '[a-z]', '[1-9]', '*', '++', '[[a']
+         parts, star_indices = _translate(''.join(blocks), '*', '.')
+@@ -329,8 +329,8 @@
+                          [b'Python', b'Perl'])
+ 
+     def test_mix_bytes_str(self):
+-        self.assertRaises(TypeError, filter, ['test'], b'*')
+-        self.assertRaises(TypeError, filter, [b'test'], '*')
++        self.assertRaises(TypeError, filter, ['test'], b'*')  # ty: ignore[invalid-argument-type]
++        self.assertRaises(TypeError, filter, [b'test'], '*')  # ty: ignore[invalid-argument-type]
+ 
+     def test_case(self):
+         self.assertEqual(filter(['Test.py', 'Test.rb', 'Test.PL'], '*.p*'),
+@@ -348,7 +348,7 @@
+ class FilterFalseTestCase(unittest.TestCase):
+ 
+     def test_filterfalse(self):
+-        from fnmatch import filterfalse
++        from fnmatch import filterfalse  # ty: ignore[import-not-found]
+ 
+         actual = filterfalse(['Python', 'Ruby', 'Perl', 'Tcl'], 'P*')
+         self.assertListEqual(actual, ['Ruby', 'Tcl'])
+@@ -356,13 +356,13 @@
+         self.assertListEqual(actual, [b'Ruby', b'Tcl'])
+ 
+     def test_mix_bytes_str(self):
+-        from fnmatch import filterfalse
++        from fnmatch import filterfalse  # ty: ignore[import-not-found]
+ 
+         self.assertRaises(TypeError, filterfalse, ['test'], b'*')
+         self.assertRaises(TypeError, filterfalse, [b'test'], '*')
+ 
+     def test_case(self):
+-        from fnmatch import filterfalse
++        from fnmatch import filterfalse  # ty: ignore[import-not-found]
+ 
+         self.assertEqual(filterfalse(['Test.py', 'Test.rb', 'Test.PL'], '*.p*'),
+                          ['Test.rb'] if IGNORECASE else ['Test.rb', 'Test.PL'])
+@@ -370,7 +370,7 @@
+                          ['Test.rb'] if IGNORECASE else ['Test.py', 'Test.rb',])
+ 
+     def test_sep(self):
+-        from fnmatch import filterfalse
++        from fnmatch import filterfalse  # ty: ignore[import-not-found]
+ 
+         self.assertEqual(filterfalse(['usr/bin', 'usr', 'usr\\lib'], 'usr/*'),
+                          ['usr'] if NORMSEP else ['usr', 'usr\\lib'])
+--- a/test/test_keyword.py
++++ b/test/test_keyword.py
+@@ -10,7 +10,7 @@
+         self.assertFalse(keyword.iskeyword('TRUE'))
+ 
+     def test_none_value_is_not_a_keyword(self):
+-        self.assertFalse(keyword.iskeyword(None))
++        self.assertFalse(keyword.iskeyword(None))  # ty: ignore[invalid-argument-type]
+ 
+     # This is probably an accident of the current implementation, but should be
+     # preserved for backward compatibility.
+@@ -46,10 +46,10 @@
+         self.assertIn("_", keyword.softkwlist)
+ 
+     def test_keywords_are_sorted(self):
+-        self.assertListEqual(sorted(keyword.kwlist), keyword.kwlist)
++        self.assertListEqual(sorted(keyword.kwlist), keyword.kwlist)  # ty: ignore[invalid-argument-type]
+ 
+     def test_softkeywords_are_sorted(self):
+-        self.assertListEqual(sorted(keyword.softkwlist), keyword.softkwlist)
++        self.assertListEqual(sorted(keyword.softkwlist), keyword.softkwlist)  # ty: ignore[invalid-argument-type]
+ 
+ 
+ if __name__ == "__main__":
+--- a/test/test_textwrap.py
++++ b/test/test_textwrap.py
+@@ -15,6 +15,8 @@
+ 
+ class BaseTestCase(unittest.TestCase):
+     '''Parent class with utility methods for textwrap tests.'''
++
++    wrapper: TextWrapper
+ 
+     def show(self, textin):
+         if isinstance(textin, list):
+@@ -617,7 +619,7 @@
+ 
+     def test_nobreak_long(self):
+         # Test with break_long_words disabled
+-        self.wrapper.break_long_words = 0
++        self.wrapper.break_long_words = 0  # ty: ignore[invalid-assignment]
+         self.wrapper.width = 30
+         expect = ['Did you say',
+                   '"supercalifragilisticexpialidocious?"',
+@@ -628,7 +630,7 @@
+         self.check(result, expect)
+ 
+         # Same thing with kwargs passed to standalone wrap() function.
+-        result = wrap(self.text, width=30, break_long_words=0)
++        result = wrap(self.text, width=30, break_long_words=0)  # ty: ignore[invalid-argument-type]
+         self.check(result, expect)
+ 
+     def test_max_lines_long(self):
+@@ -767,10 +769,10 @@
+ 
+     def test_type_error(self):
+         with self.assertRaisesRegex(TypeError, "expected str object, not"):
+-            dedent(0)
++            dedent(0)  # ty: ignore[invalid-argument-type]
+ 
+         with self.assertRaisesRegex(TypeError, "expected str object, not"):
+-            dedent(b'')
++            dedent(b'')  # ty: ignore[invalid-argument-type]
+ 
+     def assertUnchanged(self, text):
+         """assert that dedent() has no effect on 'text'"""
