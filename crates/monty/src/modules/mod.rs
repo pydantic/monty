@@ -5,6 +5,8 @@
 
 use std::fmt::{self, Write};
 
+use strum::VariantArray;
+
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
@@ -168,8 +170,9 @@ impl StandardLib {
     /// The import names of every built-in module (`os.path` included), so a
     /// host can keep its own module names clear of them.
     pub fn names() -> impl Iterator<Item = &'static str> {
-        (0..)
-            .map_while(StaticStrings::from_repr)
+        StaticStrings::VARIANTS
+            .iter()
+            .copied()
             .filter_map(|name| Self::from_static(name).map(|_| <&'static str>::from(name)))
     }
 

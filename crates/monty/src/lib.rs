@@ -1,6 +1,4 @@
 #![doc = include_str!("../README.md")]
-#![recursion_limit = "256"]
-
 // these files first because they include macros for the rest of the crate to use
 mod boundary_uuid;
 mod heap;

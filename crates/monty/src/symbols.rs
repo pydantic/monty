@@ -35,7 +35,7 @@ use ahash::AHashMap;
 pub(crate) use compile::CompileSymbols;
 use num_bigint::BigInt;
 use storage::Entries;
-use strum::{EnumString, FromRepr, IntoStaticStr};
+use strum::{EnumString, IntoStaticStr, VariantArray};
 
 use crate::{
     frozen::FrozenFunction,
@@ -132,9 +132,9 @@ pub(crate) static RESERVED_STRS: [&str; 129] = const {
 
 /// Static string values known at compile time.
 ///
-/// The `Ascii*` variants and [`Self::EmptyString`] pin the discriminants
-/// [`get_static_string`] reverses with [`FromRepr`](strum::FromRepr), so they
-/// stay in code-point order. Every variant after them is in alphabetical
+/// The first 129 variants match the reserved symbol IDs: ASCII in code-point
+/// order, followed by [`Self::EmptyString`]. [`get_static_string`] indexes
+/// the variant array by those IDs. Every variant after them is in alphabetical
 /// order by variant name, purely so that two branches adding a string rarely
 /// touch the same line; nothing reads those discriminants. Symbol entries
 /// serialize as text and recover a tag only when the loading build recognizes
@@ -144,7 +144,7 @@ pub(crate) static RESERVED_STRS: [&str; 129] = const {
 /// or loaded from a dump) a compile-time perfect-hash lookup. strum's default is
 /// a `match` that LLVM turns into a chain of comparisons per text length.
 #[repr(u16)]
-#[derive(Debug, Clone, Copy, EnumString, FromRepr, IntoStaticStr, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, EnumString, IntoStaticStr, PartialEq, Eq, Hash, VariantArray)]
 #[strum(serialize_all = "snake_case", use_phf)]
 pub enum StaticStrings {
     /// ASCII character 0x00.
@@ -3545,10 +3545,8 @@ fn get_str(strings: &Entries<Symbol>, id: SymbolId) -> &str {
 /// Returns the static tag stored at `id`, if any.
 #[inline]
 fn get_static_string(strings: &Entries<Symbol>, id: SymbolId) -> Option<StaticStrings> {
-    if id == SymbolId::EMPTY {
-        Some(StaticStrings::EmptyString)
-    } else if id.index() < SYMBOL_ID_OFFSET {
-        StaticStrings::from_repr(u16::try_from(id.index()).expect("ASCII ID fits u16"))
+    if id.index() < SYMBOL_ID_OFFSET {
+        Some(StaticStrings::VARIANTS[id.index()])
     } else {
         strings[id.index() - SYMBOL_ID_OFFSET].static_tag
     }

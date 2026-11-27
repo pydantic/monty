@@ -18,6 +18,7 @@ fn character_lengths_survive_text_only_serialization() {
     let symbols = SymbolTable::new("");
     for (index, text) in RESERVED_STRS.iter().enumerate() {
         let id = SymbolId(index.try_into().unwrap());
+        assert_eq!(symbols.static_string(id).map(<&str>::from), Some(*text));
         assert_eq!(symbols.str_char_len(id), text.chars().count());
         assert!(symbols.str_is_ascii(id));
     }
