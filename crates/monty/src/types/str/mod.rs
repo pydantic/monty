@@ -1349,8 +1349,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
     /// Implements Python's `str.encode(encoding='utf-8', errors='strict')` method.
     ///
     /// Returns an encoded version of the string as a bytes object. Encoding-name
-    /// resolution and the codec implementations (UTF-8, ASCII, UTF-16/32
-    /// families) live in [`crate::codecs`]. Like CPython, the error handler name
+    /// resolution and the codec implementations live in [`crate::codecs`]. Like CPython, the error handler name
     /// is only looked up (and validated) when an actual encoding error occurs —
     /// `'hello'.encode('ascii', 'bogus')` succeeds because there's nothing for
     /// the handler to do.

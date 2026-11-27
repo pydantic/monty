@@ -2665,6 +2665,17 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::RePatternError, msg).into()
     }
 
+    /// Creates the mixed `str`/`bytes` error raised by regex matching.
+    #[must_use]
+    fn re_subject_mismatch(bytes_pattern: bool) -> RunError {
+        let msg = if bytes_pattern {
+            "cannot use a bytes pattern on a string-like object"
+        } else {
+            "cannot use a string pattern on a bytes-like object"
+        };
+        Self::type_error(msg)
+    }
+
     /// Creates a `json.JSONDecodeError` with CPython-compatible location suffix,
     /// formatted as `{message}: line {line} column {column} (char {index})`.
     ///

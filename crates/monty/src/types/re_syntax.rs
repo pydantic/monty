@@ -15,7 +15,11 @@ use std::{
 use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     modules::re::{ASCII, DOTALL, IGNORECASE, MULTILINE, VERBOSE},
-    types::str::{StringRepr, str_isidentifier},
+    types::{
+        bytes::bytes_repr,
+        re_text::ReInput,
+        str::{StringRepr, str_isidentifier},
+    },
 };
 
 /// `re.LOCALE`, which CPython rejects for str patterns.
@@ -45,7 +49,7 @@ const MAX_NESTING: usize = 64;
 ///
 /// `re.PatternError` with CPython's message for an invalid pattern, `OverflowError` for a repeat count
 /// that is too large and `ValueError` for incompatible flags.
-pub(crate) fn translate(pattern: &str, flags: u16) -> RunResult<String> {
+pub(crate) fn translate(pattern: ReInput<'_>, flags: u16) -> RunResult<String> {
     let mut translator = Translator::new(pattern, flags)?;
     translator.parse_sub(flags & VERBOSE != 0, 0)?;
     translator.finish()
@@ -87,15 +91,21 @@ impl fmt::Display for Token {
 /// A port of CPython's `re._parser.Tokenizer`: one token of lookahead over the pattern's characters.
 struct Tokenizer {
     chars: Vec<char>,
+    is_bytes: bool,
     /// Index just past `next`.
     index: usize,
     next: Option<Token>,
 }
 
 impl Tokenizer {
-    fn new(pattern: &str) -> RunResult<Self> {
+    fn new(pattern: ReInput<'_>) -> RunResult<Self> {
+        let (chars, is_bytes) = match pattern {
+            ReInput::Str(s) => (s.chars().collect(), false),
+            ReInput::Bytes(b) => (b.iter().copied().map(char::from).collect(), true),
+        };
         let mut tokenizer = Self {
-            chars: pattern.chars().collect(),
+            chars,
+            is_bytes,
             index: 0,
             next: None,
         };
@@ -196,11 +206,19 @@ impl Tokenizer {
 
     /// Rejects a group name that is not an identifier.
     fn check_group_name(&self, name: &str, offset: usize) -> RunResult<()> {
-        if str_isidentifier(name) {
+        if str_isidentifier(name) && (!self.is_bytes || name.is_ascii()) {
             Ok(())
         } else {
-            let msg = format!("bad character in group name {}", StringRepr(name));
-            Err(self.error(msg, name.chars().count() + offset))
+            let repr = if self.is_bytes {
+                let bytes: Vec<u8> = name.chars().map(|c| u8::try_from(c).expect("byte pattern")).collect();
+                bytes_repr(&bytes)[1..].to_owned()
+            } else {
+                StringRepr(name).to_string()
+            };
+            Err(self.error(
+                format!("bad character in group name {repr}"),
+                name.chars().count() + offset,
+            ))
         }
     }
 
@@ -299,10 +317,11 @@ struct Translator {
 }
 
 impl Translator {
-    fn new(pattern: &str, flags: u16) -> RunResult<Self> {
+    fn new(pattern: ReInput<'_>, flags: u16) -> RunResult<Self> {
+        let len = pattern.len();
         Ok(Self {
             source: Tokenizer::new(pattern)?,
-            out: String::with_capacity(pattern.len()),
+            out: String::with_capacity(len),
             flags,
             group_widths: vec![None],
             group_names: HashMap::new(),
@@ -315,10 +334,19 @@ impl Translator {
 
     /// The checks CPython makes after parsing, in its order; returns the translated pattern.
     fn finish(self) -> RunResult<String> {
-        if self.flags & LOCALE != 0 {
+        if self.source.is_bytes {
+            if self.flags & UNICODE != 0 {
+                return Err(ExcType::value_error("cannot use UNICODE flag with a bytes pattern"));
+            }
+            if self.flags & ASCII != 0 && self.flags & LOCALE != 0 {
+                return Err(ExcType::value_error("ASCII and LOCALE flags are incompatible"));
+            }
+            if self.flags & LOCALE != 0 {
+                return Err(unsupported_locale());
+            }
+        } else if self.flags & LOCALE != 0 {
             return Err(ExcType::value_error("cannot use LOCALE flag with a str pattern"));
-        }
-        if self.flags & ASCII != 0 && self.flags & UNICODE != 0 {
+        } else if self.flags & ASCII != 0 && self.flags & UNICODE != 0 {
             return Err(ExcType::value_error("ASCII and UNICODE flags are incompatible"));
         }
         if self.source.next.is_some() {
@@ -393,7 +421,7 @@ impl Translator {
                     items.push(Item::AT);
                 }
                 Token::Char(c) => {
-                    push_literal(&mut self.out, u32::from(c));
+                    push_literal(&mut self.out, u32::from(c), self.source.is_bytes);
                     items.push(Item::UNIT);
                 }
             }
@@ -425,7 +453,7 @@ impl Translator {
                     None if c.is_ascii_alphabetic() => return Err(self.source.error(format!("bad escape \\{c}"), 2)),
                     None => u32::from(c),
                 };
-                push_literal(&mut self.out, cp);
+                push_literal(&mut self.out, cp, self.source.is_bytes);
                 Item::UNIT
             }
         })
@@ -446,7 +474,7 @@ impl Translator {
                     let msg = format!("octal escape value \\{digits} outside of range 0-0o377");
                     return Err(self.source.error(msg, digits.len() + 1));
                 }
-                push_literal(&mut self.out, cp);
+                push_literal(&mut self.out, cp, self.source.is_bytes);
                 return Ok(Item::UNIT);
             }
         }
@@ -477,9 +505,9 @@ impl Translator {
             'v' => 0x0b,
             '\\' => u32::from('\\'),
             'x' => self.hex_escape(c, 2)?,
-            'u' => self.hex_escape(c, 4)?,
-            'U' => self.hex_escape(c, 8)?,
-            'N' => self.named_escape()?,
+            'u' if !self.source.is_bytes => self.hex_escape(c, 4)?,
+            'U' if !self.source.is_bytes => self.hex_escape(c, 8)?,
+            'N' if !self.source.is_bytes => self.named_escape()?,
             _ => return Ok(None),
         }))
     }
@@ -549,7 +577,7 @@ impl Translator {
                 }
             }
         }
-        push_class(&mut self.out, negate, &members);
+        push_class(&mut self.out, negate, &members, self.source.is_bytes);
         Ok(())
     }
 
@@ -592,7 +620,7 @@ impl Translator {
             _ => self.brace_bounds(here)?,
         };
         let Some((min, max)) = bounds else {
-            push_literal(&mut self.out, u32::from('{'));
+            push_literal(&mut self.out, u32::from('{'), self.source.is_bytes);
             items.push(Item::UNIT);
             return Ok(());
         };
@@ -947,10 +975,19 @@ impl Translator {
         if first != '-' {
             loop {
                 let c = current.char();
-                if c == 'L' {
-                    return Err(self
-                        .source
-                        .error("bad inline flags: cannot use 'L' flag with a str pattern", 0));
+                match (c, self.source.is_bytes) {
+                    ('L', true) => return Err(unsupported_locale()),
+                    ('L', false) => {
+                        return Err(self
+                            .source
+                            .error("bad inline flags: cannot use 'L' flag with a str pattern", 0));
+                    }
+                    ('u', true) => {
+                        return Err(self
+                            .source
+                            .error("bad inline flags: cannot use 'u' flag with a bytes pattern", 0));
+                    }
+                    _ => {}
                 }
                 let flag = flag_bit(c).expect("checked to be a flag");
                 add |= flag;
@@ -1035,6 +1072,11 @@ fn flag_bit(c: char) -> Option<u16> {
     }
 }
 
+/// Locale-dependent byte classes and folding are not available in the sandbox.
+fn unsupported_locale() -> RunError {
+    ExcType::not_implemented("LOCALE matching is not supported for bytes patterns").into()
+}
+
 /// True for a plain character that is an inline flag letter.
 fn is_flag(token: Token) -> bool {
     matches!(token, Token::Char(c) if flag_bit(c).is_some())
@@ -1063,11 +1105,10 @@ fn repeat_count(digits: &str) -> RunResult<u64> {
         .ok_or_else(|| ExcType::overflow_error("the repetition number is too large"))
 }
 
-/// Appends `c` as a literal, in a form `fancy-regex` cannot read as syntax.
-fn push_literal(out: &mut String, cp: u32) {
+/// Appends `cp` as a literal, in a form `fancy-regex` cannot read as syntax.
+fn push_literal(out: &mut String, cp: u32, is_bytes: bool) {
     match char::from_u32(cp) {
-        Some(c) if c.is_ascii_alphanumeric() || c == '_' || !c.is_ascii() => out.push(c),
-        Some(c) => push_hex(out, c),
+        Some(c) => push_literal_char(out, c, is_bytes),
         // A surrogate: no Monty string contains one, so the literal never matches.
         None => out.push_str("[^\\s\\S]"),
     }
@@ -1079,13 +1120,13 @@ fn push_hex(out: &mut String, c: char) {
 }
 
 /// Appends a character class; surrogates are dropped, since no Monty string contains one.
-fn push_class(out: &mut String, negate: bool, members: &[ClassItem]) {
+fn push_class(out: &mut String, negate: bool, members: &[ClassItem], is_bytes: bool) {
     let mut body = String::new();
     for &member in members {
         match member {
             ClassItem::Literal(cp) => {
                 if let Some(c) = char::from_u32(cp) {
-                    push_class_char(&mut body, c);
+                    push_literal_char(&mut body, c, is_bytes);
                 }
             }
             ClassItem::Range(lo, hi) => {
@@ -1094,9 +1135,9 @@ fn push_class(out: &mut String, negate: bool, members: &[ClassItem]) {
                 if let (Some(lo), Some(hi)) = (char::from_u32(lo), char::from_u32(hi))
                     && lo <= hi
                 {
-                    push_class_char(&mut body, lo);
+                    push_literal_char(&mut body, lo, is_bytes);
                     body.push('-');
-                    push_class_char(&mut body, hi);
+                    push_literal_char(&mut body, hi, is_bytes);
                 }
             }
             ClassItem::Category(c) => {
@@ -1120,9 +1161,9 @@ fn push_class(out: &mut String, negate: bool, members: &[ClassItem]) {
     }
 }
 
-/// Appends a class member character, escaping the punctuation `fancy-regex` treats as class syntax.
-fn push_class_char(out: &mut String, c: char) {
-    if c.is_ascii_alphanumeric() || c == '_' || !c.is_ascii() {
+/// Escapes syntax and emits high bytes as hex, since raw literals in the engine's source are UTF-8.
+fn push_literal_char(out: &mut String, c: char, is_bytes: bool) {
+    if c.is_ascii_alphanumeric() || c == '_' || (!is_bytes && !c.is_ascii()) {
         out.push(c);
     } else {
         push_hex(out, c);

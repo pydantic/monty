@@ -17,7 +17,7 @@ use super::{CmpOrder, LazyHeapSet, PyTrait, Type, TypeRef};
 /// # Implemented Methods
 ///
 /// ## Encoding/Decoding
-/// - `decode([encoding[, errors]])` - Decode to string (UTF-8, ASCII, UTF-16/32)
+/// - `decode([encoding[, errors]])` - Decode to string
 /// - `hex([sep[, bytes_per_sep]])` - Return hex string representation
 /// - `fromhex(string)` - Create bytes from hex string (classmethod)
 ///
@@ -562,9 +562,8 @@ impl HeapItem for Bytes {
 
 /// Implements Python's `bytes.decode([encoding[, errors]])` method.
 ///
-/// Converts bytes to a string. Encoding-name resolution and the codec
-/// implementations (UTF-8, ASCII, UTF-16/32 families) live in
-/// [`crate::codecs`]. Like CPython, the error handler name is only looked up
+/// Converts bytes to a string using [`crate::codecs`].
+/// Like CPython, the error handler name is only looked up
 /// (and validated) when a byte actually needs handling — see
 /// `limitations/encoding.md` for the handful of decode divergences (the
 /// surrogate-producing handlers raise `NotImplementedError`).

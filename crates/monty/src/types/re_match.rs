@@ -5,9 +5,8 @@
 //! Python-compatible access via `.group()`, `.groups()`, `.start()`, `.end()`,
 //! and `.span()` methods.
 //!
-//! The matched substrings are owned copies, but the subject string (`.string`)
-//! is held as a single refcounted heap reference shared across every match from
-//! one `finditer`/`findall` call, so `py_dec_ref_ids` releases that reference.
+//! The captures are owned copies, but the subject (`.string`) is shared
+//! across every match from one `finditer` call.
 
 use std::{cell::OnceCell, cmp::Ordering, fmt::Write};
 
@@ -24,7 +23,8 @@ use crate::{
     py_attrs::PyAttrs,
     types::{
         Dict, LazyHeapSet, PyTrait, Type, TypeRef, allocate_tuple,
-        str::{allocate_string, string_repr_fmt},
+        re_text::{ReInput, ReText},
+        str::allocate_string,
     },
     value::{EitherStr, Value},
 };
@@ -45,7 +45,7 @@ use crate::{
 /// Offsets are stored as byte offsets (what the `regex` crate produces) and
 /// converted to the character offsets CPython reports lazily, only when
 /// `.start()`/`.end()`/`.span()`/`repr` read them; the full match's conversion
-/// is memoized (`char_span`). ASCII input needs no conversion.
+/// is memoized (`char_span`). Bytes and ASCII text need no conversion.
 ///
 /// # Group Indexing
 ///
@@ -55,23 +55,24 @@ use crate::{
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ReMatch {
     /// The full matched text (equivalent to `group(0)`).
-    full_match: String,
+    full_match: ReText,
     /// Start byte position of the full match in the input string.
     start: usize,
     /// End byte position of the full match in the input string.
     end: usize,
-    /// Captured group strings (index 0 = group 1). `None` for unmatched optional groups.
-    groups: Vec<Option<String>>,
+    /// Captures (index 0 = group 1). `None` for unmatched optional groups.
+    groups: Vec<Option<ReText>>,
     /// Span byte positions per captured group (index 0 = group 1). `None` for unmatched optional groups.
     group_spans: Vec<Option<(usize, usize)>>,
     /// Named groups: maps group name → 1-based group index.
     named_groups: Vec<(String, usize)>,
     /// The searched subject (the `.string` attribute), held as a refcounted heap
     /// reference so every match from one `finditer` shares one copy — tracked
-    /// once, not per match. Always a `str` `Value` (heap `Str` or interned).
+    /// once, not per match.
     subject: Value,
-    /// Whether the subject is pure ASCII, so byte offset == character offset.
-    all_ascii: bool,
+    /// Whether Python positions equal byte offsets (bytes or ASCII text).
+    #[serde(rename = "all_ascii")]
+    byte_offsets: bool,
     /// Char-offset `(start, end)` of the full match, computed lazily by
     /// [`ReMatch::char_span`]. A pure cache — skipped by serde, rebuilt on demand.
     #[serde(skip)]
@@ -83,21 +84,21 @@ impl ReMatch {
     /// match, then one entry per capture group (`None` if it took no part).
     ///
     /// Taking spans rather than `fancy_regex::Captures` lets `finditer` hold a flat,
-    /// fixed-size span buffer while it scans. `text` is the searched string; `subject`
-    /// is its already-refcounted `Value` (the caller clones it per match); `regex`
+    /// fixed-size span buffer while it scans. `subject` is the `Value` behind `text`
+    /// (the caller clones it per match); `regex`
     /// supplies named-group mappings.
     pub fn from_spans(
-        text: &str,
+        text: ReInput<'_>,
         spans: &[Option<(usize, usize)>],
         subject: Value,
-        all_ascii: bool,
+        byte_offsets: bool,
         regex: &fancy_regex::Regex,
     ) -> Self {
         let (start, end) = spans[0].expect("group 0 always exists on a successful match");
         let group_spans = spans[1..].to_vec();
         let groups = group_spans
             .iter()
-            .map(|span| span.map(|(s, e)| text[s..e].to_owned()))
+            .map(|span| span.map(|(s, e)| text.capture(s, e)))
             .collect();
 
         // Extract named group name→index mappings from the regex, sized exactly as
@@ -111,14 +112,14 @@ impl ReMatch {
         );
 
         Self {
-            full_match: text[start..end].to_owned(),
+            full_match: text.capture(start, end),
             start,
             end,
             groups,
             group_spans,
             named_groups,
             subject,
-            all_ascii,
+            byte_offsets,
             char_span: OnceCell::new(),
         }
     }
@@ -130,7 +131,7 @@ impl ReMatch {
     /// `finditer` sums this over every match to preflight the pass that builds them.
     pub fn estimated_size(group_count: usize, name_count: usize, names_len: usize) -> usize {
         size_of::<Self>()
-            + group_count * (size_of::<Option<String>>() + size_of::<Option<(usize, usize)>>())
+            + group_count * (size_of::<Option<ReText>>() + size_of::<Option<(usize, usize)>>())
             + name_count * size_of::<(String, usize)>()
             + names_len
     }
@@ -146,7 +147,7 @@ impl ReMatch {
     /// scanned once (only up to the match end) on first access, O(1) after.
     fn char_span(&self, vm: &VM<'_>) -> (i64, i64) {
         *self.char_span.get_or_init(|| {
-            let (start, end) = if self.all_ascii {
+            let (start, end) = if self.byte_offsets {
                 (self.start, self.end)
             } else {
                 let text = self.subject.try_as_str(vm).expect("subject is always a str");
@@ -161,10 +162,10 @@ impl ReMatch {
     /// Converts a stored byte offset into the subject to the Unicode character
     /// offset CPython reports — used for capture-group positions (the full
     /// match's span goes through the memoized [`ReMatch::char_span`] instead).
-    /// ASCII subjects need no conversion; otherwise the subject text is read
+    /// Bytes and ASCII text need no conversion; otherwise the subject text is read
     /// back from the heap for a forward scan.
     fn char_offset(&self, byte_offset: usize, vm: &VM<'_>) -> i64 {
-        let char_offset = if self.all_ascii {
+        let char_offset = if self.byte_offsets {
             byte_offset
         } else {
             let text = self.subject.try_as_str(vm).expect("subject is always a str");
@@ -180,7 +181,7 @@ impl ReMatch {
     /// Raises `IndexError` for invalid group numbers.
     fn get_group(&self, n: i64, heap: &Heap) -> RunResult<Value> {
         match n.cmp(&0) {
-            Ordering::Equal => Ok(allocate_string(self.full_match.as_str(), heap)),
+            Ordering::Equal => Ok(self.full_match.to_value(heap)),
             Ordering::Less => Err(ExcType::re_match_group_index_error()),
             Ordering::Greater => {
                 let idx = group_index(n);
@@ -188,7 +189,7 @@ impl ReMatch {
                     return Err(ExcType::re_match_group_index_error());
                 }
                 match &self.groups[idx] {
-                    Some(s) => Ok(allocate_string(s.as_str(), heap)),
+                    Some(s) => Ok(s.to_value(heap)),
                     None => Ok(Value::None),
                 }
             }
@@ -223,7 +224,7 @@ impl<'h> HeapRead<'h, ReMatch> {
             // idx is 1-based, groups vec is 0-based (index 0 = group 1)
             let value = if *idx > 0 && (*idx - 1) < this.groups.len() {
                 match &this.groups[*idx - 1] {
-                    Some(s) => allocate_string(s.as_str(), vm.heap),
+                    Some(s) => s.to_value(vm.heap),
                     None => default.clone_with_heap(vm),
                 }
             } else {
@@ -244,7 +245,7 @@ impl ReMatch {
         let mut elements = smallvec![];
         for group in &self.groups {
             match group {
-                Some(s) => elements.push(allocate_string(s.as_str(), heap)),
+                Some(s) => elements.push(s.to_value(heap)),
                 None => elements.push(Value::None),
             }
         }
@@ -339,7 +340,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ReMatch> {
         let m = self.get(vm.heap);
         let (start, end) = m.char_span(vm);
         write!(f, "<re.Match object; span=({start}, {end}), match=")?;
-        string_repr_fmt(&m.full_match, f)?;
+        m.full_match.repr_fmt(f)?;
         Ok(f.write_char('>')?)
     }
 

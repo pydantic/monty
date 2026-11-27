@@ -54,6 +54,18 @@ assert re.findall('[\\1]', '\x01') == ['\x01']
 assert pattern_error('\\400') == 'octal escape value \\400 outside of range 0-0o377 at position 0'
 assert pattern_error('[\\8]') == 'bad escape \\8 at position 1'
 
+# === Bytes syntax and error positions ===
+assert pattern_error(rb'\u00ff') == 'bad escape \\u at position 0'
+assert pattern_error(rb'[\N{A}]') == 'bad escape \\N at position 1'
+assert pattern_error(b'(?u:a)') == "bad inline flags: cannot use 'u' flag with a bytes pattern at position 3"
+assert pattern_error(b'\xff(?P<\xe9>a)') == "bad character in group name '\\xe9' at position 5"
+assert pattern_error(b'\xff\n[') == 'unterminated character set at position 2 (line 2, column 1)'
+try:
+    re.compile(b'a', 32)  # re.UNICODE
+    assert False, 'expected ValueError for UNICODE with a bytes pattern'
+except ValueError as e:
+    assert str(e) == 'cannot use UNICODE flag with a bytes pattern'
+
 # === Named characters ===
 assert re.findall('\\N{LATIN SMALL LETTER A}', 'abc') == ['a']
 assert re.findall('[\\N{EM DASH}b]', 'a—b') == ['—', 'b']

@@ -1516,8 +1516,8 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
             16_044_735,
         ),
         // `re.finditer` preflights the matches it builds from its scanned spans as a whole.
-        ("import re\nre.finditer('ab', 'ab ' * 10_000)", 3_218_319),
-        ("import re\nre.finditer('(a)(b)', 'ab ' * 10_000)", 4_597_165),
+        ("import re\nre.finditer('ab', 'ab ' * 10_000)", 3_298_319),
+        ("import re\nre.finditer('(a)(b)', 'ab ' * 10_000)", 4_837_165),
         // A split's piece buffer is grown under the same checks as `re.split`'s.
         ("('ab,' * 100_000).split(',')", 1_392_992),
         ("('ab,' * 100_000).rsplit(',')", 1_392_993),
@@ -1709,6 +1709,15 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         ("s = 'é' * (8 * 1024 * 1024)\ns.upper()", 24 * 1024 * 1024),
         ("s = 'ΐ' * (4 * 1024 * 1024)\ns.upper()", 24 * 1024 * 1024),
         ("import re\nre.escape(' ' * (10 * 1024 * 1024))", 24 * 1024 * 1024),
+        // Overlapping groups copy the same input bytes once per capture.
+        (
+            "import re\nre.fullmatch(b'((((.*))))', b'x' * (8 * 1024 * 1024))",
+            24 * 1024 * 1024,
+        ),
+        (
+            "('Ā' * (2 * 1024 * 1024)).encode('latin-1', 'namereplace')",
+            24 * 1024 * 1024,
+        ),
         // Async cases carry storage the guest never sees: the wait input list,
         // one wait slot per input, fanned-out exception copies and timer
         // storage. Their payload is sized against their own budget so the
@@ -1861,7 +1870,7 @@ asyncio.run(main())";
     // A result `finditer` preflights as fitting must build within that estimate: a
     // named group's table once took 4 slots per match, killing the worker here.
     let mut child = ChildProc::spawn();
-    child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+    child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024 + 256 * 1024));
     assert_eq!(
         child.feed_complete("import re\nlen(re.finditer('(?P<x>)', 'a' * 60_000))"),
         MontyObject::int(60_001),
