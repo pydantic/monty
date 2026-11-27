@@ -271,6 +271,8 @@ another order (`Counter(a=x, b=x, c=x).most_common(2)` is
 
 - Functions (`def`, `async def`), nested functions, closures, and decorators on functions and methods.
 - List, dict and set comprehensions and generator expressions.
+- Generator functions with `yield`, `yield from` and `send()`; see
+    [generators.md](generators.md).
 - `try` / `except` / `else` / `finally`, `raise ... from ...`.
 - `for` / `while` / `if` / `elif` / `else`, `break`, `continue`, `pass`,
     `assert`, `global`, `nonlocal`, `return`.
