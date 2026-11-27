@@ -694,6 +694,12 @@ fn is_daylight(sandbox_zone: &SandboxTimeZone, utc: DateTime, at: &MontyTimeZone
         .is_some_and(|constants| constants.daylight && at.offset_seconds == constants.daylight_zone.offset_seconds)
 }
 
+/// The zone-less `struct_time` for `wall`, as `date.timetuple()` returns:
+/// `tm_isdst` is -1 and the two zone fields are `None`.
+pub(crate) fn naive_struct_time(wall: DateTime, vm: &mut VM<'_>) -> Value {
+    struct_time_value(&TimeFields::naive(wall), vm)
+}
+
 /// Builds a `time.struct_time`.
 ///
 /// A structseq in CPython: no class object, so `_fields`/`_replace` are absent

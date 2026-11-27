@@ -3053,6 +3053,8 @@ pub enum StaticStrings {
     Timespec,
     /// `datetime.timestamp()` method.
     Timestamp,
+    /// `date.timetuple()` method.
+    Timetuple,
     /// `datetime.timetz` method name.
     Timetz,
     /// The `datetime.timezone` type.
