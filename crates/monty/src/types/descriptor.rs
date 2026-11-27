@@ -117,7 +117,7 @@ pub(crate) fn may_be_descriptor(value: &Value, heap: &Heap) -> bool {
 pub(crate) fn may_be_data_descriptor(value: &Value, heap: &Heap) -> bool {
     matches!(value, Value::Ref(id) if match heap.get(*id) {
         HeapData::Instance(_) => true,
-        HeapData::BuiltinDescriptor(d) => d.kind() == Type::Property,
+        HeapData::BuiltinDescriptor(d) => d.is_data(),
         _ => false,
     })
 }
@@ -242,7 +242,7 @@ pub(crate) fn is_data(value: &Value, vm: &VM<'_>) -> bool {
     if let Value::Ref(id) = value
         && let HeapData::BuiltinDescriptor(d) = vm.heap.get(*id)
     {
-        d.kind() == Type::Property
+        d.is_data()
     } else {
         // Presence, not callability, determines precedence: a broken setter is still a data descriptor.
         descriptor_class(value, vm)

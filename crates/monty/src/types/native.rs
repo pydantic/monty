@@ -441,6 +441,8 @@ impl Type {
             Self::BlockingIOError => 169,
             Self::ClassMethod => 170,
             Self::StaticMethod => 171,
+            Self::MemberDescriptor => 175,
+            Self::GetSetDescriptor => 176,
         }
     }
 
@@ -938,12 +940,14 @@ native_types! {
         .ctor(Constructor::Value(hashlib::blake2s_init)),
     /// The iterator `csv.reader()` returns, CPython's `_csv.reader`.
     CsvReader("_csv.reader")
+        .attrs(<super::csv::PyCsvReaderImpl as PyAttrs<'static>>::TABLE)
         .iterator(),
     /// The object `csv.writer()` returns, CPython's `_csv.writer`.
     CsvWriter("_csv.writer")
         .attrs(<super::csv::PyCsvWriterImpl as PyAttrs<'static>>::TABLE),
     /// `csv.DictReader`, a class in CPython and so callable here.
     CsvDictReader("csv.DictReader")
+        .attrs(<super::csv::PyCsvDictReaderImpl as PyAttrs<'static>>::TABLE)
         .iterator()
         .ctor(Constructor::Call(csv::dict_reader_call)),
     /// `csv.DictWriter`, a class in CPython and so callable here.
@@ -952,6 +956,7 @@ native_types! {
         .ctor(Constructor::Value(csv::dict_writer_init)),
     /// A resolved `csv` dialect, CPython's `_csv.Dialect`.
     CsvDialect("_csv.Dialect")
+        .attrs(<super::csv::dialect::PyCsvDialectImpl as PyAttrs<'static>>::TABLE)
         .ctor(Constructor::Value(csv::dialect_init)),
     /// `decimal.Decimal`.
     Decimal("decimal.Decimal")
@@ -1217,6 +1222,8 @@ native_types! {
         .exc(ExcType::InvalidStateError),
     ClassMethod("classmethod").builtin().basetype().ctor(Constructor::Value(builtin_descriptor::classmethod_init)),
     StaticMethod("staticmethod").builtin().basetype().ctor(Constructor::Value(builtin_descriptor::staticmethod_init)),
+    MemberDescriptor("member_descriptor"),
+    GetSetDescriptor("getset_descriptor"),
 }
 
 #[cfg(test)]

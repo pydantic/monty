@@ -143,6 +143,13 @@ Each annotation names its `StaticStrings` key explicitly:
 - `#[pyclassmethod(Fromkeys)]` registers `(StaticStrings, TypeRef, ArgValues, &mut VM) -> RunResult<CallResult>`.
   The adapter supplies the registered key and bound class, including calls through instances.
 - `#[pyvalue(Min)]` registers `(&mut VM) -> Value`.
+- `#[pyget(Fieldnames)]` registers `(Receiver, &mut VM)` returning `Value` or `RunResult<Value>` for an instance attribute.
+  Reading the name through the class returns a descriptor.
+  Use `#[pyget(LineNum, member)]` for a native member descriptor.
+- `#[pyset(Fieldnames)]` adds a setter for the getter with the same key.
+  It takes `(Receiver, Value, &mut VM)` and returns `()` or `RunResult<()>`.
+  The setter owns the incoming value and must release or store it on every path.
+  A getter without a setter is read-only.
 
 `Receiver` declares the view borrowed from `PyValue`:
 `HeapRead<'heap, T>`, `HeapReadMut<'heap, T>`, `HeapObjectRead<'heap, T>`,

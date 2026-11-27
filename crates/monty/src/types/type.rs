@@ -9,15 +9,15 @@ use std::fmt;
 
 use num_bigint::BigInt;
 
-use super::native::Constructor;
 pub use super::native::Type;
+use super::{builtin_descriptor, native::Constructor};
 use crate::{
     args::{ArgValues, FromArgs},
     builtins::{Builtins, BuiltinsFunctions},
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{DropWithContext, Heap},
+    heap::{DropGuard, DropWithContext, Heap},
     intern::{Interns, StaticStrings},
     modules::collections,
     py_attrs::{self, AttrDef},
@@ -107,6 +107,13 @@ impl Type {
         match self.lookup_attr(attr, vm.interns) {
             Some((owner, AttrDef::Method(call))) => py_attrs::call_method(owner, obj, attr, call, args, vm),
             Some((_, AttrDef::ClassMethod(classmethod))) => classmethod(obj.py_type(vm), args, vm),
+            Some((_, AttrDef::GetSet { get, .. })) => {
+                let mut pending = DropGuard::new(args, vm);
+                let callable = get(obj, pending.ctx())?;
+                let (args, vm) = pending.into_parts();
+                defer_drop!(callable, vm);
+                vm.call_function(callable, args)
+            }
             _ => obj.call_dynamic_attr(vm, attr, args),
         }
     }
@@ -168,7 +175,14 @@ impl Type {
                 vm.heap,
             ),
             "__init_subclass__" => bind_init_subclass(type_value(self), self.class_constant(attr, vm)?, vm.heap),
-            _ => self.class_constant(attr, vm)?,
+            _ => match self.lookup_attr(attr, vm.interns)? {
+                (_, AttrDef::Value(get)) => get(vm),
+                (owner, AttrDef::GetSet { member, .. }) => {
+                    let name = vm.interns.intern_static(attr.static_string(vm.interns)?);
+                    builtin_descriptor::native_attribute(owner, name, member, vm)
+                }
+                _ => return None,
+            },
         })
     }
 

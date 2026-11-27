@@ -72,3 +72,6 @@ from the notes below.
 - **A dialect object's attributes cannot come from properties.**
     `dialect=SomeClass` reads plain attributes (`delimiter = ';'`); an attribute implemented as a `property`
     raises `NotImplementedError`.
+- `DictReader.fieldnames` uses a native getset descriptor. CPython exposes a Python `property` with inspectable
+    accessor functions.
+- Reads of native descriptors through the class return a fresh descriptor each time.

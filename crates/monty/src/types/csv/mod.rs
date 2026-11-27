@@ -24,7 +24,7 @@ use crate::{
     bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
-    heap::{DropWithContext, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    heap::{DropWithContext, HeapId, HeapItem, HeapObjectRead},
     intern::StaticStrings,
     py_attrs::PyAttrs,
     types::{LazyHeapSet, PyTrait, Type, TypeRef},
@@ -159,20 +159,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, CsvObject> {
             return Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns)));
         };
         let value = match (self.get(vm.heap), name) {
-            (CsvObject::Reader(reader), StaticStrings::Dialect) => {
-                CsvObject::Dialect(Dialect::clone(&reader.dialect)).allocate(vm)
-            }
-            (CsvObject::Reader(reader), StaticStrings::LineNum) => line_num_value(reader.line_num)?,
-            (CsvObject::Writer(writer), StaticStrings::Dialect) => {
-                CsvObject::Dialect(Dialect::clone(&writer.dialect)).allocate(vm)
-            }
-            (CsvObject::DictReader(_), StaticStrings::Fieldnames) => {
-                // Reading the header mutates the object, which needs its own handle.
-                let HeapReadOutput::Csv(this) = vm.heap.read(self.id()) else {
-                    unreachable!("self is a csv object")
-                };
-                return dict::reader_fieldnames(&this, vm).map(|value| Some(CallResult::Value(value)));
-            }
             (CsvObject::DictReader(reader), StaticStrings::LineNum) => line_num_value(reader.line_num)?,
             (CsvObject::DictReader(reader), StaticStrings::Reader) => reader.reader.clone_with_heap(vm.heap),
             (CsvObject::DictReader(reader), StaticStrings::Restkey) => reader.restkey.clone_with_heap(vm.heap),
@@ -184,48 +170,20 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, CsvObject> {
                 writer.extrasaction.clone_with_heap(vm.heap)
             }
             (CsvObject::DictWriter(writer), StaticStrings::Writer) => writer.writer.clone_with_heap(vm.heap),
-            (CsvObject::Dialect(dialect), name) => match dialect.attr(name, vm) {
-                Some(value) => value,
-                None => return Err(ExcType::attribute_error(Type::CsvDialect, attr.as_str(vm.interns))),
-            },
             _ => return Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns))),
         };
         Ok(Some(CallResult::Value(value)))
     }
 
-    /// The `DictReader` and `DictWriter` attributes that are plain Python attributes in
-    /// CPython are assignable, except the wrapped `reader` / `writer` and `line_num`;
-    /// everything on the `_csv` objects is read-only, with CPython's two wordings for a
-    /// member and a getset descriptor.
+    /// Writes the mutable fields on the DictReader and DictWriter instances.
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         let slot = match (self.get_mut(vm.heap), name.static_string(vm.interns)) {
-            (CsvObject::Reader(_), Some(StaticStrings::Dialect | StaticStrings::LineNum))
-            | (CsvObject::Writer(_), Some(StaticStrings::Dialect)) => {
-                value.drop_with(vm);
-                return Err(ExcType::attribute_error_readonly());
-            }
-            (CsvObject::DictReader(reader), Some(StaticStrings::Fieldnames)) => {
-                // `None` unsets the names, so the next row read is the header again.
-                let names = match value {
-                    Value::None => None,
-                    names => Some(names),
-                };
-                mem::replace(&mut reader.fieldnames, names).drop_with(vm);
-                return Ok(());
-            }
             (CsvObject::DictReader(reader), Some(StaticStrings::Restkey)) => &mut reader.restkey,
             (CsvObject::DictReader(reader), Some(StaticStrings::Restval)) => &mut reader.restval,
             (CsvObject::DictReader(reader), Some(StaticStrings::Dialect)) => &mut reader.dialect,
             (CsvObject::DictWriter(writer), Some(StaticStrings::Fieldnames)) => &mut writer.fieldnames,
             (CsvObject::DictWriter(writer), Some(StaticStrings::Restval)) => &mut writer.restval,
             (CsvObject::DictWriter(writer), Some(StaticStrings::Extrasaction)) => &mut writer.extrasaction,
-            (CsvObject::Dialect(_), Some(attr)) if Dialect::is_attr(attr) => {
-                value.drop_with(vm);
-                return Err(ExcType::attribute_error_not_writable(
-                    name.as_str(vm.interns),
-                    &Type::CsvDialect.to_string(),
-                ));
-            }
             _ => {
                 value.drop_with(vm);
                 let type_name = self.py_type_name(vm);
@@ -244,11 +202,67 @@ fn line_num_value(line_num: u64) -> RunResult<Value> {
         .map_err(|_| ExcType::overflow_c_ssize_t())
 }
 
+pub(crate) struct PyCsvReaderImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyCsvReaderImpl {
+    type Receiver = HeapObjectRead<'heap, CsvObject>;
+
+    #[pyget(Dialect, member)]
+    fn dialect<'h>(this: &HeapObjectRead<'h, CsvObject>, vm: &mut VM<'h>) -> Value {
+        let CsvObject::Reader(reader) = this.get(vm.heap) else {
+            unreachable!("dispatched on CsvObject::Reader");
+        };
+        CsvObject::Dialect(Dialect::clone(&reader.dialect)).allocate(vm)
+    }
+
+    #[pyget(LineNum, member)]
+    fn line_num<'h>(this: &HeapObjectRead<'h, CsvObject>, vm: &mut VM<'h>) -> RunResult<Value> {
+        let CsvObject::Reader(reader) = this.get(vm.heap) else {
+            unreachable!("dispatched on CsvObject::Reader");
+        };
+        line_num_value(reader.line_num)
+    }
+}
+
+pub(crate) struct PyCsvDictReaderImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyCsvDictReaderImpl {
+    type Receiver = HeapObjectRead<'heap, CsvObject>;
+
+    #[pyget(Fieldnames)]
+    fn fieldnames<'h>(this: &HeapObjectRead<'h, CsvObject>, vm: &mut VM<'h>) -> RunResult<Value> {
+        dict::reader_fieldnames(this, vm)
+    }
+
+    #[pyset(Fieldnames)]
+    fn set_fieldnames<'h>(this: &HeapObjectRead<'h, CsvObject>, value: Value, vm: &mut VM<'h>) {
+        let CsvObject::DictReader(reader) = this.get_mut(vm.heap) else {
+            unreachable!("dispatched on CsvObject::DictReader");
+        };
+        // Clearing the names makes the next read consume another header.
+        let names = match value {
+            Value::None => None,
+            names => Some(names),
+        };
+        mem::replace(&mut reader.fieldnames, names).drop_with(vm);
+    }
+}
+
 pub(crate) struct PyCsvWriterImpl;
 
 #[pyattrs]
 impl<'heap> PyAttrs<'heap> for PyCsvWriterImpl {
     type Receiver = HeapObjectRead<'heap, CsvObject>;
+
+    #[pyget(Dialect, member)]
+    fn dialect<'h>(this: &HeapObjectRead<'h, CsvObject>, vm: &mut VM<'h>) -> Value {
+        let CsvObject::Writer(writer) = this.get(vm.heap) else {
+            unreachable!("dispatched on CsvObject::Writer");
+        };
+        CsvObject::Dialect(Dialect::clone(&writer.dialect)).allocate(vm)
+    }
 
     #[pymethod(Writerow)]
     fn writerow<'h>(

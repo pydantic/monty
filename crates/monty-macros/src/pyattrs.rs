@@ -1,4 +1,4 @@
-use std::{collections::HashSet, mem};
+use std::{collections::HashMap, mem};
 
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
@@ -28,9 +28,8 @@ pub(crate) fn expand(mut input: ItemImpl) -> syn::Result<TokenStream> {
         input.generics = syn::Generics::default();
     }
     let owner = inferred_lifetimes((*input.self_ty).clone());
-    let mut names = HashSet::new();
-    let mut entries = Vec::new();
-    let mut arms = Vec::new();
+    let mut names = HashMap::new();
+    let mut definitions = Vec::<Definition>::new();
 
     for item in &mut input.items {
         match item {
@@ -51,16 +50,21 @@ pub(crate) fn expand(mut input: ItemImpl) -> syn::Result<TokenStream> {
                         let name = args
                             .next()
                             .ok_or_else(|| syn::Error::new_spanned(&attr, "expected a StaticStrings key"))?;
-                        if args.next().is_some() {
-                            return Err(syn::Error::new_spanned(attr, "expected one StaticStrings key"));
-                        }
-                        annotation = Some((kind, name));
+                        let member = match args.next() {
+                            None => false,
+                            Some(option) if kind == Kind::Get && option == "member" && args.next().is_none() => true,
+                            Some(_) if kind != Kind::Get => {
+                                return Err(syn::Error::new_spanned(attr, "expected one StaticStrings key"));
+                            }
+                            Some(option) => return Err(syn::Error::new_spanned(option, "unexpected attribute option")),
+                        };
+                        annotation = Some((kind, name, member));
                     } else {
                         remaining.push(attr);
                     }
                 }
                 method.attrs = remaining;
-                let Some((kind, name)) = annotation else {
+                let Some((kind, name, member)) = annotation else {
                     continue;
                 };
                 if method
@@ -73,12 +77,9 @@ pub(crate) fn expand(mut input: ItemImpl) -> syn::Result<TokenStream> {
                         "conditional Python attributes are not supported",
                     ));
                 }
-                if !names.insert(name.to_string()) {
-                    return Err(syn::Error::new_spanned(name, "duplicate Python attribute name"));
-                }
                 let handler = &method.sig.ident;
                 let key = quote!(crate::intern::StaticStrings::#name);
-                let definition = match kind {
+                let callback = match kind {
                     Kind::Method => {
                         quote! {
                             crate::py_attrs::AttrDef::Method(|this, args, vm| {
@@ -93,10 +94,31 @@ pub(crate) fn expand(mut input: ItemImpl) -> syn::Result<TokenStream> {
                         crate::py_attrs::AttrDef::ClassMethod(|this, args, vm| <#owner>::#handler(#key, this, args, vm))
                     },
                     Kind::Value => quote!(crate::py_attrs::AttrDef::Value(<#owner>::#handler)),
+                    Kind::Get => quote!(|this, vm| {
+                        let Some(receiver) = (#projection) else {
+                            return Err(crate::py_attrs::invalid_receiver_error(#key));
+                        };
+                        crate::py_attrs::IntoAttrResult::into_attr_result(<#owner>::#handler(receiver, vm))
+                    }),
+                    Kind::Set => quote!(|this, value, vm| {
+                        let Some(receiver) = (#projection) else {
+                            crate::heap::DropWithContext::drop_with(value, vm);
+                            return Err(crate::py_attrs::invalid_receiver_error(#key));
+                        };
+                        crate::py_attrs::IntoAttrResult::into_attr_result(<#owner>::#handler(receiver, value, vm))
+                    }),
                 };
-                let index = entries.len();
-                entries.push(quote!((#key, #definition)));
-                arms.push(quote!(#key => Some(Self::TABLE.entries[#index].1)));
+                let index = *names.entry(name.to_string()).or_insert_with(|| {
+                    definitions.push(Definition {
+                        name,
+                        method: None,
+                        get: None,
+                        set: None,
+                        member: false,
+                    });
+                    definitions.len() - 1
+                });
+                definitions[index].add(kind, callback, member)?;
             }
             _ => {
                 return Err(syn::Error::new_spanned(
@@ -105,6 +127,15 @@ pub(crate) fn expand(mut input: ItemImpl) -> syn::Result<TokenStream> {
                 ));
             }
         }
+    }
+    let mut entries = Vec::new();
+    let mut arms = Vec::new();
+    for (index, definition) in definitions.into_iter().enumerate() {
+        let key = &definition.name;
+        let body = definition.body()?;
+        let key = quote!(crate::intern::StaticStrings::#key);
+        entries.push(quote!((#key, #body)));
+        arms.push(quote!(#key => Some(Self::TABLE.entries[#index].1)));
     }
     input.items.retain(|item| matches!(item, ImplItem::Fn(_)));
     table_impl.items.push(syn::parse_quote! {
@@ -119,11 +150,54 @@ pub(crate) fn expand(mut input: ItemImpl) -> syn::Result<TokenStream> {
     Ok(quote!(#input #table_impl))
 }
 
-#[derive(Clone, Copy)]
+struct Definition {
+    name: syn::Ident,
+    method: Option<TokenStream>,
+    get: Option<TokenStream>,
+    set: Option<TokenStream>,
+    member: bool,
+}
+
+impl Definition {
+    fn add(&mut self, kind: Kind, callback: TokenStream, member: bool) -> syn::Result<()> {
+        let slot = match kind {
+            Kind::Get if self.method.is_none() => {
+                self.member = member;
+                &mut self.get
+            }
+            Kind::Set if self.method.is_none() => &mut self.set,
+            Kind::Method | Kind::ClassMethod | Kind::Value if self.get.is_none() && self.set.is_none() => {
+                &mut self.method
+            }
+            _ => return Err(syn::Error::new_spanned(&self.name, "duplicate Python attribute name")),
+        };
+        if slot.replace(callback).is_some() {
+            return Err(syn::Error::new_spanned(&self.name, "duplicate Python attribute name"));
+        }
+        Ok(())
+    }
+
+    fn body(&self) -> syn::Result<TokenStream> {
+        if let Some(method) = &self.method {
+            return Ok(method.clone());
+        }
+        let get = self
+            .get
+            .as_ref()
+            .ok_or_else(|| syn::Error::new_spanned(&self.name, "#[pyset] requires a matching #[pyget]"))?;
+        let set = self.set.as_ref().map_or_else(|| quote!(None), |set| quote!(Some(#set)));
+        let member = self.member;
+        Ok(quote!(crate::py_attrs::AttrDef::GetSet { get: #get, set: #set, member: #member }))
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
     Method,
     ClassMethod,
     Value,
+    Get,
+    Set,
 }
 
 impl Kind {
@@ -134,6 +208,10 @@ impl Kind {
             Some(Self::ClassMethod)
         } else if attr.path().is_ident("pyvalue") {
             Some(Self::Value)
+        } else if attr.path().is_ident("pyget") {
+            Some(Self::Get)
+        } else if attr.path().is_ident("pyset") {
+            Some(Self::Set)
         } else {
             None
         }
