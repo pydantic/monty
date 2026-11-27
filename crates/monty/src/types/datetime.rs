@@ -457,7 +457,7 @@ pub(crate) fn timestamp_parts(
             integer.to_i64(vm).ok_or_else(ExcType::timestamp_out_of_range)?,
             0,
         ))),
-        PyValue::Float(f) => split_float_timestamp(f.value(), rounding).map(Some),
+        PyValue::Float(f) => split_float_timestamp(f, rounding).map(Some),
         _ => match value.py_index_impl(vm)? {
             Some(index) => {
                 defer_drop!(index, vm);

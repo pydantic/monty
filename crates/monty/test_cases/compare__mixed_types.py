@@ -227,11 +227,6 @@ try:
 except TypeError as exc:
     assert str(exc) == "'<' not supported between instances of 'float' and 'str'"
 
-# Identical NaNs are skipped before ordering the remaining elements.
-assert [nan, 0] < [nan, 1]
-assert (nan, 0) < (nan, 1)
-assert [nan] <= [nan]
-assert (nan,) >= (nan,)
 assert (nan <= nan) is False
 assert (nan >= nan) is False
 

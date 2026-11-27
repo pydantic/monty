@@ -242,9 +242,9 @@ pub(crate) fn format_row(
                 let text = digits.format(*v);
                 append_field_data(dialect, terminator_chars, text, &mut quoted, &mut field_buffer, tracker)?;
             }
-            value if let Some(v) = value.as_float(vm.heap) => {
+            Value::Float(v) => {
                 number.clear();
-                write!(number, "{}", FormatFloat(v))?;
+                write!(number, "{}", FormatFloat(*v))?;
                 append_field_data(
                     dialect,
                     terminator_chars,

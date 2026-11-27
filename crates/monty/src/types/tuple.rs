@@ -414,7 +414,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Tuple> {
             }
             let bv = other.clone_item(i, vm);
             defer_drop!(bv, vm);
-            if !av.py_eq(bv, vm)? {
+            if !av.py_eq_for_ordering(bv, vm)? {
                 return av.py_richcompare(bv, op, vm);
             }
         }

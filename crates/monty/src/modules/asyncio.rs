@@ -168,7 +168,7 @@ struct SleepArgs {
 /// an unsupported comparison rather than as a bad argument.
 fn delay_seconds(delay: &Value, vm: &VM<'_>) -> RunResult<f64> {
     match delay {
-        value if let Some(f) = value.as_float(vm.heap) => Ok(f),
+        Value::Float(f) => Ok(*f),
         Value::Int(n) => Ok(*n as f64),
         Value::Bool(b) => Ok(f64::from(*b)),
         _ => match delay.as_long_int(vm) {

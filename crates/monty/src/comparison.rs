@@ -127,6 +127,15 @@ impl Value {
         }
     }
 
+    /// Identity-or-equality for sequence ordering, excluding bit-derived NaN identities.
+    pub(crate) fn py_eq_for_ordering(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
+        if matches!(self, Self::Float(value) if value.is_nan()) {
+            self.py_eq_operator(other, vm)
+        } else {
+            self.py_eq(other, vm)
+        }
+    }
+
     /// Truth-tests a rich comparison without an identity shortcut, releasing its owned result.
     pub(crate) fn py_richcompare_bool(&self, other: &Self, op: RichCompareOp, vm: &mut VM<'_>) -> RunResult<bool> {
         let result = self.py_richcompare(other, op, vm)?;
@@ -176,7 +185,7 @@ impl Number<'_> {
         let other = match other {
             Value::Bool(b) => Number::Int(i64::from(*b)),
             Value::Int(i) => Number::Int(*i),
-            value if let Some(f) = value.as_float(vm.heap) => Number::Float(f),
+            Value::Float(f) => Number::Float(*f),
             Value::InternLongInt(id) => Number::BigInt(vm.interns.get_long_int(*id)),
             Value::Ref(id) if let HeapData::LongInt(i) = vm.heap.get(*id) => Number::BigInt(i.inner()),
             _ => return Value::NotImplemented,

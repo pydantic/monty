@@ -506,7 +506,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
             defer_drop!(a, vm);
             let b = other.get(vm.heap).items[i].clone_with_heap(vm.heap);
             defer_drop!(b, vm);
-            if !a.py_eq(b, vm)? {
+            if !a.py_eq_for_ordering(b, vm)? {
                 // Unlike list and tuple, deque truth-tests its element's result.
                 return Ok(Value::Bool(a.py_richcompare_bool(b, op, vm)?));
             }

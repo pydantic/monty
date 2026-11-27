@@ -30,7 +30,6 @@ use crate::{
         GenericAlias, LazyHeapSet, LongInt, Property, PyTrait, Type, TypeRef, Union, allocate_string, allocate_tuple,
         bytes::PyBytes,
         file::unloaded_iteration_error,
-        float::PyFloat,
         long_int::{PyInt, arithmetic::float_binary},
         numeric::{round_digits, round_float},
         py_trait::PyObjectIdentity,
@@ -68,7 +67,7 @@ macro_rules! define_py_value {
             NotImplemented,
             None,
             Bool(bool),
-            Float(PyFloat<'h>),
+            Float(f64),
             Builtin(Builtins),
             ModuleFunction(ModuleFunctions),
             DefFunction(FunctionId),
@@ -86,14 +85,12 @@ macro_rules! define_py_value {
             }
         })*
 
-        impl<'h> PyValue<'h> {
-            /// Normalizes heap scalars while retaining the guards that carry their identity.
-            pub(crate) fn from_read(value: HeapReadOutput<'h>, heap: &HeapReader<'h>) -> Self {
+        impl<'h> From<HeapReadOutput<'h>> for PyValue<'h> {
+            fn from(value: HeapReadOutput<'h>) -> Self {
                 match value {
                     HeapReadOutput::Str(heap_string) => Self::Str(PyStr::Heap(heap_string)),
                     HeapReadOutput::Bytes(value) => Self::Bytes(PyBytes::Heap(value)),
                     HeapReadOutput::LongInt(value) => Self::Int(PyInt::Heap(value)),
-                    HeapReadOutput::Float(value) => Self::Float(PyFloat::from_heap(value, heap)),
                     $(HeapReadOutput::$variant(value) => Self::$variant(value),)*
                 }
             }
@@ -110,7 +107,7 @@ macro_rules! define_py_value {
                     Self::NotImplemented => Identity::NotImplemented,
                     Self::None => Identity::None,
                     Self::Bool(value) => Identity::Bool(*value),
-                    Self::Float(value) => value.py_identity(),
+                    Self::Float(value) => Identity::Float(value.to_bits()),
                     Self::Builtin(value) => Identity::Builtin(*value),
                     Self::ModuleFunction(value) => Identity::ModuleFunction(*value),
                     Self::DefFunction(id) => Identity::DefFunction(id.index()),
@@ -140,9 +137,6 @@ macro_rules! define_py_value {
     };
     (@collect [$($out:tt)*] $(#[$meta:meta])* Bytes($storage:ident $payload:ty), $($rest:tt)*) => {
         define_py_value!(@view Bytes, PyBytes, $payload);
-        define_py_value!(@collect [$($out)*] $($rest)*);
-    };
-    (@collect [$($out:tt)*] $(#[$meta:meta])* Float($storage:ident $payload:ty), $($rest:tt)*) => {
         define_py_value!(@collect [$($out)*] $($rest)*);
     };
     (@collect [$($out:tt)*] $(#[$meta:meta])* LongInt($storage:ident $payload:ty), $($rest:tt)*) => {
@@ -237,7 +231,7 @@ macro_rules! numeric_binary {
         fn $method(&self, other: &Value, $vm: &mut VM<'h>) -> RunResult<Option<Value>> {
             forward_py_value!(self, |value| value.$method(other, $vm), {
                 Self::Bool(value) => PyInt::Small(i64::from(*value)).$method(other, $vm),
-                Self::Float(value) => float_binary(value.value(), other, $vm, $reflected, |$lhs, $rhs| $body),
+                Self::Float(value) => float_binary(*value, other, $vm, $reflected, |$lhs, $rhs| $body),
                 _ => Ok(None),
             })
         }
@@ -256,24 +250,21 @@ impl<'h> PyValue<'h> {
     /// Borrows an iterator whose advancement never calls Python or suspends.
     /// Select this path before consuming anything; other sources must use a continuation.
     pub(crate) fn native_iterator(value: &Value, vm: &VM<'h>) -> Option<Self> {
-        value
-            .read_heap(vm)
-            .map(|value| Self::from_read(value, vm.heap))
-            .filter(|source| {
-                matches!(
-                    source,
-                    PyValue::ListIterator(_)
-                        | PyValue::DequeIterator(_)
-                        | PyValue::TupleIterator(_)
-                        | PyValue::StringIterator(_)
-                        | PyValue::BytesIterator(_)
-                        | PyValue::RangeIterator(_)
-                        | PyValue::DictKeyIterator(_)
-                        | PyValue::DictItemIterator(_)
-                        | PyValue::DictValueIterator(_)
-                        | PyValue::SetIterator(_)
-                )
-            })
+        value.read_heap(vm).map(Self::from).filter(|source| {
+            matches!(
+                source,
+                PyValue::ListIterator(_)
+                    | PyValue::DequeIterator(_)
+                    | PyValue::TupleIterator(_)
+                    | PyValue::StringIterator(_)
+                    | PyValue::BytesIterator(_)
+                    | PyValue::RangeIterator(_)
+                    | PyValue::DictKeyIterator(_)
+                    | PyValue::DictItemIterator(_)
+                    | PyValue::DictValueIterator(_)
+                    | PyValue::SetIterator(_)
+            )
+        })
     }
 
     /// Completes advancement for a native consumer that cannot retain a continuation.
@@ -298,7 +289,7 @@ impl<'h> PyValue<'h> {
     /// Reads a heap object once and opens its normalized Python-type view.
     #[inline]
     pub(crate) fn from_heap(id: HeapId, heap: &HeapReader<'h>) -> Self {
-        Self::from_read(heap.read(id), heap)
+        heap.read(id).into()
     }
 
     /// Converts an integer or an object implementing `__index__` into a repetition count.
@@ -392,7 +383,7 @@ impl<'h> PyValue<'h> {
             Self::None => Ok(f.write_str("None")?),
             Self::Bool(true) => Ok(f.write_str("True")?),
             Self::Bool(false) => Ok(f.write_str("False")?),
-            Self::Float(value) => Ok(write!(f, "{}", FormatFloat(value.value()))?),
+            Self::Float(value) => Ok(write!(f, "{}", FormatFloat(*value))?),
             Self::Builtin(value) => Ok(value.py_repr_fmt(f)?),
             Self::ModuleFunction(function) => {
                 let py_id = self.py_identity().into_value(vm.heap);
@@ -515,7 +506,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     fn py_richcompare_impl(&self, other: &Value, op: RichCompareOp, vm: &mut VM<'h>) -> RunResult<Value> {
         forward_py_value!(self, |value| value.py_richcompare_impl(other, op, vm), {
             Self::Bool(value) => Ok(Number::Int(i64::from(*value)).richcompare(other, op, vm)),
-            Self::Float(value) => Ok(Number::Float(value.value()).richcompare(other, op, vm)),
+            Self::Float(value) => Ok(Number::Float(*value).richcompare(other, op, vm)),
             _ if op.is_equality() => Ok(op.equality_result(self.py_eq_impl(other, vm)?)),
             _ => Ok(Value::NotImplemented),
         })
@@ -579,7 +570,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
             Self::NotImplemented => Value::NotImplemented.py_hash(vm),
             Self::None => Value::None.py_hash(vm),
             Self::Bool(value) => Value::Bool(*value).py_hash(vm),
-            Self::Float(value) => Ok(Some(value.hash())),
+            Self::Float(value) => Value::Float(*value).py_hash(vm),
             Self::Builtin(value) => Value::Builtin(*value).py_hash(vm),
             Self::ModuleFunction(value) => Value::ModuleFunction(*value).py_hash(vm),
             Self::DefFunction(id) => Value::DefFunction(*id).py_hash(vm),
@@ -636,7 +627,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
             ).into()),
             Self::Undefined | Self::None => Ok(false),
             Self::Bool(value) => Ok(*value),
-            Self::Float(value) => Ok(value.value() != 0.0),
+            Self::Float(value) => Ok(*value != 0.0),
             _ => Ok(true),
         })
     }
@@ -682,7 +673,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
             Self::NotImplemented => Value::NotImplemented.py_eq_impl(other, vm),
             Self::None => Value::None.py_eq_impl(other, vm),
             Self::Bool(value) => Value::Bool(*value).py_eq_impl(other, vm),
-            Self::Float(value) => Value::Float(value.value()).py_eq_impl(other, vm),
+            Self::Float(value) => Value::Float(*value).py_eq_impl(other, vm),
             Self::Builtin(value) => Value::Builtin(*value).py_eq_impl(other, vm),
             Self::ModuleFunction(value) => Value::ModuleFunction(*value).py_eq_impl(other, vm),
             Self::DefFunction(id) => Value::DefFunction(*id).py_eq_impl(other, vm),
@@ -695,8 +686,11 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         forward_py_value!(self, |value| value.py_add_impl(other, vm), {
             Self::Bool(value) => PyInt::Small(i64::from(*value)).py_add_impl(other, vm),
-            Self::Float(lhs) => float_binary(lhs.value(), other, vm, false, |lhs, rhs| {
-                Ok(Value::float(lhs + rhs, vm.heap))
+            Self::Float(lhs) => Ok(match other {
+                Value::Int(rhs) => Some(Value::Float(lhs + *rhs as f64)),
+                Value::Bool(rhs) => Some(Value::Float(lhs + f64::from(*rhs))),
+                Value::Float(rhs) => Some(Value::Float(lhs + rhs)),
+                _ => None,
             }),
             _ => Ok(None),
         })
@@ -705,8 +699,11 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         forward_py_value!(self, |value| value.py_mul_impl(other, vm), {
             Self::Bool(value) => PyInt::Small(i64::from(*value)).py_mul_impl(other, vm),
-            Self::Float(lhs) => float_binary(lhs.value(), other, vm, false, |lhs, rhs| {
-                Ok(Value::float(lhs * rhs, vm.heap))
+            Self::Float(lhs) => Ok(match other {
+                Value::Int(rhs) => Some(Value::Float(lhs * *rhs as f64)),
+                Value::Bool(rhs) => Some(Value::Float(lhs * f64::from(*rhs))),
+                Value::Float(rhs) => Some(Value::Float(lhs * rhs)),
+                _ => None,
             }),
             _ => Ok(None),
         })
@@ -720,48 +717,48 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
         forward_py_value!(self, |value| value.py_rmul_impl(other, vm), else Ok(None))
     }
 
-    numeric_binary!(py_sub_impl, false, |lhs, rhs, vm| Ok(Value::float(lhs - rhs, vm.heap)));
-    numeric_binary!(py_rsub_impl, true, |lhs, rhs, vm| Ok(Value::float(lhs - rhs, vm.heap)));
+    numeric_binary!(py_sub_impl, false, |lhs, rhs, vm| Ok(Value::Float(lhs - rhs)));
+    numeric_binary!(py_rsub_impl, true, |lhs, rhs, vm| Ok(Value::Float(lhs - rhs)));
     numeric_binary!(py_truediv_impl, false, |lhs, rhs, vm| {
         if rhs == 0.0 {
             Err(ExcType::zero_division().into())
         } else {
-            Ok(Value::float(lhs / rhs, vm.heap))
+            Ok(Value::Float(lhs / rhs))
         }
     });
     numeric_binary!(py_rtruediv_impl, true, |lhs, rhs, vm| {
         if rhs == 0.0 {
             Err(ExcType::zero_division().into())
         } else {
-            Ok(Value::float(lhs / rhs, vm.heap))
+            Ok(Value::Float(lhs / rhs))
         }
     });
     numeric_binary!(py_floordiv_impl, false, |lhs, rhs, vm| {
         if rhs == 0.0 {
             Err(ExcType::zero_division().into())
         } else {
-            Ok(Value::float(py_float_divmod(lhs, rhs).0, vm.heap))
+            Ok(Value::Float(py_float_divmod(lhs, rhs).0))
         }
     });
     numeric_binary!(py_rfloordiv_impl, true, |lhs, rhs, vm| {
         if rhs == 0.0 {
             Err(ExcType::zero_division().into())
         } else {
-            Ok(Value::float(py_float_divmod(lhs, rhs).0, vm.heap))
+            Ok(Value::Float(py_float_divmod(lhs, rhs).0))
         }
     });
     numeric_binary!(py_mod_impl, false, |lhs, rhs, vm| {
         if rhs == 0.0 {
             Err(ExcType::zero_division().into())
         } else {
-            Ok(Value::float(py_float_mod(lhs, rhs), vm.heap))
+            Ok(Value::Float(py_float_mod(lhs, rhs)))
         }
     });
     numeric_binary!(py_rmod_impl, true, |lhs, rhs, vm| {
         if rhs == 0.0 {
             Err(ExcType::zero_division().into())
         } else {
-            Ok(Value::float(py_float_mod(lhs, rhs), vm.heap))
+            Ok(Value::Float(py_float_mod(lhs, rhs)))
         }
     });
     numeric_binary!(py_divmod_impl, false, |lhs, rhs, vm| float_divmod_tuple(
@@ -787,7 +784,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     fn py_neg_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         forward_py_value!(self, |value| value.py_neg_impl(vm), {
             Self::Bool(value) => PyInt::Small(i64::from(*value)).py_neg_impl(vm),
-            Self::Float(value) => Ok(Some(Value::float(-value.value(), vm.heap))),
+            Self::Float(value) => Ok(Some(Value::Float(-value))),
             _ => Ok(None),
         })
     }
@@ -795,7 +792,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     fn py_abs_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         forward_py_value!(self, |value| value.py_abs_impl(vm), {
             Self::Bool(value) => Ok(Some(Value::Int(i64::from(*value)))),
-            Self::Float(value) => Ok(Some(Value::float(value.value().abs(), vm.heap))),
+            Self::Float(value) => Ok(Some(Value::Float(value.abs()))),
             _ => Ok(None),
         })
     }
@@ -812,7 +809,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
             Self::Bool(value) => PyInt::Small(i64::from(*value)).py_round_impl(ndigits, vm),
             Self::Float(value) => {
                 let digits = round_digits(ndigits, vm)?;
-                round_float(value.value(), digits, vm.heap).map(Some)
+                round_float(*value, digits, vm.heap).map(Some)
             }
             _ => Ok(None),
         })
@@ -821,15 +818,15 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     fn py_int_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         forward_py_value!(self, |value| value.py_int_impl(vm), {
             Self::Bool(value) => Ok(Some(Value::Int(i64::from(*value)))),
-            Self::Float(value) => LongInt::value_from_f64(value.value(), vm.heap).map(Some),
+            Self::Float(value) => LongInt::value_from_f64(*value, vm.heap).map(Some),
             _ => Ok(None),
         })
     }
 
-    fn py_float_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_float_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<f64>> {
         forward_py_value!(self, |value| value.py_float_impl(vm), {
-            Self::Bool(value) => Ok(Some(Value::Float(f64::from(*value)))),
-            Self::Float(value) => Ok(Some(value.to_value(vm.heap))),
+            Self::Bool(value) => Ok(Some(f64::from(*value))),
+            Self::Float(value) => Ok(Some(*value)),
             _ => Ok(None),
         })
     }
@@ -837,7 +834,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     fn py_floor_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         forward_py_value!(self, |value| value.py_floor_impl(vm), {
             Self::Bool(value) => Ok(Some(Value::Int(i64::from(*value)))),
-            Self::Float(value) => LongInt::value_from_f64(value.value().floor(), vm.heap).map(Some),
+            Self::Float(value) => LongInt::value_from_f64(value.floor(), vm.heap).map(Some),
             _ => Ok(None),
         })
     }
@@ -845,7 +842,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     fn py_ceil_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         forward_py_value!(self, |value| value.py_ceil_impl(vm), {
             Self::Bool(value) => Ok(Some(Value::Int(i64::from(*value)))),
-            Self::Float(value) => LongInt::value_from_f64(value.value().ceil(), vm.heap).map(Some),
+            Self::Float(value) => LongInt::value_from_f64(value.ceil(), vm.heap).map(Some),
             _ => Ok(None),
         })
     }
@@ -853,7 +850,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     fn py_trunc_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         forward_py_value!(self, |value| value.py_trunc_impl(vm), {
             Self::Bool(value) => Ok(Some(Value::Int(i64::from(*value)))),
-            Self::Float(value) => LongInt::value_from_f64(value.value(), vm.heap).map(Some),
+            Self::Float(value) => LongInt::value_from_f64(*value, vm.heap).map(Some),
             _ => Ok(None),
         })
     }
@@ -861,7 +858,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     fn py_pos_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         forward_py_value!(self, |value| value.py_pos_impl(vm), {
             Self::Bool(value) => Ok(Some(Value::Int(i64::from(*value)))),
-            Self::Float(value) => Ok(Some(value.to_value(vm.heap))),
+            Self::Float(value) => Ok(Some(Value::Float(*value))),
             _ => Ok(None),
         })
     }
@@ -870,7 +867,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
         forward_py_value!(self, |value| value.py_pow_impl(other, modulus, vm), {
             Self::Bool(value) => PyInt::Small(i64::from(*value)).py_pow_impl(other, modulus, vm),
             Self::Float(_) if modulus.is_some() => Err(ExcType::type_error_pow_modulo()),
-            Self::Float(value) => float_binary(value.value(), other, vm, false, |base, exp| float_pow_value(base, exp, vm.heap)),
+            Self::Float(value) => float_binary(*value, other, vm, false, |base, exp| float_pow_value(base, exp, vm.heap)),
             _ => Ok(None),
         })
     }

@@ -1039,7 +1039,7 @@ fn cmp_item_seqs(a: &[Value], b: &[Value], op: RichCompareOp, vm: &mut VM<'_>) -
     let mut guard = vm.recursion_guard()?;
     let vm = &mut *guard;
     for (av, bv) in a.iter().zip(b) {
-        if !av.py_eq(bv, vm)? {
+        if !av.py_eq_for_ordering(bv, vm)? {
             return av.py_richcompare(bv, op, vm);
         }
     }

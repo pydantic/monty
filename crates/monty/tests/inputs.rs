@@ -76,20 +76,21 @@ fn input_float() {
     assert_eq!(result, MontyObject::float(2.5));
 }
 
-/// Shared NaN graph nodes retain identity through import, export and re-import.
+/// Imported NaNs use bit-derived identity through export and re-import.
 #[test]
-fn input_nan_graph_preserves_identity() {
+fn input_nan_graph_uses_bit_identity() {
     let mut graph = MontyGraph::new();
     let a = graph.push(MontyNode::Float(f64::NAN));
     let b = graph.push(MontyNode::Float(f64::NAN));
     let root = graph.push(MontyNode::List(vec![a, a, b]));
     let value = unstable::object_from_graph(graph, root).unwrap();
     let mut run = MontyRun::new(
-        "import math\nassert x[0] is x[1]\nassert x[0] is not x[2]\nassert math.isnan(x[0])\nassert len(set(x)) == 2\nx".to_owned(),
+        "import math\nassert x[0] is x[1] is x[2]\nassert math.isnan(x[0])\nassert len(set(x)) == 1\nx".to_owned(),
         "nan.py",
         vec!["x".to_owned()],
         CompileOptions::default(),
-    ).unwrap();
+    )
+    .unwrap();
     let exported = run.run_no_limits(vec![value]).unwrap();
     let exported = run.run_no_limits(vec![exported]).unwrap();
     let items = exported.as_ref().items().unwrap();

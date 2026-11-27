@@ -274,6 +274,8 @@ pub(crate) fn py_lt(a: &Value, b: &Value, vm: &mut VM<'_>) -> RunResult<bool> {
 }
 
 /// Equality as CPython's tuple comparison asks it of an element pair, identity first.
+///
+/// Immediate floats retain Monty's [value-derived identity](Value::is), including NaNs.
 pub(crate) fn py_eq_item(a: &Value, b: &Value, vm: &mut VM<'_>) -> RunResult<bool> {
     a.py_eq(b, vm)
 }

@@ -107,7 +107,7 @@ fn mean(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let (total, has_float, n) = exact_sum(items, vm)?;
     match total {
         _ if n == 0 => Err(ExcType::statistics_error("mean requires at least one data point")),
-        Total::Special(x) => Ok(Value::float(x / n as f64, vm.heap)),
+        Total::Special(x) => Ok(Value::Float(x / n as f64)),
         Total::Exact(frac) => convert(frac.div_int(n), has_float, vm),
     }
 }
@@ -140,13 +140,10 @@ fn fmean(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
             let n = items.len();
             (list_value(items, vm), n)
         };
-        let total = math::fsum(vm, ArgValues::One(data))?;
-        defer_drop!(total, vm);
-        if n == 0 {
-            Err(ExcType::statistics_error("fmean requires at least one data point"))
-        } else {
-            let total = total.as_float(vm.heap).expect("math.fsum returns a float");
-            Ok(Value::float(total / n as f64, vm.heap))
+        match math::fsum(vm, ArgValues::One(data))? {
+            _ if n == 0 => Err(ExcType::statistics_error("fmean requires at least one data point")),
+            Value::Float(total) => Ok(Value::Float(total / n as f64)),
+            _ => unreachable!("math.fsum returns a float"),
         }
     } else {
         weighted_fmean(data, weights, vm)
@@ -188,12 +185,10 @@ fn weighted_fmean(data: Value, weights: Value, vm: &mut VM<'_>) -> RunResult<Val
     })?;
     defer_drop!(num, vm);
     let weights_for_den = weights.clone_with_heap(vm.heap);
-    let den = math::fsum(vm, ArgValues::One(weights_for_den))?;
-    defer_drop!(den, vm);
-    if den.as_float(vm.heap) == Some(0.0) {
-        Err(ExcType::statistics_error("sum of weights must be non-zero"))
-    } else {
-        num.py_truediv(den, vm)
+    match math::fsum(vm, ArgValues::One(weights_for_den))? {
+        // A float pattern compares with `==`, so this also catches `-0.0`, as CPython's `not den` does.
+        Value::Float(0.0) => Err(ExcType::statistics_error("sum of weights must be non-zero")),
+        den => num.py_truediv(&den, vm),
     }
 }
 
@@ -312,7 +307,7 @@ fn spread_of(items: &[Value], center: &Value, kind: Spread, vm: &mut VM<'_>) -> 
             )))
         }
         (Some(_), Total::Special(_)) if kind.is_stdev() => Err(ExcType::value_error("inf or nan encountered in data")),
-        (Some(divisor), Total::Special(x)) => Ok(Value::float(x / divisor as f64, vm.heap)),
+        (Some(divisor), Total::Special(x)) => Ok(Value::Float(x / divisor as f64)),
         (Some(divisor), Total::Exact(ss)) if kind.is_stdev() => {
             let mss = ss.div_int(divisor).reduced();
             // A user-defined `__sub__`/`__mul__` can make the total negative; CPython's `isqrt` rejects it.
@@ -700,7 +695,7 @@ fn element(value: &Value, vm: &VM<'_>) -> RunResult<(Elem, bool)> {
     match value {
         Value::Int(n) => Ok((Elem::Finite(BigInt::from(*n), 0), false)),
         Value::Bool(b) => Ok((Elem::Finite(BigInt::from(i32::from(*b)), 0), false)),
-        value if let Some(f) = value.as_float(vm.heap) => Ok((float_element(f), true)),
+        Value::Float(f) => Ok((float_element(*f), true)),
         _ => match value.as_long_int(vm) {
             Some(n) => Ok((Elem::Finite(n.clone(), 0), false)),
             None => Err(ExcType::type_error(format!(

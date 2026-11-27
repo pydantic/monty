@@ -236,12 +236,36 @@ CPython accepts this code, and `outer()` returns `1`.
 
 ## Float identity
 
-Monty identifies non-NaN floats by their IEEE-754 bits rather than by object identity.
-Separately created non-NaN floats with identical bits therefore have the same `id()` and compare identical with `is`.
+Monty identifies floats by their IEEE-754 bits rather than by object identity.
+Separately created floats with identical bits therefore have the same `id()` and compare identical with `is`.
+For NaNs, this also changes container operations that check identity before equality.
 
-Sessions restored from dumps written before dump version 18 can retain bitwise identities for stored NaNs.
-Distinct same-bit NaNs in those sessions can compare identical with `is`, collapse into one dict or set key,
-and be treated as equal by container operations that check identity before equality.
+With `a = float('nan')` and a separate `b = float('nan')`:
+
+| Expression       | CPython      | Monty  |
+| ---------------- | ------------ | ------ |
+| `a is b`         | `False`      | `True` |
+| `id(a) == id(b)` | `False`      | `True` |
+| `[a] == [b]`     | `False`      | `True` |
+| `a in [b]`       | `False`      | `True` |
+| `[a].count(b)`   | `0`          | `1`    |
+| `[a].index(b)`   | `ValueError` | `0`    |
+
+Distinct same-bit NaN keys likewise collapse to one entry in a dict, set or frozenset.
+
+### NaNs in sequence ordering
+
+List, tuple, named tuple and deque ordering does not skip float NaNs by identity.
+A NaN pair makes the ordering false, even when both elements are the same NaN.
+CPython skips shared NaNs and continues comparing later elements or sequence lengths:
+
+| Expression        | CPython | Monty   |
+| ----------------- | ------- | ------- |
+| `[a, 0] < [a, 1]` | `True`  | `False` |
+| `[a] < [a, 1]`    | `True`  | `False` |
+| `[a] <= [a]`      | `True`  | `False` |
+
+This can also affect `sorted`, `min` and `max` when their operands contain NaNs.
 
 ## What *does* work
 

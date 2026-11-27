@@ -321,7 +321,7 @@ fn getstate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult
         .chain(once(Value::Int(i64::try_from(index).expect("index fits i64"))))
         .collect();
     let internal = allocate_tuple(internal, vm.heap);
-    let gauss_next = gauss_next.map_or(Value::None, |value| Value::float(value, vm.heap));
+    let gauss_next = gauss_next.map_or(Value::None, Value::Float);
     Ok(allocate_tuple(
         SmallVec::from_vec(vec![Value::Int(3), internal, gauss_next]),
         vm.heap,
@@ -369,7 +369,7 @@ fn setstate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult
     let internal = &items[1];
     let gauss_next = match &items[2] {
         Value::None => None,
-        value if let Some(f) = value.as_float(vm.heap) => Some(f),
+        Value::Float(f) => Some(*f),
         Value::Int(i) => Some(*i as f64),
         Value::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
         other => {
@@ -1107,7 +1107,7 @@ fn uniform(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<
     defer_drop!(b, vm);
     let (a, b) = (to_float(a, vm)?, to_float(b, vm)?);
     let r = target.with_generator(vm, |random, _| random.rng().random());
-    Ok(Value::float(a + (b - a) * r, vm.heap))
+    Ok(Value::Float(a + (b - a) * r))
 }
 
 /// `triangular(low=0.0, high=1.0, mode=None)` — a Python `def`.
@@ -1149,7 +1149,7 @@ fn triangular(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResu
         c = 1.0 - c;
         mem::swap(&mut low, &mut high);
     }
-    Ok(Value::float(low + (high - low) * (u * c).sqrt(), vm.heap))
+    Ok(Value::Float(low + (high - low) * (u * c).sqrt()))
 }
 
 /// `normalvariate(mu=0.0, sigma=1.0)` — a Python `def`.
@@ -1169,7 +1169,7 @@ fn normalvariate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunR
     defer_drop!(sigma, vm);
     let (mu, sigma) = (to_float(mu, vm)?, to_float(sigma, vm)?);
     let z = target.with_generator(vm, |random, vm| normal_deviate(random.rng(), &vm.heap.tracker))?;
-    Ok(Value::float(mu + z * sigma, vm.heap))
+    Ok(Value::Float(mu + z * sigma))
 }
 
 /// One standard normal deviate by `normalvariate`'s rejection loop.
@@ -1207,7 +1207,7 @@ fn gauss(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Va
     defer_drop!(mu, vm);
     defer_drop!(sigma, vm);
     let (mu, sigma) = (to_float(mu, vm)?, to_float(sigma, vm)?);
-    let result = target.with_generator(vm, |random, _| {
+    Ok(Value::Float(target.with_generator(vm, |random, _| {
         let z = if let Some(z) = random.take_gauss_next() {
             z
         } else {
@@ -1218,8 +1218,7 @@ fn gauss(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Va
             x2pi.cos() * g2rad
         };
         mu + z * sigma
-    });
-    Ok(Value::float(result, vm.heap))
+    })))
 }
 
 /// `lognormvariate(mu, sigma)` — a Python `def`.
@@ -1242,7 +1241,7 @@ fn lognormvariate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> Run
     if result.is_infinite() && exponent.is_finite() {
         Err(ExcType::overflow_math_range())
     } else {
-        Ok(Value::float(result, vm.heap))
+        Ok(Value::Float(result))
     }
 }
 
@@ -1261,7 +1260,7 @@ fn expovariate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunRes
     let lambd = to_float(lambd, vm)?;
     let r = target.with_generator(vm, |random, _| random.rng().random());
     let numerator = -(1.0 - r).ln();
-    Ok(Value::float(float_div(numerator, lambd)?, vm.heap))
+    Ok(Value::Float(float_div(numerator, lambd)?))
 }
 
 /// `vonmisesvariate(mu, kappa)` — a Python `def`.
@@ -1309,7 +1308,7 @@ fn vonmisesvariate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> Ru
         } else {
             py_fmod(mu - f.acos(), TAU)
         };
-        Ok(Value::float(result, vm.heap))
+        Ok(Value::Float(result))
     })
 }
 
@@ -1335,7 +1334,7 @@ fn gammavariate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunRe
         .with_generator(vm, |random, vm| {
             gamma_deviate(random.rng(), alpha, beta, &vm.heap.tracker)
         })
-        .map(|value| Value::float(value, vm.heap))
+        .map(Value::Float)
 }
 
 /// The `gammavariate` body for validated `alpha`/`beta`.
@@ -1425,7 +1424,7 @@ fn betavariate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunRes
     let z = target.with_generator(vm, |random, vm| {
         gamma_deviate(random.rng(), beta, 1.0, &vm.heap.tracker)
     })?;
-    Ok(Value::float(y / (y + z), vm.heap))
+    Ok(Value::Float(y / (y + z)))
 }
 
 /// `paretovariate(alpha)` — a Python `def`.
@@ -1441,7 +1440,7 @@ fn paretovariate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunR
     defer_drop!(alpha, vm);
     let alpha = to_float(alpha, vm)?;
     let u = 1.0 - target.with_generator(vm, |random, _| random.rng().random());
-    float_pow(u, float_div(-1.0, alpha)?).map(|value| Value::float(value, vm.heap))
+    float_pow(u, float_div(-1.0, alpha)?).map(Value::Float)
 }
 
 /// `weibullvariate(alpha, beta)` — parsed separately to preserve its error messages.
@@ -1459,10 +1458,7 @@ fn weibullvariate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> Run
     defer_drop!(beta, vm);
     let (alpha, beta) = (to_float(alpha, vm)?, to_float(beta, vm)?);
     let u = 1.0 - target.with_generator(vm, |random, _| random.rng().random());
-    Ok(Value::float(
-        alpha * float_pow(-u.ln(), float_div(1.0, beta)?)?,
-        vm.heap,
-    ))
+    Ok(Value::Float(alpha * float_pow(-u.ln(), float_div(1.0, beta)?)?))
 }
 
 /// `binomialvariate(n=1, p=0.5)` — a Python `def`.
@@ -1607,7 +1603,7 @@ fn float_div(numerator: f64, divisor: f64) -> RunResult<f64> {
 /// `random.py` would; non-numbers raise `math`'s wording.
 fn to_float(value: &Value, vm: &VM<'_>) -> RunResult<f64> {
     match value {
-        value if let Some(f) = value.as_float(vm.heap) => Ok(f),
+        Value::Float(f) => Ok(*f),
         #[expect(clippy::cast_precision_loss, reason = "int to float, as Python arithmetic does")]
         Value::Int(i) => Ok(*i as f64),
         Value::Bool(b) => Ok(if *b { 1.0 } else { 0.0 }),

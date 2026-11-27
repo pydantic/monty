@@ -394,7 +394,7 @@ impl<'h> HeapRead<'h, SetStorage> {
             Some(HeapReadOutput::Set(other)) => self.compare_storage(&other.storage(), op, vm),
             Some(HeapReadOutput::FrozenSet(other)) => self.compare_storage(&other.storage(), op, vm),
             Some(view @ (HeapReadOutput::DictKeysView(_) | HeapReadOutput::DictItemsView(_))) => {
-                let view = PyValue::from_read(view, vm.heap);
+                let view = PyValue::from(view);
                 let lhs_len = self.get(vm.heap).len();
                 let rhs_len = view.py_len(vm).expect("dict views have a length");
                 let possible = match op {

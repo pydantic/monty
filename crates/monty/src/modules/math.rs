@@ -202,7 +202,7 @@ pub fn create_module(vm: &mut VM<'_>) -> Module {
     module.set_attr(StaticStrings::AsciiLowerE, Value::Float(consts::E), vm);
     module.set_attr(StaticStrings::Tau, Value::Float(consts::TAU), vm);
     module.set_attr(StaticStrings::MathInf, Value::Float(f64::INFINITY), vm);
-    module.set_attr(StaticStrings::MathNan, Value::float(f64::NAN, vm.heap), vm);
+    module.set_attr(StaticStrings::MathNan, Value::Float(f64::NAN), vm);
 
     module
 }
@@ -425,7 +425,7 @@ fn math_sqrt(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     if f < 0.0 {
         Err(SimpleException::new_msg(ExcType::ValueError, format!("expected a nonnegative input, got {f:?}")).into())
     } else {
-        Ok(Value::float(f.sqrt(), vm.heap))
+        Ok(Value::Float(f.sqrt()))
     }
 }
 
@@ -481,7 +481,7 @@ fn math_cbrt(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(value, vm);
 
     let f = value_to_float(value, vm)?;
-    Ok(Value::float(f.cbrt(), vm.heap))
+    Ok(Value::Float(f.cbrt()))
 }
 
 /// `math.pow(x, y)` — returns x raised to the power y.
@@ -508,7 +508,7 @@ fn math_pow(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         }
         return Err(math_range_error());
     }
-    Ok(Value::float(result, vm.heap))
+    Ok(Value::Float(result))
 }
 
 /// `math.exp(x)` — returns e raised to the power x.
@@ -519,7 +519,7 @@ fn math_exp(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let f = value_to_float(value, vm)?;
     let result = f.exp();
     check_range_error(result, f)?;
-    Ok(Value::float(result, vm.heap))
+    Ok(Value::Float(result))
 }
 
 /// `math.exp2(x)` — returns 2 raised to the power x.
@@ -530,7 +530,7 @@ fn math_exp2(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let f = value_to_float(value, vm)?;
     let result = f.exp2();
     check_range_error(result, f)?;
-    Ok(Value::float(result, vm.heap))
+    Ok(Value::Float(result))
 }
 
 /// `math.expm1(x)` — returns e**x - 1.
@@ -543,7 +543,7 @@ fn math_expm1(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let f = value_to_float(value, vm)?;
     let result = f.exp_m1();
     check_range_error(result, f)?;
-    Ok(Value::float(result, vm.heap))
+    Ok(Value::Float(result))
 }
 
 // ==========================
@@ -568,10 +568,10 @@ fn math_log(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
             if denominator == 0.0 {
                 Err(ExcType::zero_division().into())
             } else {
-                Ok(Value::float(numerator / denominator, vm.heap))
+                Ok(Value::Float(numerator / denominator))
             }
         }
-        None => Ok(Value::float(numerator, vm.heap)),
+        None => Ok(Value::Float(numerator)),
     }
 }
 
@@ -652,7 +652,7 @@ fn math_log1p(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
             SimpleException::new_msg(ExcType::ValueError, format!("expected argument value > -1, got {f:?}")).into(),
         );
     }
-    Ok(Value::float(f.ln_1p(), vm.heap))
+    Ok(Value::Float(f.ln_1p()))
 }
 
 /// `math.log2(x)` — returns the base-2 logarithm of x.
@@ -663,7 +663,7 @@ fn math_log2(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("math.log2", vm.heap)?;
     defer_drop!(value, vm);
 
-    Ok(Value::float(log_arg(value, f64::log2, vm)?, vm.heap))
+    Ok(Value::Float(log_arg(value, f64::log2, vm)?))
 }
 
 /// `math.log10(x)` — returns the base-10 logarithm of x.
@@ -674,7 +674,7 @@ fn math_log10(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("math.log10", vm.heap)?;
     defer_drop!(value, vm);
 
-    Ok(Value::float(log_arg(value, f64::log10, vm)?, vm.heap))
+    Ok(Value::Float(log_arg(value, f64::log10, vm)?))
 }
 
 // ==========================
@@ -689,7 +689,7 @@ fn math_fabs(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(value, vm);
 
     let f = value_to_float(value, vm)?;
-    Ok(Value::float(f.abs(), vm.heap))
+    Ok(Value::Float(f.abs()))
 }
 
 /// `math.isnan(x)` — returns True if x is NaN.
@@ -729,7 +729,7 @@ fn math_copysign(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     let x = value_to_float(x_val, vm)?;
     let y = value_to_float(y_val, vm)?;
-    Ok(Value::float(x.copysign(y), vm.heap))
+    Ok(Value::Float(x.copysign(y)))
 }
 
 /// `math.isclose(a, b, *, rel_tol=1e-9, abs_tol=0.0)` — returns True if a and b are close.
@@ -799,7 +799,7 @@ fn math_nextafter(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let x = value_to_float(x_val, vm)?;
     let y = value_to_float(y_val, vm)?;
 
-    Ok(Value::float(libm::nextafter(x, y), vm.heap))
+    Ok(Value::Float(libm::nextafter(x, y)))
 }
 
 /// `math.ulp(x)` — returns the value of the least significant bit of x.
@@ -812,7 +812,7 @@ fn math_ulp(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     let f = value_to_float(value, vm)?;
     if f.is_nan() {
-        return Ok(Value::float(f64::NAN, vm.heap));
+        return Ok(Value::Float(f64::NAN));
     }
     if f.is_infinite() {
         return Ok(Value::Float(f64::INFINITY));
@@ -824,7 +824,7 @@ fn math_ulp(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     }
     // ULP = nextafter(f, inf) - f
     let next = libm::nextafter(f, f64::INFINITY);
-    Ok(Value::float(next - f, vm.heap))
+    Ok(Value::Float(next - f))
 }
 
 // ==========================
@@ -840,7 +840,7 @@ fn math_sin(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     let f = value_to_float(value, vm)?;
     require_finite(f)?;
-    Ok(Value::float(f.sin(), vm.heap))
+    Ok(Value::Float(f.sin()))
 }
 
 /// `math.cos(x)` — returns the cosine of x (in radians).
@@ -850,7 +850,7 @@ fn math_cos(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     let f = value_to_float(value, vm)?;
     require_finite(f)?;
-    Ok(Value::float(f.cos(), vm.heap))
+    Ok(Value::Float(f.cos()))
 }
 
 /// `math.tan(x)` — returns the tangent of x (in radians).
@@ -860,7 +860,7 @@ fn math_tan(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     let f = value_to_float(value, vm)?;
     require_finite(f)?;
-    Ok(Value::float(f.tan(), vm.heap))
+    Ok(Value::Float(f.tan()))
 }
 
 /// `math.asin(x)` — returns the arc sine of x (in radians).
@@ -872,7 +872,7 @@ fn math_asin(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     let f = value_to_float(value, vm)?;
     require_unit_range(f)?;
-    Ok(Value::float(f.asin(), vm.heap))
+    Ok(Value::Float(f.asin()))
 }
 
 /// `math.acos(x)` — returns the arc cosine of x (in radians).
@@ -884,7 +884,7 @@ fn math_acos(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     let f = value_to_float(value, vm)?;
     require_unit_range(f)?;
-    Ok(Value::float(f.acos(), vm.heap))
+    Ok(Value::Float(f.acos()))
 }
 
 /// `math.atan(x)` — returns the arc tangent of x (in radians).
@@ -893,7 +893,7 @@ fn math_atan(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(value, vm);
 
     let f = value_to_float(value, vm)?;
-    Ok(Value::float(f.atan(), vm.heap))
+    Ok(Value::Float(f.atan()))
 }
 
 /// `math.atan2(y, x)` — returns atan(y/x) in radians, using the signs of both
@@ -905,7 +905,7 @@ fn math_atan2(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     let y = value_to_float(y_val, vm)?;
     let x = value_to_float(x_val, vm)?;
-    Ok(Value::float(y.atan2(x), vm.heap))
+    Ok(Value::Float(y.atan2(x)))
 }
 
 // ==========================
@@ -920,7 +920,7 @@ fn math_sinh(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let f = value_to_float(value, vm)?;
     let result = f.sinh();
     check_range_error(result, f)?;
-    Ok(Value::float(result, vm.heap))
+    Ok(Value::Float(result))
 }
 
 /// `math.cosh(x)` — returns the hyperbolic cosine of x.
@@ -931,7 +931,7 @@ fn math_cosh(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let f = value_to_float(value, vm)?;
     let result = f.cosh();
     check_range_error(result, f)?;
-    Ok(Value::float(result, vm.heap))
+    Ok(Value::Float(result))
 }
 
 /// `math.tanh(x)` — returns the hyperbolic tangent of x.
@@ -940,7 +940,7 @@ fn math_tanh(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(value, vm);
 
     let f = value_to_float(value, vm)?;
-    Ok(Value::float(f.tanh(), vm.heap))
+    Ok(Value::Float(f.tanh()))
 }
 
 /// `math.asinh(x)` — returns the inverse hyperbolic sine of x.
@@ -949,7 +949,7 @@ fn math_asinh(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(value, vm);
 
     let f = value_to_float(value, vm)?;
-    Ok(Value::float(f.asinh(), vm.heap))
+    Ok(Value::Float(f.asinh()))
 }
 
 /// `math.acosh(x)` — returns the inverse hyperbolic cosine of x.
@@ -967,7 +967,7 @@ fn math_acosh(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         )
         .into());
     }
-    Ok(Value::float(f.acosh(), vm.heap))
+    Ok(Value::Float(f.acosh()))
 }
 
 /// `math.atanh(x)` — returns the inverse hyperbolic tangent of x.
@@ -986,7 +986,7 @@ fn math_atanh(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         .into());
     }
     // `f64::atanh` is a Rust std formula that loses most digits near -1.
-    Ok(Value::float(libm::atanh(f), vm.heap))
+    Ok(Value::Float(libm::atanh(f)))
 }
 
 // ==========================
@@ -999,7 +999,7 @@ fn math_degrees(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(value, vm);
 
     let f = value_to_float(value, vm)?;
-    Ok(Value::float(f.to_degrees(), vm.heap))
+    Ok(Value::Float(f.to_degrees()))
 }
 
 /// `math.radians(x)` — converts angle x from degrees to radians.
@@ -1008,7 +1008,7 @@ fn math_radians(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(value, vm);
 
     let f = value_to_float(value, vm)?;
-    Ok(Value::float(f.to_radians(), vm.heap))
+    Ok(Value::Float(f.to_radians()))
 }
 
 // ==========================
@@ -1224,7 +1224,7 @@ fn math_fmod(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
             return Err(math_domain_error());
         }
     }
-    Ok(Value::float(x % y, vm.heap))
+    Ok(Value::Float(x % y))
 }
 
 /// `math.remainder(x, y)` — IEEE 754 remainder of x with respect to y.
@@ -1240,7 +1240,7 @@ fn math_remainder(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     // NaN propagates
     if x.is_nan() || y.is_nan() {
-        return Ok(Value::float(f64::NAN, vm.heap));
+        return Ok(Value::Float(f64::NAN));
     }
     if y == 0.0 {
         return Err(math_domain_error());
@@ -1249,10 +1249,10 @@ fn math_remainder(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         return Err(math_domain_error());
     }
     if y.is_infinite() {
-        return Ok(Value::float(x, vm.heap));
+        return Ok(Value::Float(x));
     }
 
-    Ok(Value::float(libm::remainder(x, y), vm.heap))
+    Ok(Value::Float(libm::remainder(x, y)))
 }
 
 /// `math.modf(x)` — returns the fractional and integer parts of x as a tuple.
@@ -1264,10 +1264,7 @@ fn math_modf(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     let f = value_to_float(value, vm)?;
     let (fractional, integer) = libm::modf(f);
-    let tuple = allocate_tuple(
-        smallvec![Value::float(fractional, vm.heap), Value::float(integer, vm.heap)],
-        vm.heap,
-    );
+    let tuple = allocate_tuple(smallvec![Value::Float(fractional), Value::Float(integer)], vm.heap);
     Ok(tuple)
 }
 
@@ -1281,7 +1278,7 @@ fn math_frexp(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     let f = value_to_float(value, vm)?;
     let (m, exp) = libm::frexp(f);
-    let tuple = allocate_tuple(smallvec![Value::float(m, vm.heap), Value::Int(i64::from(exp))], vm.heap);
+    let tuple = allocate_tuple(smallvec![Value::Float(m), Value::Int(i64::from(exp))], vm.heap);
     Ok(tuple)
 }
 
@@ -1307,7 +1304,7 @@ fn math_ldexp(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     // Special cases: inf/nan/zero pass through regardless of exponent
     if x.is_nan() || x.is_infinite() || x == 0.0 {
-        return Ok(Value::float(x, vm.heap));
+        return Ok(Value::Float(x));
     }
 
     // Clamp i64 to i32 range — exponents beyond ±2 billion trivially overflow/underflow
@@ -1320,7 +1317,7 @@ fn math_ldexp(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         return Err(math_range_error());
     }
 
-    Ok(Value::float(result, vm.heap))
+    Ok(Value::Float(result))
 }
 
 // ==========================
@@ -1348,7 +1345,7 @@ fn math_gamma(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     let result = libm::tgamma(f);
     check_range_error(result, f)?;
-    Ok(Value::float(result, vm.heap))
+    Ok(Value::Float(result))
 }
 
 /// `math.lgamma(x)` — returns the natural log of the absolute value of Gamma(x).
@@ -1361,7 +1358,7 @@ fn math_lgamma(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     let result = libm::lgamma(f);
     check_range_error(result, f)?;
-    Ok(Value::float(result, vm.heap))
+    Ok(Value::Float(result))
 }
 
 /// `math.erf(x)` — returns the error function at x.
@@ -1370,7 +1367,7 @@ fn math_erf(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(value, vm);
 
     let f = value_to_float(value, vm)?;
-    Ok(Value::float(libm::erf(f), vm.heap))
+    Ok(Value::Float(libm::erf(f)))
 }
 
 /// `math.erfc(x)` — returns the complementary error function at x (1 - erf(x)).
@@ -1381,7 +1378,7 @@ fn math_erfc(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(value, vm);
 
     let f = value_to_float(value, vm)?;
-    Ok(Value::float(libm::erfc(f), vm.heap))
+    Ok(Value::Float(libm::erfc(f)))
 }
 
 // ==========================
@@ -1399,7 +1396,7 @@ fn math_erfc(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 )]
 fn value_to_float(value: &Value, vm: &VM<'_>) -> RunResult<f64> {
     match value {
-        value if let Some(f) = value.as_float(vm.heap) => Ok(f),
+        Value::Float(f) => Ok(*f),
         Value::Int(n) => Ok(*n as f64),
         Value::Bool(b) => Ok(if *b { 1.0 } else { 0.0 }),
         _ => match value.as_long_int(vm) {

@@ -211,7 +211,7 @@ assert add5(2) == 7
 (result, c.value)
 ";
 
-/// NaNs retain sharing, identity hashes and signed payloads across a suspended dump.
+/// NaNs retain bit-derived identities, hashes and signed payloads across a suspended dump.
 const NAN_STATE: &str = r"
 import math
 nan_a = float('-nan')
@@ -237,7 +237,7 @@ assert nan_keys[nan_a] == 1
 assert nan_keys[nan_b] == 2
 assert nan_a in nan_set
 assert nan_b in nan_set
-assert float('nan') not in nan_set
+assert float('nan') in nan_set
 assert math.copysign(1, nan_a) == -1.0
 assert math.nan is module_nan
 ";

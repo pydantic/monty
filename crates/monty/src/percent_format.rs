@@ -771,7 +771,7 @@ fn integer_operand(value: &Value, conversion: u8, vm: &mut VM<'_>) -> RunResult<
     let decimal = matches!(conversion, b'd' | b'i' | b'u');
     match value.py_value(vm) {
         PyValue::Int(_) | PyValue::Bool(_) => Ok(value.clone_with_heap(vm.heap)),
-        PyValue::Float(value) if decimal => LongInt::value_from_f64(value.value(), vm.heap),
+        PyValue::Float(value) if decimal => LongInt::value_from_f64(value, vm.heap),
         // The decimal directives convert any real number through `__int__` (`Decimal`).
         _ if decimal && let Some(int) = value.py_int_impl(vm)? => Ok(int),
         _ => {
@@ -899,7 +899,7 @@ fn format_float<T: Target>(
 /// when they fit a float, anything else through `__float__` or `__index__`.
 fn float_operand<T: Target>(value: &Value, vm: &mut VM<'_>) -> RunResult<f64> {
     match value.py_value(vm) {
-        PyValue::Float(value) => Ok(value.value()),
+        PyValue::Float(value) => Ok(value),
         PyValue::Bool(value) => Ok(f64::from(value)),
         PyValue::Int(integer) => match integer.to_f64(vm) {
             Some(f) if f.is_finite() => Ok(f),
@@ -908,8 +908,7 @@ fn float_operand<T: Target>(value: &Value, vm: &mut VM<'_>) -> RunResult<f64> {
         _ => {
             // `__float__` first (`Decimal`), then `__index__`, as `PyFloat_AsDouble` does.
             if let Some(f) = value.py_float_impl(vm)? {
-                defer_drop!(f, vm);
-                Ok(f.as_float(vm.heap).expect("__float__ returns a float"))
+                Ok(f)
             } else if let Some(index) = value.py_index_impl(vm)? {
                 defer_drop!(index, vm);
                 float_operand::<T>(index, vm)

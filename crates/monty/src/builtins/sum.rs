@@ -95,7 +95,7 @@ impl Phase {
 
     fn float_onwards(total: &Value, vm: &VM<'_>) -> Self {
         match total {
-            value if let Some(x) = value.as_float(vm.heap) => Self::Float(CompensatedSum::new(x)),
+            Value::Float(x) => Self::Float(CompensatedSum::new(*x)),
             _ => Self::complex_onwards(total, vm),
         }
     }
@@ -116,7 +116,7 @@ impl Phase {
             return Ok(false);
         }
         match (self, item.py_value(vm)) {
-            (Self::Float(real) | Self::Complex(real, _), PyValue::Float(x)) => real.add(x.value()),
+            (Self::Float(real) | Self::Complex(real, _), PyValue::Float(x)) => real.add(x),
             (Self::Float(real) | Self::Complex(real, _), PyValue::Int(i)) => real.add(i.to_f64_checked(vm)?),
             (Self::Float(real) | Self::Complex(real, _), PyValue::Bool(b)) => real.add(f64::from(b)),
             (Self::Complex(real, imag), PyValue::Complex(z)) => {
@@ -132,7 +132,7 @@ impl Phase {
     /// Writes a compensated total back into `total`.
     fn store(&self, total: &mut Value, vm: &mut VM<'_>) {
         let value = match self {
-            Self::Float(real) => Value::float(real.value(), vm.heap),
+            Self::Float(real) => Value::Float(real.value()),
             Self::Complex(real, imag) => Complex::new(real.value(), imag.value()).into_value(vm.heap),
             Self::Int | Self::Generic => return,
         };

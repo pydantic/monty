@@ -9,7 +9,7 @@ use crate::{
     exception_private::RunResult,
     intern::StaticStrings,
     py_attrs::{PyAttrs, PyAttrs as NativeAttrs},
-    py_value::{PyFloat, PyValue},
+    py_value::PyValue,
     types::TypeRef,
     value::Value,
 };
@@ -54,13 +54,7 @@ mod py_value {
     use super::*;
     pub enum PyValue<'h> {
         Int(PyInt<'h>),
-        Float(PyFloat),
-    }
-    pub struct PyFloat(pub f64);
-    impl PyFloat {
-        pub fn value(&self) -> f64 {
-            self.0
-        }
+        Float(f64),
     }
 }
 mod py_attrs {
@@ -156,7 +150,7 @@ fn explicit_names_and_both_integer_representations() {
         Value(20)
     );
     assert_eq!(
-        call(&mut PyValue::Float(PyFloat(0.0)), ArgValues, &mut vm),
+        call(&mut PyValue::Float(0.0), ArgValues, &mut vm),
         Err("invalid receiver")
     );
 }
@@ -167,10 +161,7 @@ fn call_results_class_receivers_and_values() {
     let Some(py_attrs::AttrDef::Method(call)) = (FloatMethods::TABLE.lookup)(StaticStrings::Count) else {
         panic!("method missing")
     };
-    assert_eq!(
-        call(&mut PyValue::Float(PyFloat(1.0)), ArgValues, &mut vm).unwrap().0,
-        Value(7)
-    );
+    assert_eq!(call(&mut PyValue::Float(1.0), ArgValues, &mut vm).unwrap().0, Value(7));
     let Some(py_attrs::AttrDef::ClassMethod(call)) = (FloatMethods::TABLE.lookup)(StaticStrings::FromNumber) else {
         panic!("classmethod missing")
     };

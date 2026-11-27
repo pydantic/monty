@@ -243,12 +243,12 @@ pub(crate) fn float_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         return Ok(Value::Float(0.0));
     };
     defer_drop!(v, vm);
-    if let Some(value) = v.py_float_value(vm)? {
-        Ok(value)
+    if let Some(value) = v.py_float(vm)? {
+        Ok(Value::Float(value))
     } else {
         match v.py_value(vm) {
-            PyValue::Str(value) => Ok(Value::float(parse_f64_from_str(value.as_str(vm))?, vm.heap)),
-            PyValue::Bytes(value) => Ok(Value::float(parse_f64_from_bytes(value.as_slice(vm))?, vm.heap)),
+            PyValue::Str(value) => Ok(Value::Float(parse_f64_from_str(value.as_str(vm))?)),
+            PyValue::Bytes(value) => Ok(Value::Float(parse_f64_from_bytes(value.as_slice(vm))?)),
             _ => Err(ExcType::type_error_float_conversion(&v.py_type_name(vm))),
         }
     }

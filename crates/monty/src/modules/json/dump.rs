@@ -503,7 +503,7 @@ impl<'h> Encoder<'_, 'h> {
                 Ok(())
             }
             PyValue::Int(integer) => integer.write_decimal(self.out, self.vm),
-            PyValue::Float(value) => serialize_float(value.value(), self.out, self.config),
+            PyValue::Float(value) => serialize_float(value, self.out, self.config),
             PyValue::Str(string) => {
                 self.check_output_growth(string.as_str(self.vm).len())?;
                 write_json_string(string.as_str(self.vm), self.out, self.config.ensure_ascii());
@@ -789,7 +789,7 @@ fn write_json_key(key: &Value, out: &mut String, config: &JsonDumpsConfig, vm: &
             integer.write_decimal(out, vm)?;
             out.push('"');
         }
-        PyValue::Float(value) => serialize_float_key(value.value(), out, config)?,
+        PyValue::Float(value) => serialize_float_key(value, out, config)?,
         PyValue::Str(value) => write_json_string(value.as_str(vm), out, ensure_ascii),
         _ => return Err(ExcType::json_invalid_key_error(&key.py_type_name(vm))),
     }

@@ -323,7 +323,7 @@ enum Operand {
 /// `NotImplemented` and the reflected form gets its turn.
 fn operand(value: &Value, vm: &VM<'_>) -> RunResult<Option<Operand>> {
     Ok(match value.py_value(vm) {
-        PyValue::Float(value) => Some(Operand::Real(value.value())),
+        PyValue::Float(value) => Some(Operand::Real(value)),
         PyValue::Int(integer) => Some(Operand::Real(integer.to_f64_checked(vm)?)),
         PyValue::Bool(value) => Some(Operand::Real(f64::from(value))),
         PyValue::Complex(value) => Some(Operand::Complex(*value.get(vm.heap))),
@@ -635,7 +635,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
     }
 
     fn py_abs_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        Ok(Some(Value::float(self.get(vm.heap).abs()?, vm.heap)))
+        Ok(Some(Value::Float(self.get(vm.heap).abs()?)))
     }
 
     fn py_neg_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -753,8 +753,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let c = *self.get(vm.heap);
         Ok(match attr.static_string(vm.interns) {
-            Some(StaticStrings::Real) => Some(CallResult::Value(Value::float(c.real, vm.heap))),
-            Some(StaticStrings::Imag) => Some(CallResult::Value(Value::float(c.imag, vm.heap))),
+            Some(StaticStrings::Real) => Some(CallResult::Value(Value::Float(c.real))),
+            Some(StaticStrings::Imag) => Some(CallResult::Value(Value::Float(c.imag))),
             _ => None,
         })
     }

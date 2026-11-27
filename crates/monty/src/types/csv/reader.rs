@@ -370,7 +370,7 @@ impl<'d> Parser<'d> {
         let value = if unquoted && self.field_len == 0 && matches!(quoting, Quoting::Notnull | Quoting::Strings) {
             Value::None
         } else if unquoted && self.field_len != 0 && matches!(quoting, Quoting::Nonnumeric | Quoting::Strings) {
-            Value::float(parse_f64_from_str(&self.field)?, heap)
+            Value::Float(parse_f64_from_str(&self.field)?)
         } else {
             // From the slice: one exact-size allocation, and the buffer keeps its capacity.
             allocate_string(self.field.as_str(), heap)

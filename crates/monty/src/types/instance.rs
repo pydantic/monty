@@ -253,17 +253,16 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
         call_int_dunder(self.id(), "__int__", vm)
     }
 
-    fn py_float_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_float_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<f64>> {
         if let Some(result) = instance_call_dunder_sync(self.id(), "__float__", None, vm)? {
-            let mut result = DropGuard::new(result, vm);
-            let (value, vm) = result.as_parts_mut();
-            if value.as_float(vm.heap).is_some() {
-                Ok(Some(result.into_inner()))
+            defer_drop!(result, vm);
+            if let Value::Float(value) = result {
+                Ok(Some(*value))
             } else {
                 Err(ExcType::type_error(format!(
                     "{}.__float__ returned non-float (type {})",
                     self.py_type_name(vm),
-                    value.py_type_name(vm),
+                    result.py_type_name(vm),
                 )))
             }
         } else {
