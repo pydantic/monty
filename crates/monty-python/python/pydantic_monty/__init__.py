@@ -60,6 +60,7 @@ from .os_access import (
 
 __all__ = (
     # this file
+    'AppliedLimits',
     'ResourceLimits',
     'OSPolicy',
     'RandomSeed',
@@ -139,6 +140,19 @@ def instrument_telemetry(*, tracer: Any | None = None, meter: Any | None = None,
     enabled independently by supplying its component.
     """
     _install_telemetry(tracer, meter, logger)
+
+
+class AppliedLimits(TypedDict):
+    """Execution limits a peer reported at checkout. `None` means no value was reported for that field."""
+
+    max_feed_duration_micros: int | None
+    """Maximum execution time per feed, in microseconds."""
+
+    max_memory_bytes: int | None
+    """Maximum memory in bytes."""
+
+    max_turn_duration_micros: int | None
+    """Maximum execution time per turn, in microseconds."""
 
 
 class ResourceLimits(TypedDict, total=False):

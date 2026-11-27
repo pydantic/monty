@@ -585,9 +585,11 @@ impl Worker {
             }
             let clock = configure.execution_clock.unwrap_or(pb::ExecutionClock::Wall as i32);
             self.legacy_binary_writes = configure.protocol_version < POSITIONAL_WRITES_PROTOCOL_VERSION;
+            let limits: ResourceLimits = configure.limits.unwrap_or_default().into();
             self.state = SessionState::Configured(Some(Box::new(configure)));
             let mut event = ok_event();
             event.execution_clock = Some(clock);
+            event.applied_limits = Some((&limits).into());
             event
         } else {
             // the worker still holds a session, so this is the client's bug, not a refusal
@@ -610,7 +612,11 @@ impl Worker {
         }
         sink.session_opened(self.session_budget());
         let mut event = match first {
-            pb::configure::First::Feed(feed) => self.handle_repl_feed(feed, sink),
+            pb::configure::First::Feed(feed) => {
+                let mut reply = self.handle_repl_feed(feed, sink);
+                reply.applied_limits = configured.applied_limits;
+                reply
+            }
             pb::configure::First::Load(load) => self.handle_load(&load),
         };
         event.execution_clock = configured.execution_clock;

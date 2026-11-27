@@ -15,6 +15,7 @@ use monty_types::{
     CompileOptions, ExcType, ExecutionClock, IMPORT_STUBS_CALL_ID, MONTY_VERSION, MontyException, MontyObject,
     MontyUuid, NamedValues, PrintWriter, ResourceLimits, ResourceTracker, unstable,
 };
+use prost::Message;
 
 /// Starts a feed with `f` already bound, leaving the worker at its first external call.
 fn start_external_call(worker: &mut Worker, code: &str) -> WireFunctionCall {
@@ -686,6 +687,56 @@ fn turn_events_carry_the_suspension_budget() {
     let events = decode_full_events(&bytes);
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].max_suspensions, Some(3));
+}
+
+#[test]
+fn configure_reports_applied_limits_once() {
+    // Model an old reader of the existing reply arms, which skips the new field.
+    #[derive(prost::Message)]
+    struct OldWorkerEvent {
+        #[prost(bytes, optional, tag = "6")]
+        complete: Option<Vec<u8>>,
+        #[prost(bytes, optional, tag = "10")]
+        ok: Option<Vec<u8>>,
+    }
+
+    let feed = pb::Feed {
+        code: "None".to_owned(),
+        ..Default::default()
+    };
+    for bundled in [false, true] {
+        let mut worker = Worker::default();
+        let request = frame_request(pb::client_request::Kind::Configure(pb::Configure {
+            protocol_version: PROTOCOL_VERSION,
+            limits: Some(pb::ResourceLimits {
+                max_feed_duration_micros: Some(175_000),
+                max_memory_bytes: Some(8_000_000),
+                max_turn_duration_micros: Some(150_000),
+                ..Default::default()
+            }),
+            first: bundled.then(|| pb::configure::First::Feed(feed.clone())),
+            ..Default::default()
+        }));
+        let (bytes, _) = dispatch_frame(&mut worker, &request);
+        let [event]: [pb::WorkerEvent; 1] = decode_full_events(&bytes).try_into().expect("one reply");
+        assert_eq!(
+            event.applied_limits,
+            Some(pb::AppliedLimits {
+                max_feed_duration_micros: Some(175_000),
+                max_memory_bytes: Some(8_000_000),
+                max_turn_duration_micros: Some(150_000),
+            })
+        );
+        let old = OldWorkerEvent::decode(&bytes[4..]).expect("old reader decodes the reply");
+        assert_eq!(old.complete.is_some(), bundled);
+        assert_eq!(old.ok.is_some(), !bundled);
+
+        let request = frame_request(pb::client_request::Kind::Feed(feed.clone()));
+        let (bytes, _) = dispatch_frame(&mut worker, &request);
+        let [event]: [pb::WorkerEvent; 1] = decode_full_events(&bytes).try_into().expect("one reply");
+        assert!(matches!(event.kind, Some(pb::worker_event::Kind::Complete(_))));
+        assert!(event.applied_limits.is_none());
+    }
 }
 
 // ---------------------------------------------------------------------------

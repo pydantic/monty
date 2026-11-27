@@ -107,6 +107,10 @@ Use `Checkout::terminate` to discard a subprocess and wait for its exit, includi
 Only `Some(ExitStatus)` confirms process exit. `None` does not confirm physical termination.
 Dropping a checkout requests cleanup without waiting for that confirmation.
 
+Call [`Checkout::open`](../api/rust/monty-pool.md#checkout) before feeding code if you need to read `Checkout::checkout_effective_limits` at checkout.
+Otherwise the checkout can receive these limits with its first feed reply, without a separate request.
+The method returns `None` if the peer did not report limits.
+
 [`Checkout::feed`](../api/rust/monty-pool.md#checkout) takes the code, inputs (host values bound as sandbox globals), per-feed filesystem mounts
 ([`MountSpec`](../api/rust/monty-pool.md#mountspec)), a `skip_type_check` flag and a print sink;
 [`Checkout::feed_with_cwd`](../api/rust/monty-pool.md#checkout) also sets the sandbox's

@@ -1593,6 +1593,40 @@ async fn worker_resource_limits_do_not_kill_the_worker() {
     assert_eq!(pool.idle_workers(), 1);
 }
 
+/// A bundled raw feed retains checkout metadata on both the reply and the checkout.
+#[tokio::test]
+async fn raw_opening_feed_records_checkout_effective_limits() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut checkout = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_memory(4_000_000)),
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(checkout.checkout_effective_limits(), None);
+    let event = checkout
+        .turn_raw(
+            &pb::ClientRequest {
+                kind: Some(pb::client_request::Kind::Feed(pb::Feed {
+                    code: "1 + 1".to_owned(),
+                    ..pb::Feed::default()
+                })),
+                ..pb::ClientRequest::default()
+            },
+            &mut |_: &pb::WorkerEvent| Box::pin(ready(())),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(event.kind, Some(pb::worker_event::Kind::Complete(_))));
+    assert_eq!(event.applied_limits.unwrap().max_memory_bytes, Some(4_000_000));
+    assert_eq!(
+        checkout.checkout_effective_limits().unwrap().max_memory_bytes,
+        Some(4_000_000)
+    );
+    checkout.finish().await.unwrap();
+}
+
 /// A session's `max_memory` must not disturb work that stays inside it.
 #[tokio::test]
 async fn max_memory_leaves_normal_work_alone() {

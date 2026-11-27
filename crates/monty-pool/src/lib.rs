@@ -28,8 +28,8 @@ use monty_types::{ExecutionClock, MontyException};
 use crate::telemetry::Metrics;
 pub use crate::{
     checkout::{
-        Checkout, CheckoutOptions, MountSpec, MountSpecMode, OnPrint, OnRawEvent, OnStreamedCall, Persistence,
-        PrintFuture, ReplConfig, ResumeValue, StreamedCall, TurnEvent, TurnOptions, on_print_sync,
+        AppliedLimits, Checkout, CheckoutOptions, MountSpec, MountSpecMode, OnPrint, OnRawEvent, OnStreamedCall,
+        Persistence, PrintFuture, ReplConfig, ResumeValue, StreamedCall, TurnEvent, TurnOptions, on_print_sync,
     },
     pool::Pool,
 };

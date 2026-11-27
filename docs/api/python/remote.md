@@ -100,6 +100,15 @@ on each side.
 Pass only `meter=` (and `logger=`, if you want Monty's logs) to keep client-side metrics without the duplicate spans.
 `logfire.instrument_monty()` always installs a tracer, so it records the duplicates.
 
+## Applied checkout limits
+
+Call [`checkout_effective_limits()`][pydantic_monty.AsyncMontySession.checkout_effective_limits] before submitting code to get the limits the server applied at the initial checkout.
+This sends a separate configuration request if the session has not made a request yet.
+If the first feed opens the session, the same metadata comes with the feed's first reply, without another round trip.
+The durations use the server's execution clock.
+This method reports the initial checkout, even if a snapshot restore changes the session's limits.
+`None` means the peer did not report limits; it does not mean the peer applied the requested limits unchanged.
+
 ## Stored sessions
 
 A server that stores sessions gives each one an opaque ID instead of sending its state back.
