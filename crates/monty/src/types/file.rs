@@ -457,10 +457,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, OpenFile> {
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let Some(method) = attr.static_string(vm.interns) else {
-            return Err(ExcType::attribute_error(
-                self.py_type(vm).name(vm.heap, vm.interns),
-                attr.as_str(vm.interns),
-            ));
+            return Ok(None);
         };
 
         let file = self.get(vm.heap);
@@ -473,10 +470,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, OpenFile> {
             StaticStrings::Closed => Value::Bool(file.closed),
             StaticStrings::Encoding if !file.mode.is_binary() => allocate_string("utf-8", vm.heap),
             _ => {
-                return Err(ExcType::attribute_error(
-                    self.py_type(vm).name(vm.heap, vm.interns),
-                    attr.as_str(vm.interns),
-                ));
+                return Ok(None);
             }
         };
         Ok(Some(CallResult::Value(value)))

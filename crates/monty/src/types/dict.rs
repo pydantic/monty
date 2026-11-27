@@ -10,7 +10,8 @@ use serde::ser::SerializeStruct;
 use smallvec::smallvec;
 
 use super::{
-    DictItemsView, DictKeysView, DictValuesView, LazyHeapSet, PyTrait, allocate_tuple, list::repr_should_truncate,
+    DictItemsView, DictKeysView, DictValuesView, LazyHeapSet, MappingProxy, PyTrait, allocate_tuple,
+    list::repr_should_truncate,
 };
 use crate::{
     args::{ArgValues, FromArgs, KwargsValues},
@@ -945,24 +946,20 @@ impl<'h> HeapReadMut<'h, Dict> {
     fn merge_from_value(&self, other_value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         let mut guard = DropGuard::new(other_value, vm);
         let (other_value, vm) = guard.as_parts_mut();
-        if let Value::Ref(id) = other_value {
-            let src_id = *id;
-            if let HeapReadOutput::Dict(src) = vm.heap.read(src_id) {
-                // Self-merges preserve all entries; only later keyword overrides can change them.
-                if ptr::eq(self.get(vm.heap), src.get(vm.heap)) {
-                    return Ok(());
-                }
-
-                let iter = src.iter(vm)?;
-                defer_drop_mut!(iter, vm);
-                while let Some((key, value)) = iter.next_owned(vm)? {
-                    let old_value = self.set(key, value, vm)?;
-                    old_value.drop_with(vm);
-                }
-
-                // guard drops other_value here
+        if let Some(src) = MappingProxy::source(other_value, vm.heap) {
+            // Self-merges preserve all entries; only later keyword overrides can change them.
+            if ptr::eq(self.get(vm.heap), src.get(vm.heap)) {
                 return Ok(());
             }
+
+            let iter = src.iter(vm)?;
+            defer_drop_mut!(iter, vm);
+            while let Some((key, value)) = iter.next_owned(vm)? {
+                let old_value = self.set(key, value, vm)?;
+                old_value.drop_with(vm);
+            }
+
+            return Ok(());
         }
 
         // Non-dict values are interpreted as iterable-of-pairs
@@ -1706,7 +1703,8 @@ fn dict_merge_from_value(dict: &mut Dict, other_value: Value, vm: &mut VM<'_>) -
     let mut other_value_guard = DropGuard::new(other_value, vm);
     {
         let (other_value, vm) = other_value_guard.as_parts();
-        if let Some(src_dict) = other_value.get_as::<Dict>(vm.heap) {
+        if let Some(source) = MappingProxy::source(other_value, vm.heap) {
+            let src_dict = source.get(vm.heap);
             // The snapshot stays live while the pairs are applied, so charge it
             // up front. Only the snapshot: how much the target grows depends on
             // how many of these keys it already holds, and charging for all of

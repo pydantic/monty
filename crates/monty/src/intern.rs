@@ -1174,6 +1174,9 @@ pub enum StaticStrings {
     /// `__forward_module__` attribute of `annotationlib.ForwardRef`.
     #[strum(serialize = "__forward_module__")]
     DunderForwardModule,
+    /// Binds a descriptor to its receiver.
+    #[strum(serialize = "__get__")]
+    DunderGet,
     /// `__getnewargs__` — the copy/pickle hook on named tuples.
     #[strum(serialize = "__getnewargs__")]
     DunderGetnewargs,

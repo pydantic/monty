@@ -183,9 +183,9 @@ pub(crate) fn class_namespace_copy(class_id: HeapId, vm: &mut VM<'_>) -> RunResu
     let HeapData::Class(class) = vm.heap.get(class_id) else {
         unreachable!("class_namespace_copy takes a class");
     };
-    dict::check_pairs_into_fresh_dict(class.namespace().len(), vm)?;
+    dict::check_pairs_into_fresh_dict(class.namespace(vm.heap).len(), vm)?;
     let pairs = class
-        .namespace()
+        .namespace(vm.heap)
         .iter()
         .map(|(name, value)| (name.clone_with_heap(vm.heap), value.clone_with_heap(vm.heap)))
         .collect();
@@ -281,7 +281,7 @@ fn class_member(class_id: HeapId, name: StaticStrings, vm: &VM<'_>) -> Option<Va
         unreachable!("class_member takes a class");
     };
     class
-        .namespace()
+        .namespace(vm.heap)
         .get_by_str(name.into(), vm.heap, vm.interns)
         .map(|value| value.clone_with_heap(vm.heap))
 }
@@ -291,7 +291,10 @@ fn has_class_member(class_id: HeapId, name: StaticStrings, vm: &VM<'_>) -> bool 
     let HeapData::Class(class) = vm.heap.get(class_id) else {
         unreachable!("has_class_member takes a class");
     };
-    class.namespace().get_by_str(name.into(), vm.heap, vm.interns).is_some()
+    class
+        .namespace(vm.heap)
+        .get_by_str(name.into(), vm.heap, vm.interns)
+        .is_some()
 }
 
 /// Binds `name` to `value` in the class namespace, taking ownership of `value`.

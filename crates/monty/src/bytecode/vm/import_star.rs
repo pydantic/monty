@@ -98,7 +98,7 @@ impl VM<'_> {
         };
         matches!(
             self.heap.get(instance.class()),
-            HeapData::Class(class) if class.namespace().get_by_str("__getitem__", self.heap, self.interns).is_some()
+            HeapData::Class(class) if class.namespace(self.heap).get_by_str("__getitem__", self.heap, self.interns).is_some()
         )
     }
 

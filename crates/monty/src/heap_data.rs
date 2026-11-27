@@ -58,6 +58,7 @@ macro_rules! heap_payloads {
             NamedTupleClass(boxed $crate::types::NamedTupleClass),
             #[serde(rename = "D")]
             Dict(inline $crate::types::Dict),
+            MappingProxy(inline $crate::types::MappingProxy),
             DictKeysView(inline $crate::types::DictKeysView),
             DictItemsView(inline $crate::types::DictItemsView),
             DictValuesView(inline $crate::types::DictValuesView),
@@ -262,6 +263,7 @@ impl HeapData {
             | Self::NamedTuple(_)
             | Self::NamedTupleClass(_)
             | Self::Dict(_)
+            | Self::MappingProxy(_)
             | Self::DictKeysView(_)
             | Self::DictItemsView(_)
             | Self::DictValuesView(_)
@@ -382,6 +384,7 @@ impl HeapData {
             Self::Union(_) => Type::Union,
             Self::ForwardRef(_) => Type::ForwardRef,
             Self::LruCache(_) => Type::LruCacheWrapper,
+            Self::MappingProxy(_) => Type::MappingProxy,
             Self::DictKeysView(_) => Type::DictKeys,
             Self::DictItemsView(_) => Type::DictItems,
             Self::DictValuesView(_) => Type::DictValues,
@@ -398,7 +401,7 @@ impl HeapData {
             // A class object's type is `type`.
             Self::HostClassType(_) | Self::Class(_) => Type::Type,
             Self::BuiltinDescriptor(d) => d.kind(),
-            Self::BoundMethod(_) => Type::Function,
+            Self::BoundMethod(method) => method.kind(),
             Self::DataclassField(_) => Type::DataclassField,
             Self::DataclassMethod(_) => Type::Function,
             Self::DataclassParams(_) => Type::DataclassParams,

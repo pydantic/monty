@@ -297,7 +297,7 @@ fn check_frozen_inheritance(class: &Class, options: DataclassOptions, vm: &VM<'_
     let base_params = class.ancestors().iter().filter_map(|ancestor| match ancestor {
         TypeRef::Class(id) => match vm.heap.get(*id) {
             HeapData::Class(base) => base
-                .namespace()
+                .namespace(vm.heap)
                 .get_by_str("__dataclass_params__", vm.heap, vm.interns)
                 .and_then(|params| params.get_as::<DataclassParams>(vm.heap))
                 .map(DataclassParams::options),
@@ -424,7 +424,7 @@ fn store_dataclass_params<'h>(
 /// defines its own `__match_args__` keeps it, as in CPython.
 fn store_match_args<'h>(class: &HeapReadMut<'h, Class>, fields_id: HeapId, vm: &mut VM<'h>) -> RunResult<()> {
     let name_id = vm.interns.intern_static(StaticStrings::MatchArgsDunder);
-    let namespace = class.get(vm.heap).namespace();
+    let namespace = class.get(vm.heap).namespace(vm.heap);
     if namespace.get_by_str("__match_args__", vm.heap, vm.interns).is_some() {
         return Ok(());
     }
@@ -607,7 +607,7 @@ fn rewrite_field_attributes<'h>(class: &HeapReadMut<'h, Class>, fields_id: HeapI
         // `x: int = 5` already binds the value CPython would leave behind.
         let bound = class
             .get(vm.heap)
-            .namespace()
+            .namespace(vm.heap)
             .get_by_str(vm.interns.get_str(name), vm.heap, vm.interns);
         if !matches!(bound, Some(Value::Ref(id)) if *id == field_id) {
             continue;
@@ -658,7 +658,7 @@ fn collect_annotated_fields<'h>(class: &HeapRead<'h, Class>, annotations: &Value
     let mut guard = DropGuard::new(Vec::with_capacity(names.len()), vm);
     let (fields, vm) = guard.as_parts_mut();
     for name_id in names {
-        let namespace = class.get(vm.heap).namespace();
+        let namespace = class.get(vm.heap).namespace(vm.heap);
         // Captured now, as CPython bakes it into the generated `__init__`:
         // rebinding the class attribute later must not change it.
         let bound = namespace

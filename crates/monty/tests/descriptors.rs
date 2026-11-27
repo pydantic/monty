@@ -34,6 +34,38 @@ fn restore_idle(repl: MontyRepl) -> MontyRepl {
     *repl
 }
 
+#[test]
+fn saved_native_methods_survive_restore() {
+    let mut repl = repl();
+    repl.feed_run(
+        "from collections import namedtuple
+Point = namedtuple('Point', ['x'])
+make_point = Point(1)._make
+items = []
+append = items.append
+unbound = list.append
+make = dict.fromkeys
+lookup = {unbound: 1}",
+        vec![],
+        PrintWriter::Disabled,
+    )
+    .unwrap();
+    restore_idle(repl)
+        .feed_run(
+            "append(1)
+unbound(items, 2)
+assert items == [1, 2]
+assert append.__self__ is items
+assert lookup[list.append] == 1
+assert make(items) == {1: None, 2: None}
+assert make_point.__self__ is Point
+assert type(make_point([3])) is Point",
+            vec![],
+            PrintWriter::Disabled,
+        )
+        .unwrap();
+}
+
 /// Forwarded annotation getters retain the caller's fallback across a host error and restore.
 #[test]
 fn bound_method_attribute_errors_survive_suspension_and_restore() {
@@ -829,6 +861,24 @@ for forged, args in forged_methods:
         assert str(exc) == 'invalid descriptor receiver'
 assert p.__get__([1, 2]) == 2
 ",
+        vec![],
+        PrintWriter::Disabled,
+    )
+    .unwrap();
+}
+
+#[test]
+fn live_namespaces_survive_restore() {
+    let mut repl = repl();
+    repl.feed_run(
+        "class C: pass\no = C()\nd = vars(o)\nd['owner'] = o\np = vars(C)\nC.proxy = p",
+        vec![],
+        PrintWriter::Disabled,
+    )
+    .unwrap();
+    let mut repl = restore_idle(repl);
+    repl.feed_run(
+        "assert vars(o) is d and d['owner'] is o\nC.x = 3\nassert p['x'] == 3 and p['proxy'] is p",
         vec![],
         PrintWriter::Disabled,
     )

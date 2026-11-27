@@ -351,7 +351,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ReMatch> {
                 let v = self.get(vm.heap).subject.clone_with_heap(vm);
                 Ok(Some(CallResult::Value(v)))
             }
-            _ => Err(ExcType::attribute_error(Type::ReMatch, attr.as_str(vm.interns))),
+            _ => Ok(None),
         }
     }
 

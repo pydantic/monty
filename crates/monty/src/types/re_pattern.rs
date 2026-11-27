@@ -569,7 +569,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RePattern> {
                 Ok(Some(CallResult::Value(v)))
             }
             Some(StaticStrings::Flags) => Ok(Some(CallResult::Value(Value::Int(i64::from(self.get(vm.heap).flags))))),
-            _ => Err(ExcType::attribute_error(Type::RePattern, attr.as_str(vm.interns))),
+            _ => Ok(None),
         }
     }
 }

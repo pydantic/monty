@@ -556,6 +556,7 @@ impl<'h> VM<'h> {
     pub(crate) fn call_function(&mut self, callable: &Value, args: ArgValues) -> Result<CallResult, RunError> {
         match callable {
             Value::Builtin(builtin) => builtin.call(self, args),
+            Value::NativeMethod(method) => method.call(args, self),
             Value::ModuleFunction(mf) => mf.call(self, args),
             Value::DefFunction(func_id) => {
                 // Defined function without defaults, captured variables or a globals dict
@@ -1164,9 +1165,11 @@ impl<'h> VM<'h> {
             let new_func = new_func.clone_with_heap(self.heap);
             return self.instantiate_with_new(class_id, new_func, args);
         }
-        let instance_id = self
-            .heap
-            .allocate(HeapData::Instance(Box::new(Instance::new(class_id, Dict::new()))));
+        let instance_id = self.heap.allocate(HeapData::Instance(Box::new(Instance::new(
+            class_id,
+            Dict::new(),
+            self.heap,
+        ))));
         // The instance now owns a reference to its class object.
         self.heap.inc_ref(class_id);
         self.initialize_instance(class_id, instance_id, args)

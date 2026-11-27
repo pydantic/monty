@@ -297,6 +297,9 @@ enum Copyability {
 /// Decides what the two passes do with a heap value.
 fn classify<'h>(output: &HeapReadOutput<'h>, vm: &VM<'h>) -> Copyability {
     match output {
+        HeapReadOutput::BoundMethod(method) if matches!(method.get(vm.heap).func, Value::NativeMethod(_)) => {
+            Copyability::Shared
+        }
         HeapReadOutput::List(_)
         | HeapReadOutput::Dict(_)
         | HeapReadOutput::Set(_)
@@ -364,6 +367,7 @@ fn classify<'h>(output: &HeapReadOutput<'h>, vm: &VM<'h>) -> Copyability {
         // CPython manages to copy one of these and Monty does not.
         HeapReadOutput::HostClass(_)
         | HeapReadOutput::HashObject(_)
+        | HeapReadOutput::MappingProxy(_)
         | HeapReadOutput::DictKeysView(_)
         | HeapReadOutput::DictItemsView(_)
         | HeapReadOutput::DictValuesView(_)
@@ -430,7 +434,7 @@ pub(crate) fn deep_copy_attrs(
         let HeapReadOutput::Instance(instance) = vm.heap.read(copy_id) else {
             unreachable!("caller allocated an instance")
         };
-        let replaced = instance.attrs_mut().set(key_copy, value_copy, vm)?;
+        let replaced = instance.attrs_mut(vm.heap).set(key_copy, value_copy, vm)?;
         if let Some(replaced) = replaced {
             replaced.drop_with(vm);
         }
@@ -628,7 +632,7 @@ fn clone_attrs(id: HeapId, vm: &mut VM<'_>) -> RunResult<Vec<(Value, Value)>> {
 /// Borrows an instance's attribute dict.
 fn attrs<'a>(id: HeapId, vm: &'a VM<'_>) -> &'a Dict {
     match vm.heap.get(id) {
-        HeapData::Instance(instance) => instance.attrs(),
+        HeapData::Instance(instance) => instance.attrs(vm.heap),
         _ => unreachable!("caller checked the type"),
     }
 }
@@ -677,7 +681,7 @@ fn insert_attrs(id: HeapId, pairs: Vec<(Value, Value)>, vm: &mut VM<'_>) -> RunR
         let HeapReadOutput::Instance(instance) = vm.heap.read(id) else {
             unreachable!("caller allocated an instance")
         };
-        let replaced = instance.attrs_mut().set(key, value, vm)?;
+        let replaced = instance.attrs_mut(vm.heap).set(key, value, vm)?;
         if let Some(replaced) = replaced {
             replaced.drop_with(vm);
         }

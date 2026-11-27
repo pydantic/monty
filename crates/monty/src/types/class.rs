@@ -6,6 +6,7 @@ use smallvec::smallvec;
 use super::{
     Dict, LazyHeapSet, OwnedTypeRef, PyTrait, Type, TypeRef, descriptor,
     instance::{BoundMethod, is_method_value},
+    mapping_proxy::MappingProxy,
     tuple::allocate_tuple,
 };
 use crate::{
@@ -17,10 +18,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
-    heap::{
-        BorrowedHeapReadMut, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadMut,
-        HeapReader, heap_read_ref_as_field_mut,
-    },
+    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadMut, HeapReader},
     intern::{Interns, StringId},
     types::{Union, str::allocate_string, r#type::bind_init_subclass},
     value::{EitherStr, Value},
@@ -45,7 +43,7 @@ pub(crate) struct Class {
     /// interned because the intern table is frozen after prepare.
     name: EitherStr,
     /// Members: method name / class-variable name -> value.
-    namespace: Dict,
+    pub(crate) namespace: Namespace,
     /// Direct bases in declaration order (`__bases__`), owning their class
     /// references. Empty for a class written before inheritance, read as `(object,)`.
     #[serde(default)]
@@ -97,7 +95,7 @@ impl Class {
                 .all(|(_, value)| !descriptor::may_be_data_descriptor(value, heap));
         Self {
             name,
-            namespace,
+            namespace: Namespace::Shared(heap.allocate(HeapData::Dict(namespace))),
             bases,
             mro,
             uuid: None,
@@ -137,8 +135,8 @@ impl Class {
 
     /// Returns a reference to the class member namespace.
     #[must_use]
-    pub fn namespace(&self) -> &Dict {
-        &self.namespace
+    pub fn namespace<'a>(&self, heap: &'a Heap) -> &'a Dict {
+        self.namespace.dict(heap)
     }
 
     /// The direct bases (`__bases__`); empty means `(object,)`.
@@ -151,10 +149,10 @@ impl Class {
     /// in MRO order. Native ancestors carry no namespace, so they are skipped.
     #[must_use]
     pub(crate) fn lookup<'h>(&'h self, name: &str, heap: &'h Heap, interns: &Interns) -> Option<&'h Value> {
-        self.namespace.get_by_str(name, heap, interns).or_else(|| {
+        self.namespace(heap).get_by_str(name, heap, interns).or_else(|| {
             self.mro.iter().find_map(|ancestor| match ancestor {
                 TypeRef::Class(id) => match heap.get(*id) {
-                    HeapData::Class(class) => class.namespace.get_by_str(name, heap, interns),
+                    HeapData::Class(class) => class.namespace(heap).get_by_str(name, heap, interns),
                     _ => None,
                 },
                 TypeRef::Native(_) => None,
@@ -172,9 +170,10 @@ impl Class {
 }
 
 impl<'h> HeapReadMut<'h, Class> {
-    /// Borrows the inline namespace for reader-gated attribute mutation.
-    fn namespace_mut(&self) -> BorrowedHeapReadMut<'_, 'h, Dict> {
-        heap_read_ref_as_field_mut!(self, Class, namespace)
+    /// Returns the live attribute dictionary for mutation.
+    fn namespace_mut(&self, heap: &HeapReader<'h>) -> HeapObjectRead<'h, Dict> {
+        heap.read_as(self.get(heap).namespace.id())
+            .expect("namespace is a dict")
     }
 
     /// Sets a class attribute (`Foo.x = 1`), returning the previous value (if any)
@@ -199,11 +198,11 @@ impl<'h> HeapReadMut<'h, Class> {
                 [name, value].drop_with(vm);
                 Err(ExcType::type_error("type controls __class__ and __bases__"))
             }
-            Some("__mro__") => {
+            Some(attr @ ("__mro__" | "__dict__")) => {
                 [name, value].drop_with(vm);
-                Err(ExcType::attribute_error_not_writable("__mro__", "type"))
+                Err(ExcType::attribute_error_not_writable(attr, "type"))
             }
-            _ => self.namespace_mut().set(name, value, vm),
+            _ => self.namespace_mut(vm.heap).set(name, value, vm),
         }
     }
 
@@ -223,7 +222,7 @@ impl<'h> HeapReadMut<'h, Class> {
         if descriptor::may_be_data_descriptor(&value, heap) {
             self.get_mut(heap).data_descriptor_free = false;
         }
-        self.namespace_mut().set_interned_str(name, value, heap, interns)
+        self.namespace_mut(heap).set_interned_str(name, value, heap, interns)
     }
 
     /// Removes a class attribute, returning it for the caller to drop.
@@ -231,7 +230,13 @@ impl<'h> HeapReadMut<'h, Class> {
     /// Only `@dataclass` needs this, to clear the `field()` object a class body
     /// bound for a factory-only field — CPython's decorator `delattr`s it.
     pub fn pop_attr(&self, name: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        Ok(self.namespace_mut().pop(name, vm)?.map(|(key, value)| {
+        if name
+            .as_either_str(vm.heap)
+            .is_some_and(|s| s.as_str(vm.interns) == "__dict__")
+        {
+            return Err(ExcType::attribute_error_not_writable("__dict__", "type"));
+        }
+        Ok(self.namespace_mut(vm.heap).pop(name, vm)?.map(|(key, value)| {
             key.drop_with(vm);
             value
         }))
@@ -353,11 +358,12 @@ pub(crate) fn class_getattr(class_id: HeapId, attr: &EitherStr, vm: &mut VM<'_>)
     let attr_str = attr.as_str(vm.interns);
     Ok(Some(CallResult::Value(match attr_str {
         "__name__" => allocate_string(class.name.as_str(vm.interns).to_owned(), vm.heap),
+        "__dict__" => MappingProxy::live(class.namespace.id(), vm.heap),
         "__bases__" => bases_tuple(class, vm.heap),
         "__mro__" => mro_tuple(class_id, vm.heap),
         // Annotations are per class: an inherited `__annotate__` would describe the base.
         "__annotate__" | "__annotate_func__" => class
-            .namespace
+            .namespace(vm.heap)
             .get_by_str(attr_str, vm.heap, vm.interns)
             .map_or(Value::None, |value| value.clone_with_heap(vm.heap)),
         _ => {
@@ -417,6 +423,30 @@ pub(crate) fn mro_tuple(class_id: HeapId, heap: &Heap) -> Value {
 impl HeapItem for Class {
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         stack.extend(self.bases.iter().filter_map(|base| base.class_id()));
-        self.namespace.py_dec_ref_ids(stack);
+        stack.push(self.namespace.id());
+    }
+}
+
+/// Older snapshots embed the dict in its owner. Heap restoration moves it to its own slot.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub(crate) enum Namespace {
+    Shared(HeapId),
+    Inline(Box<Dict>),
+}
+
+impl Namespace {
+    pub(crate) fn id(&self) -> HeapId {
+        match self {
+            Self::Shared(id) => *id,
+            Self::Inline(_) => unreachable!("heap restore promotes inline namespaces"),
+        }
+    }
+
+    pub(crate) fn dict<'a>(&self, heap: &'a Heap) -> &'a Dict {
+        let HeapData::Dict(dict) = heap.get(self.id()) else {
+            unreachable!("namespace is a dict")
+        };
+        dict
     }
 }

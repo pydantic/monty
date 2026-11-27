@@ -7,7 +7,12 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{HeapData, HeapReadOutput},
     modules::dataclasses,
-    types::{descriptor, instance::class_name},
+    types::{
+        Dict,
+        class::Namespace,
+        descriptor,
+        instance::{class_dunder, class_name},
+    },
     value::Value,
 };
 
@@ -39,7 +44,16 @@ pub(crate) fn builtin_delattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Cal
     defer_drop!(key, vm);
     let removed = match object {
         Value::Ref(id) => match vm.heap.read(*id) {
-            HeapReadOutput::Instance(instance) => instance.attrs_mut().pop(key, vm)?.map(|(key, value)| {
+            HeapReadOutput::Instance(instance)
+                if attr.as_str(vm.interns) == "__dict__"
+                    && class_dunder(instance.get(vm.heap).class(), "__dict__", vm).is_none() =>
+            {
+                let old = instance.get(vm.heap).attrs.id();
+                let empty = vm.heap.allocate(HeapData::Dict(Dict::new()));
+                instance.get_mut(vm.heap).attrs = Namespace::Shared(empty);
+                Some(Value::Ref(old))
+            }
+            HeapReadOutput::Instance(instance) => instance.attrs_mut(vm.heap).pop(key, vm)?.map(|(key, value)| {
                 key.drop_with(vm);
                 value
             }),
