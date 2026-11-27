@@ -1007,10 +1007,10 @@ impl<'h> VM<'h> {
         if let Some(globals) = globals {
             this.heap.inc_ref(globals);
         }
-        let coroutine = Coroutine::new(func_id, namespace, globals);
-        let coroutine_id = this.heap.allocate(HeapData::Coroutine(coroutine));
-
-        Ok(CallResult::Value(Value::Ref(coroutine_id)))
+        Ok(CallResult::Value(Value::allocate(
+            Coroutine::new(func_id, namespace, globals),
+            this.heap,
+        )))
     }
 
     /// Installs owned cell variables and captured free-var cells into a frame's
@@ -1039,8 +1039,7 @@ impl<'h> VM<'h> {
                 Some(param_idx) => namespace[param_idx].clone_with_heap(self),
                 None => Value::Undefined,
             };
-            let cell_id = self.heap.allocate(HeapData::Cell(CellValue(cell_value)));
-            namespace[slot.index()] = Value::Ref(cell_id);
+            namespace[slot.index()] = Value::allocate(CellValue(cell_value), self.heap);
         }
 
         for (i, &cell_id) in cells.iter().enumerate() {

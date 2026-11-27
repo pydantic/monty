@@ -7,7 +7,8 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{DropWithContext, HeapReadOutput},
+    heap::DropWithContext,
+    types::Instance,
     value::{EitherStr, Value},
 };
 
@@ -51,10 +52,7 @@ pub fn builtin_object_setattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Val
     // Only an instance has a `__dict__` to write into. Everything else gets the
     // error CPython's own `object.__setattr__` produces for a type whose
     // instances have no attribute storage.
-    let Value::Ref(heap_id) = object else {
-        return Err(no_dict_error(object, &name, vm));
-    };
-    let HeapReadOutput::Instance(instance) = vm.heap.read(*heap_id) else {
+    let Some(instance) = object.read_as::<Instance>(vm.heap) else {
         return Err(no_dict_error(object, &name, vm));
     };
 

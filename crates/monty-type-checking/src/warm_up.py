@@ -86,6 +86,7 @@ ModuleNotFoundError
 IndexError
 KeyError
 UnboundLocalError
+BlockingIOError
 FileExistsError
 FileNotFoundError
 IsADirectoryError

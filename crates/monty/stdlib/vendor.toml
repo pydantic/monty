@@ -16,6 +16,7 @@ commit = "b703b2c5e704341d61e367b9b940b77ed11dded0"
 # Paths under CPython's `Lib/`; `pkg/__init__.py` makes `pkg` a package.
 files = [
     "colorsys.py",
+    "io.py",
     "keyword.py",
     "stat.py",
     "textwrap.py",
@@ -32,6 +33,7 @@ suites = [
     "test_int_literal.py",
     "test_keyword.py",
     "test_keywordonlyarg.py",
+    "test_memoryio.py",
     "test_pow.py",
     "test_strftime.py",
     "test_textwrap.py",

@@ -179,6 +179,8 @@ fn native_overrides_init(ty: Type) -> bool {
                 | Type::Random
                 | Type::Module
                 | Type::DecimalContext
+                | Type::StringIo
+                | Type::BytesIo
                 | Type::Type
         )
 }

@@ -421,11 +421,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
 
     fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
         let deque_id = self.id();
-        let iterator = vm
-            .heap
-            .allocate(HeapData::DequeIterator(DequeIterator::new(deque_id, vm)));
+        let iterator = Value::allocate(DequeIterator::new(deque_id, vm), vm.heap);
         vm.heap.inc_ref(deque_id);
-        Ok(CallResult::Value(Value::Ref(iterator)))
+        Ok(CallResult::Value(iterator))
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {

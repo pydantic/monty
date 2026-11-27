@@ -252,16 +252,15 @@ impl Target for BytesTarget {
 
     /// Only `bytes` values; Monty has no `bytearray`, `memoryview` or `__bytes__`.
     fn text_operand(value: &Value, spec: &Directive, vm: &mut VM<'_>) -> RunResult<Text<Self>> {
-        match value {
-            Value::InternBytes(id) => Ok(Self::from_bytes(vm.interns.get_bytes(*id), spec.precision)),
-            Value::Ref(id) if let HeapData::Bytes(bytes) = vm.heap.get(*id) => {
-                Ok(Self::from_bytes(bytes.as_slice(), spec.precision))
-            }
-            _ => Err(ExcType::type_error(format!(
-                "%b requires a bytes-like object, or an object that implements __bytes__, not '{}'",
-                value.py_type_name(vm)
-            ))),
-        }
+        value
+            .as_bytes(vm)
+            .map(|bytes| Self::from_bytes(bytes, spec.precision))
+            .ok_or_else(|| {
+                ExcType::type_error(format!(
+                    "%b requires a bytes-like object, or an object that implements __bytes__, not '{}'",
+                    value.py_type_name(vm)
+                ))
+            })
     }
 
     fn char_operand(value: &Value, vm: &mut VM<'_>) -> RunResult<Text<Self>> {

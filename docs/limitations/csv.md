@@ -42,9 +42,11 @@ from the notes below.
     dialect, format parameter or keyword would be; CPython validates the arguments first and never reads
     there.
 - **`writer.writerows()` on a file issues one write.**
-    The rows are formatted and written to the file in a single host call, where CPython calls `write()`
-    once per row, so a row that fails to format leaves the file untouched instead of partly written.
+    The rows are formatted and written to an `open()` file in a single host `write()` call, where CPython
+    calls `write()` once per row, so a row that fails to format leaves the file untouched instead of partly
+    written.
     `DictWriter.writerows()` on a file flattens every dict before writing for the same reason.
+    An `io.StringIO` is written once per row, as in CPython.
     Any other target (an object with a `write()` method) is called once per row as the rows arrive, but
     synchronously: a `write()` that reaches an external function or host call raises `NotImplementedError`
     (see [classes.md](classes.md) for this restriction).
