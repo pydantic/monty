@@ -46,8 +46,9 @@ assert rows.fieldnames == ['x', 'y']
 rows.fieldnames = None
 assert rows.fieldnames == ['c', 'd']
 assert rows.line_num == 2
+# The setter accepts callables at runtime.
 rows.fieldnames = lambda arg: arg
-assert rows.fieldnames('call through the getter') == 'call through the getter'
+assert rows.fieldnames('call through the getter') == 'call through the getter'  # pyright: ignore[reportOptionalCall]
 
 try:
     reader.line_num([])

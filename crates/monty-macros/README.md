@@ -145,7 +145,7 @@ Each annotation names its `StaticStrings` key explicitly:
 - `#[pyvalue(Min)]` registers `(&mut VM) -> Value`.
 - `#[pyget(Fieldnames)]` registers `(Receiver, &mut VM)` returning `Value` or `RunResult<Value>` for an instance attribute.
   Reading the name through the class returns a `getset_descriptor`.
-  Use `#[pyget(Flags, instance)]` for an attribute accessible only through instances.
+  Use `#[pyget(Flags, instance_only)]` for an attribute accessible only through instances.
 - `#[pyset(Fieldnames)]` adds a setter for the getter with the same key.
   It takes `(Receiver, Value, &mut VM)` and returns `()` or `RunResult<()>`.
   The setter owns the incoming value and must release or store it on every path.

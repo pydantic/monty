@@ -99,7 +99,7 @@ impl Type {
             !matches!(
                 attr,
                 AttrDef::GetSet {
-                    kind: AccessorKind::Instance,
+                    kind: AccessorKind::InstanceOnly,
                     ..
                 }
             )

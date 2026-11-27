@@ -55,7 +55,9 @@ pub(crate) fn expand(mut input: ItemImpl) -> syn::Result<TokenStream> {
                             Some(_) if kind != Kind::Get => {
                                 return Err(syn::Error::new_spanned(attr, "expected one StaticStrings key"));
                             }
-                            Some(option) if option == "instance" && args.next().is_none() => Accessor::Instance,
+                            Some(option) if option == "instance_only" && args.next().is_none() => {
+                                Accessor::InstanceOnly
+                            }
                             Some(option) => return Err(syn::Error::new_spanned(option, "unexpected attribute option")),
                         };
                         annotation = Some((kind, name, accessor));
@@ -188,7 +190,7 @@ impl Definition {
         let set = self.set.as_ref().map_or_else(|| quote!(None), |set| quote!(Some(#set)));
         let kind = match self.accessor {
             Accessor::GetSet => quote!(GetSet),
-            Accessor::Instance => quote!(Instance),
+            Accessor::InstanceOnly => quote!(InstanceOnly),
         };
         Ok(quote!(crate::py_attrs::AttrDef::GetSet {
             get: #get, set: #set, kind: crate::py_attrs::AccessorKind::#kind,
@@ -199,7 +201,7 @@ impl Definition {
 #[derive(Clone, Copy)]
 enum Accessor {
     GetSet,
-    Instance,
+    InstanceOnly,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

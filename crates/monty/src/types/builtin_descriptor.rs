@@ -588,7 +588,7 @@ impl<'heap> PyAttrs<'heap> for PyPropertyImpl {
         fdel.clone_with_heap(vm.heap)
     }
 
-    #[pyget(DunderDoc, instance)]
+    #[pyget(DunderDoc, instance_only)]
     fn doc<'h>(this: &HeapObjectRead<'h, BuiltinDescriptor>, vm: &mut VM<'h>) -> Value {
         let BuiltinDescriptor::Property { doc, .. } = this.get(vm.heap) else {
             unreachable!("dispatched on a property");
@@ -646,7 +646,7 @@ impl<'heap> PyAttrs<'heap> for PyFunctionWrapperImpl {
         wrapped_function(this.get(vm.heap)).clone_with_heap(vm.heap)
     }
 
-    #[pyget(DunderName, instance)]
+    #[pyget(DunderName, instance_only)]
     fn name<'h>(this: &HeapObjectRead<'h, BuiltinDescriptor>, vm: &mut VM<'h>) -> RunResult<Value> {
         let descriptor = this.get(vm.heap);
         function_name(wrapped_function(descriptor), vm)

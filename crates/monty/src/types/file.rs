@@ -1800,7 +1800,7 @@ file_attrs!(PyFileImpl {
 });
 
 file_attrs!(PyTextFileImpl {
-    #[pyget(Mode, instance)]
+    #[pyget(Mode, instance_only)]
     fn mode<'h>(this: &HeapObjectRead<'h, OpenFile>, vm: &mut VM<'h>) -> Value {
         allocate_string(this.get(vm.heap).mode.as_str().to_owned(), vm.heap)
     }

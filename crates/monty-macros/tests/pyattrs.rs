@@ -104,7 +104,7 @@ mod py_attrs {
     #[derive(Clone, Copy)]
     pub enum AccessorKind {
         GetSet,
-        Instance,
+        InstanceOnly,
     }
 
     #[derive(Clone, Copy)]
@@ -182,7 +182,7 @@ impl PyAttrs<'_> for FloatMethods {
         Value(3)
     }
 
-    #[pyget(InstanceValue, instance)]
+    #[pyget(InstanceValue, instance_only)]
     fn instance_value(_: f64, _: &mut VM<'_>) -> Value {
         Value(1)
     }
@@ -220,7 +220,7 @@ fn pairs_getter_and_setter_in_one_entry() {
     assert!(matches!(
         (FloatMethods::TABLE.lookup)(StaticStrings::InstanceValue),
         Some(py_attrs::AttrDef::GetSet {
-            kind: py_attrs::AccessorKind::Instance,
+            kind: py_attrs::AccessorKind::InstanceOnly,
             set: None,
             ..
         })

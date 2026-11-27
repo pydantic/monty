@@ -516,7 +516,7 @@ pub(crate) struct PyLruCacheImpl;
 impl<'heap> PyAttrs<'heap> for PyLruCacheImpl {
     type Receiver = HeapObjectRead<'heap, LruCache>;
 
-    #[pyget(DunderWrapped, instance)]
+    #[pyget(DunderWrapped, instance_only)]
     fn wrapped<'h>(this: &HeapObjectRead<'h, LruCache>, vm: &mut VM<'h>) -> RunResult<Value> {
         this.get(vm.heap)
             .func

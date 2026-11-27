@@ -888,7 +888,7 @@ impl<'heap> PyAttrs<'heap> for PyContextImpl {
         set_context_field(this, ContextField::Clamp, value, vm)
     }
 
-    #[pyget(Flags, instance)]
+    #[pyget(Flags, instance_only)]
     fn flags<'h>(this: &HeapObjectRead<'h, DecContext>, vm: &mut VM<'h>) -> Value {
         get_context_field(this, ContextField::Flags, vm)
     }
@@ -898,7 +898,7 @@ impl<'heap> PyAttrs<'heap> for PyContextImpl {
         set_context_field(this, ContextField::Flags, value, vm)
     }
 
-    #[pyget(Traps, instance)]
+    #[pyget(Traps, instance_only)]
     fn traps<'h>(this: &HeapObjectRead<'h, DecContext>, vm: &mut VM<'h>) -> Value {
         get_context_field(this, ContextField::Traps, vm)
     }
