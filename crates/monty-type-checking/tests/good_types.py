@@ -123,6 +123,16 @@ obj = object()
 t = type(42)
 
 
+class SuperBase:
+    def value(self) -> int:
+        return 42
+
+
+class SuperChild(SuperBase):
+    def value(self) -> int:
+        return super().value() + 1
+
+
 # === Primitive Types ===
 
 # bool

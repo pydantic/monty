@@ -3986,6 +3986,16 @@ fn collect_nested_function_references(
     }
 }
 
+/// Records a name read and the implicit `__class__` reference CPython adds for `super`.
+fn collect_name_reference(name: StringId, referenced: &mut AHashSet<StringId>, interner: &CompileInterns<'_>) {
+    referenced.insert(name);
+    if interner.get_str(name) == "super"
+        && let Some(class_name) = interner.get_string_id_by_name("__class__")
+    {
+        referenced.insert(class_name);
+    }
+}
+
 /// Collects all names referenced in an expression.
 fn collect_referenced_names_from_expr(
     expr: &ExprLoc,
@@ -3993,9 +4003,7 @@ fn collect_referenced_names_from_expr(
     interner: &CompileInterns<'_>,
 ) {
     match &expr.expr {
-        Expr::Name(ident) => {
-            referenced.insert(ident.name_id);
-        }
+        Expr::Name(ident) => collect_name_reference(ident.name_id, referenced, interner),
         Expr::Literal(_) => {}
         Expr::Builtin(_) => {}
         Expr::List(items) | Expr::Tuple(items) | Expr::Set(items) => {
@@ -4038,9 +4046,8 @@ fn collect_referenced_names_from_expr(
             collect_referenced_names_from_expr(index, referenced, interner);
         }
         Expr::Call { callable, args } => {
-            // Check if the callable is a Name reference
             if let Callable::Name(ident) = callable {
-                referenced.insert(ident.name_id);
+                collect_name_reference(ident.name_id, referenced, interner);
             }
             collect_referenced_names_from_args(args, referenced, interner);
         }

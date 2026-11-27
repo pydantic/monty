@@ -346,15 +346,17 @@ pub(crate) fn bind_descriptor(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Cal
     defer_drop!(member, vm);
     defer_drop!(instance, vm);
     defer_drop!(owner, vm);
-    let (Value::Ref(instance), Value::Ref(owner)) = (instance, owner) else {
-        return Err(ExcType::type_error(
-            "descriptor binding requires a member, instance and class",
-        ));
+    let instance = match instance {
+        Value::None => None,
+        Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Instance(_)) => Some(*id),
+        _ => return Err(ExcType::type_error("descriptor binding requires an instance or None")),
     };
-    if matches!(vm.heap.get(*instance), HeapData::Instance(_)) && matches!(vm.heap.get(*owner), HeapData::Class(_)) {
-        get(member, Some(*instance), *owner, vm)
+    if let Value::Ref(owner) = owner
+        && matches!(vm.heap.get(*owner), HeapData::Class(_))
+    {
+        get(member, instance, *owner, vm)
     } else {
-        Err(ExcType::type_error("descriptor binding requires an instance and class"))
+        Err(ExcType::type_error("descriptor binding requires a class"))
     }
 }
 
@@ -373,30 +375,43 @@ struct BindingArgs {
 /// Call a class-only special method, binding native functions directly and suspending getters.
 pub(crate) fn call_member(member: &Value, instance: HeapId, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
     if has_get(member, vm) {
-        let (args, kwargs) = pack_args(args, vm)?;
         let HeapData::Instance(object) = vm.heap.get(instance) else {
             unreachable!("special method receiver is an instance")
         };
-        let owner = object.class();
-        vm.heap.inc_ref(instance);
-        vm.heap.inc_ref(owner);
-        vm.call_frozen_exact(
-            FrozenFunction::DescriptorBindCall,
-            [
-                Value::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::BindDescriptor)),
-                member.clone_with_heap(vm.heap),
-                Value::Ref(instance),
-                Value::Ref(owner),
-                args,
-                kwargs,
-            ],
-        )
+        bind_and_call(member, Some(instance), object.class(), args, vm)
     } else if is_method_value(member, vm) {
         vm.heap.inc_ref(instance);
         vm.call_function(member, args.prepend(Value::Ref(instance)))
     } else {
         vm.call_function(member, args)
     }
+}
+
+/// Bind a descriptor before calling its result, preserving arguments across suspension.
+pub(crate) fn bind_and_call(
+    member: &Value,
+    instance: Option<HeapId>,
+    owner: HeapId,
+    args: ArgValues,
+    vm: &mut VM<'_>,
+) -> RunResult<CallResult> {
+    let (args, kwargs) = pack_args(args, vm)?;
+    let instance = instance.map_or(Value::None, |id| {
+        vm.heap.inc_ref(id);
+        Value::Ref(id)
+    });
+    vm.heap.inc_ref(owner);
+    vm.call_frozen_exact(
+        FrozenFunction::DescriptorBindCall,
+        [
+            Value::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::BindDescriptor)),
+            member.clone_with_heap(vm.heap),
+            instance,
+            Value::Ref(owner),
+            args,
+            kwargs,
+        ],
+    )
 }
 
 /// Execute a mutation hook as an ordinary frame and ignore its result.

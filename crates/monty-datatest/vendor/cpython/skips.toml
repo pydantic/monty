@@ -141,3 +141,13 @@
 "test.test_memoryio.PyStringIOTest.test_write" = "Tests the _pyio implementation; CStringIOTest runs these tests on Monty's io."
 "test.test_memoryio.PyStringIOTest.test_writelines" = "Tests the _pyio implementation; CStringIOTest runs these tests on Monty's io."
 "test.test_memoryio.PyStringIOTest.test_writelines_error" = "Tests the _pyio implementation; CStringIOTest runs these tests on Monty's io."
+
+[suites."test_super.py".exclude]
+"test.test_super.TestSuper.test___class___modification_multithreaded" = "Monty does not provide threading."
+"test.test_super.TestSuper.test_cell_as_self" = "Monty does not expose function closure cells."
+"test.test_super.TestSuper.test_pickling" = "Monty does not provide pickle."
+"test.test_super.TestSuper.test_reassigned_new" = "Monty does not expose a class's __dict__, and this test uses CPython's internal specialization threshold."
+"test.test_super.TestSuper.test_special_methods" = "Monty does not implement the pickle protocol."
+"test.test_super.TestSuper.test_super_init_leaks" = "Monty does not expose super.__init__."
+"test.test_super.TestSuper.test_super_subclass___class__" = "Monty does not support subclassing super."
+"test.test_super.TestSuper.test_unusual_getattro" = "Monty does not support metaclasses or CPython's internal specialization threshold."

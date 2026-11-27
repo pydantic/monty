@@ -1,0 +1,176 @@
+Keep upstream runtime probes whose calls are intentionally invalid or rely on dynamic rebinding and attribute lookup.
+Suppress missing modules and type information in cases excluded from Monty execution.
+
+--- a/test/test_super.py
++++ b/test/test_super.py
+@@ -96,7 +96,7 @@
+         self.assertEqual(x.f(), 'A')
+         self.assertEqual(x.__class__, 413)
+         class X:
+-            x = __class__
++            x = __class__  # ty: ignore[unresolved-reference]
+             def f():
+                 __class__
+         self.assertIs(X.x, type(self))
+@@ -126,13 +126,13 @@
+ 
+     def test_obscure_super_errors(self):
+         def f():
+-            super()
++            super()  # ty: ignore[unavailable-implicit-super-arguments]
+         with self.assertRaisesRegex(RuntimeError, r"no arguments"):
+             f()
+ 
+         class C:
+             def f():
+-                super()
++                super()  # ty: ignore[unavailable-implicit-super-arguments]
+         with self.assertRaisesRegex(RuntimeError, r"no arguments"):
+             C.f()
+ 
+@@ -160,11 +160,11 @@
+ 
+     def test_super_argcount(self):
+         with self.assertRaisesRegex(TypeError, "expected at most"):
+-            super(int, int, int)
++            super(int, int, int)  # ty: ignore[no-matching-overload]
+ 
+     def test_super_argtype(self):
+         with self.assertRaisesRegex(TypeError, "argument 1 must be a type"):
+-            super(1, int)
++            super(1, int)  # ty: ignore[invalid-super-argument]
+ 
+     def test_shadowed_global(self):
+         source = textwrap.dedent(
+@@ -197,7 +197,7 @@
+ 
+         class C:
+             def method(self):
+-                return super().msg
++                return super().msg  # ty: ignore[unresolved-attribute]
+ 
+         original = super
+         replace_super(MySuper)
+@@ -215,7 +215,7 @@
+ 
+         class C:
+             def method(self):
+-                return super(1, 2).msg
++                return super(1, 2).msg  # ty: ignore[invalid-super-argument]
+ 
+         original = super
+         replace_super(MySuper)
+@@ -228,7 +228,7 @@
+     def test_attribute_error(self):
+         class C:
+             def method(self):
+-                return super().msg
++                return super().msg  # ty: ignore[unresolved-attribute]
+ 
+         with self.assertRaisesRegex(AttributeError, "'super' object has no attribute 'msg'"):
+             C().method()
+@@ -236,7 +236,7 @@
+     def test_bad_first_arg(self):
+         class C:
+             def method(self):
+-                return super(1, self).method()
++                return super(1, self).method()  # ty: ignore[invalid-super-argument]
+ 
+         with self.assertRaisesRegex(TypeError, "argument 1 must be a type"):
+             C().method()
+@@ -286,7 +286,7 @@
+         self.assertEqual(C().method(), mysuper)
+ 
+     def test_unusual_getattro(self):
+-        from test.support import import_helper
++        from test.support import import_helper  # ty: ignore[import-not-found]
+ 
+         class MyType(type):
+             pass
+@@ -294,14 +294,14 @@
+         def test(name):
+             mytype = MyType(name, (MyType,), {})
+             super(MyType, type(mytype)).__setattr__(mytype, "bar", 1)
+-            self.assertEqual(mytype.bar, 1)
++            self.assertEqual(mytype.bar, 1)  # ty: ignore[unresolved-attribute]
+ 
+         _testinternalcapi = import_helper.import_module("_testinternalcapi")
+         for _ in range(_testinternalcapi.SPECIALIZATION_THRESHOLD):
+             test("foo1")
+ 
+     def test_reassigned_new(self):
+-        from test.support import import_helper
++        from test.support import import_helper  # ty: ignore[import-not-found]
+ 
+         class A:
+             def __new__(cls):
+@@ -309,7 +309,7 @@
+ 
+             def __init_subclass__(cls):
+                 if "__new__" not in cls.__dict__:
+-                    cls.__new__ = cls.__new__
++                    cls.__new__ = cls.__new__  # ty: ignore[invalid-assignment]
+ 
+         class B(A):
+             pass
+@@ -354,7 +354,7 @@
+         This should be the case anyways as our test suite sets
+         an audit hook.
+         """
+-        import threading
++        import threading  # ty: ignore[import-not-found]
+ 
+         class Foo:
+             pass
+@@ -394,10 +394,10 @@
+             self.assertNotHasAttr(s, '__deepcopy__')
+ 
+     def test_pickling(self):
+-        import pickle
++        import pickle  # ty: ignore[import-not-found]
+ 
+         e = E()
+-        e.x = 1
++        e.x = 1  # ty: ignore[unresolved-attribute]
+         s = super(C, e)
+         for proto in range(pickle.HIGHEST_PROTOCOL + 1):
+             with self.subTest(proto=proto):
+@@ -428,18 +428,18 @@
+ 
+     def test_deep_copying(self):
+         e = E()
+-        e.x = [1]
++        e.x = [1]  # ty: ignore[unresolved-attribute]
+         s = super(C, e)
+         u = copy.deepcopy(s)
+         self.assertEqual(u.f(), s.f())
+         self.assertIs(type(u), type(s))
+         self.assertIsNot(u, s)
+-        self.assertIs(type(u.__self__), E)
+-        self.assertIsNot(u.__self__, e)
+-        self.assertIsNot(u.__self__.x, e.x)
+-        self.assertEqual(u.__self__.x, [1])
+-        self.assertIs(u.__thisclass__, C)
+-        self.assertIs(u.__self_class__, E)
++        self.assertIs(type(u.__self__), E)  # ty: ignore[unresolved-attribute]
++        self.assertIsNot(u.__self__, e)  # ty: ignore[unresolved-attribute]
++        self.assertIsNot(u.__self__.x, e.x)  # ty: ignore[unresolved-attribute]
++        self.assertEqual(u.__self__.x, [1])  # ty: ignore[unresolved-attribute]
++        self.assertIs(u.__thisclass__, C)  # ty: ignore[unresolved-attribute]
++        self.assertIs(u.__self_class__, E)  # ty: ignore[unresolved-attribute]
+ 
+         s = super(C, E)
+         u = copy.deepcopy(s)
+@@ -447,9 +447,9 @@
+         self.assertEqual(u.f, s.f)
+         self.assertIsNot(u, s)
+         self.assertIs(type(u), type(s))
+-        self.assertIs(u.__self__, E)
+-        self.assertIs(u.__thisclass__, C)
+-        self.assertIs(u.__self_class__, E)
++        self.assertIs(u.__self__, E)  # ty: ignore[unresolved-attribute]
++        self.assertIs(u.__thisclass__, C)  # ty: ignore[unresolved-attribute]
++        self.assertIs(u.__self_class__, E)  # ty: ignore[unresolved-attribute]
+ 
+ 
+ if sys.platform != 'monty':

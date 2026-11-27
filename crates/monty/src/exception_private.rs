@@ -260,6 +260,11 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::TypeError, format!("'{type_}' object can't be awaited")).into()
     }
 
+    /// Creates the `RuntimeError` for a zero-argument `super()` with no usable frame context.
+    fn runtime_error_super(message: impl Display) -> RunError {
+        SimpleException::new_msg(ExcType::RuntimeError, format!("super(): {message}")).into()
+    }
+
     /// Creates the canonical `RuntimeError: cannot reuse already awaited coroutine`,
     /// raised on direct re-await and on cross-gather coroutine reuse.
     #[must_use]

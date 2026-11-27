@@ -105,3 +105,4 @@ DecimalContextManager 105
 ForwardRef 106
 ClassMethod 170
 StaticMethod 171
+Super 172

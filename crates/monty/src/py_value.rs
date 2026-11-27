@@ -200,6 +200,7 @@ macro_rules! forward_py_value {
             Self::Instance($value) => $body,
             Self::BuiltinDescriptor($value) => $body,
             Self::BoundMethod($value) => $body,
+            Self::Super($value) => $body,
             Self::DataclassField($value) => $body,
             Self::DataclassMethod($value) => $body,
             Self::DataclassParams($value) => $body,

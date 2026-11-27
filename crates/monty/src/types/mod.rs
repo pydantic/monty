@@ -47,6 +47,7 @@ pub(crate) mod sequence;
 pub mod set;
 pub mod slice;
 pub mod str;
+pub(crate) mod super_;
 pub mod time;
 pub mod timedelta;
 pub mod timezone;

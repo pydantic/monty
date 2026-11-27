@@ -34,6 +34,51 @@ fn restore_idle(repl: MontyRepl) -> MontyRepl {
     *repl
 }
 
+/// A class-bound super call retains its arguments while the descriptor getter suspends.
+#[test]
+fn super_descriptor_call_survives_restore() {
+    let code = r"
+class Descriptor:
+    def __get__(self, instance, owner):
+        assert instance is None
+        return build(owner.__name__)
+
+class Base:
+    add = Descriptor()
+
+class Child(Base):
+    pass
+
+super(Child, Child).add(2, offset=3)
+";
+    let progress = repl()
+        .feed_start(
+            code,
+            vec![("build".to_owned(), MontyObject::function("build", None))],
+            PrintWriter::Disabled,
+        )
+        .unwrap();
+    let call = restore(progress).into_function_call().unwrap();
+    assert_eq!(call.function_name, "build");
+    assert_eq!(call.args.args().next().unwrap().as_str(), Some("Child"));
+    let progress = call
+        .resume(
+            ExtFunctionResult::Return(MontyObject::function("add", None)),
+            PrintWriter::Disabled,
+        )
+        .unwrap();
+    let call = restore(progress).into_function_call().unwrap();
+    assert_eq!(call.function_name, "add");
+    assert_eq!(call.args.args().next().unwrap().as_int(), Some(2));
+    let (key, value) = call.args.kwargs().next().unwrap();
+    assert_eq!(key.as_str(), Some("offset"));
+    assert_eq!(value.as_int(), Some(3));
+    let complete = call
+        .resume(ExtFunctionResult::Return(MontyObject::int(5)), PrintWriter::Disabled)
+        .unwrap();
+    assert_eq!(complete.into_complete().unwrap().1, MontyObject::int(5));
+}
+
 /// Forwarded annotation getters retain the caller's fallback across a host error and restore.
 #[test]
 fn bound_method_attribute_errors_survive_suspension_and_restore() {

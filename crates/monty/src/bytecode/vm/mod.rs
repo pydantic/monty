@@ -2930,17 +2930,49 @@ impl<'h> VM<'h> {
         Ok(())
     }
 
+    /// Reads the current value of the first positional parameter, including `Undefined`.
+    pub(crate) fn frame_first_positional(&self) -> Option<&Value> {
+        let func = self.interns.get_function(self.current_frame.function_id?);
+        func.signature.has_positional_param().then(|| {
+            let cell_slot = func
+                .cell_var_slots
+                .iter()
+                .zip(&func.cell_param_indices)
+                .find_map(|(&slot, &index)| (index == Some(0)).then_some(slot));
+            if let Some(slot) = cell_slot {
+                self.local_cell_value(slot.as_u16())
+            } else {
+                &self.stack[self.current_frame.stack_base()]
+            }
+        })
+    }
+
+    /// Reads a captured free variable, not a local of the same name.
+    pub(crate) fn frame_free_var(&self, name: &str) -> Option<&Value> {
+        let func = self.interns.get_function(self.current_frame.function_id?);
+        let slot = func.free_var_slots.iter().map(|slot| slot.as_u16()).find(|&slot| {
+            func.code
+                .local_name(slot)
+                .is_some_and(|id| self.interns.get_str(id) == name)
+        })?;
+        Some(self.local_cell_value(slot))
+    }
+
+    /// Reads the payload of a closure cell held in a frame local.
+    fn local_cell_value(&self, slot: u16) -> &Value {
+        let HeapData::Cell(cell) = self.heap.get(self.cell_id_from_local(slot)) else {
+            unreachable!("cell slots hold cells")
+        };
+        &cell.0
+    }
+
     /// Loads from a closure cell and pushes onto the stack.
     ///
     /// The cell `HeapId` is read from the frame's local variable slot on the stack
     /// (cells are stored as `Value::Ref(cell_id)` at known positions in the locals region).
     /// Returns a `NameError` if the cell value is undefined (free variable not bound).
     fn load_cell(&mut self, slot: u16) -> RunResult<()> {
-        let cell_id = self.cell_id_from_local(slot);
-        let value = match self.heap.get(cell_id) {
-            HeapData::Cell(c) => c.0.clone_with_heap(self),
-            _ => panic!("LoadCell: entry is not a Cell"),
-        };
+        let value = self.local_cell_value(slot).clone_with_heap(self);
 
         // An undefined value raises the error CPython picks by cell kind: the
         // free-variable NameError only for a cell *captured* from an enclosing

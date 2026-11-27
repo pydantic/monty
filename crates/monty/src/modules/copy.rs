@@ -104,7 +104,7 @@ fn shallow_copy(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
     };
     let id = *id;
     match classify(&vm.heap.read(id), vm) {
-        Copyability::Shared | Copyability::ImmutableContainer => Ok(value.clone_with_heap(vm.heap)),
+        Copyability::Shared | Copyability::ShallowShared => Ok(value.clone_with_heap(vm.heap)),
         Copyability::Refused => Err(cannot_copy(value, vm)),
         Copyability::Rebuilt => match vm.heap.read(id) {
             HeapReadOutput::List(list) => {
@@ -186,17 +186,9 @@ fn shallow_copy(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
 
 /// Deep-copying, implemented by the heap types `copy.deepcopy` rebuilds.
 ///
-/// Narrow on purpose: only eleven of the sixty-seven heap types implement it (a
-/// `decimal.Context`, holding no references, is rebuilt inline), so this is a
-/// trait of its own rather than a method on [`PyTrait`](crate::types::PyTrait)
-/// that the others would carry meaninglessly. The method is required, with no
-/// default — a default would be the "refuse it" answer, which is legitimate for
-/// most types, so forgetting to override it would look exactly like deciding
-/// not to. Which types reach this at all is settled by [`classify`].
-///
-/// Implementations memoize an empty shell before filling it, so a container
-/// holding itself resolves to the shell instead of recursing forever, and hold
-/// that shell in a `DropGuard` so a failure partway releases it.
+/// Used for [`Copyability::Rebuilt`] and [`Copyability::ShallowShared`] values.
+/// If an implementation fills an empty shell, memoize it before copying children
+/// so recursive references resolve to it, and keep it in a [`DropGuard`] until filling succeeds.
 pub(crate) trait PyDeepCopy<'h> {
     /// Returns a new object holding deep copies of everything this one holds.
     ///
@@ -230,12 +222,11 @@ pub(crate) fn deep_copy(source: &Value, memo: &mut Memo, vm: &mut VM<'_>) -> Run
     // Dispatched here rather than in a function of its own: every frame live
     // across the recursion is paid once per level of nesting. `classify`
     // returns before the recursion, so its frame is not one of them.
+    let mut replace_memo = false;
     let copy = match classify(&vm.heap.read(id), vm) {
         Copyability::Shared => Ok(source.clone_with_heap(vm.heap)),
         Copyability::Refused => Err(cannot_copy(source, vm)),
-        // An immutable container's items still change, so `deepcopy` rebuilds
-        // the ones `copy` shares.
-        Copyability::Rebuilt | Copyability::ImmutableContainer => match vm.heap.read(id) {
+        Copyability::Rebuilt | Copyability::ShallowShared => match vm.heap.read(id) {
             HeapReadOutput::List(list) => list.py_deep_copy(source, memo, vm),
             HeapReadOutput::Dict(dict) => dict.py_deep_copy(source, memo, vm),
             HeapReadOutput::Deque(deque) => deque.py_deep_copy(source, memo, vm),
@@ -245,6 +236,11 @@ pub(crate) fn deep_copy(source: &Value, memo: &mut Memo, vm: &mut VM<'_>) -> Run
             HeapReadOutput::Tuple(tuple) => tuple.py_deep_copy(source, memo, vm),
             HeapReadOutput::NamedTuple(named) => named.py_deep_copy(source, memo, vm),
             HeapReadOutput::BoundMethod(bound) => bound.py_deep_copy(source, memo, vm),
+            HeapReadOutput::Super(proxy) => {
+                // Copying the receiver can memoize an inner proxy; CPython replaces it with the outer copy.
+                replace_memo = true;
+                proxy.py_deep_copy(source, memo, vm)
+            }
             HeapReadOutput::Partial(partial) => partial.py_deep_copy(source, memo, vm),
             HeapReadOutput::Random(random) => random.py_deep_copy(source, memo, vm),
             // A stream holds no references, so its deep copy is its shallow one.
@@ -261,7 +257,12 @@ pub(crate) fn deep_copy(source: &Value, memo: &mut Memo, vm: &mut VM<'_>) -> Run
     if same_object(source, &copy) {
         Ok(copy)
     } else {
-        match memo.insert_if_absent(source, &copy, vm) {
+        let result = if replace_memo {
+            memo.insert(source, &copy, vm)
+        } else {
+            memo.insert_if_absent(source, &copy, vm)
+        };
+        match result {
             Ok(()) => Ok(copy),
             Err(e) => {
                 copy.drop_with(vm);
@@ -287,9 +288,8 @@ enum Copyability {
     /// Shared by both passes. Values CPython shares too, so rebuilding one
     /// would be the divergence — its `_copy_atomic_types` set.
     Shared,
-    /// Shared by `copy`, which keeps the same items, and rebuilt by `deepcopy`,
-    /// which does not.
-    ImmutableContainer,
+    /// Shared by `copy` and rebuilt by `deepcopy`.
+    ShallowShared,
     /// Refused, with the `TypeError` CPython's pickler raises.
     Refused,
 }
@@ -309,11 +309,7 @@ fn classify<'h>(output: &HeapReadOutput<'h>, vm: &VM<'h>) -> Copyability {
         | HeapReadOutput::StringIo(_)
         | HeapReadOutput::BytesIo(_)
         | HeapReadOutput::DecimalContext(_) => Copyability::Rebuilt,
-        // A shallow copy of an immutable container holds the same items, so
-        // CPython hands back the original; only `deepcopy` rebuilds these.
-        HeapReadOutput::Tuple(_) | HeapReadOutput::FrozenSet(_) => {
-            Copyability::ImmutableContainer
-        }
+        HeapReadOutput::Tuple(_) | HeapReadOutput::FrozenSet(_) | HeapReadOutput::Super(_) => Copyability::ShallowShared,
         // CPython's cache wrappers share their state through both copy operations.
         HeapReadOutput::LruCache(_) => Copyability::Shared,
         HeapReadOutput::BuiltinDescriptor(d) => {

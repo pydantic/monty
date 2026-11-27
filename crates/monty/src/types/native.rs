@@ -32,6 +32,7 @@ use crate::{
         io::{BytesIo, PyBytesIoImpl, PyStringIoImpl, StringIo},
         numeric,
         str::PyStr,
+        super_::super_new,
         time, timedelta,
         r#type::{bool_init, float_init, int_init, union_init},
     },
@@ -441,6 +442,7 @@ impl Type {
             Self::BlockingIOError => 169,
             Self::ClassMethod => 170,
             Self::StaticMethod => 171,
+            Self::Super => 172,
         }
     }
 
@@ -1215,6 +1217,7 @@ native_types! {
         .exc(ExcType::InvalidStateError),
     ClassMethod("classmethod").builtin().basetype().ctor(Constructor::Value(builtin_descriptor::classmethod_init)),
     StaticMethod("staticmethod").builtin().basetype().ctor(Constructor::Value(builtin_descriptor::staticmethod_init)),
+    Super("super").builtin().basetype().ctor(Constructor::Value(super_new)),
 }
 
 #[cfg(test)]

@@ -191,6 +191,87 @@ assert self_bound_copy.cb() == [1, 7]
 assert self_bound.v == [1]
 
 
+# === super proxies ===
+class CopyBase:
+    def get(self):
+        return self.items
+
+
+class CopyChild(CopyBase):
+    def __init__(self):
+        self.items = [1]
+
+
+copy_receiver = CopyChild()
+proxy = super(CopyChild, copy_receiver)
+assert copy.copy(proxy) is proxy
+proxy_copy = copy.deepcopy(proxy)
+assert type(proxy_copy) is super
+assert proxy_copy is not proxy
+assert proxy_copy.__thisclass__ is CopyChild
+assert proxy_copy.__self_class__ is CopyChild
+assert proxy_copy.__self__ is not copy_receiver
+assert proxy_copy.get() is not copy_receiver.items
+assert proxy_copy.get() == [1]
+
+for other_proxy in (super(CopyChild), super(CopyChild, CopyChild)):
+    assert copy.copy(other_proxy) is other_proxy
+    other_copy = copy.deepcopy(other_proxy)
+    assert other_copy is not other_proxy
+    assert other_copy.__thisclass__ is CopyChild
+    assert other_copy.__self__ is other_proxy.__self__
+    assert other_copy.__self_class__ is other_proxy.__self_class__
+
+# The receiver's back-reference produces an inner proxy; subsequent copies reuse the outer one.
+copy_receiver.proxy = proxy
+memo = {}
+first, again = copy.deepcopy([proxy, proxy], memo)
+assert first is again
+assert memo[id(proxy)] is first
+assert first.__self__.proxy is not first
+assert first.__self__.proxy.__self__ is first.__self__
+
+
+class ReplacingReceiver(CopyBase):
+    def __deepcopy__(self, memo):
+        return CopyChild()
+
+
+replaced = copy.deepcopy(super(CopyBase, ReplacingReceiver()))
+assert replaced.__thisclass__ is CopyBase
+assert replaced.__self_class__ is CopyChild
+assert type(replaced.__self__) is CopyChild
+
+
+class InvalidReceiver(CopyBase):
+    def __deepcopy__(self, memo):
+        return 42
+
+
+try:
+    copy.deepcopy(super(CopyBase, InvalidReceiver()))
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == 'super(type, obj): obj (instance of int) is not an instance or subtype of type (CopyBase).'
+
+
+class ProxyCopyHook:
+    def __deepcopy__(self, memo):
+        return 'hook on the proxy'
+
+
+class HookChild(ProxyCopyHook):
+    pass
+
+
+hook_proxy = super(HookChild, HookChild())
+assert copy.copy(hook_proxy) is hook_proxy
+assert copy.deepcopy(hook_proxy) == 'hook on the proxy'
+
+ProxyCopyHook.__deepcopy__ = property(lambda self: lambda memo: 'hook from a property')
+assert copy.deepcopy(hook_proxy) == 'hook from a property'
+
+
 # === partials are rebuilt, not shared ===
 def take(*args, **kwargs):
     return (args, kwargs)

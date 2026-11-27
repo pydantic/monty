@@ -61,6 +61,7 @@ from typing import (  # noqa: Y022,UP035,RUF100
 
 # we can't import `Literal` from typing or mypy crashes: see #11247
 from typing_extensions import (  # noqa: Y023
+    Concatenate,
     Literal,
     LiteralString,
     ParamSpec,
@@ -140,6 +141,47 @@ class object:
     def __subclasshook__(cls, subclass: type, /) -> bool: ...
 
 @disjoint_base
+class staticmethod(Generic[_P, _R_co]):
+    @property
+    def __func__(self) -> Callable[_P, _R_co]: ...
+    @property
+    def __isabstractmethod__(self) -> bool: ...
+    def __init__(self, f: Callable[_P, _R_co], /) -> None: ...
+    @overload
+    def __get__(self, instance: None, owner: type, /) -> Callable[_P, _R_co]: ...
+    @overload
+    def __get__(self, instance: _T, owner: type[_T] | None = None, /) -> Callable[_P, _R_co]: ...
+    if sys.version_info >= (3, 10):
+        __name__: str
+        __qualname__: str
+        @property
+        def __wrapped__(self) -> Callable[_P, _R_co]: ...
+        def __call__(self, *args: _P.args, **kwargs: _P.kwargs) -> _R_co: ...
+    if sys.version_info >= (3, 14):
+        def __class_getitem__(cls, item: Any, /) -> GenericAlias: ...
+        __annotate__: AnnotateFunc | None
+
+@disjoint_base
+class classmethod(Generic[_T, _P, _R_co]):
+    @property
+    def __func__(self) -> Callable[Concatenate[type[_T], _P], _R_co]: ...
+    @property
+    def __isabstractmethod__(self) -> bool: ...
+    def __init__(self, f: Callable[Concatenate[type[_T], _P], _R_co], /) -> None: ...
+    @overload
+    def __get__(self, instance: _T, owner: type[_T] | None = None, /) -> Callable[_P, _R_co]: ...
+    @overload
+    def __get__(self, instance: None, owner: type[_T], /) -> Callable[_P, _R_co]: ...
+    if sys.version_info >= (3, 10):
+        __name__: str
+        __qualname__: str
+        @property
+        def __wrapped__(self) -> Callable[Concatenate[type[_T], _P], _R_co]: ...
+    if sys.version_info >= (3, 14):
+        def __class_getitem__(cls, item: Any, /) -> GenericAlias: ...
+        __annotate__: AnnotateFunc | None
+
+@disjoint_base
 class type:
     # object.__base__ is None. Otherwise, it would be a type.
     @property
@@ -194,6 +236,15 @@ class type:
     __annotations__: dict[str, AnnotationForm]
     if sys.version_info >= (3, 14):
         __annotate__: AnnotateFunc | None
+
+@disjoint_base
+class super:
+    @overload
+    def __init__(self, t: Any, obj: Any, /) -> None: ...
+    @overload
+    def __init__(self, t: Any, /) -> None: ...
+    @overload
+    def __init__(self) -> None: ...
 
 _PositiveInteger: TypeAlias = Literal[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
 _NegativeInteger: TypeAlias = Literal[-1, -2, -3, -4, -5, -6, -7, -8, -9, -10, -11, -12, -13, -14, -15, -16, -17, -18, -19, -20]
