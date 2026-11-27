@@ -150,8 +150,7 @@ assert repr('\t\n\r') == "'\\t\\n\\r'"
 assert repr('café 日本') == "'café 日本'"
 # non-printable unicode beyond the control range is escaped too (Cf/Zs/Co/...)
 assert repr('\xa0') == "'\\xa0'"
-assert repr('
-') == "'\\u2028'"
+assert repr(' ') == "'\\u2028'"
 assert repr('\xad') == "'\\xad'"
 assert repr('\U000f4240') == "'\\U000f4240'"
 assert repr('　') == "'\\u3000'"
