@@ -1,0 +1,236 @@
+# Standard library modules
+
+Monty provides a fixed set of stdlib modules.
+Other imports ask the host, which answers with a [host module](#host-modules) or the module's
+[`.py` file](#modules-from-files) from the working directory, and raise `ModuleNotFoundError` if it has neither.
+There is no `sys.path` or site-packages.
+
+`os.path` (also importable as `posixpath`) is the only submodule.
+
+Every import of a native module builds a fresh module object; there is no `sys.modules` cache, except for
+[vendored CPython modules](#vendored-cpython-modules) and [modules from files](#modules-from-files).
+Thus `import math as a; import math as b` leaves `a is not b`, and changes such as `sys.argv.append(...)` do not
+survive the next import.
+Assigning a native module's attributes raises `AttributeError`, as in `sys.x = 1`.
+[Host modules](#host-modules) are module objects too, bound afresh by every import.
+The one exception is `random`'s module-level generator, which is session
+state: a `random.seed(...)` is still in effect after a later `import random`,
+in the next feed, and after a dump (see [random.md](random.md)).
+
+## Modules available
+
+| Module          | See                                   |
+| --------------- | ------------------------------------- |
+| `_io`           | [io.md](io.md)                        |
+| `annotationlib` | [annotationlib.md](annotationlib.md)  |
+| `asyncio`       | [asyncio.md](asyncio.md)              |
+| `base64`        | [base64.md](base64.md)                |
+| `binascii`      | [base64.md](base64.md)                |
+| `bisect`        | [bisect.md](bisect.md)                |
+| `collections`   | [collections.md](collections.md)      |
+| `colorsys`      | [vendored](#vendored-cpython-modules) |
+| `copy`          | [copy.md](copy.md)                    |
+| `csv`           | [csv.md](csv.md)                      |
+| `dataclasses`   | [dataclasses.md](dataclasses.md)      |
+| `datetime`      | [datetime.md](datetime.md)            |
+| `decimal`       | [decimal.md](decimal.md)              |
+| `errno`         | [errno.md](errno.md)                  |
+| `fnmatch`       | [fnmatch.md](fnmatch.md)              |
+| `functools`     | [functools.md](functools.md)          |
+| `hashlib`       | [hashlib.md](hashlib.md)              |
+| `io`            | [io.md](io.md)                        |
+| `itertools`     | [itertools.md](itertools.md)          |
+| `json`          | [json.md](json.md)                    |
+| `keyword`       | [vendored](#vendored-cpython-modules) |
+| `math`          | [math.md](math.md)                    |
+| `os`            | [os.md](os.md)                        |
+| `os.path`       | [os.md](os.md)                        |
+| `pathlib`       | [pathlib.md](pathlib.md)              |
+| `posixpath`     | [os.md](os.md)                        |
+| `random`        | [random.md](random.md)                |
+| `re`            | [re.md](re.md)                        |
+| `stat`          | [vendored](#vendored-cpython-modules) |
+| `statistics`    | [statistics.md](statistics.md)        |
+| `sys`           | [sys.md](sys.md)                      |
+| `textwrap`      | [vendored](#vendored-cpython-modules) |
+| `time`          | [time.md](time.md)                    |
+| `tomllib`       | [tomllib.md](tomllib.md)              |
+| `typing`        | [typing.md](typing.md)                |
+| `unicodedata`   | [unicodedata.md](unicodedata.md)      |
+
+`collections` is importable and exposes `deque`, `Counter`, `defaultdict`,
+and `namedtuple`; `OrderedDict`, `ChainMap`, and the `UserDict` / `UserList`
+/ `UserString` wrappers are missing (see [collections.md](collections.md)).
+
+A `gc` module exposing `collect()` / `enable()` / `disable()` is compiled
+in only under the `test-hooks` Cargo feature, for Monty's own test suite;
+production sandboxes never see it.
+
+## Notable modules NOT available
+
+Common modules that are *not* importable in Monty (non-exhaustive):
+`abc`, `argparse`, `array`, `contextlib`,
+`ctypes`, `enum`, `fractions`,
+`heapq`, `hmac`, `http`, `inspect`,
+`logging`, `multiprocessing`, `operator`, `pickle`, `queue`,
+`socket`, `string`, `struct`, `subprocess`, `tempfile`, `threading`,
+`traceback`, `unittest`, `urllib`, `uuid`, `warnings`, `weakref`,
+`zipfile`, `zlib`.
+
+`socket`, `subprocess`, `multiprocessing`, `threading` and `ctypes` are
+excluded because they would breach the sandbox. Others (`enum`, `operator`)
+are unimplemented and may appear over time.
+
+Some available modules cover only part of their CPython surface: `functools`
+implements only `reduce`, `partial`, `lru_cache`, and `cache`, `copy` only `copy()` and `deepcopy()`,
+`time` everything but `tzset` and the `clock_*` family, `hashlib` everything but `file_digest()` and `scrypt()`,
+`io` the in-memory streams, `open()` and its constants but not the ABCs or `FileIO` (see [io.md](io.md)),
+and `collections` only the four types above; `tomllib` all three of its names, with the argument and exception differences listed in [tomllib.md](tomllib.md).
+The absent names are missing from
+the module namespace rather than stubbed, so they fail type checking as well as
+raising `AttributeError` at runtime; see each module's page for the specifics.
+
+## Modules the type checker resolves but the runtime does not
+
+`abc`, `enum`, `types`, `typing_extensions`, `_collections_abc` and `_typeshed` support the vendored
+stubs, so their imports pass type checking.
+At runtime, the host must provide them or the import raises `ModuleNotFoundError`.
+The worker never requests host stubs for vendored typeshed modules: a host-provided `abc` is checked against
+typeshed's `abc` declarations.
+
+## Vendored CPython modules
+
+`colorsys`, `io`, `keyword`, `stat` and `textwrap` run CPython 3.14's own `Lib/*.py`, copied from the release pinned in
+`crates/monty/stdlib/vendor.toml`, so they match CPython wherever the language features they use do.
+They differ from CPython's modules in how they are loaded:
+
+- Each is compiled the first time a session imports it, then cached by name for the rest of the session, like a
+    [module from a file](#modules-from-files); a session dump keeps it.
+- `__file__` is `<stdlib>/<name>.py`, which is not a path in the sandbox's filesystem, and tracebacks through
+    the module show that name where CPython shows its installation path.
+- Their globals are those of a [module from a file](#modules-from-files): `__spec__`, `__loader__`, `__cached__`,
+    `__builtins__` and `__doc__` are not defined.
+- The host is never asked for these names, so neither a host module nor a same-named `.py` file in the working
+    directory can shadow them; in CPython a script's directory comes before the standard library on `sys.path`.
+
+Monty patches `keyword.iskeyword` and `keyword.issoftkeyword` to be Python functions, where CPython binds
+`frozenset.__contains__`.
+A wrong argument count raises `TypeError: iskeyword() missing 1 required positional argument: 's'` (CPython:
+`frozenset.__contains__() takes exactly one argument (0 given)`), and their `repr()` differs.
+
+`stat` always uses the pure-Python definitions.
+The type checker resolves `_stat` for the `stat` stub, but the runtime reserves the name: `import _stat` raises
+`ModuleNotFoundError` without consulting the host.
+The `stat` stub retains CPython's positional-only signatures, so the checker rejects keyword arguments that the
+pure-Python functions accept.
+
+- Its functions are Python functions with Python's argument errors.
+- A non-`int` mode raises `TypeError: unsupported operand type(s) for &: 'str' and 'int'`
+    (CPython: `'str' object cannot be interpreted as an integer`).
+- Negative and oversized modes are masked rather than rejected: `stat.S_ISDIR(-1)` returns `False` where CPython
+    raises `OverflowError: can't convert negative value to unsigned int`.
+- Platform-specific constants take `stat.py`'s portable values: `S_IFWHT` is `0` and `SF_SETTABLE` is `0xffff0000`,
+    where CPython on macOS reports `0o160000` and `0x3fff0000`.
+
+`io` runs over a native `_io`, split on CPython's boundary, but is patched down to `_io`'s re-exports and the
+`SEEK_*` constants.
+Monty has no metaclasses or `abc`, so the `IOBase`, `RawIOBase`, `BufferedIOBase` and `TextIOBase` ABCs and the
+`Reader` and `Writer` protocols are dropped, along with the `_io` names Monty lacks (see [io.md](io.md)).
+
+`textwrap` is patched because Monty does not parse `del` yet: the class-body `del` that CPython uses to remove the
+regex building blocks is dropped, so `TextWrapper.word_punct`, `TextWrapper.letter`, `TextWrapper.nowhitespace`
+and `TextWrapper.whitespace` exist as class attributes (CPython deletes them), and the statements `del chunks[-1]` and
+`del cur_line[-1]` are `.pop()` calls with the same effect.
+`dedent()` is also patched to name a non-`str` argument's type by `__name__` in its `TypeError`, because Monty types
+have no `__qualname__` (see [classes.md](classes.md)): a class defined inside a function shows as `'Adder'` where
+CPython shows `'make.<locals>.Adder'`.
+
+## Star imports
+
+`from m import *` binds the names in `m.__all__`, or every name of `m` not starting with `_`, for native, vendored,
+host and file modules alike, with these differences from CPython:
+
+- A native module's `__all__` holds only the names of CPython's `__all__` that Monty implements, and is always a
+    `list` (CPython's is a tuple for `asyncio`, `datetime`, `hashlib` and `tomllib`), in the order Monty defines them.
+    Modules whose CPython counterpart has no `__all__` have none.
+    Host modules have no `__all__` (their dunders raise `AttributeError`), so every attribute not starting with `_` is
+    bound.
+- `__all__` is read in full before the first name is bound, where CPython reads entry `i` just before binding it.
+    The difference shows only through a class whose `__getitem__` has side effects, which all happen first, or when
+    binding an earlier name fails, which CPython stops at before asking for the later entries.
+    That `__getitem__` cannot call external or OS functions; see [classes.md](classes.md).
+- At module level, each new name takes a global slot; the 65537th distinct global name raises
+    `SyntaxError: too many distinct names in scope; maximum is 65536 per scope`.
+
+## Host modules
+
+Unknown imports request the top-level name through the `import` OS call; `__import__` is undefined.
+The same call carries the module's search path, so a host with no module of that name can answer with its
+[file](#modules-from-files) instead; an exception the host raises is the import's error.
+Dotted imports such as `import a.b.c` request `a`, then read `b` and `c` as successive attributes of a host module.
+Bundled modules that are not packages never request host submodules: `import os.x` raises
+`ModuleNotFoundError: No module named 'os.x'; 'os' is not a package`.
+The host's answer becomes the imported `module` object, with these differences from CPython:
+
+- Dunder attributes, including `m.__name__` and `m.__dict__`, raise `AttributeError`.
+- Every `import` requests the module again, including imports inside functions.
+    Two imports bind distinct objects: `import m as a; import m as b` leaves `a is not b`.
+- Assigning an attribute raises `AttributeError`, as on a bundled module; a function call runs the host's current
+    attribute, and the next import binds the module afresh.
+- Host exceptions are raised at the `import`.
+- Host modules are packages: a missing submodule, or `import m.x` for an attribute `x` that is not a module, raises
+    `ModuleNotFoundError: No module named 'm.x'`.
+- `from m import x` reads the module's attributes; missing names raise
+    `ImportError: cannot import name 'x' from 'm' (unknown location)`.
+- Python classes among a module's attrs become host functions: `m.X()` constructs on the host, but
+    `isinstance(v, m.X)` raises `TypeError`.
+    Wrap a class in `ClassType` to send it as a type.
+- Imports with more than 32 dotted components raise `SyntaxError`; `import a.b.c` has three.
+
+With no host or mount to answer, every unknown module raises `ModuleNotFoundError`.
+`monty file.py` answers imports from its `--mount` directories only (see [files](#modules-from-files)).
+
+## Modules from files
+
+An `import` the host has no module for runs the module's file, which the host finds on the search path the `import`
+call carries: `<dir>/name/__init__.py`, then `<dir>/name.py`, for each directory.
+The bindings read each candidate through the `os` handler and the feed's mounts (see
+[importing modules](../filesystem.md#importing-modules)).
+`FileNotFoundError`, `NotADirectoryError`, `IsADirectoryError` and `PermissionError` (including the answer outside
+any mount) move on to the next file; any other error raises at the `import`.
+Differences from CPython:
+
+- The working directory at the time of the `import` is the only search location.
+    There is no `sys.path`, `PYTHONPATH`, `.pth` file or site-packages.
+- Bundled modules are never shadowed: a `json.py` in the working directory is not read by `import json`, where
+    CPython would import it.
+- An unreadable module file is skipped rather than raising `PermissionError`, so the import raises
+    `ModuleNotFoundError` when no later candidate exists.
+- Each module the cache lacks costs one `import` call, one suspension against
+    [`max_suspensions`](resource_limits.md#suspensions), however many files the host reads.
+- A worker or binding from a release before file imports leaves the search out, so a mixed pairing raises
+    `ModuleNotFoundError` for every module file.
+- A file module is cached for the session by its dotted name, but there is no `sys.modules` or `importlib`, so nothing
+    clears the cache: a file edited after its first import is not read again, even in later feeds or after `os.chdir`,
+    and later imports of the name bind the cached module without asking the host.
+    A module whose body raises is dropped from the cache, so the next import runs it again.
+- Each submodule of a file package is its own `import` call for the dotted name (`pkg.sub`), searching the package's
+    `__path__` directories, joined to the working directory.
+    Monty reads lists, tuples, and named tuples for `__path__`. CPython also searches other iterable paths.
+    Only the first 32 directories of `__path__` are searched; later entries are ignored.
+    Relative imports inside a package are supported; see [language.md](language.md#imports) for their differences.
+    Directories without an `__init__.py` (namespace packages) are not found.
+- Module globals are `__name__`, `__file__`, `__package__` and, for a package, `__path__`; `__spec__`, `__loader__`,
+    `__cached__`, `__builtins__` and `__doc__` are not defined.
+    `m.__dict__` raises `AttributeError`, and `vars` and `dir` are not implemented (see [builtins.md](builtins.md)).
+- Module code looks names up in its globals and the builtins, never on the host: calling a
+    [host function](../host-functions.md) by name raises `NameError` unless the importer binds it on the module first,
+    as in `helpers.fetch = fetch`.
+- A `SyntaxError` in a module file shows the file's frame and line, but `str(exc)` lacks CPython's
+    `(name.py, line N)` suffix.
+- No bytecode is cached: each session compiles every module it imports.
+    The source of an imported module stays allocated for the rest of the session, counted against `max_memory`.
+- The type checker does not read module files, so a type-checked feed that imports a file module fails with
+    `import-not-found`.
+    [Module stubs](../type-checking.md) come only with host modules, which would shadow the file; feed such code with
+    `skip_type_check=True`.
