@@ -37,7 +37,7 @@ and function-attributes-become-methods), bound methods, class variables
 (arbitrary expressions, evaluated in a real suspendable class-body scope),
 class and method decorators (including `property`, `classmethod`, and `staticmethod`),
 `__repr__`/`__str__`/`__enter__`/`__exit__`/`__eq__`/`__hash__` dispatch,
-`__call__`, `__getitem__`/`__setitem__`, unary `+`/`-`, and binary numeric operators
+`__call__`, `__getitem__`/`__setitem__`/`__delitem__`, unary `+`/`-`, and binary numeric operators
 (including `@`, `divmod()` and `pow()`) with their reflected forms,
 `obj.__class__`, `Foo.__name__`, `Foo.__doc__`/`obj.__doc__`,
 `Foo.__annotations__` (evaluated lazily, see [typing.md](typing.md#annotations)),
@@ -134,7 +134,8 @@ order and error wording, but with these divergences:
     comparison.
 - **Arithmetic, conversion, rounding and subscript dunders cannot suspend.**
     `__neg__`, `__pos__`, `__abs__`, `__invert__`, `__int__`, `__float__`, `__round__`, `__floor__`, `__ceil__`,
-    `__trunc__`, binary numeric dunders (including reflected forms), `__getitem__` and `__setitem__` run synchronously.
+    `__trunc__`, binary numeric dunders (including reflected forms), and `__getitem__`, `__setitem__` and `__delitem__`
+    run synchronously.
     An external or OS call raises `NotImplementedError` rather than yielding to the host.
     `__call__` uses the ordinary suspendable call path.
 - **Ordering dunders are still not dispatched**; see the entry above.
@@ -514,7 +515,7 @@ every construction request. Divergences:
     `obj.__repr__()` / `obj.__str__()` calls when the class defines none, all
     raise `AttributeError`.
 - Class-body statements other than a `def`, a simple `name [: T] = <expr>`
-    variable assignment, `pass`, `...`, or a docstring, e.g. `if`/`for`/`while`
+    variable assignment, `del`, `pass`, `...`, or a docstring, e.g. `if`/`for`/`while`
     in the class body, or tuple/multiple assignment targets (rejected at parse
     time).
 - Assignment expressions (`:=`) that bind in the class-body scope: in
@@ -526,7 +527,8 @@ every construction request. Divergences:
     (`f = lambda: (z := 1)`) binds in the lambda's own scope and works. A walrus
     in a comprehension in the class body is also rejected (CPython rejects that
     too, but as a `SyntaxError` with different wording).
-- `del obj.attr` (the `del` statement is unsupported generally).
+- **Implicit class attributes are not all bound during the class body.** For example, `del __module__` raises
+    `NameError`, where CPython deletes the binding.
 
 ## `object`
 

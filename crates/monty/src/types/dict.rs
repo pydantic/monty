@@ -1512,6 +1512,18 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
         }
         Ok(())
     }
+
+    fn py_delitem(&self, key: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        defer_drop!(key, vm);
+        if let Some((stored_key, value)) = self.pop(key, vm)? {
+            [stored_key, value].drop_with(vm);
+            Ok(())
+        } else if self.get(vm.heap).is_counter() {
+            Ok(())
+        } else {
+            Err(ExcType::key_error(key, vm))
+        }
+    }
 }
 
 impl<'h> HeapObjectRead<'h, Dict> {

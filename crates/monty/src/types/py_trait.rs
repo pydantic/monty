@@ -2,11 +2,11 @@ use std::{borrow::Cow, cmp::Ordering, fmt::Write, str};
 
 use ahash::AHashSet;
 
-use super::{TypeRef, allocate_string};
+use super::{Type, TypeRef, allocate_string};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
-    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     expressions::CmpOperator,
     hash::HashValue,
     heap::{DropWithContext, HeapId, HeapObjectRead, HeapReadOutput},
@@ -659,6 +659,20 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
             format!("'{}' object does not support item assignment", self.py_type_name(vm)),
         )
         .into())
+    }
+
+    /// Python subscript deletion, consuming `key` on both success and error.
+    fn py_delitem(&self, key: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        key.drop_with(vm);
+        Err(self.unsupported_delitem(vm))
+    }
+
+    /// CPython uses a contraction for immutable sequences with a subscript slot.
+    fn unsupported_delitem(&self, vm: &VM<'h>) -> RunError {
+        let ty = self.py_type(vm);
+        let contracted = matches!(ty.native(), Some(Type::Str | Type::Bytes | Type::Range))
+            || ty.is_subclass_of(Type::Tuple.into(), vm.heap);
+        ExcType::type_error_not_sub_deletion(&self.py_type_name(vm), contracted)
     }
 
     /// Python attribute assignment, consuming `value` on both success and error.

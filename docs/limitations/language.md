@@ -11,7 +11,7 @@ any code runs.
     `__init__`/`__repr__`/`__str__`, class variables of arbitrary expressions).
     Rejected at parse time: metaclasses (`class Foo(metaclass=M):`), `**kwargs`
     in a class statement, and class-body statements other than `def`, a simple
-    `name [: T] = <expr>` assignment, `pass`, or a docstring. Classes can inherit
+    `name [: T] = <expr>` assignment, `del`, `pass`, or a docstring. Classes can inherit
     from other classes and `object` but not from native types, and there is no
     general dunder protocol. See [classes.md](classes.md).
 - **`async with` statements** — not yet supported.
@@ -19,7 +19,6 @@ any code runs.
     *expressions* (`(x for x in ...)`) parse but currently materialize to a
     `list` rather than a lazy iterator, a known temporary divergence; see
     `iter__generator_expr_type.py`.
-- **Unsupported `del` forms** — `del x`, `del d[k]`, and multiple targets.
 - **`try*` / `except*` exception groups** — PEP 654 syntax rejected.
 - **`type` aliases** (PEP 695 `type Foo = int`).
 - **`async for` loops** and **async comprehensions**.
@@ -47,6 +46,10 @@ Unpacking a named tuple into too few targets reports its total length, for examp
 `ValueError: too many values to unpack (expected 1, got 2)`. CPython omits `got 2` for named tuples.
 
 See [comprehensions.md](comprehensions.md) for the comprehension target restriction.
+
+## Deletion
+
+Invalid targets such as `del *x` raise `SyntaxError: Invalid delete target`, where CPython names the kind of target.
 
 ## Source nesting depth
 
@@ -167,6 +170,8 @@ via `global __name__` inside a function, and augmented assignment like
 `NotImplementedError: cannot reassign read-only module attribute '<name>'`.
 CPython instead *allows* rebinding most of them (it is how you set a module
 docstring), and rejects only `__debug__`, with a `SyntaxError`.
+Deleting one of these names raises `NameError` when there is no namespace entry behind it, except `del __debug__`,
+which is a `SyntaxError` as in CPython.
 
 Binding one of these names as a **function local** is allowed (it is an
 ordinary local in a separate namespace), matching CPython, except `__debug__`,

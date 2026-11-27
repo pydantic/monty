@@ -740,6 +740,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, SignalDict> {
         Ok(Value::Bool(self.get(vm.heap).read(vm).has_signal(signal)))
     }
 
+    fn py_delitem(&self, key: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        key.drop_with(vm);
+        Err(ExcType::value_error("signal keys cannot be deleted"))
+    }
+
     fn py_setitem(&mut self, key: Value, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         defer_drop!(key, vm);
         defer_drop!(value, vm);
@@ -1300,9 +1305,10 @@ impl<'heap> PyAttrs<'heap> for PySignalDictImpl {
     }
 
     #[pymethod(DunderDelitem)]
-    fn __delitem__<'h>(_: &HeapObjectRead<'h, SignalDict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        args.drop_with(vm);
-        Err(ExcType::value_error("signal keys cannot be deleted"))
+    fn __delitem__<'h>(this: &HeapObjectRead<'h, SignalDict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let key = args.get_one_arg("__delitem__", vm.heap)?;
+        this.py_delitem(key, vm)?;
+        Ok(Value::None)
     }
 
     #[pymethod(Pop)]

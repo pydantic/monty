@@ -335,19 +335,7 @@ impl<'h> HeapRead<'h, Deque> {
 
     /// Resolves a Python index (negative counts from the right) to a real one.
     fn resolve_index(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<usize> {
-        // A slice is rejected with CPython's sequence wording (names the type).
-        if let Value::Ref(id) = key
-            && matches!(vm.heap.get(*id), HeapData::Slice(_))
-        {
-            return Err(ExcType::type_error_sequence_index("slice"));
-        }
-        // A big int is a valid index, raising `IndexError` if it can't fit.
-        let index = if let Some(res) = read_ssize(key, vm, ExcType::index_error_int_too_large) {
-            res?
-        } else {
-            let name = key.py_type_name(vm);
-            return Err(ExcType::type_error_sequence_index(&name));
-        };
+        let index = key.as_index(vm, Type::Deque)?;
         let len = i64::try_from(self.get(vm.heap).len()).expect("deque length exceeds i64::MAX");
         let normalized = if index < 0 { index + len } else { index };
         if normalized < 0 || normalized >= len {
@@ -449,6 +437,16 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
         }
         // The guard drops whatever `value` holds after the swap — i.e. the old item.
         mem::swap(&mut self.get_mut(vm.heap).items[idx], value);
+        Ok(())
+    }
+
+    fn py_delitem(&self, key: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        defer_drop!(key, vm);
+        let idx = self.resolve_index(key, vm)?;
+        let deque = self.get_mut(vm.heap);
+        let value = deque.items.remove(idx).expect("index is in bounds");
+        deque.bump_state();
+        value.drop_with(vm);
         Ok(())
     }
 

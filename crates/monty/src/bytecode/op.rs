@@ -93,7 +93,7 @@ pub fn decode_assert_flags(flags: u8) -> Option<Option<CmpOperator>> {
 /// Opcode bytes are part of Monty's serialized `Code` format. Explicit
 /// discriminants prevent source reordering or removal from changing that format
 /// accidentally; intentional renumbering requires a dump-format version bump.
-#[monty_macros::explicit_discriminants(checksum = 0xcfa6_6168_5f74_b86e)]
+#[monty_macros::explicit_discriminants(checksum = 0xf949_aec4_81f5_50c7)]
 #[repr(u8)]
 #[cfg_attr(test, derive(strum::EnumIter))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromRepr)]
@@ -318,7 +318,6 @@ pub enum Opcode {
     BinarySubscr = 75,
     /// a[b] = c: pop value, pop index, pop obj.
     StoreSubscr = 76,
-    // NOTE: DeleteSubscr removed - `del` statement not supported by parser
     /// Pop obj, push obj.attr. Operand: u16 name_id.
     LoadAttr = 77,
     /// Pop module, push module.attr for `from ... import`. Operand: u16 name_id.
@@ -328,7 +327,6 @@ pub enum Opcode {
     LoadAttrImport = 78,
     /// Pop value, pop obj, set obj.attr. Operand: u16 name_id.
     StoreAttr = 79,
-    // NOTE: DeleteAttr removed - `del` statement not supported by parser
 
     // === Function Calls ===
     /// Call TOS with n positional args. Operand: u8 arg_count.
@@ -619,6 +617,10 @@ pub enum Opcode {
     /// `IMPORT_STAR_LOAD` or `IMPORT_STAR_BIND`); see `Compiler::compile_import_star`
     /// for the loop the three modes form.
     ImportStar = 131,
+    /// `del obj[index]`: pop index and object.
+    DeleteSubscr = 132,
+    /// Delete a wide local slot. Operands: u16 slot, u8 class-scope flag.
+    DeleteLocalW = 133,
 }
 
 /// `LoadName` flag: the load is in call position, so an unresolved name under
@@ -714,6 +716,7 @@ impl Opcode {
             | Self::ListToTuple
             | Self::BinarySubscr
             | Self::StoreSubscr
+            | Self::DeleteSubscr
             | Self::GetIter
             | Self::Raise
             | Self::RaiseFrom
@@ -776,7 +779,9 @@ impl Opcode {
             | Self::JumpIfFalseOrPop
             | Self::ForIter => OperandShape::Offset,
             Self::CallBuiltinFunction | Self::CallBuiltinType | Self::UnpackEx => OperandShape::U8U8,
-            Self::CallAttr | Self::CallAttrExtended | Self::MakeFunction | Self::MatchShape => OperandShape::U16U8,
+            Self::CallAttr | Self::CallAttrExtended | Self::MakeFunction | Self::MatchShape | Self::DeleteLocalW => {
+                OperandShape::U16U8
+            }
             Self::LoadGlobalCallable | Self::LoadSubmodule => OperandShape::U16U16,
             Self::MakeClosure => OperandShape::U16U8U8,
             Self::LoadName | Self::StoreName | Self::DeleteName => OperandShape::U16U16U8,
@@ -983,6 +988,7 @@ impl Opcode {
             (ListToTuple, Operand::None) => 0,
             (BinarySubscr, Operand::None) => -1,
             (StoreSubscr, Operand::None) => -3,
+            (DeleteSubscr, Operand::None) => -2,
             (GetIter | Await, Operand::None) => 0,
             (Raise, Operand::None) => -1,
             (RaiseFrom, Operand::None) => -2,
@@ -996,7 +1002,7 @@ impl Opcode {
             // === Fixed-effect, U8 operand ===
             (LoadLocal, Operand::U8(_)) => 1,
             (StoreLocal, Operand::U8(_)) => -1,
-            (DeleteLocal, Operand::U8(_)) => 0,
+            (DeleteLocal, Operand::U8(_)) | (DeleteLocalW, Operand::U16U8(..)) => 0,
             // `ListAppend`/`SetAdd`/`DictSetItem` carry a u8 stack-depth operand
             // that names which collection below TOS to extend; the stack
             // effect itself is fixed.

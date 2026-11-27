@@ -137,11 +137,7 @@ pure-Python functions accept.
 Monty has no metaclasses or `abc`, so the `IOBase`, `RawIOBase`, `BufferedIOBase` and `TextIOBase` ABCs and the
 `Reader` and `Writer` protocols are dropped, along with the `_io` names Monty lacks (see [io.md](io.md)).
 
-`textwrap` is patched because Monty does not parse `del` yet: the class-body `del` that CPython uses to remove the
-regex building blocks is dropped, so `TextWrapper.word_punct`, `TextWrapper.letter`, `TextWrapper.nowhitespace`
-and `TextWrapper.whitespace` exist as class attributes (CPython deletes them), and the statements `del chunks[-1]` and
-`del cur_line[-1]` are `.pop()` calls with the same effect.
-`dedent()` is also patched to name a non-`str` argument's type by `__name__` in its `TypeError`, because Monty types
+`textwrap.dedent()` names a non-`str` argument's type by `__name__` in its `TypeError`, because Monty types
 have no `__qualname__` (see [classes.md](classes.md)): a class defined inside a function shows as `'Adder'` where
 CPython shows `'make.<locals>.Adder'`.
 

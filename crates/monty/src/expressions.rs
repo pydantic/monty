@@ -388,8 +388,8 @@ pub enum Expr {
     },
 }
 
-/// Target for tuple unpacking - a name, attribute, subscript, nested tuple or
-/// starred target.
+/// Target for unpacking or deletion: a name, attribute, subscript, nested group
+/// or starred target. Deletion allows empty groups but not starred targets.
 ///
 /// Supports recursive structures like `(a, b), c` or `a, (b, c)`.
 /// Also supports starred targets like `first, *rest = [1, 2, 3, 4]`.
@@ -420,7 +420,7 @@ pub enum UnpackTarget {
     Starred(Box<Self>),
     /// Attribute target: `obj.attr`.
     Attr {
-        /// Expression evaluating to the object whose attribute is being set.
+        /// Expression evaluating to the object whose attribute is being modified.
         object: Box<ExprLoc>,
         /// The attribute name.
         attr: EitherStr,
@@ -661,6 +661,8 @@ pub enum Node<F> {
     /// No-op statement. Only present in parsed form, filtered out during prepare.
     Pass,
     Expr(ExprLoc),
+    /// Deletion targets, evaluated from left to right without unpacking a value.
+    Delete(Vec<UnpackTarget>),
     Return(Option<ExprLoc>),
     /// `raise exc from cause`; a bare `raise` has neither.
     Raise {
@@ -835,9 +837,8 @@ pub enum Node<F> {
         /// emitted code ends by building the namespace `Dict` and returning the
         /// `Class` object.
         body: F,
-        /// Top-level member names (methods + class vars) in source order.
-        /// Each is resolved to a class-body-local slot during prepare; the
-        /// compiler uses them to assemble the namespace dict.
+        /// Surviving class-body members in insertion order, filled by prepare.
+        /// The compiler uses their local slots to assemble the namespace dict.
         members: Vec<Identifier>,
         /// In source order; evaluated in the enclosing scope and applied
         /// bottom-up (`cls = deco(cls)`), like CPython.

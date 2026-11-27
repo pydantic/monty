@@ -318,6 +318,13 @@ pub(crate) trait ExcTypeExt: Sized {
         .into()
     }
 
+    /// Creates the TypeError for `del obj[key]` on an unsupported type.
+    #[must_use]
+    fn type_error_not_sub_deletion(type_: &str, contracted: bool) -> RunError {
+        let negative = if contracted { "doesn't" } else { "does not" };
+        Self::type_error(format!("'{type_}' object {negative} support item deletion"))
+    }
+
     /// Creates a TypeError for unhashable types when calling `hash()`.
     ///
     /// This matches Python 3.14's error message: `TypeError: unhashable type: 'list'`
@@ -1793,6 +1800,7 @@ pub(crate) trait ExcTypeExt: Sized {
         let message = match container {
             Type::Str => format!("string indices must be integers, not '{index_type}'"),
             Type::Bytes => format!("byte indices must be integers or slices, not {index_type}"),
+            Type::Deque => return Self::type_error_sequence_index(index_type),
             _ => format!("{container} indices must be integers or slices, not {index_type}"),
         };
         SimpleException::new_msg(ExcType::TypeError, message).into()

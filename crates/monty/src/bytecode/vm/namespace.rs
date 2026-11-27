@@ -9,7 +9,7 @@
 
 use std::{iter, ops::Not};
 
-use ahash::AHashSet;
+use ahash::{AHashMap, AHashSet};
 
 use super::{CallFrame, VM};
 use crate::{
@@ -540,11 +540,13 @@ impl<'h> VM<'h> {
                 .filter(|name_id| *name_id != StringId::default())
                 .map(|name_id| (usize::from(slot), name_id))
         });
-        // Cell slots go last so a captured parameter's live cell value replaces
-        // the stale copy left in its parameter slot under the same name.
-        let cell_slots: AHashSet<usize> = frame
-            .function_id
-            .map(|id| this.interns.get_function(id))
+        let function = frame.function_id.map(|id| this.interns.get_function(id));
+        let captured_params: AHashMap<usize, usize> = function
+            .into_iter()
+            .flat_map(|func| func.cell_var_slots.iter().zip(&func.cell_param_indices))
+            .filter_map(|(cell, param)| param.map(|slot| (slot, cell.index())))
+            .collect();
+        let cell_slots: AHashSet<usize> = function
             .into_iter()
             .flat_map(|func| {
                 func.cell_var_slots
@@ -554,7 +556,16 @@ impl<'h> VM<'h> {
             })
             .collect();
         for (slot, name_id) in names.clone().filter(|(slot, _)| !cell_slots.contains(slot)) {
-            let value = this.stack[base + slot].clone_with_heap(this.heap);
+            // Read captured parameters through their cells at their original positions.
+            let value = if let Some(&cell) = captured_params.get(&slot) {
+                this.stack[base + cell]
+                    .get_as::<CellValue>(this.heap)
+                    .expect("captured parameter has a cell")
+                    .0
+                    .clone_with_heap(this.heap)
+            } else {
+                this.stack[base + slot].clone_with_heap(this.heap)
+            };
             this.snapshot_entry(dict_id, name_id, value)?;
         }
         for (slot, name_id) in names.filter(|(slot, _)| cell_slots.contains(slot)) {

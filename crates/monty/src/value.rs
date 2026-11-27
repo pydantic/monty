@@ -771,6 +771,10 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
+    fn py_delitem(&self, key: Self, vm: &mut VM<'_>) -> RunResult<()> {
+        self.py_value(vm).py_delitem(key, vm)
+    }
+
     fn py_is_iterator(&self, vm: &VM<'_>) -> bool {
         // No immediate value is an iterator; interned `str`/`bytes` are iterable
         // but, as in CPython, are not their own iterators.

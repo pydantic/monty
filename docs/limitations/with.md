@@ -48,9 +48,9 @@ explicit `obj.__enter__()` call, which is an ordinary method call.
     when the `with` statement is entered; Monty's `WithExit`/`WithExceptStart`
     opcodes look `__exit__` up again when the block exits. A class whose
     `__exit__` attribute is reassigned *during* the body calls the new
-    function in Monty but the originally-bound one in CPython, and a
-    reassignment that removes it raises `AttributeError` in Monty where
-    CPython would still call the original.
+    function in Monty but the originally-bound one in CPython.
+    Deleting `__exit__` raises `AttributeError` on exit in Monty if no base class provides it;
+    CPython still calls the original.
 - Direct `obj.__exit__(typ, val, tb)` invocation on a **built-in** context
     manager forwards `val` to the type's `py_exit` only when it is `None` or a
     heap-allocated value, matching CPython for the `None` / exception-instance

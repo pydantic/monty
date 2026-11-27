@@ -93,12 +93,14 @@ class TextWrapper:
         )''' % {'wp': word_punct, 'lt': letter,
                 'ws': whitespace, 'nws': nowhitespace},
         re.VERBOSE)
+    del word_punct, letter, nowhitespace
 
     # This less funky little regex just split on recognized spaces. E.g.
     #   "Hello there -- you goof-ball, use the -b option!"
     # splits into
     #   Hello/ /there/ /--/ /you/ /goof-ball,/ /use/ /the/ /-b/ /option!/
     wordsep_simple_re = re.compile(r'(%s+)' % whitespace)
+    del whitespace
 
     # XXX this is not locale- or charset-aware -- string.lowercase
     # is US-ASCII only (and therefore English-only)
@@ -279,7 +281,7 @@ class TextWrapper:
             # First chunk on line is whitespace -- drop it, unless this
             # is the very beginning of the text (ie. no lines started yet).
             if self.drop_whitespace and chunks[-1].strip() == '' and lines:
-                chunks.pop()
+                del chunks[-1]
 
             while chunks:
                 l = len(chunks[-1])
@@ -302,7 +304,7 @@ class TextWrapper:
             # If the last chunk on this line is all whitespace, drop it.
             if self.drop_whitespace and cur_line and cur_line[-1].strip() == '':
                 cur_len -= len(cur_line[-1])
-                cur_line.pop()
+                del cur_line[-1]
 
             if cur_line:
                 if (self.max_lines is None or
@@ -322,7 +324,7 @@ class TextWrapper:
                             lines.append(indent + ''.join(cur_line))
                             break
                         cur_len -= len(cur_line[-1])
-                        cur_line.pop()
+                        del cur_line[-1]
                     else:
                         if lines:
                             prev_line = lines[-1].rstrip()

@@ -1037,7 +1037,7 @@ impl<'h> VM<'h> {
 
         for (i, &slot) in func.cell_var_slots.iter().enumerate() {
             let cell_value = match func.cell_param_indices[i] {
-                Some(param_idx) => namespace[param_idx].clone_with_heap(self),
+                Some(param_idx) => mem::replace(&mut namespace[param_idx], Value::Undefined),
                 None => Value::Undefined,
             };
             namespace[slot.index()] = Value::allocate(CellValue(cell_value), self.heap);

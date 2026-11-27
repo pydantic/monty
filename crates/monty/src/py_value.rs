@@ -524,6 +524,17 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
         )
     }
 
+    fn py_delitem(&self, key: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        forward_py_value!(
+            self,
+            |item| item.py_delitem(key, vm),
+            else {
+                key.drop_with(vm);
+                Err(self.unsupported_delitem(vm))
+            }
+        )
+    }
+
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         if let Self::Module(module) = self {
             return module.py_set_attr(name, value, vm);

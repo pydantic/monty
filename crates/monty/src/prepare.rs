@@ -232,19 +232,10 @@ struct Prepare<'i, 'g> {
     /// body. The first iterable is evaluated in the class body itself; filters,
     /// later iterables, and result expressions skip the class namespace.
     skip_class_scope: bool,
-    /// Class members whose binding statement has already been prepared, in
-    /// source order (only populated when `is_class_scope`).
-    ///
-    /// CPython class bodies resolve name reads with `LOAD_NAME` semantics:
-    /// class locals → globals → builtins, decided at *runtime*. Because Monty
-    /// restricts class bodies to linear statements (no control flow, walrus,
-    /// `del`, or `exec`-style namespace mutation), source order IS execution
-    /// order, so the runtime question "is this member bound yet?" is decidable
-    /// at prepare time: a read of a member listed here uses its local slot; a
-    /// read of a not-yet-bound member falls back to a late-bound global load
-    /// (see [`Self::get_id_read`]). If class bodies ever allow conditional
-    /// bindings this must become a runtime-fallback opcode instead.
-    bound_class_members: AHashSet<StringId>,
+    /// Live class-body bindings, with the statement index of each insertion.
+    /// Class bodies are linear, so reads can resolve to locals or fall back to
+    /// globals at prepare time. Deleting then rebinding moves the member to the end.
+    bound_class_members: AHashMap<StringId, (usize, Identifier)>,
     /// Aliased class-body local slot holding the implicit `__class__` cell when a
     /// method or nested closure in this class references `__class__`.
     class_cell_slot: Option<NamespaceId>,
@@ -588,7 +579,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             has_star_import: false,
             is_class_scope: false,
             skip_class_scope: false,
-            bound_class_members: AHashSet::new(),
+            bound_class_members: AHashMap::new(),
             class_cell_slot: None,
             is_annotate: false,
         }
@@ -706,7 +697,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             has_star_import: false,
             is_class_scope: false,
             skip_class_scope: false,
-            bound_class_members: AHashSet::new(),
+            bound_class_members: AHashMap::new(),
             class_cell_slot: None,
             is_annotate: false,
         })
@@ -777,7 +768,9 @@ impl<'i, 'g> Prepare<'i, 'g> {
                     // value expression above must see the pre-binding state
                     // (`x = x + 1` reads the global `x`, like CPython).
                     if self.is_class_scope {
-                        self.bound_class_members.insert(target.name_id);
+                        self.bound_class_members
+                            .entry(target.name_id)
+                            .or_insert((new_nodes.len(), target));
                     }
                     new_nodes.push(Node::Assign { target, object });
                 }
@@ -884,6 +877,13 @@ impl<'i, 'g> Prepare<'i, 'g> {
                         .collect::<Result<Vec<_>, _>>()?;
                     new_nodes.push(Node::ChainAssign { targets, object });
                 }
+                Node::Delete(targets) => {
+                    let targets = targets
+                        .into_iter()
+                        .map(|target| self.prepare_sequence_target(target, true))
+                        .collect::<Result<_, _>>()?;
+                    new_nodes.push(Node::Delete(targets));
+                }
                 Node::For {
                     target,
                     iter,
@@ -942,7 +942,9 @@ impl<'i, 'g> Prepare<'i, 'g> {
                     // only now — its own parameter defaults (evaluated in class
                     // scope, above) must see the pre-binding state.
                     if self.is_class_scope {
-                        self.bound_class_members.insert(func.name.name_id);
+                        self.bound_class_members
+                            .entry(func.name.name_id)
+                            .or_insert((new_nodes.len(), func.name));
                     }
                     new_nodes.push(Node::FunctionDef { def: func, decorators });
                 }
@@ -951,12 +953,11 @@ impl<'i, 'g> Prepare<'i, 'g> {
                     bases,
                     keywords,
                     body,
-                    members,
                     decorators,
                     position,
+                    ..
                 } => {
-                    let prepared =
-                        self.prepare_class_def(name, bases, keywords, body, members, decorators, position)?;
+                    let prepared = self.prepare_class_def(name, bases, keywords, body, decorators, position)?;
                     new_nodes.push(prepared);
                 }
                 Node::Global { names, position } => {
@@ -1612,9 +1613,16 @@ impl<'i, 'g> Prepare<'i, 'g> {
     ///
     /// Handles both single identifiers and nested tuples like `(a, b), c`.
     fn prepare_unpack_target(&mut self, target: UnpackTarget) -> Result<UnpackTarget, ParseError> {
+        self.prepare_sequence_target(target, false)
+    }
+
+    fn prepare_sequence_target(&mut self, target: UnpackTarget, deleting: bool) -> Result<UnpackTarget, ParseError> {
         match target {
             UnpackTarget::Name(ident) => {
                 self.names_assigned_in_order.insert(ident.name_id);
+                if deleting && self.is_class_scope {
+                    self.bound_class_members.remove(&ident.name_id);
+                }
                 Ok(UnpackTarget::Name(self.get_id(ident)?))
             }
             UnpackTarget::Starred(inner) => Ok(UnpackTarget::Starred(Box::new(self.prepare_unpack_target(*inner)?))),
@@ -1635,7 +1643,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             UnpackTarget::Tuple { targets, position } => {
                 let resolved_targets = targets
                     .into_iter()
-                    .map(|t| self.prepare_unpack_target(t)) // Recursive call
+                    .map(|t| self.prepare_sequence_target(t, deleting))
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(UnpackTarget::Tuple {
                     targets: resolved_targets,
@@ -2043,14 +2051,12 @@ impl<'i, 'g> Prepare<'i, 'g> {
     ///   assembly) from the inner preparer's locals.
     ///
     /// The class name itself binds in the **enclosing** scope, exactly like a `def`.
-    #[expect(clippy::too_many_arguments)]
     fn prepare_class_def(
         &mut self,
         name: Identifier,
         bases: Vec<SequenceItem>,
         keywords: Vec<Kwarg>,
         body: RawFunctionDef,
-        members: Vec<Identifier>,
         decorators: Vec<ExprLoc>,
         position: CodeRange,
     ) -> Result<PreparedNode, ParseError> {
@@ -2124,6 +2130,11 @@ impl<'i, 'g> Prepare<'i, 'g> {
         inner_prepare.is_class_scope = true;
 
         let prepared_body = inner_prepare.prepare_nodes(body_nodes)?;
+        let mut bound_members: Vec<_> = mem::take(&mut inner_prepare.bound_class_members)
+            .into_values()
+            .collect();
+        bound_members.sort_unstable_by_key(|(order, _)| *order);
+        let members = bound_members.into_iter().map(|(_, member)| member).collect();
 
         // Take the per-function state out of the child and drop it so its
         // `GlobalsRef` borrow is released before we mutate `self` below.
@@ -2139,20 +2150,6 @@ impl<'i, 'g> Prepare<'i, 'g> {
         let namespace_size = inner_locals.len();
         let class_cell_slot = inner_prepare.class_cell_slot;
         drop(inner_prepare);
-
-        // Resolve each member to its class-body-local slot. Every member is
-        // assigned in the class body (a method `def` or a class-var `Assign`),
-        // so it is always present as a plain local.
-        let members = members
-            .into_iter()
-            .map(|member| {
-                let slot = inner_locals.get(member.name_id).unwrap_or_else(|| {
-                    let member_name = self.interner.get_str(member.name_id);
-                    panic!("class member '{member_name}' missing from class-body locals")
-                });
-                Identifier::new_with_scope(member.name_id, member.position, slot, NameScope::Local)
-            })
-            .collect::<Vec<_>>();
 
         // Same-name collision (a known divergence — see `limitations/classes.md`):
         // a class-body owned cell means a method captured a class-body local that
@@ -2498,7 +2495,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
         // `LOAD_NAME` tail. See `bound_class_members` for the full rationale.
         if is_read
             && self.is_class_scope
-            && !self.bound_class_members.contains(&name_id)
+            && !self.bound_class_members.contains_key(&name_id)
             && matches!(&self.state, PrepareState::Function(state) if state.assigned_names.contains(&name_id))
         {
             let slot = self.globals.ensure_slot(name_id, position)?;
@@ -2820,6 +2817,11 @@ fn collect_scope_info_from_node(
             // But scan expressions for walrus operators
             collect_assigned_names_from_expr(object, assigned_names, interner);
             collect_assigned_names_from_expr(value, assigned_names, interner);
+        }
+        Node::Delete(targets) => {
+            for target in targets {
+                collect_names_from_unpack_target(target, assigned_names, interner);
+            }
         }
         Node::ChainAssign { targets, object } => {
             // Each target sees the same shared RHS; treat it like each per-target
@@ -3385,6 +3387,11 @@ fn collect_cell_vars_from_node(
             }
             collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
         }
+        Node::Delete(targets) => {
+            for target in targets {
+                collect_cell_vars_from_unpack_target(target, our_locals, cell_vars, interner);
+            }
+        }
         // Listed rather than matched by `_`: a missed capture compiles a local's
         // stores as plain stores and its later loads as cell loads.
         Node::Pass
@@ -3799,6 +3806,11 @@ fn collect_referenced_names_from_node(
                 collect_referenced_names_from_assign_target(target, referenced, interner);
             }
             collect_referenced_names_from_expr(object, referenced, interner);
+        }
+        Node::Delete(targets) => {
+            for target in targets {
+                collect_referenced_names_from_unpack_target(target, referenced, interner);
+            }
         }
         Node::For {
             target,

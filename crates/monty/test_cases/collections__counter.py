@@ -4,7 +4,6 @@
 # against CPython and Monty, so both must agree exactly.
 #
 # NOT covered in this version (documented in limitations/collections.md):
-# - `del c[key]` (the `del` statement is unimplemented Monty-wide).
 # - `elements()` returns a list rather than a lazy iterator.
 
 from collections import Counter, defaultdict

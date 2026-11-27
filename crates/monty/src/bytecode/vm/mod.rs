@@ -1465,7 +1465,11 @@ impl<'h> VM<'h> {
                 }
                 Opcode::DeleteLocal => {
                     let slot = u16::from(self.current_frame.fetch_u8());
-                    self.delete_local(slot);
+                    try_catch!(self, self.delete_local(slot, false));
+                }
+                Opcode::DeleteLocalW => {
+                    let (slot, class_scope) = self.current_frame.fetch_u16_u8();
+                    try_catch!(self, self.delete_local(slot, class_scope != 0));
                 }
                 Opcode::DeleteGlobal => {
                     let slot = self.current_frame.fetch_u16();
@@ -1509,7 +1513,7 @@ impl<'h> VM<'h> {
                 }
                 Opcode::DeleteCell => {
                     let slot = self.current_frame.fetch_u16();
-                    self.delete_cell(slot);
+                    try_catch!(self, self.delete_cell(slot));
                 }
                 // Binary Operations - route through exception handling for tracebacks
                 Opcode::BinaryAdd => try_catch!(self, self.binary_add()),
@@ -1653,6 +1657,13 @@ impl<'h> VM<'h> {
                     if let Err(e) = result {
                         catch!(self, e);
                     }
+                }
+                Opcode::DeleteSubscr => {
+                    let index = self.pop();
+                    let obj = self.pop();
+                    let result = obj.py_delitem(index, self);
+                    obj.drop_with(self);
+                    try_catch!(self, result);
                 }
                 Opcode::LoadAttr => {
                     let name_idx = self.current_frame.fetch_u16();
@@ -2847,11 +2858,21 @@ impl<'h> VM<'h> {
         old_value.drop_with(self);
     }
 
-    /// Deletes a local variable (sets it to Undefined).
-    fn delete_local(&mut self, slot: u16) {
-        let index = self.current_frame.stack_base() + slot as usize;
+    /// Unbinds a function local or a class namespace entry.
+    fn delete_local(&mut self, slot: u16, class_scope: bool) -> RunResult<()> {
+        let index = self.current_frame.stack_base() + usize::from(slot);
         let old_value = mem::replace(&mut self.stack[index], Value::Undefined);
-        old_value.drop_with(self);
+        if matches!(old_value, Value::Undefined) {
+            let name = self.current_frame.code.local_name(slot);
+            Err(if class_scope {
+                self.name_error(slot, name)
+            } else {
+                self.unbound_local_error(slot, name)
+            })
+        } else {
+            old_value.drop_with(self);
+            Ok(())
+        }
     }
 
     /// Loads a global variable and pushes it onto the stack.
@@ -2919,8 +2940,6 @@ impl<'h> VM<'h> {
     ///
     /// Raises `NameError` if the slot is already `Undefined`.
     fn delete_global(&mut self, slot: u16) -> RunResult<()> {
-        // TODO: the `Undefined` branch is currently unreachable from Python source,
-        // needs support for the `del` statement.
         if matches!(self.globals[slot as usize], Value::Undefined) {
             let name = self.global_name(slot);
             return Err(self.name_error(slot, name));
@@ -2948,12 +2967,7 @@ impl<'h> VM<'h> {
         // nested functions) is an ordinary UnboundLocalError, like any local.
         if matches!(value, Value::Undefined) {
             value.drop_with(self);
-            let name = self.current_frame.code.local_name(slot);
-            Err(if self.is_free_var_slot(slot) {
-                self.free_var_error(name)
-            } else {
-                self.unbound_local_error(slot, name)
-            })
+            Err(self.unbound_cell_error(slot))
         } else {
             self.push(value);
             Ok(())
@@ -3009,14 +3023,9 @@ impl<'h> VM<'h> {
         mem::swap(&mut cell.get_mut(this.heap).0, value);
     }
 
-    /// Unbinds a closure cell: replaces its contents with `Undefined`, so a
-    /// later [`Self::load_cell`] raises the free-variable `NameError` —
-    /// CPython's `DELETE_DEREF` cleanup of a captured `except ... as` target.
-    /// The only emitter stores `None` first, so the cell is never already
-    /// unbound here (no error path, unlike [`Self::delete_global`]).
-    fn delete_cell(&mut self, slot: u16) {
+    /// Unbinds a closure cell, distinguishing an unbound local from a free variable.
+    fn delete_cell(&mut self, slot: u16) -> RunResult<()> {
         let value = Value::Undefined;
-        // the guard drops the cell's previous contents after the swap
         let this = self;
         defer_drop_mut!(value, this);
 
@@ -3025,6 +3034,21 @@ impl<'h> VM<'h> {
             panic!("DeleteCell: entry is not a Cell")
         };
         mem::swap(&mut cell.get_mut(this.heap).0, value);
+        if matches!(value, Value::Undefined) {
+            Err(this.unbound_cell_error(slot))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Builds the error for an unbound cell based on whether this frame owns it.
+    fn unbound_cell_error(&self, slot: u16) -> RunError {
+        let name = self.current_frame.code.local_name(slot);
+        if self.is_free_var_slot(slot) {
+            self.free_var_error(name)
+        } else {
+            self.unbound_local_error(slot, name)
+        }
     }
 }
 
