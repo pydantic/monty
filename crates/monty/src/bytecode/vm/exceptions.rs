@@ -10,7 +10,8 @@ use crate::{
     bytecode::code::HandlerKind,
     defer_drop,
     exception_private::{
-        ExcType, ExcTypeExt, ExceptionRaise, ExceptionValue, RawStackFrame, RunError, RunResult, SimpleException,
+        ExcType, ExcTypeExt, ExceptionArgs, ExceptionRaise, PyException, RawStackFrame, RunError, RunResult,
+        SimpleException,
     },
     expressions::CmpOperator,
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
@@ -126,6 +127,15 @@ impl VM<'_> {
         }
     }
 
+    /// Converts an exception instance on the heap to a `SimpleException`.
+    pub(crate) fn exception_to_simple_exception(&mut self, id: HeapId) -> RunResult<Option<SimpleException>> {
+        let (exc_type, args, data) = match self.heap.get(id) {
+            HeapData::Exception(e) => (e.exc_type, e.args.clone_with_heap(self.heap), e.data.clone()),
+            _ => return Ok(None),
+        };
+        PyException::to_simple_exception_from_parts(exc_type, args, data, self).map(Some)
+    }
+
     /// Creates a RunError from a Value that should be an exception.
     ///
     /// Borrows the value so callers that already own one can keep it — the
@@ -134,7 +144,16 @@ impl VM<'_> {
     pub(super) fn make_exception(&mut self, exc_value: &Value, is_raise: bool) -> RunError {
         let simple_exc = match exc_value {
             // Exception instance on heap
-            value if let Some(exc) = value.get_as::<ExceptionValue>(self.heap) => exc.exception.clone(),
+            Value::Ref(heap_id) => match self.heap.get(*heap_id) {
+                HeapData::Exception(e) => {
+                    let arg = match &e.args {
+                        ExceptionArgs::OneStr(s) => Some(s.clone()),
+                        _ => None,
+                    };
+                    SimpleException::new(e.exc_type, arg).with_data(e.data.clone())
+                }
+                _ => SimpleException::new_msg(ExcType::TypeError, "exceptions must derive from BaseException"),
+            },
             // Exception type (e.g., `raise ValueError` instead of `raise ValueError()`)
             // Instantiate with no message
             Value::Builtin(Builtins::Type(ty)) if let Some(exc_type) = ty.exc_type() => {
@@ -154,6 +173,7 @@ impl VM<'_> {
 
         RunError::Exc(ExceptionRaise {
             exc: simple_exc,
+            instance: None,
             frame,
             snippet_frame: None,
             hide_caret: false,
@@ -211,7 +231,7 @@ impl VM<'_> {
 
     /// Allocates `exc_type()` with no message, for `raise ExcType from ...` and its cause.
     fn allocate_exception(&mut self, exc_type: ExcType) -> Value {
-        Value::allocate(ExceptionValue::from(SimpleException::new_none(exc_type)), self.heap)
+        Value::allocate(PyException::new(exc_type, None), self.heap)
     }
 
     /// Stores `cause` (an owned reference) as `__cause__` of the exception `id`,
@@ -343,10 +363,14 @@ impl VM<'_> {
 
     /// Converts best-effort detail into an `AssertionError` message.
     /// Catchable formatting errors fall back to no detail; terminal errors propagate.
-    fn assert_failure(&self, detail: RunResult<Option<String>>) -> RunError {
+    fn assert_failure(&mut self, detail: RunResult<Option<String>>) -> RunError {
         match detail {
             Ok(Some(detail)) => self.assertion_error(Some(format!("assert {detail}"))),
-            Ok(None) | Err(RunError::Exc(_)) => self.assertion_error(None),
+            Ok(None) => self.assertion_error(None),
+            Err(RunError::Exc(exc)) => {
+                exc.drop_with(self);
+                self.assertion_error(None)
+            }
             Err(e) => e,
         }
     }
@@ -363,7 +387,10 @@ impl VM<'_> {
         // the message itself fails to stringify.
         let detail = match this.assert_detail(cmp_op) {
             Ok(detail) => detail,
-            Err(RunError::Exc(_)) => None,
+            Err(RunError::Exc(exc)) => {
+                exc.drop_with(this);
+                None
+            }
             Err(e) => return e,
         };
         let msg = match assert_msg_str(msg_value, this) {
@@ -371,7 +398,10 @@ impl VM<'_> {
             // show only the detail — avoids a stray leading `\n` before `assert`.
             Ok(msg) if msg.is_empty() => None,
             Ok(msg) => Some(msg),
-            Err(RunError::Exc(_)) => None,
+            Err(RunError::Exc(exc)) => {
+                exc.drop_with(this);
+                None
+            }
             Err(e) => return e,
         };
         let full = match (msg, detail) {
@@ -414,6 +444,7 @@ impl VM<'_> {
             .then(|| RawStackFrame::from_raise(self.current_position(), self.current_frame_name()));
         RunError::Exc(ExceptionRaise {
             exc: SimpleException::new(ExcType::AssertionError, msg),
+            instance: None,
             frame,
             snippet_frame: None,
             hide_caret: false,
@@ -454,6 +485,25 @@ impl VM<'_> {
 
     /// Handles one task's exception, returning to the caller's loop if another task must raise.
     fn handle_exception_step(&mut self, mut error: RunError, raised: Option<Value>) -> ExceptionHandlingResult {
+        // Reclaim an instance that crossed a synchronous boundary before anything
+        // else, so every exit path below owns exactly one reference.
+        let from_sync_boundary = raised.is_none()
+            && match &error {
+                RunError::Exc(exc) | RunError::UncatchableExc(exc) => exc.instance.is_some(),
+                RunError::Internal(_) => false,
+            };
+        let carried = match &mut error {
+            RunError::Exc(exc) | RunError::UncatchableExc(exc) => exc.take_instance(),
+            RunError::Internal(_) => None,
+        };
+        let raised = match (raised, carried) {
+            (Some(raised), Some(carried)) => {
+                carried.drop_with(self);
+                Some(raised)
+            }
+            (raised, carried) => raised.or(carried),
+        };
+
         // Ensure exception has initial frame info
         error = self.attach_frame_to_error(error);
 
@@ -476,7 +526,7 @@ impl VM<'_> {
             };
             self.create_exception_value(exc)
         };
-        if let Err(error) = self.attach_context(&exc_value) {
+        if !from_sync_boundary && let Err(error) = self.attach_context(&exc_value) {
             exc_value.drop_with(self);
             return ExceptionHandlingResult::Unhandled(self.unwind_for_traceback(error.into()));
         }
@@ -573,6 +623,39 @@ impl VM<'_> {
                 // No more frames - exception is unhandled
                 let is_spawned = this.is_spawned_task();
 
+                // Refresh error.exc from exc_value before dropping it at top level
+                if let RunError::Exc(exc_raise) = &mut error {
+                    let (exc_val, vm_ref) = exc_guard.as_parts_mut();
+                    let args_opt = match exc_val {
+                        Value::Ref(id) => match vm_ref.heap.get(*id) {
+                            HeapData::Exception(e) => {
+                                let args = e.args.clone_with_heap(vm_ref.heap);
+                                Some(args)
+                            }
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    if let Some(args) = args_opt {
+                        let exc_type = exc_raise.exc.exc_type;
+                        match args.format_arg(exc_type, vm_ref) {
+                            Ok(formatted) => {
+                                exc_raise.exc.arg = formatted;
+                            }
+                            Err(err @ (RunError::UncatchableExc(_) | RunError::Internal(_))) => {
+                                args.drop_with(vm_ref);
+                                drop(exc_guard);
+                                return ExceptionHandlingResult::Unhandled(err);
+                            }
+                            Err(RunError::Exc(exc)) => {
+                                exc.drop_with(vm_ref);
+                                exc_raise.exc.arg = Some("<exception str() failed>".to_owned());
+                            }
+                        }
+                        args.drop_with(vm_ref);
+                    }
+                }
+
                 // Drop exc_value before potentially switching tasks
                 drop(exc_guard);
 
@@ -617,6 +700,22 @@ impl VM<'_> {
                 }
             }
             if should_return {
+                let (exc_value, this) = exc_guard.into_parts();
+                if let RunError::Exc(exc) = &mut error {
+                    if let Value::Ref(id) = exc_value {
+                        match this.exception_to_simple_exception(id) {
+                            Ok(Some(simple)) => exc.exc = simple,
+                            Ok(None) => {}
+                            Err(terminal) => {
+                                exc_value.drop_with(this);
+                                return ExceptionHandlingResult::Unhandled(terminal);
+                            }
+                        }
+                    }
+                    exc.set_instance(exc_value);
+                } else {
+                    exc_value.drop_with(this);
+                }
                 return ExceptionHandlingResult::Unhandled(error);
             }
             // Look up the caller's handler at the faulting call, not its return IP
@@ -664,8 +763,8 @@ impl VM<'_> {
     ///
     /// Allocates an Exception on the heap and returns a Value::Ref to it.
     fn create_exception_value(&mut self, exc: &ExceptionRaise) -> Value {
-        let exception = exc.exc.clone();
-        Value::allocate(ExceptionValue::from(exception), self.heap)
+        let exception = PyException::from_simple_exception(&exc.exc);
+        Value::allocate(exception, self.heap)
     }
 
     /// Wraps an escaping `StopIteration` as a `RuntimeError` (PEP 479).

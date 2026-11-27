@@ -962,3 +962,27 @@ p = functools.partial(len, Mutator())
         "[[[1, 2, 3]], Repr('functools.partial(<built-in function len>, m)'), Holder(x=[9])]"
     );
 }
+
+/// `SystemExit.code` attribute resolution when uninitialized or constructed via `__new__`
+/// must preserve its value across reading `.args` (which mutates `ExceptionArgs` representation).
+#[test]
+fn system_exit_code_after_args_access() {
+    let code = "
+se_new_single = SystemExit.__new__(SystemExit, 5)
+assert se_new_single.code == 5
+assert se_new_single.args == (5,)
+assert se_new_single.code == 5
+
+se_new_empty = SystemExit.__new__(SystemExit)
+assert se_new_empty.code is None
+assert se_new_empty.args == ()
+assert se_new_empty.code is None
+
+se_new_multi = SystemExit.__new__(SystemExit, 1, 2)
+assert se_new_multi.code == (1, 2)
+assert se_new_multi.args == (1, 2)
+assert se_new_multi.code == (1, 2)
+";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    ex.run_no_limits(vec![]).unwrap();
+}

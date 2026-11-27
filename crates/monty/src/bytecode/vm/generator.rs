@@ -16,7 +16,7 @@ use super::{CallFrame, VM, exceptions::CaughtException, namespace::function_name
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, FrameExit},
-    exception_private::{ExcType, ExcTypeExt, ExceptionValue, RunError, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, PyException, RunError, RunResult},
     hash::{HashValue, identity_hash},
     heap::{
         ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput,
@@ -472,7 +472,7 @@ impl VM<'_> {
         if let Some(offset) = call_offset {
             self.instruction_ip = offset as usize;
         }
-        let exception = ExceptionValue::stop_iteration(value, self);
+        let exception = PyException::stop_iteration(value, self);
         let exception = Value::allocate(exception, self.heap);
         let error = self.make_exception(&exception, false);
         if should_return {
@@ -573,25 +573,5 @@ impl VM<'_> {
             self.pop().drop_with(self);
         }
         self.finish_yield_from(result);
-    }
-}
-
-impl ExceptionValue {
-    /// The `StopIteration` a generator's `return value` raises: no arguments for
-    /// `None`, else the value itself, also as the message when it is a string.
-    pub(crate) fn stop_iteration(value: Value, vm: &mut VM<'_>) -> Self {
-        let message = match value.py_value(vm) {
-            PyValue::Str(string) => Some(string.as_str(vm).to_owned()),
-            _ => None,
-        };
-        let value = if matches!(value, Value::None) {
-            None
-        } else {
-            Some(Box::new(value))
-        };
-        Self {
-            exception: SimpleException::new(ExcType::StopIteration, message),
-            value,
-        }
     }
 }

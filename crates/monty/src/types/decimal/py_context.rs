@@ -22,7 +22,7 @@ use crate::{
     builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcType, ExcTypeExt, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead},
     py_attrs::PyAttrs,
@@ -706,7 +706,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, SignalDict> {
             HeapData::Dict(dict) if dict.is_empty() => return Err(ExcType::value_error("invalid signal dict")),
             HeapData::Dict(_) => match signal_dict_arg(other, vm) {
                 Ok(set) => set,
-                Err(_) => return Ok(Some(false)),
+                Err(err @ (RunError::UncatchableExc(_) | RunError::Internal(_))) => return Err(err),
+                Err(err) => {
+                    err.drop_with(vm);
+                    return Ok(Some(false));
+                }
             },
             _ => return Ok(None),
         };

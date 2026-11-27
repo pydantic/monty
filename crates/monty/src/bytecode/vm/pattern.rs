@@ -301,6 +301,7 @@ impl VM<'_> {
                 Err(RunError::internal("class pattern lookup escaped its continuation"))
             }
             Err(RunError::Exc(exc)) if exc.exc.exc_type() == ExcType::AttributeError => {
+                exc.drop_with(this);
                 this.push(Value::None);
                 Ok(CallResult::Value(Value::Bool(false)))
             }

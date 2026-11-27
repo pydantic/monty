@@ -1090,14 +1090,26 @@ pub(crate) fn class_name<'i>(class_id: HeapId, heap: &Heap, interns: &'i Interns
 }
 
 /// Binds a class member before invoking an ordinary or implicit special method.
-fn call_member_bound(member: &Value, self_id: HeapId, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
-    descriptor::call_member(member, self_id, args, vm)
+pub(crate) fn call_member_bound(
+    member: &Value,
+    self_id: HeapId,
+    args: ArgValues,
+    vm: &mut VM<'_>,
+) -> RunResult<CallResult> {
+    if matches!(vm.heap.get(self_id), HeapData::Instance(_)) && descriptor::has_get(member, vm) {
+        descriptor::call_member(member, self_id, args, vm)
+    } else if is_method_value(member, vm) {
+        vm.heap.inc_ref(self_id);
+        vm.call_function(member, args.prepend(Value::Ref(self_id)))
+    } else {
+        vm.call_function(member, args)
+    }
 }
 
 /// What a function found on an instance's class binds to: the instance, except
 /// for the implicit staticmethod `__new__` (nothing) and the implicit
 /// classmethod `__init_subclass__` (the class).
-pub(super) fn implicit_receiver(attr: &str, self_id: HeapId, class_id: HeapId) -> Option<HeapId> {
+pub(crate) fn implicit_receiver(attr: &str, self_id: HeapId, class_id: HeapId) -> Option<HeapId> {
     match attr {
         "__new__" => None,
         "__init_subclass__" => Some(class_id),

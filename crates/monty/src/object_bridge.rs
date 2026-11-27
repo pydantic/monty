@@ -20,7 +20,7 @@ use crate::{
     builtins::Builtins,
     bytecode::VM,
     defer_drop,
-    exception_private::{ExceptionValue, RunError, RunResult, SimpleException},
+    exception_private::{PyException, RunError, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
     intern::StringId,
     modules::dataclasses,
@@ -398,11 +398,29 @@ impl GraphExporter {
                 })
             }
             HeapReadOutput::Exception(exc) => {
-                let exc_ref = exc.get(vm.heap);
-                MontyNode::Exception {
-                    exc_type: exc_ref.exc_type(),
-                    arg: exc_ref.arg().map(ToString::to_string),
-                }
+                let (exc_type, args_copy) = {
+                    let exc_ref = exc.get(vm.heap);
+                    let args = exc_ref.args.clone_with_heap(vm.heap);
+                    (exc_ref.exc_type(), args)
+                };
+                let args = args_copy;
+                let arg = if self.error.is_some() {
+                    None
+                } else {
+                    match args.format_arg(exc_type, vm) {
+                        Ok(s) => s,
+                        Err(err @ (RunError::UncatchableExc(_) | RunError::Internal(_))) => {
+                            self.error = Some(err);
+                            None
+                        }
+                        Err(RunError::Exc(exc)) => {
+                            exc.drop_with(vm);
+                            Some("<exception str() failed>".to_owned())
+                        }
+                    }
+                };
+                args.drop_with(vm);
+                MontyNode::Exception { exc_type, arg }
             }
             HeapReadOutput::HostClass(hc) => {
                 let (class_id, instance_id) = {
@@ -541,7 +559,9 @@ impl GraphExporter {
                 }
                 Err(RunError::Exc(exc)) => {
                     let ty = value.py_type_name(vm);
-                    MontyNode::Repr(format!("<{ty} object, error on repr(): {}>", exc.exc))
+                    let repr = format!("<{ty} object, error on repr(): {}>", exc.exc);
+                    exc.drop_with(vm);
+                    MontyNode::Repr(repr)
                 }
             }
         }
@@ -1069,8 +1089,8 @@ fn import_node(
             }
         }
         MontyNode::Exception { exc_type, arg } => {
-            let exc = SimpleException::new(exc_type, arg);
-            Ok(Value::allocate(ExceptionValue::from(exc), vm.heap))
+            let exc = PyException::from_simple_exception(&SimpleException::new(exc_type, arg));
+            Ok(Value::allocate(exc, vm.heap))
         }
         // A sandbox class the host hands back resolves to the class object
         // itself; a host class resolves to its single `HostClassType` entry,

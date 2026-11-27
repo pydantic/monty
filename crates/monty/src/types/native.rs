@@ -20,7 +20,8 @@ use strum::VariantNames;
 use crate::{
     args::ArgValues,
     builtins::{
-        filter::builtin_filter, iter::builtin_iter, map::builtin_map, object::PyObjectImpl, type_::builtin_type,
+        base_exception::PyBaseExceptionImpl, filter::builtin_filter, iter::builtin_iter, map::builtin_map,
+        object::PyObjectImpl, type_::builtin_type,
     },
     bytecode::{CallResult, PyGeneratorImpl, VM},
     exception_private::{ExcType, RunResult, exc_new},
@@ -978,6 +979,7 @@ native_types! {
         .exc(ExcType::Exception),
     /// The root of every exception class.
     BaseException("BaseException", Object)
+        .attrs(<PyBaseExceptionImpl as PyAttrs<'static>>::TABLE)
         .builtin()
         .exc(ExcType::BaseException),
     SystemExit("SystemExit", BaseException)

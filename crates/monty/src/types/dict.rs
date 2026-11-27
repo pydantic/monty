@@ -238,6 +238,20 @@ impl Dict {
         }
     }
 
+    #[inline]
+    pub(crate) fn from_table(table: PyHashTable<DictEntry>, contains_refs: bool) -> Self {
+        Self {
+            table,
+            contains_refs,
+            kind: DictKind::plain(),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn table(&self) -> &PyHashTable<DictEntry> {
+        &self.table
+    }
+
     /// The live entries, in insertion order.
     #[inline]
     fn live(&self) -> Live<'_, DictEntry> {
@@ -1267,6 +1281,7 @@ impl<'h> HeapRead<'h, Dict> {
         let order = match counter_order(counts, vm) {
             Ok(order) => order,
             Err(RunError::Exc(raise)) if Type::from(raise.exc.exc_type()).is_subclass_of(Type::TypeError) => {
+                raise.drop_with(vm);
                 (0..pairs.len()).collect()
             }
             Err(err) => return Err(err),

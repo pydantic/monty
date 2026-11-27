@@ -83,7 +83,10 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     hash::{HashValue, hash_python_bytes},
-    heap::{DropGuard, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReader, HeapView, heap_read_ref_as_field},
+    heap::{
+        DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReader, HeapView,
+        heap_read_ref_as_field,
+    },
     identity::Identity,
     intern::{BytesId, StaticStrings},
     percent_format::{copy_bytes_template, percent_format_bytes},
@@ -203,6 +206,7 @@ impl Bytes {
                     let iterator = match source_val.py_iter(vm).and_then(|call| call.require_synchronous(vm)) {
                         Ok(iter) => iter,
                         Err(e) if e.is_catchable(ExcType::TypeError) => {
+                            e.drop_with(vm);
                             return Err(ExcType::type_error_bytes_init(&source_val.py_type_name(vm)));
                         }
                         Err(e) => return Err(e),
@@ -242,7 +246,10 @@ fn try_bytes_from_size(source: &Value, vm: &mut VM<'_>) -> RunResult<Option<Vec<
             let index = match source.py_index_impl(vm) {
                 Ok(Some(index)) => index,
                 Ok(None) => return Ok(None),
-                Err(e) if e.is_catchable(ExcType::TypeError) => return Ok(None),
+                Err(e) if e.is_catchable(ExcType::TypeError) => {
+                    e.drop_with(vm);
+                    return Ok(None);
+                }
                 Err(e) => return Err(e),
             };
             defer_drop!(index, vm);

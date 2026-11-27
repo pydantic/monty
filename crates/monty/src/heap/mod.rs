@@ -2246,11 +2246,7 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
         HeapData::DecimalContextManager(manager) => manager.context_ids().for_each(on_child),
         // The owned `__cause__` / `__context__`; only a `StopIteration` that owns a value is GC-tracked.
         HeapData::Exception(exc) => {
-            exc.owned_chain_ids().for_each(&mut on_child);
-            // A `StopIteration` carries an arbitrary value.
-            if let Some(Value::Ref(id)) = exc.value.as_deref() {
-                on_child(*id);
-            }
+            exc.child_ids().for_each(on_child);
         }
         // Leaf types with no heap references
         _ => {}

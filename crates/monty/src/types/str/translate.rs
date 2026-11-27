@@ -59,7 +59,10 @@ pub(super) fn str_translate<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>)
         // `None` is a lookup miss, which keeps the character.
         let mapped = match table.py_getitem(&key, vm) {
             Ok(mapped) => Some(mapped),
-            Err(RunError::Exc(raise)) if Type::from(raise.exc.exc_type()).is_subclass_of(Type::LookupError) => None,
+            Err(RunError::Exc(raise)) if Type::from(raise.exc.exc_type()).is_subclass_of(Type::LookupError) => {
+                raise.drop_with(vm);
+                None
+            }
             Err(error) => return Err(error),
         };
         defer_drop!(mapped, vm);

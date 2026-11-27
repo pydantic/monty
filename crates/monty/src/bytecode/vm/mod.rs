@@ -1780,7 +1780,12 @@ impl<'h> VM<'h> {
                         Ok(Some(CallResult::Value(item))) => self.push(item),
                         Ok(Some(call)) => handle_call_result!(self, self.catch_deferred_iteration(call, stack_base)),
                         Err(error) if !error.is_stop_iteration() => catch!(self, error),
-                        Ok(None) | Err(_) => {
+                        Err(error) => {
+                            error.drop_with(self);
+                            self.pop().drop_with(self);
+                            jump_relative!(self.current_frame.ip, offset);
+                        }
+                        Ok(None) => {
                             self.pop().drop_with(self);
                             jump_relative!(self.current_frame.ip, offset);
                         }
@@ -2453,6 +2458,7 @@ impl<'h> VM<'h> {
                 // Resume on attempting to unlink missing file with unlink(missing_ok=True)
                 PendingEffect::Pre(PreConversionEffect::Unlink { missing_ok: true }) if matches!(&error, RunError::Exc(raise) if raise.exc.exc_type() == ExcType::FileNotFoundError) =>
                 {
+                    error.drop_with(self);
                     self.push(Value::None);
                     return self.run_external();
                 }

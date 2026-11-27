@@ -57,6 +57,19 @@ impl TypeRef {
         }
     }
 
+    /// Converts this into an [`OwnedTypeRef`], incrementing the refcount if it is a class.
+    #[inline]
+    #[must_use]
+    pub(crate) fn to_owned(self, heap: &Heap) -> OwnedTypeRef {
+        match self {
+            Self::Native(ty) => OwnedTypeRef::Native(ty),
+            Self::Class(id) => {
+                heap.inc_ref(id);
+                OwnedTypeRef::Class(id)
+            }
+        }
+    }
+
     /// The type a value denotes, if it is a type object: a native type or a class.
     #[must_use]
     pub(crate) fn from_value(value: &Value, heap: &Heap) -> Option<Self> {
@@ -195,6 +208,19 @@ impl OwnedTypeRef {
         }
     }
 
+    /// Clones this owned type reference, incrementing the refcount if it is a class.
+    #[inline]
+    #[must_use]
+    pub(crate) fn clone_with_heap(&self, heap: &Heap) -> Self {
+        match *self {
+            Self::Native(ty) => Self::Native(ty),
+            Self::Class(id) => {
+                heap.inc_ref(id);
+                Self::Class(id)
+            }
+        }
+    }
+
     /// The owned class id, if any, for refcount release and GC tracing.
     #[inline]
     #[must_use]
@@ -281,5 +307,45 @@ pub(crate) fn c3_merge(
                 sequence.remove(0);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use monty_types::ResourceTracker;
+
+    use super::*;
+    use crate::{
+        heap::HeapData,
+        types::{Class, Dict},
+        value::EitherStr,
+    };
+
+    #[test]
+    fn test_type_ref_to_owned() {
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        let native = TypeRef::Native(Type::Int);
+        let owned_native = native.to_owned(&heap);
+        assert_eq!(owned_native, OwnedTypeRef::Native(Type::Int));
+
+        let class = Class::new(EitherStr::Heap("Foo".to_string()), Dict::new(), &heap);
+        let class_id = heap.allocate(HeapData::Class(Box::new(class)));
+        let class_ref = TypeRef::Class(class_id);
+        let owned_class = class_ref.to_owned(&heap);
+        assert_eq!(owned_class, OwnedTypeRef::Class(class_id));
+        heap.dec_ref(class_id);
+        heap.dec_ref(class_id);
+    }
+
+    #[test]
+    fn test_owned_type_ref_clone_with_heap() {
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        let class = Class::new(EitherStr::Heap("Bar".to_string()), Dict::new(), &heap);
+        let class_id = heap.allocate(HeapData::Class(Box::new(class)));
+        let owned_class = OwnedTypeRef::Class(class_id);
+        let cloned_owned = owned_class.clone_with_heap(&heap);
+        assert_eq!(cloned_owned, OwnedTypeRef::Class(class_id));
+        heap.dec_ref(class_id);
+        heap.dec_ref(class_id);
     }
 }

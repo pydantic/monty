@@ -79,6 +79,7 @@ pub fn builtin_hasattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult
             value.drop_with(vm);
             true
         }
+
         Ok(CallResult::AttrLookup {
             name,
             class_name,
@@ -99,7 +100,10 @@ pub fn builtin_hasattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult
             other.drop_with(vm);
             return Err(RunError::internal("hasattr() lookup escaped its continuation"));
         }
-        Err(RunError::Exc(e)) if e.exc.exc_type() == ExcType::AttributeError => false,
+        Err(RunError::Exc(e)) if e.exc.exc_type() == ExcType::AttributeError => {
+            e.drop_with(vm);
+            false
+        }
         Err(e) => return Err(e),
     };
 

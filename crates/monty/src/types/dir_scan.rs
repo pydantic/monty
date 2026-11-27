@@ -26,9 +26,9 @@ use crate::{
     args::{ArgValues, FromArgs, LaxBool},
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcType, ExcTypeExt, ExceptionValue, RunError, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, PyException, RunError, RunResult, SimpleException},
     hash::{HashValue, identity_hash},
-    heap::{ContainsHeap, HeapData, HeapId, HeapItem, HeapObjectRead},
+    heap::{ContainsHeap, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead},
     identity::Identity,
     intern::StaticStrings,
     os_dispatch::value_as_path_str,
@@ -378,7 +378,13 @@ fn walk_step<'h>(this: &mut HeapObjectRead<'h, DirScan>, vm: &mut VM<'h>) -> Run
                     let RunError::Exc(raise) = error else {
                         return Err(error);
                     };
-                    let exc = Value::allocate(ExceptionValue::from(raise.exc), vm.heap);
+                    let exc = raise.instance.map_or_else(
+                        || {
+                            let py_exc = PyException::from_simple_exception(&raise.exc);
+                            Value::allocate(py_exc, vm.heap)
+                        },
+                        |b| *b,
+                    );
                     let result = vm.evaluate_function(onerror, ArgValues::One(exc))?;
                     result.drop_with(vm);
                 }
@@ -720,7 +726,11 @@ impl ScanEffect {
                     return Err(SimpleException::new_msg(ExcType::RuntimeError, message).into());
                 }
             },
-            Err(RunError::Exc(raise)) => Err(raise.exc),
+            Err(RunError::Exc(raise)) => {
+                let exc = raise.exc.clone();
+                raise.drop_with(vm);
+                Err(exc)
+            }
             Err(other) => {
                 self.release(vm.heap);
                 return Err(other);

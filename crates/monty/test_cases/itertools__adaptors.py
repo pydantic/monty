@@ -144,6 +144,12 @@ try:
 except ValueError as exc:
     assert str(exc) == 'Stop argument for islice() must be None or an integer: 0 <= x <= sys.maxsize.'
 
+try:
+    itertools.islice([1], 'bad')
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == 'Stop argument for islice() must be None or an integer: 0 <= x <= sys.maxsize.'
+
 # ...while three or more arguments stop distinguishing which was at fault.
 try:
     itertools.islice([1], -1, 2)

@@ -135,16 +135,14 @@ impl<'h> HeapReadMut<'h, List> {
             Some(HeapReadOutput::List(list)) => list.clone_all_items(vm)?,
             Some(HeapReadOutput::Tuple(tuple)) => tuple.cloned_items(vm)?,
             _ => {
-                let iterator = value
-                    .py_iter(vm)
-                    .and_then(|call| call.require_synchronous(vm))
-                    .map_err(|error| {
-                        if matches!(&error, RunError::Exc(raise) if raise.exc.exc_type() == ExcType::TypeError) {
-                            ExcType::type_error("must assign iterable to extended slice")
-                        } else {
-                            error
-                        }
-                    })?;
+                let iterator = match value.py_iter(vm).and_then(|call| call.require_synchronous(vm)) {
+                    Ok(it) => it,
+                    Err(RunError::Exc(raise)) if raise.exc.exc_type() == ExcType::TypeError => {
+                        raise.drop_with(vm);
+                        return Err(ExcType::type_error("must assign iterable to extended slice"));
+                    }
+                    Err(err) => return Err(err),
+                };
                 collect_python_iterator(iterator, vm)?
             }
         };

@@ -17,11 +17,11 @@ use crate::{
     },
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcTypeExt, ExceptionValue, RunResult},
+    exception_private::{ExcTypeExt, ExceptionArgs, PyException, RunResult},
     hash::HashValue,
     heap::{HeapId, HeapItem, HeapObjectRead},
     intern::FunctionId,
-    types::{LazyHeapSet, LongInt, PyTrait, Type, TypeRef},
+    types::{LazyHeapSet, LongInt, OwnedTypeRef, PyTrait, Type, TypeRef},
     value::{EitherStr, Value},
 };
 
@@ -78,7 +78,7 @@ macro_rules! heap_payloads {
             Slice(inline $crate::types::Slice),
             /// An exception instance such as `ValueError('message')`.
             #[serde(rename = "X")]
-            Exception(inline $crate::exception_private::ExceptionValue),
+            Exception(boxed $crate::exception_private::PyException),
             /// A host-backed class instance (the heap form of the wire `ClassInstance`).
             HostClass(boxed $crate::types::HostClass),
             /// The lightweight type object `type(x)` materializes for a `HostClass`
@@ -242,7 +242,7 @@ impl HeapData {
     /// Returns whether this heap data type can participate in reference cycles.
     ///
     /// Only container types that can hold references to other heap objects need to be
-    /// tracked for GC purposes. Leaf types like Str, Bytes, Range, and most exceptions
+    /// tracked for GC purposes. Leaf types like Str, Bytes, Range, and simple exceptions
     /// cannot form cycles and should not count toward the GC allocation threshold.
     ///
     /// This optimization allows programs that allocate many leaf objects (like strings)
@@ -252,8 +252,6 @@ impl HeapData {
     #[inline]
     pub(crate) fn is_gc_tracked(&self) -> bool {
         match self {
-            // Tracked only when it owns a `StopIteration` value; a chained exception that owns one is tracked itself.
-            Self::Exception(exception) => exception.value.is_some(),
             Self::Itertools(iter) => iter.is_gc_tracked(),
             Self::DirScan(scan) => scan.is_gc_tracked(),
             Self::List(_)
@@ -300,6 +298,7 @@ impl HeapData {
             | Self::ForwardRef(_)
             | Self::LruCache(_)
             | Self::Csv(_) => true,
+            Self::Exception(exc) => exc.is_gc_tracked(),
             // Leaf types, plus iterators whose heap refs only point at leaves and so
             // cannot close a cycle. Move one up if it gains a container-valued field.
             Self::Str(_)
@@ -391,7 +390,7 @@ impl HeapData {
             Self::Cell(_) => Type::Cell,
             Self::Range(_) => Type::Range,
             Self::Slice(_) => Type::Slice,
-            Self::Exception(e) => Type::from(e.exc_type()),
+            Self::Exception(e) => return e.class().borrow(),
             // An instance's type is its class object.
             Self::HostClass(instance) => return TypeRef::Class(instance.class_id()),
             Self::Instance(instance) => return TypeRef::Class(instance.class()),
@@ -666,12 +665,26 @@ fn hash_func_id(func_id: FunctionId) -> HashValue {
     HashValue::new(hasher.finish())
 }
 
-impl HeapItem for ExceptionValue {
+impl HeapItem for PyException {
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-        // The chain only holds exceptions; a `StopIteration` value can be anything.
-        stack.extend(self.owned_chain_ids());
-        if let Some(value) = &mut self.value {
-            value.py_dec_ref_ids(stack);
+        if let OwnedTypeRef::Class(id) = self.class {
+            stack.push(id);
+        }
+        match &mut self.args {
+            ExceptionArgs::OneValue(val) => val.py_dec_ref_ids(stack),
+            ExceptionArgs::Tuple(id) => stack.push(*id),
+            _ => {}
+        }
+        if let Some(chain) = &self.chain {
+            if let Some(cause) = chain.cause {
+                stack.push(cause);
+            }
+            if let Some(context) = chain.context {
+                stack.push(context);
+            }
+        }
+        if let Some(attrs) = &mut self.attrs {
+            attrs.py_dec_ref_ids(stack);
         }
     }
 }
