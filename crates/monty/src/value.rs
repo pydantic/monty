@@ -1290,9 +1290,9 @@ impl Value {
     pub fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'_>) -> RunResult<CallResult> {
         if !matches!(self, Self::Builtin(Builtins::Type(_)))
             && let TypeRef::Native(ty) = self.py_type(vm)
-            && let Some((_, AttrDef::GetSet { get, .. })) = ty.lookup_attr(attr, vm.interns)
+            && let Some((owner, AttrDef::GetSet { get, .. })) = ty.lookup_attr(attr, vm.interns)
         {
-            return get(&mut self.py_value(vm), vm).map(CallResult::Value);
+            return py_attrs::get_attribute(owner, attr, get, &mut self.py_value(vm), vm).map(CallResult::Value);
         }
         match self {
             // Instances resolve attributes (instance dict → class methods/vars,
@@ -1338,9 +1338,9 @@ impl Value {
     pub fn py_set_attr(&self, name: &EitherStr, value: Self, vm: &mut VM<'_>) -> RunResult<()> {
         if !matches!(self, Self::Builtin(Builtins::Type(_)))
             && let TypeRef::Native(ty) = self.py_type(vm)
-            && let Some((owner, AttrDef::GetSet { member, set, .. })) = ty.lookup_attr(name, vm.interns)
+            && let Some((owner, AttrDef::GetSet { kind, set, .. })) = ty.lookup_attr(name, vm.interns)
         {
-            py_attrs::set_attribute(owner, name, member, set, &mut self.py_value(vm), value, vm)
+            py_attrs::set_attribute(owner, name, kind, set, &mut self.py_value(vm), value, vm)
         } else if let Self::Ref(heap_id) = self {
             PyValue::from_heap(*heap_id, vm.heap).py_set_attr(name, value, vm)
         } else {

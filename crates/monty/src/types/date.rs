@@ -30,7 +30,7 @@ use crate::{
     heap::{DropWithContext, Heap, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
     modules::time,
-    py_attrs::{MethodCall, PyAttrs},
+    py_attrs::{Getter, MethodCall, PyAttrs},
     py_value::PyValue,
     string_builder::StringBuilder,
     types::{
@@ -356,16 +356,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
             _ => Ok(None),
         }
     }
-
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let (year, month, day) = to_ymd(*self.get(vm.heap));
-        match attr.static_string(vm.interns) {
-            Some(StaticStrings::Year) => Ok(Some(CallResult::Value(Value::Int(i64::from(year))))),
-            Some(StaticStrings::Month) => Ok(Some(CallResult::Value(Value::Int(i64::from(month))))),
-            Some(StaticStrings::Day) => Ok(Some(CallResult::Value(Value::Int(i64::from(day))))),
-            _ => Ok(None),
-        }
-    }
 }
 
 /// `date - date` returns a timedelta with the difference in days.
@@ -572,6 +562,27 @@ struct DateReplaceArgs {
     day: Option<i32>,
 }
 
+/// Date attributes on a datetime read its local calendar date.
+pub(crate) fn get_subtype_attribute<'h>(
+    receiver: &mut PyValue<'h>,
+    attr: &EitherStr,
+    get: Getter,
+    vm: &mut VM<'h>,
+) -> RunResult<Value> {
+    if let PyValue::DateTime(datetime) = receiver {
+        let date = datetime.get(vm.heap).date().0;
+        let component = match attr.static_string(vm.interns) {
+            Some(StaticStrings::Year) => i64::from(date.year()),
+            Some(StaticStrings::Month) => i64::from(date.month()),
+            Some(StaticStrings::Day) => i64::from(date.day()),
+            _ => return get(receiver, vm),
+        };
+        Ok(Value::Int(component))
+    } else {
+        get(receiver, vm)
+    }
+}
+
 /// Adapts date descriptors to the datetime payload while preserving method-specific results.
 pub(crate) fn call_subtype_descriptor<'h>(
     receiver: &mut PyValue<'h>,
@@ -641,6 +652,21 @@ pub(crate) struct PyDateImpl;
 #[pyattrs]
 impl<'heap> PyAttrs<'heap> for PyDateImpl {
     type Receiver = HeapObjectRead<'heap, Date>;
+
+    #[pyget(Year)]
+    fn year<'h>(this: &HeapObjectRead<'h, Date>, vm: &mut VM<'h>) -> Value {
+        Value::Int(i64::from(this.get(vm.heap).0.year()))
+    }
+
+    #[pyget(Month)]
+    fn month<'h>(this: &HeapObjectRead<'h, Date>, vm: &mut VM<'h>) -> Value {
+        Value::Int(i64::from(this.get(vm.heap).0.month()))
+    }
+
+    #[pyget(Day)]
+    fn day<'h>(this: &HeapObjectRead<'h, Date>, vm: &mut VM<'h>) -> Value {
+        Value::Int(i64::from(this.get(vm.heap).0.day()))
+    }
 
     #[pymethod(Isoformat)]
     fn isoformat<'h>(value: &mut HeapObjectRead<'h, Date>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {

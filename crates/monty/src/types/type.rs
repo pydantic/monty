@@ -20,7 +20,7 @@ use crate::{
     heap::{DropGuard, DropWithContext, Heap},
     intern::{Interns, StaticStrings},
     modules::collections,
-    py_attrs::{self, AttrDef},
+    py_attrs::{self, AccessorKind, AttrDef},
     py_value::PyValue,
     types::{
         GenericAlias, LongInt, PyTrait, TypeRef, allocate_tuple,
@@ -91,9 +91,32 @@ impl Type {
     /// Returns the first definition in the MRO and the native namespace that owns it.
     /// The owner validates descriptors; class methods bind to the accessing class.
     pub(crate) fn lookup_attr(self, attr: &EitherStr, interns: &Interns) -> Option<(Self, AttrDef)> {
+        self.lookup_attr_if(attr, interns, |_| true)
+    }
+
+    pub(super) fn lookup_class_attr(self, attr: &EitherStr, interns: &Interns) -> Option<(Self, AttrDef)> {
+        self.lookup_attr_if(attr, interns, |attr| {
+            !matches!(
+                attr,
+                AttrDef::GetSet {
+                    kind: AccessorKind::Instance,
+                    ..
+                }
+            )
+        })
+    }
+
+    fn lookup_attr_if(
+        self,
+        attr: &EitherStr,
+        interns: &Interns,
+        include: impl Fn(AttrDef) -> bool,
+    ) -> Option<(Self, AttrDef)> {
         let name = attr.static_string(interns)?;
-        self.mro()
-            .find_map(|owner| (owner.def().attrs?.lookup)(name).map(|definition| (owner, definition)))
+        self.mro().find_map(|owner| {
+            let definition = (owner.def().attrs?.lookup)(name)?;
+            include(definition).then_some((owner, definition))
+        })
     }
 
     /// Calls registered methods on existing views, binding class methods to the receiver's class.
@@ -107,9 +130,9 @@ impl Type {
         match self.lookup_attr(attr, vm.interns) {
             Some((owner, AttrDef::Method(call))) => py_attrs::call_method(owner, obj, attr, call, args, vm),
             Some((_, AttrDef::ClassMethod(classmethod))) => classmethod(obj.py_type(vm), args, vm),
-            Some((_, AttrDef::GetSet { get, .. })) => {
+            Some((owner, AttrDef::GetSet { get, .. })) => {
                 let mut pending = DropGuard::new(args, vm);
-                let callable = get(obj, pending.ctx())?;
+                let callable = py_attrs::get_attribute(owner, attr, get, obj, pending.ctx())?;
                 let (args, vm) = pending.into_parts();
                 defer_drop!(callable, vm);
                 vm.call_function(callable, args)
@@ -124,7 +147,7 @@ impl Type {
     /// other name is looked up as a plain attribute and the result called, so
     /// `list.__name__()` raises `'str' object is not callable`.
     pub(crate) fn call_class_method(self, attr: &EitherStr, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
-        match self.lookup_attr(attr, vm.interns) {
+        match self.lookup_class_attr(attr, vm.interns) {
             Some((_, AttrDef::ClassMethod(classmethod))) => {
                 return classmethod(TypeRef::Native(self), args, vm);
             }
@@ -175,9 +198,10 @@ impl Type {
                 vm.heap,
             ),
             "__init_subclass__" => bind_init_subclass(type_value(self), self.class_constant(attr, vm)?, vm.heap),
-            _ => match self.lookup_attr(attr, vm.interns)? {
+            _ => match self.lookup_class_attr(attr, vm.interns)? {
                 (_, AttrDef::Value(get)) => get(vm),
-                (owner, AttrDef::GetSet { member, .. }) => {
+                (owner, AttrDef::GetSet { kind, .. }) => {
+                    let member = matches!(kind, AccessorKind::Member);
                     let name = vm.interns.intern_static(attr.static_string(vm.interns)?);
                     builtin_descriptor::native_attribute(owner, name, member, vm)
                 }
@@ -193,7 +217,7 @@ impl Type {
     /// Every lookup allocates a fresh object, so `date.min is date.min` is
     /// `False` where CPython caches (see limitations/datetime.md).
     pub(crate) fn class_constant(self, attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
-        match self.lookup_attr(attr, vm.interns) {
+        match self.lookup_class_attr(attr, vm.interns) {
             Some((_, AttrDef::Value(get))) => Some(get(vm)),
             _ => None,
         }

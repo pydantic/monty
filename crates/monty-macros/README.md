@@ -133,7 +133,7 @@ The table contains enumerable entries and a lookup function generated from the s
 `TypeDef::attrs` registers each native namespace once.
 Lookup follows the native MRO and retains the defining namespace for descriptor receiver checks.
 Class methods receive the accessing class as a borrowed `TypeRef`; the caller keeps that class alive during the call.
-Bases with different native payloads register a `TypeDef::subtype_call` adapter for their instance methods.
+Bases with different native payloads can register `TypeDef::subtype_call` and `TypeDef::subtype_get` adapters.
 
 Each annotation names its `StaticStrings` key explicitly:
 
@@ -146,6 +146,7 @@ Each annotation names its `StaticStrings` key explicitly:
 - `#[pyget(Fieldnames)]` registers `(Receiver, &mut VM)` returning `Value` or `RunResult<Value>` for an instance attribute.
   Reading the name through the class returns a descriptor.
   Use `#[pyget(LineNum, member)]` for a native member descriptor.
+  Use `#[pyget(Flags, instance)]` for an attribute accessible only through instances.
 - `#[pyset(Fieldnames)]` adds a setter for the getter with the same key.
   It takes `(Receiver, Value, &mut VM)` and returns `()` or `RunResult<()>`.
   The setter owns the incoming value and must release or store it on every path.

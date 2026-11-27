@@ -42,7 +42,7 @@ use crate::{
         },
         key_hash::dict_key_hash,
     },
-    value::{EitherStr, VALUE_SIZE, Value, eq_bigint, eq_bytes, eq_f64, eq_i64, eq_str},
+    value::{VALUE_SIZE, Value, eq_bigint, eq_bytes, eq_f64, eq_i64, eq_str},
 };
 
 /// Python dict type preserving insertion order.
@@ -1297,31 +1297,6 @@ impl<'h> HeapRead<'h, Dict> {
     }
 }
 
-impl<'h> HeapReadMut<'h, Dict> {
-    /// Handles dict attribute assignment. Only `defaultdict.default_factory` is
-    /// settable, and it accepts *any* value (see the note below); it returns the
-    /// previous factory for the caller to drop. Every other attribute — and any
-    /// attribute on a plain dict — raises the generic no-setattr
-    /// `AttributeError`. Consumes `value`.
-    fn set_default_factory_attr(&self, attr: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        if self.get(vm.heap).is_defaultdict() && attr.static_string(vm.interns) == Some(StaticStrings::DefaultFactory) {
-            // Deliberately unvalidated: CPython's setter is a plain member
-            // assignment, so a non-callable is stored and only raises
-            // `'int' object is not callable` when a missing key finally calls it.
-            // (The *constructor* does check — see `modules::collections::defaultdict`.)
-            if matches!(value, Value::None) {
-                Ok(self.get_mut(vm.heap).replace_default_factory(None))
-            } else {
-                Ok(self.get_mut(vm.heap).replace_default_factory(Some(value)))
-            }
-        } else {
-            let type_name = self.get(vm.heap).kind_type().name();
-            value.drop_with(vm);
-            Err(ExcType::attribute_error_no_setattr(type_name, attr.as_str(vm.interns)))
-        }
-    }
-}
-
 /// `PyTrait` implementation for a heap-backed `Dict` object.
 ///
 /// All methods access the dict data through short-lived borrows from the heap via
@@ -1339,12 +1314,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
 
     fn py_type(&self, vm: &VM<'h>) -> TypeRef {
         self.get(vm.heap).kind_type().into()
-    }
-
-    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
-        let old_value = self.set_default_factory_attr(name, value, vm)?;
-        old_value.drop_with(vm);
-        Ok(())
     }
 
     fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
@@ -1478,20 +1447,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
             return Ok(f.write_char(')')?);
         }
         self.write_map_repr(f, vm, heap_ids)
-    }
-
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        // A defaultdict exposes `default_factory`; every other attribute (and all
-        // attributes on a plain dict) falls through to the caller's generic error.
-        if self.get(vm.heap).is_defaultdict() && attr.static_string(vm.interns) == Some(StaticStrings::DefaultFactory) {
-            let factory = self
-                .get(vm.heap)
-                .default_factory()
-                .map_or(Value::None, |v| v.clone_with_heap(vm.heap));
-            Ok(Some(CallResult::Value(factory)))
-        } else {
-            Ok(None)
-        }
     }
 
     /// A Counter reads a missing key as `0` *without* inserting it. A
@@ -2317,6 +2272,23 @@ pub(crate) struct PyDefaultDictImpl;
 #[pyattrs]
 impl<'heap> PyAttrs<'heap> for PyDefaultDictImpl {
     type Receiver = HeapObjectRead<'heap, Dict>;
+
+    #[pyget(DefaultFactory, member)]
+    fn default_factory<'h>(this: &HeapObjectRead<'h, Dict>, vm: &mut VM<'h>) -> Value {
+        this.get(vm.heap)
+            .default_factory()
+            .map_or(Value::None, |value| value.clone_with_heap(vm.heap))
+    }
+
+    #[pyset(DefaultFactory)]
+    fn set_default_factory<'h>(this: &HeapObjectRead<'h, Dict>, value: Value, vm: &mut VM<'h>) {
+        // A non-callable factory only raises when a missing key tries to call it.
+        let factory = match value {
+            Value::None => None,
+            value => Some(value),
+        };
+        this.get_mut(vm.heap).replace_default_factory(factory).drop_with(vm);
+    }
 
     #[pymethod(Copy)]
     fn copy<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {

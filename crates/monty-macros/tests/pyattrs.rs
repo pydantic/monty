@@ -49,6 +49,8 @@ mod intern {
         FromNumber,
         Min,
         Size,
+        InstanceValue,
+        Other,
     }
 }
 mod bytecode {
@@ -100,6 +102,13 @@ mod py_attrs {
     type Setter = for<'h> fn(&mut PyValue<'h>, Value, &mut VM<'h>) -> RunResult<()>;
 
     #[derive(Clone, Copy)]
+    pub enum AccessorKind {
+        GetSet,
+        Member,
+        Instance,
+    }
+
+    #[derive(Clone, Copy)]
     pub enum AttrDef {
         Method(for<'h> fn(&mut PyValue<'h>, ArgValues, &mut VM<'h>) -> RunResult<bytecode::CallResult>),
         ClassMethod(for<'h> fn(TypeRef, ArgValues, &mut VM<'h>) -> RunResult<bytecode::CallResult>),
@@ -107,7 +116,7 @@ mod py_attrs {
         GetSet {
             get: Getter,
             set: Option<Setter>,
-            member: bool,
+            kind: AccessorKind,
         },
     }
     pub fn invalid_receiver_error(_: StaticStrings) -> &'static str {
@@ -174,6 +183,16 @@ impl PyAttrs<'_> for FloatMethods {
         Value(3)
     }
 
+    #[pyget(InstanceValue, instance)]
+    fn instance_value(_: f64, _: &mut VM<'_>) -> Value {
+        Value(1)
+    }
+
+    #[pyget(Other)]
+    fn other(_: f64, _: &mut VM<'_>) -> Value {
+        Value(0)
+    }
+
     #[pyvalue(Min)]
     fn minimum(_: &mut VM<'_>) -> Value {
         Value(-1)
@@ -186,7 +205,7 @@ fn pairs_getter_and_setter_in_one_entry() {
     let Some(py_attrs::AttrDef::GetSet {
         get,
         set: Some(set),
-        member: true,
+        kind: py_attrs::AccessorKind::Member,
     }) = (FloatMethods::TABLE.lookup)(StaticStrings::Size)
     else {
         panic!("member getter/setter missing");
@@ -199,6 +218,22 @@ fn pairs_getter_and_setter_in_one_entry() {
             .count(),
         1
     );
+    assert!(matches!(
+        (FloatMethods::TABLE.lookup)(StaticStrings::InstanceValue),
+        Some(py_attrs::AttrDef::GetSet {
+            kind: py_attrs::AccessorKind::Instance,
+            set: None,
+            ..
+        })
+    ));
+    assert!(matches!(
+        (FloatMethods::TABLE.lookup)(StaticStrings::Other),
+        Some(py_attrs::AttrDef::GetSet {
+            kind: py_attrs::AccessorKind::GetSet,
+            set: None,
+            ..
+        })
+    ));
     assert_eq!(get(&mut PyValue::Float(1.0), &mut vm), Ok(Value(3)));
     assert_eq!(
         get(&mut PyValue::Int(PyInt::Small(1)), &mut vm),

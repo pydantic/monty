@@ -25,7 +25,7 @@ use crate::{
     bytecode::{CallResult, PyGeneratorImpl, VM},
     exception_private::{ExcType, RunResult, exc_new},
     modules::{collections, csv, hashlib, itertools},
-    py_attrs::{AttrTable, PyAttrs, SubtypeCall},
+    py_attrs::{AttrTable, PyAttrs, SubtypeCall, SubtypeGet},
     types::{
         Bytes, Deque, Dict, ForwardRef, FrozenSet, List, Partial, Path, Random, Range, Set, Slice, TimeZone, Tuple,
         builtin_descriptor, complex, date, datetime, decimal,
@@ -69,6 +69,7 @@ pub(crate) struct TypeDef {
     pub attrs: Option<AttrTable>,
     /// Calls this type's descriptors on native subtypes with different payloads.
     pub subtype_call: Option<SubtypeCall>,
+    pub subtype_get: Option<SubtypeGet>,
     /// The boundary exception type, for exception classes.
     pub exc: Option<ExcType>,
 }
@@ -101,6 +102,7 @@ impl TypeDef {
             ctor: Constructor::None,
             attrs: None,
             subtype_call: None,
+            subtype_get: None,
             exc: None,
         }
     }
@@ -162,6 +164,12 @@ impl TypeDef {
     /// Adapts this type's descriptors to native subtypes with different payloads.
     const fn subtype_call(mut self, call: SubtypeCall) -> Self {
         self.subtype_call = Some(call);
+        self
+    }
+
+    /// Adapts a getter to native subtypes with different payloads.
+    const fn subtype_get(mut self, get: SubtypeGet) -> Self {
+        self.subtype_get = Some(get);
         self
     }
 
@@ -619,6 +627,7 @@ native_types! {
         .builtin()
         .ctor(Constructor::Value(Range::init)),
     Slice("slice")
+        .attrs(<super::slice::PySliceImpl as PyAttrs<'static>>::TABLE)
         .builtin()
         .ctor(Constructor::Value(Slice::init)),
     /// The four `datetime` classes are qualified like `collections.deque`:
@@ -627,6 +636,7 @@ native_types! {
     /// reports the bare name, see `dunder_name`.
     Date("datetime.date")
         .subtype_call(date::call_subtype_descriptor)
+        .subtype_get(date::get_subtype_attribute)
         .attrs(<super::date::PyDateImpl as PyAttrs<'static>>::TABLE)
         .basetype()
         .ctor(Constructor::Value(date::init)),

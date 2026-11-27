@@ -12,7 +12,6 @@ use crate::{
         DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadMut,
         HeapReadOutput,
     },
-    intern::StaticStrings,
     modules::copy::{Memo, PyDeepCopy, deep_copy},
     py_attrs::PyAttrs,
     py_value::PyValue,
@@ -24,7 +23,7 @@ use crate::{
         list::repr_items_fmt,
         slice::{normalize_sequence_index, value_to_i64_bound},
     },
-    value::{EitherStr, VALUE_SIZE, Value},
+    value::{VALUE_SIZE, Value},
 };
 
 /// `deque([iterable[, maxlen]])` — both positional-or-keyword, both defaulted.
@@ -409,16 +408,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
         Type::Deque.into()
     }
 
-    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
-        value.drop_with(vm);
-        let type_name = self.py_type(vm).name(vm.heap, vm.interns);
-        if name.static_string(vm.interns) == Some(StaticStrings::Maxlen) {
-            Err(ExcType::attribute_error_not_writable("maxlen", &type_name))
-        } else {
-            Err(ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm.interns)))
-        }
-    }
-
     fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
         let deque_id = self.id();
         let iterator = Value::allocate(DequeIterator::new(deque_id, vm), vm.heap);
@@ -642,18 +631,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
 
     fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         self.py_mul_impl(other, vm)
-    }
-
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        // `maxlen` is the deque's only data attribute (read-only in CPython).
-        if attr.static_string(vm.interns) == Some(StaticStrings::Maxlen) {
-            let value = match self.get(vm.heap).maxlen() {
-                Some(max) => Value::Int(i64::try_from(max).expect("maxlen fits in i64")),
-                None => Value::None,
-            };
-            return Ok(Some(CallResult::Value(value)));
-        }
-        Ok(None)
     }
 }
 
@@ -958,6 +935,13 @@ pub(crate) struct PyDequeImpl;
 #[pyattrs]
 impl<'heap> PyAttrs<'heap> for PyDequeImpl {
     type Receiver = HeapObjectRead<'heap, Deque>;
+
+    #[pyget(Maxlen)]
+    fn maxlen<'h>(this: &HeapObjectRead<'h, Deque>, vm: &mut VM<'h>) -> Value {
+        this.get(vm.heap).maxlen().map_or(Value::None, |max| {
+            Value::Int(i64::try_from(max).expect("maxlen fits in i64"))
+        })
+    }
 
     #[pymethod(Append)]
     fn append<'h>(this: &mut HeapObjectRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {

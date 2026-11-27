@@ -49,6 +49,14 @@ pub(crate) struct AttrTable {
 }
 
 #[derive(Clone, Copy)]
+pub(crate) enum AccessorKind {
+    GetSet,
+    Member,
+    /// A fixed instance attribute without a descriptor on the class.
+    Instance,
+}
+
+#[derive(Clone, Copy)]
 pub(crate) enum AttrDef {
     Method(MethodCall),
     ClassMethod(ClassMethodCall),
@@ -56,15 +64,33 @@ pub(crate) enum AttrDef {
     GetSet {
         get: Getter,
         set: Option<Setter>,
-        member: bool,
+        kind: AccessorKind,
     },
+}
+
+pub(crate) type SubtypeGet = for<'h> fn(&mut PyValue<'h>, &EitherStr, Getter, &mut VM<'h>) -> RunResult<Value>;
+
+pub(crate) fn get_attribute<'h>(
+    owner: Type,
+    attr: &EitherStr,
+    get: Getter,
+    receiver: &mut PyValue<'h>,
+    vm: &mut VM<'h>,
+) -> RunResult<Value> {
+    if let Some(adapt) = owner.def().subtype_get
+        && receiver.py_type(vm) != owner
+    {
+        adapt(receiver, attr, get, vm)
+    } else {
+        get(receiver, vm)
+    }
 }
 
 /// Writes a native descriptor, consuming the value even when it is read-only.
 pub(crate) fn set_attribute<'h>(
     owner: Type,
     attr: &EitherStr,
-    member: bool,
+    kind: AccessorKind,
     setter: Option<Setter>,
     receiver: &mut PyValue<'h>,
     value: Value,
@@ -74,7 +100,7 @@ pub(crate) fn set_attribute<'h>(
         set(receiver, value, vm)
     } else {
         value.drop_with(vm);
-        if member {
+        if matches!(kind, AccessorKind::Member) {
             Err(ExcType::attribute_error_readonly())
         } else {
             Err(ExcType::attribute_error_not_writable(

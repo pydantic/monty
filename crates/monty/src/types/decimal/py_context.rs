@@ -346,21 +346,6 @@ impl ContextField {
         Self::Traps,
     ];
 
-    /// Resolves an attribute name.
-    fn from_name(name: &str) -> Option<Self> {
-        Some(match name {
-            "prec" => Self::Prec,
-            "rounding" => Self::Rounding,
-            "Emin" => Self::Emin,
-            "Emax" => Self::Emax,
-            "capitals" => Self::Capitals,
-            "clamp" => Self::Clamp,
-            "flags" => Self::Flags,
-            "traps" => Self::Traps,
-            _ => return None,
-        })
-    }
-
     /// Reads the attribute; `flags` and `traps` are handled by the caller.
     fn get(self, settings: &DecContext, vm: &VM<'_>) -> Value {
         match self {
@@ -526,38 +511,41 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DecContext> {
         Ok(self.get(vm.heap).write_repr(f)?)
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let Some(field) = ContextField::from_name(attr.as_str(vm.interns)) else {
-            return Ok(None);
-        };
-        let value = match field {
-            ContextField::Flags | ContextField::Traps => {
-                vm.heap.inc_ref(self.id());
-                let dict = SignalDict {
-                    context: self.id(),
-                    traps: field == ContextField::Traps,
-                };
-                Value::allocate(dict, vm.heap)
-            }
-            _ => field.get(self.get(vm.heap), vm),
-        };
-        Ok(Some(CallResult::Value(value)))
-    }
-
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
-        defer_drop!(value, vm);
-        let Some(field) = ContextField::from_name(name.as_str(vm.interns)) else {
-            return Err(ExcType::attribute_error(Type::DecimalContext, name.as_str(vm.interns)));
-        };
-        let mut settings = *self.get(vm.heap);
-        match field {
-            ContextField::Flags => settings.flags = signal_dict_arg(value, vm)?,
-            ContextField::Traps => settings.traps = signal_dict_arg(value, vm)?,
-            _ => field.set(&mut settings, value, vm)?,
-        }
-        *self.get_mut(vm.heap) = settings;
-        Ok(())
+        value.drop_with(vm);
+        Err(ExcType::attribute_error(Type::DecimalContext, name.as_str(vm.interns)))
     }
+}
+
+fn get_context_field<'h>(this: &HeapObjectRead<'h, DecContext>, field: ContextField, vm: &VM<'h>) -> Value {
+    match field {
+        ContextField::Flags | ContextField::Traps => {
+            vm.heap.inc_ref(this.id());
+            let dict = SignalDict {
+                context: this.id(),
+                traps: field == ContextField::Traps,
+            };
+            Value::allocate(dict, vm.heap)
+        }
+        _ => field.get(this.get(vm.heap), vm),
+    }
+}
+
+fn set_context_field<'h>(
+    this: &HeapObjectRead<'h, DecContext>,
+    field: ContextField,
+    value: Value,
+    vm: &mut VM<'h>,
+) -> RunResult<()> {
+    defer_drop!(value, vm);
+    let mut settings = *this.get(vm.heap);
+    match field {
+        ContextField::Flags => settings.flags = signal_dict_arg(value, vm)?,
+        ContextField::Traps => settings.traps = signal_dict_arg(value, vm)?,
+        _ => field.set(&mut settings, value, vm)?,
+    }
+    *this.get_mut(vm.heap) = settings;
+    Ok(())
 }
 
 /// A context's `flags` or `traps`, a live mutable mapping from signal classes to bools.
@@ -839,6 +827,86 @@ pub(crate) struct PyContextImpl;
 #[pyattrs]
 impl<'heap> PyAttrs<'heap> for PyContextImpl {
     type Receiver = HeapObjectRead<'heap, DecContext>;
+
+    #[pyget(Prec)]
+    fn prec<'h>(this: &HeapObjectRead<'h, DecContext>, vm: &mut VM<'h>) -> Value {
+        get_context_field(this, ContextField::Prec, vm)
+    }
+
+    #[pyset(Prec)]
+    fn set_prec<'h>(this: &HeapObjectRead<'h, DecContext>, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        set_context_field(this, ContextField::Prec, value, vm)
+    }
+
+    #[pyget(Rounding)]
+    fn rounding<'h>(this: &HeapObjectRead<'h, DecContext>, vm: &mut VM<'h>) -> Value {
+        get_context_field(this, ContextField::Rounding, vm)
+    }
+
+    #[pyset(Rounding)]
+    fn set_rounding<'h>(this: &HeapObjectRead<'h, DecContext>, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        set_context_field(this, ContextField::Rounding, value, vm)
+    }
+
+    #[pyget(Emin)]
+    fn emin<'h>(this: &HeapObjectRead<'h, DecContext>, vm: &mut VM<'h>) -> Value {
+        get_context_field(this, ContextField::Emin, vm)
+    }
+
+    #[pyset(Emin)]
+    fn set_emin<'h>(this: &HeapObjectRead<'h, DecContext>, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        set_context_field(this, ContextField::Emin, value, vm)
+    }
+
+    #[pyget(Emax)]
+    fn emax<'h>(this: &HeapObjectRead<'h, DecContext>, vm: &mut VM<'h>) -> Value {
+        get_context_field(this, ContextField::Emax, vm)
+    }
+
+    #[pyset(Emax)]
+    fn set_emax<'h>(this: &HeapObjectRead<'h, DecContext>, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        set_context_field(this, ContextField::Emax, value, vm)
+    }
+
+    #[pyget(Capitals)]
+    fn capitals<'h>(this: &HeapObjectRead<'h, DecContext>, vm: &mut VM<'h>) -> Value {
+        get_context_field(this, ContextField::Capitals, vm)
+    }
+
+    #[pyset(Capitals)]
+    fn set_capitals<'h>(this: &HeapObjectRead<'h, DecContext>, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        set_context_field(this, ContextField::Capitals, value, vm)
+    }
+
+    #[pyget(Clamp)]
+    fn clamp<'h>(this: &HeapObjectRead<'h, DecContext>, vm: &mut VM<'h>) -> Value {
+        get_context_field(this, ContextField::Clamp, vm)
+    }
+
+    #[pyset(Clamp)]
+    fn set_clamp<'h>(this: &HeapObjectRead<'h, DecContext>, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        set_context_field(this, ContextField::Clamp, value, vm)
+    }
+
+    #[pyget(Flags, instance)]
+    fn flags<'h>(this: &HeapObjectRead<'h, DecContext>, vm: &mut VM<'h>) -> Value {
+        get_context_field(this, ContextField::Flags, vm)
+    }
+
+    #[pyset(Flags)]
+    fn set_flags<'h>(this: &HeapObjectRead<'h, DecContext>, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        set_context_field(this, ContextField::Flags, value, vm)
+    }
+
+    #[pyget(Traps, instance)]
+    fn traps<'h>(this: &HeapObjectRead<'h, DecContext>, vm: &mut VM<'h>) -> Value {
+        get_context_field(this, ContextField::Traps, vm)
+    }
+
+    #[pyset(Traps)]
+    fn set_traps<'h>(this: &HeapObjectRead<'h, DecContext>, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        set_context_field(this, ContextField::Traps, value, vm)
+    }
 
     #[pymethod(ClearFlags)]
     fn clear_flags<'h>(

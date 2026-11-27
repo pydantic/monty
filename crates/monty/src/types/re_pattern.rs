@@ -21,11 +21,10 @@ use smallvec::SmallVec;
 
 use crate::{
     args::{ArgValues, FromArgs},
-    bytecode::{CallResult, VM},
+    bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{HEAP_ENTRY_SIZE, Heap, HeapId, HeapItem, HeapObjectRead, HeapRead},
-    intern::StaticStrings,
     modules::re::{ASCII, DOTALL, IGNORECASE, MULTILINE, VERBOSE},
     py_attrs::PyAttrs,
     resource_checks::check_estimated_size,
@@ -34,7 +33,7 @@ use crate::{
         str::{allocate_string, string_repr_fmt},
         tuple::TupleVec,
     },
-    value::{EitherStr, VALUE_SIZE, Value},
+    value::{VALUE_SIZE, Value},
 };
 
 /// A compiled regular expression pattern.
@@ -561,17 +560,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RePattern> {
         }
         Ok(write!(f, ")")?)
     }
-
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        match attr.static_string(vm.interns) {
-            Some(StaticStrings::PatternAttr) => {
-                let v = allocate_string(self.get(vm.heap).pattern.as_str(), vm.heap);
-                Ok(Some(CallResult::Value(v)))
-            }
-            Some(StaticStrings::Flags) => Ok(Some(CallResult::Value(Value::Int(i64::from(self.get(vm.heap).flags))))),
-            _ => Err(ExcType::attribute_error(Type::RePattern, attr.as_str(vm.interns))),
-        }
-    }
 }
 
 impl HeapItem for RePattern {
@@ -880,6 +868,16 @@ pub(crate) struct PyRePatternImpl;
 #[pyattrs]
 impl<'heap> PyAttrs<'heap> for PyRePatternImpl {
     type Receiver = HeapRead<'heap, RePattern>;
+
+    #[pyget(PatternAttr, member)]
+    fn pattern<'h>(this: &HeapRead<'h, RePattern>, vm: &mut VM<'h>) -> Value {
+        allocate_string(this.get(vm.heap).pattern.as_str(), vm.heap)
+    }
+
+    #[pyget(Flags, member)]
+    fn flags<'h>(this: &HeapRead<'h, RePattern>, vm: &mut VM<'h>) -> Value {
+        Value::Int(i64::from(this.get(vm.heap).flags))
+    }
 
     #[pymethod(Search)]
     fn search<'h>(value: &HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {

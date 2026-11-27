@@ -16,17 +16,16 @@ use smallvec::smallvec;
 
 use crate::{
     args::{ArgValues, FromArgs},
-    bytecode::{CallResult, VM},
+    bytecode::VM,
     defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropGuard, Heap, HeapId, HeapItem, HeapObjectRead, HeapRead},
-    intern::StaticStrings,
     py_attrs::PyAttrs,
     types::{
         Dict, LazyHeapSet, PyTrait, Type, TypeRef, allocate_tuple,
         str::{allocate_string, string_repr_fmt},
     },
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// A regex match result, storing captured groups and positions.
@@ -343,18 +342,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ReMatch> {
         Ok(f.write_char('>')?)
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        match attr.static_string(vm.interns) {
-            Some(StaticStrings::StringAttr) => {
-                // Hand back the same subject object (CPython's `m.string is s`),
-                // bumping its refcount rather than allocating a fresh copy.
-                let v = self.get(vm.heap).subject.clone_with_heap(vm);
-                Ok(Some(CallResult::Value(v)))
-            }
-            _ => Err(ExcType::attribute_error(Type::ReMatch, attr.as_str(vm.interns))),
-        }
-    }
-
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         match key {
             Value::Int(n) => self.get(vm.heap).get_group(*n, vm.heap),
@@ -454,6 +441,11 @@ pub(crate) struct PyReMatchImpl;
 #[pyattrs]
 impl<'heap> PyAttrs<'heap> for PyReMatchImpl {
     type Receiver = HeapRead<'heap, ReMatch>;
+
+    #[pyget(StringAttr, member)]
+    fn string<'h>(this: &HeapRead<'h, ReMatch>, vm: &mut VM<'h>) -> Value {
+        this.get(vm.heap).subject.clone_with_heap(vm.heap)
+    }
 
     /// Handles `m.group(...)` calls, supporting zero, one, or multiple arguments.
     ///

@@ -18,17 +18,16 @@ use smallvec::smallvec;
 
 use crate::{
     args::{ArgValues, FromArgs, FromValue, FromValueFail},
-    bytecode::{CallResult, VM},
+    bytecode::VM,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
     heap::{Heap, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
-    intern::StaticStrings,
     py_attrs::PyAttrs,
     types::{
         CmpOrder, LazyHeapSet, PyTrait, Type, TypeRef, date, datetime, long_int, str::allocate_string,
         tuple::allocate_tuple,
     },
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// Minimum allowed day magnitude for `timedelta`.
@@ -556,16 +555,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
         let remainder = allocate_micros(remainder, vm.heap);
         Ok(Some(allocate_tuple(smallvec![quotient, remainder], vm.heap)))
     }
-
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let (days, seconds, microseconds) = components(self.get(vm.heap));
-        match attr.static_string(vm.interns) {
-            Some(StaticStrings::Days) => Ok(Some(CallResult::Value(Value::Int(i64::from(days))))),
-            Some(StaticStrings::Seconds) => Ok(Some(CallResult::Value(Value::Int(i64::from(seconds))))),
-            Some(StaticStrings::Microseconds) => Ok(Some(CallResult::Value(Value::Int(i64::from(microseconds))))),
-            _ => Ok(None),
-        }
-    }
 }
 
 pub(crate) struct PyTimeDeltaImpl;
@@ -573,6 +562,21 @@ pub(crate) struct PyTimeDeltaImpl;
 #[pyattrs]
 impl<'heap> PyAttrs<'heap> for PyTimeDeltaImpl {
     type Receiver = HeapObjectRead<'heap, TimeDelta>;
+
+    #[pyget(Days, member)]
+    fn days<'h>(this: &HeapObjectRead<'h, TimeDelta>, vm: &mut VM<'h>) -> Value {
+        Value::Int(i64::from(components(this.get(vm.heap)).0))
+    }
+
+    #[pyget(Seconds, member)]
+    fn seconds<'h>(this: &HeapObjectRead<'h, TimeDelta>, vm: &mut VM<'h>) -> Value {
+        Value::Int(i64::from(components(this.get(vm.heap)).1))
+    }
+
+    #[pyget(Microseconds, member)]
+    fn microseconds<'h>(this: &HeapObjectRead<'h, TimeDelta>, vm: &mut VM<'h>) -> Value {
+        Value::Int(i64::from(components(this.get(vm.heap)).2))
+    }
 
     #[pymethod(TotalSeconds)]
     fn total_seconds<'h>(

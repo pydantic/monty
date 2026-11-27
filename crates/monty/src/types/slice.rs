@@ -10,6 +10,7 @@ use std::{
     hash::{Hash, Hasher},
 };
 
+use monty_macros::pyattrs;
 use smallvec::smallvec;
 
 use super::{LazyHeapSet, allocate_tuple};
@@ -21,6 +22,7 @@ use crate::{
     hash::HashValue,
     heap::{HeapId, HeapItem, HeapObjectRead},
     intern::StaticStrings,
+    py_attrs::PyAttrs,
     types::{PyTrait, Type, TypeRef},
     value::{EitherStr, Value},
 };
@@ -275,16 +277,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Slice> {
         Ok(f.write_char(')')?)
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let this = self.get(vm.heap);
-        match attr.static_string(vm.interns) {
-            Some(StaticStrings::Start) => Ok(Some(CallResult::Value(option_i64_to_value(this.start)))),
-            Some(StaticStrings::Stop) => Ok(Some(CallResult::Value(option_i64_to_value(this.stop)))),
-            Some(StaticStrings::Step) => Ok(Some(CallResult::Value(option_i64_to_value(this.step)))),
-            _ => Ok(None),
-        }
-    }
-
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         match attr.static_string(vm.interns) {
             Some(StaticStrings::Indices) => {
@@ -402,5 +394,27 @@ pub(crate) fn normalize_sequence_index(index: i64, len: usize) -> usize {
         len.saturating_sub(abs_index)
     } else {
         usize::try_from(index).unwrap_or(len).min(len)
+    }
+}
+
+pub(crate) struct PySliceImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PySliceImpl {
+    type Receiver = HeapObjectRead<'heap, Slice>;
+
+    #[pyget(Start, member)]
+    fn start<'h>(this: &HeapObjectRead<'h, Slice>, vm: &mut VM<'h>) -> Value {
+        option_i64_to_value(this.get(vm.heap).start)
+    }
+
+    #[pyget(Stop, member)]
+    fn stop<'h>(this: &HeapObjectRead<'h, Slice>, vm: &mut VM<'h>) -> Value {
+        option_i64_to_value(this.get(vm.heap).stop)
+    }
+
+    #[pyget(Step, member)]
+    fn step<'h>(this: &HeapObjectRead<'h, Slice>, vm: &mut VM<'h>) -> Value {
+        option_i64_to_value(this.get(vm.heap).step)
     }
 }

@@ -13,7 +13,7 @@ use crate::{
     heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StringId,
     modules::ModuleFunctions,
-    py_attrs::{self, AttrDef},
+    py_attrs::{self, AccessorKind, AttrDef},
     value::{EitherStr, Value},
 };
 
@@ -171,7 +171,7 @@ fn native_access(owner: Type, name: StringId, instance: &Value, vm: &VM<'_>) -> 
         )));
     }
     let definition = owner
-        .lookup_attr(&attr, vm.interns)
+        .lookup_class_attr(&attr, vm.interns)
         .and_then(|(declaring_type, definition)| (declaring_type == owner).then_some(definition))
         .ok_or_else(|| owner.attribute_error(&attr, vm))?;
     Ok((attr, definition))
@@ -215,10 +215,10 @@ fn protocol_get(id: HeapId, instance: &Value, owner: Option<&Value>, vm: &mut VM
             Ok(CallResult::Value(Value::Ref(id)))
         }
         BuiltinDescriptor::Native { owner, name, .. } => {
-            let (_, AttrDef::GetSet { get, .. }) = native_access(*owner, *name, instance, vm)? else {
+            let (attr, AttrDef::GetSet { get, .. }) = native_access(*owner, *name, instance, vm)? else {
                 return Err(ExcType::type_error("invalid native descriptor"));
             };
-            get(&mut instance.py_value(vm), vm).map(CallResult::Value)
+            py_attrs::get_attribute(*owner, &attr, get, &mut instance.py_value(vm), vm).map(CallResult::Value)
         }
         BuiltinDescriptor::Property { fget, .. } => {
             let function = fget.clone_with_heap(vm);
@@ -243,11 +243,11 @@ pub(crate) fn mutate(id: HeapId, object: &Value, value: Option<Value>, vm: &mut 
         return Err(ExcType::type_error("invalid descriptor receiver"));
     };
     if let BuiltinDescriptor::Native { owner, name, .. } = **descriptor {
-        let (attr, AttrDef::GetSet { set, member, .. }) = native_access(owner, name, object, vm)? else {
+        let (attr, AttrDef::GetSet { set, kind, .. }) = native_access(owner, name, object, vm)? else {
             return Err(ExcType::type_error("invalid native descriptor"));
         };
         let Some(value) = value.as_ref() else {
-            return Err(if member {
+            return Err(if matches!(kind, AccessorKind::Member) {
                 ExcType::attribute_error_readonly()
             } else {
                 ExcType::attribute_error_not_writable(attr.as_str(vm.interns), owner.name())
@@ -256,7 +256,7 @@ pub(crate) fn mutate(id: HeapId, object: &Value, value: Option<Value>, vm: &mut 
         py_attrs::set_attribute(
             owner,
             &attr,
-            member,
+            kind,
             set,
             &mut object.py_value(vm),
             value.clone_with_heap(vm.heap),

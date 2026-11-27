@@ -38,7 +38,7 @@ use crate::{
         str::{StringRepr, allocate_string, allocate_string_no_interning},
         timedelta, timezone,
     },
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// `datetime.time` storage.
@@ -553,28 +553,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Time> {
         let s = format_isoformat(time, attached_offset(time, vm.heap), TimeSpec::Auto);
         Ok(allocate_string_no_interning(s, vm.heap))
     }
-
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        // Read only the field being asked for: cloning the whole `Time` would
-        // copy the timezone name's `String` on every `t.hour`.
-        let int_attr = |value: u32| Ok(Some(CallResult::Value(Value::Int(i64::from(value)))));
-        match attr.static_string(vm.interns) {
-            Some(StaticStrings::Hour) => int_attr(u32::from(self.get(vm.heap).hour)),
-            Some(StaticStrings::Minute) => int_attr(u32::from(self.get(vm.heap).minute)),
-            Some(StaticStrings::Second) => int_attr(u32::from(self.get(vm.heap).second)),
-            Some(StaticStrings::Microsecond) => int_attr(self.get(vm.heap).microsecond),
-            Some(StaticStrings::Fold) => int_attr(u32::from(self.get(vm.heap).fold)),
-            Some(StaticStrings::Tzinfo) => {
-                // `HeapId` is `Copy`, so this ends the heap borrow before `inc_ref`.
-                let Some(tzinfo_ref) = self.get(vm.heap).tzinfo_ref() else {
-                    return Ok(Some(CallResult::Value(Value::None)));
-                };
-                vm.heap.inc_ref(tzinfo_ref);
-                Ok(Some(CallResult::Value(Value::Ref(tzinfo_ref))))
-            }
-            _ => Ok(None),
-        }
-    }
 }
 
 /// Time behaviour that needs both the object and the VM, so it cannot be
@@ -653,6 +631,40 @@ pub(crate) struct PyTimeImpl;
 #[pyattrs]
 impl<'heap> PyAttrs<'heap> for PyTimeImpl {
     type Receiver = HeapObjectRead<'heap, Time>;
+
+    #[pyget(Hour)]
+    fn hour<'h>(this: &HeapObjectRead<'h, Time>, vm: &mut VM<'h>) -> Value {
+        Value::Int(i64::from(this.get(vm.heap).hour))
+    }
+
+    #[pyget(Minute)]
+    fn minute<'h>(this: &HeapObjectRead<'h, Time>, vm: &mut VM<'h>) -> Value {
+        Value::Int(i64::from(this.get(vm.heap).minute))
+    }
+
+    #[pyget(Second)]
+    fn second<'h>(this: &HeapObjectRead<'h, Time>, vm: &mut VM<'h>) -> Value {
+        Value::Int(i64::from(this.get(vm.heap).second))
+    }
+
+    #[pyget(Microsecond)]
+    fn microsecond<'h>(this: &HeapObjectRead<'h, Time>, vm: &mut VM<'h>) -> Value {
+        Value::Int(i64::from(this.get(vm.heap).microsecond))
+    }
+
+    #[pyget(Fold)]
+    fn fold<'h>(this: &HeapObjectRead<'h, Time>, vm: &mut VM<'h>) -> Value {
+        Value::Int(i64::from(this.get(vm.heap).fold))
+    }
+
+    #[pyget(Tzinfo)]
+    fn tzinfo<'h>(this: &HeapObjectRead<'h, Time>, vm: &mut VM<'h>) -> Value {
+        let Some(id) = this.get(vm.heap).tzinfo_ref() else {
+            return Value::None;
+        };
+        vm.heap.inc_ref(id);
+        Value::Ref(id)
+    }
 
     #[pymethod(Isoformat)]
     fn isoformat<'h>(value: &mut HeapObjectRead<'h, Time>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {

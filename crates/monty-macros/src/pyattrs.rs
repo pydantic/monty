@@ -50,21 +50,22 @@ pub(crate) fn expand(mut input: ItemImpl) -> syn::Result<TokenStream> {
                         let name = args
                             .next()
                             .ok_or_else(|| syn::Error::new_spanned(&attr, "expected a StaticStrings key"))?;
-                        let member = match args.next() {
-                            None => false,
-                            Some(option) if kind == Kind::Get && option == "member" && args.next().is_none() => true,
+                        let accessor = match args.next() {
+                            None => Accessor::GetSet,
                             Some(_) if kind != Kind::Get => {
                                 return Err(syn::Error::new_spanned(attr, "expected one StaticStrings key"));
                             }
+                            Some(option) if option == "member" && args.next().is_none() => Accessor::Member,
+                            Some(option) if option == "instance" && args.next().is_none() => Accessor::Instance,
                             Some(option) => return Err(syn::Error::new_spanned(option, "unexpected attribute option")),
                         };
-                        annotation = Some((kind, name, member));
+                        annotation = Some((kind, name, accessor));
                     } else {
                         remaining.push(attr);
                     }
                 }
                 method.attrs = remaining;
-                let Some((kind, name, member)) = annotation else {
+                let Some((kind, name, accessor)) = annotation else {
                     continue;
                 };
                 if method
@@ -114,11 +115,11 @@ pub(crate) fn expand(mut input: ItemImpl) -> syn::Result<TokenStream> {
                         method: None,
                         get: None,
                         set: None,
-                        member: false,
+                        accessor: Accessor::GetSet,
                     });
                     definitions.len() - 1
                 });
-                definitions[index].add(kind, callback, member)?;
+                definitions[index].add(kind, callback, accessor)?;
             }
             _ => {
                 return Err(syn::Error::new_spanned(
@@ -155,14 +156,14 @@ struct Definition {
     method: Option<TokenStream>,
     get: Option<TokenStream>,
     set: Option<TokenStream>,
-    member: bool,
+    accessor: Accessor,
 }
 
 impl Definition {
-    fn add(&mut self, kind: Kind, callback: TokenStream, member: bool) -> syn::Result<()> {
+    fn add(&mut self, kind: Kind, callback: TokenStream, accessor: Accessor) -> syn::Result<()> {
         let slot = match kind {
             Kind::Get if self.method.is_none() => {
-                self.member = member;
+                self.accessor = accessor;
                 &mut self.get
             }
             Kind::Set if self.method.is_none() => &mut self.set,
@@ -186,9 +187,22 @@ impl Definition {
             .as_ref()
             .ok_or_else(|| syn::Error::new_spanned(&self.name, "#[pyset] requires a matching #[pyget]"))?;
         let set = self.set.as_ref().map_or_else(|| quote!(None), |set| quote!(Some(#set)));
-        let member = self.member;
-        Ok(quote!(crate::py_attrs::AttrDef::GetSet { get: #get, set: #set, member: #member }))
+        let kind = match self.accessor {
+            Accessor::GetSet => quote!(GetSet),
+            Accessor::Member => quote!(Member),
+            Accessor::Instance => quote!(Instance),
+        };
+        Ok(quote!(crate::py_attrs::AttrDef::GetSet {
+            get: #get, set: #set, kind: crate::py_attrs::AccessorKind::#kind,
+        }))
     }
+}
+
+#[derive(Clone, Copy)]
+enum Accessor {
+    GetSet,
+    Member,
+    Instance,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
