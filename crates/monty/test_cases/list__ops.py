@@ -503,7 +503,7 @@ assert sorted([float('inf'), 9223372036854775807, -float('inf'), 0]) == [
     9223372036854775807,
     float('inf'),
 ]
-# interned literals and computed strings sort together, by code point
+# symbols and computed strings sort together, by code point
 computed = ''.join(['b', 'a'])
 words = ['ba', computed, 'B', 'é', '', 'a', '\U0001f600', 'ab']
 assert sorted(words) == ['', 'B', 'a', 'ab', 'ba', 'ba', 'é', '\U0001f600']
@@ -642,7 +642,7 @@ assert [*'abc'] == ['a', 'b', 'c']
 assert [*{'x': 1, 'y': 2}] == ['x', 'y']
 # Heap-allocated set: covers the HeapData::Set arm in list_extend
 assert sorted([*{1, 2, 3}]) == [1, 2, 3]
-# Heap-allocated Str (result of concat, not interned): covers HeapData::Str in list_extend
+# Heap-allocated Str (result of concat, not symbol-backed): covers HeapData::Str in list_extend
 hs = 'hel' + 'lo'
 assert [*hs] == ['h', 'e', 'l', 'l', 'o']
 

@@ -79,7 +79,7 @@ pub(crate) fn builtin_object_new(vm: &mut VM<'_>, args: ArgValues) -> RunResult<
         }
         Some(ty) => {
             // CPython names the nearest native base, whose own `__new__` builds the layout.
-            let name = ty.dunder_name(vm.heap, vm.interns);
+            let name = ty.dunder_name(vm.heap, vm.symbols);
             let base = match ty {
                 // A host class stands in for the host's real class, whose own `__new__` it names.
                 TypeRef::Class(id) if matches!(vm.heap.get(id), HeapData::HostClassType(_)) => name.clone(),
@@ -151,7 +151,7 @@ pub(crate) fn builtin_object_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult
             } else if class_defines(class_id, "__new__", vm) {
                 Ok(Value::None)
             } else {
-                let name = TypeRef::Class(class_id).name(vm.heap, vm.interns);
+                let name = TypeRef::Class(class_id).name(vm.heap, vm.symbols);
                 Err(init_takes_one_argument(&name))
             }
         }
@@ -209,7 +209,7 @@ pub(crate) fn builtin_object_init_subclass(vm: &mut VM<'_>, args: ArgValues) -> 
         Some(cls) => {
             defer_drop!(cls, vm);
             match TypeRef::from_value(cls, vm.heap) {
-                Some(ty) => ty.dunder_name(vm.heap, vm.interns).into_owned(),
+                Some(ty) => ty.dunder_name(vm.heap, vm.symbols).into_owned(),
                 None => "object".to_owned(),
             }
         }
@@ -235,6 +235,6 @@ fn init_takes_one_argument(type_name: &str) -> RunError {
 
 /// `Foo() takes no arguments`, for a class with neither `__init__` nor `__new__`.
 pub(crate) fn takes_no_arguments(class_id: HeapId, vm: &VM<'_>) -> RunError {
-    let name = TypeRef::Class(class_id).name(vm.heap, vm.interns);
+    let name = TypeRef::Class(class_id).name(vm.heap, vm.symbols);
     ExcType::type_error(format!("{name}() takes no arguments"))
 }

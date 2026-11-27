@@ -171,12 +171,12 @@ impl VM<'_> {
             defer_drop!(earlier, this);
             let repeated = earlier
                 .as_either_str(this.heap)
-                .is_some_and(|e| e.as_str(this.interns) == attr.as_str(this.interns));
+                .is_some_and(|e| e.as_str(this.symbols) == attr.as_str(this.symbols));
             if repeated {
                 let class = class_pattern_name(cls, this);
                 return Err(ExcType::type_error(format!(
                     "{class}() got multiple sub-patterns for attribute '{}'",
-                    attr.as_str(this.interns)
+                    attr.as_str(this.symbols)
                 )));
             }
         }
@@ -205,7 +205,7 @@ impl VM<'_> {
                 other.drop_with(this);
                 Err(ExcType::type_error(format!(
                     "class pattern attribute '{}' is not a plain attribute",
-                    attr.as_str(this.interns)
+                    attr.as_str(this.symbols)
                 )))
             }
             Err(RunError::Exc(exc)) if exc.exc.exc_type() == ExcType::AttributeError => {
@@ -352,12 +352,12 @@ fn class_match_args(cls: &Value, nargs: usize, vm: &mut VM<'_>) -> RunResult<Mat
         }
         HeapData::Class(class) => class
             .namespace()
-            .get_by_str("__match_args__", vm.heap, vm.interns)
+            .get_by_str("__match_args__", vm.heap, vm.symbols)
             .map(|value| value.clone_with_heap(vm.heap)),
         // A host class only has `__match_args__` if the host sent it as a class attribute.
         HeapData::HostClassType(class) => class
             .attrs()
-            .get_by_str("__match_args__", vm.heap, vm.interns)
+            .get_by_str("__match_args__", vm.heap, vm.symbols)
             .map(|value| value.clone_with_heap(vm.heap)),
         _ => None,
     };
@@ -404,7 +404,7 @@ fn positional_count_error(cls: &Value, allowed: usize, given: usize, vm: &VM<'_>
 /// The class's `__name__`, as CPython's class pattern errors spell it.
 fn class_pattern_name(cls: &Value, vm: &VM<'_>) -> String {
     match TypeRef::from_value(cls, vm.heap) {
-        Some(ty) => ty.dunder_name(vm.heap, vm.interns).into_owned(),
+        Some(ty) => ty.dunder_name(vm.heap, vm.symbols).into_owned(),
         None => cls.py_type_name(vm).to_string(),
     }
 }

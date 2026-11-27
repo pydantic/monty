@@ -554,11 +554,11 @@ fn input_function_with_looked_up_arg() {
 }
 
 /// When a NameLookup resolves to a Function whose name differs from the variable
-/// name (i.e., the function's `__name__` is not interned), the VM stores it as
+/// name (i.e., the function's `__name__` has no symbol), the VM stores it as
 /// `HeapData::ExtFunction(String)`. Calling it should yield a `FunctionCall` with
 /// the function's actual name, not the variable name.
 #[test]
-fn resolve_function_with_non_interned_name() {
+fn resolve_function_with_dynamic_name() {
     // `x = foobar` triggers NameLookup for 'foobar', we resolve it as a function
     // named 'not_foobar'. Then `x()` calls the function.
     let code = "x = foobar; x()".to_owned();
@@ -571,7 +571,7 @@ fn resolve_function_with_non_interned_name() {
     let lookup = progress.into_name_lookup().unwrap();
     assert_eq!(lookup.name, "foobar");
 
-    // Resolve with a function whose name is NOT 'foobar' — it won't be interned
+    // Resolve with a function whose name is NOT 'foobar' — it won't be stored as a symbol
     let progress = lookup
         .resume(
             NameLookupResult::Value(MontyObject::function("not_foobar".to_string(), None)),

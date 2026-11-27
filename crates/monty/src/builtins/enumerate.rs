@@ -151,7 +151,7 @@ fn key_check(key: &Value, expected: &str, vm: &VM<'_>) -> RunResult<()> {
     let Some(key) = key.as_either_str(vm.heap) else {
         return Err(ExcType::type_error_kwargs_nonstring_key());
     };
-    let key = key.as_str(vm.interns);
+    let key = key.as_str(vm.symbols);
     if key == expected {
         Ok(())
     } else {

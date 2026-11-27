@@ -15,7 +15,7 @@ use serde::{
 };
 
 use super::LocationEntry;
-use crate::{intern::StringId, parse::CodeRange};
+use crate::{parse::CodeRange, symbols::SymbolId};
 
 /// The current layout. After the format byte, each entry is LEB128 varints:
 ///
@@ -60,7 +60,7 @@ pub(super) fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<
 struct Previous {
     offset: u32,
     start: u32,
-    filename: Option<StringId>,
+    filename: Option<SymbolId>,
 }
 
 /// Appends one entry to `bytes`, then makes it the base for the next.
@@ -172,7 +172,7 @@ fn decode_v1(body: &[u8]) -> Result<Vec<LocationEntry>, &'static str> {
         let filename = if header & NEW_FILENAME == 0 {
             previous.filename.ok_or("first location entry has no filename")?
         } else {
-            StringId::from_raw(reader.u32()?)
+            SymbolId::from_raw(reader.u32()?)
         };
         let range = reader.range(filename, previous.start)?;
         let focus = if header & HAS_FOCUS == 0 {
@@ -181,7 +181,7 @@ fn decode_v1(body: &[u8]) -> Result<Vec<LocationEntry>, &'static str> {
             let focus_filename = if header & FOCUS_FILENAME == 0 {
                 filename
             } else {
-                StringId::from_raw(reader.u32()?)
+                SymbolId::from_raw(reader.u32()?)
             };
             Some(reader.range(focus_filename, range.start_byte)?)
         };
@@ -201,7 +201,7 @@ struct Reader<'a>(&'a [u8]);
 
 impl Reader<'_> {
     /// Reads a range written by [`write_range`] against `base`.
-    fn range(&mut self, filename: StringId, base: u32) -> Result<CodeRange, &'static str> {
+    fn range(&mut self, filename: SymbolId, base: u32) -> Result<CodeRange, &'static str> {
         let start_byte = base.wrapping_add(unzigzag(self.u32()?));
         let end_byte = start_byte.wrapping_add(self.u32()?);
         Ok(CodeRange {

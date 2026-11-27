@@ -13,11 +13,11 @@ use crate::{
     builtins::next,
     bytecode::{CallResult, Compiler, VM, compile_iteration_catcher},
     exception_private::RunResult,
-    intern::{CompileInterns, FunctionId, Interns},
     modules::{functools, typing},
     name_map::NameMap,
-    parse::parse_with_interner,
+    parse::parse_with_symbols,
     prepare::prepare_with_existing_names,
+    symbols::{CompileSymbols, FunctionId, SymbolTable},
     types::{forward_ref, generic_alias, iter, lru_cache, map_filter},
 };
 
@@ -65,21 +65,21 @@ pub(crate) enum FrozenFunction {
 
 impl FrozenFunction {
     /// Publishes the implementation on first use; callers can install its frame without further binding.
-    pub(crate) fn resolve(self, interns: &Interns) -> RunResult<FunctionId> {
-        if let Some(id) = interns.frozen_function(self) {
+    pub(crate) fn resolve(self, symbols: &SymbolTable) -> RunResult<FunctionId> {
+        if let Some(id) = symbols.frozen_function(self) {
             Ok(id)
         } else {
-            let (id, overlay) = self.compile(interns)?;
+            let (id, overlay) = self.compile(symbols)?;
             overlay.commit();
-            interns.set_frozen_function(self, id);
+            symbols.set_frozen_function(self, id);
             Ok(id)
         }
     }
 
-    /// Prepares an unpublished implementation using this session's intern IDs.
+    /// Prepares an unpublished implementation using this session's symbol IDs.
     /// The caller publishes the overlay before installing its frame.
-    fn compile(self, interns: &Interns) -> RunResult<(FunctionId, CompileInterns<'_>)> {
-        let mut overlay = CompileInterns::new(interns);
+    fn compile(self, symbols: &SymbolTable) -> RunResult<(FunctionId, CompileSymbols<'_>)> {
+        let mut overlay = CompileSymbols::new(symbols);
         let index = overlay.functions_len();
         let source = match self {
             Self::ForIter => {
@@ -100,7 +100,7 @@ impl FrozenFunction {
         };
         let mut globals = NameMap::new();
         let parsed =
-            parse_with_interner(source, "<monty-frozen>", &mut overlay, false).map_err(|e| e.into_run_error(source))?;
+            parse_with_symbols(source, "<monty-frozen>", &mut overlay, false).map_err(|e| e.into_run_error(source))?;
         let nodes =
             prepare_with_existing_names(parsed.nodes, &overlay, &mut globals).map_err(|e| e.into_run_error(source))?;
         Compiler::compile_module(&nodes, &mut overlay, &globals, CompileOptions::default(), false)

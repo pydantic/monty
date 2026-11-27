@@ -41,7 +41,7 @@ fn same_named_callables_share_identity() {
 
 /// Mentioning the host function's name in source does not change its identity.
 #[test]
-fn same_named_callables_share_identity_when_name_is_interned() {
+fn same_named_callables_share_identity_when_name_is_a_symbol() {
     let result = run_with_same_named_callable_inputs("foo = None\n(a is b, a == b)");
     assert_eq!(
         result,

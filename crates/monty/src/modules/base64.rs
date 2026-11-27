@@ -23,10 +23,10 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::HeapData,
-    intern::StaticStrings,
     modules::ModuleFunctions,
     py_value::PyValue,
     resource_checks::check_estimated_size,
+    symbols::StaticStrings,
     types::{
         CmpOrder, Module, PyTrait,
         bytes::{PyBytes, allocate_bytes, bytes_repr},
@@ -141,7 +141,7 @@ const BASE64_FUNCTIONS: &[(StaticStrings, Base64Functions)] = &[
 
 /// Creates the `base64` module.
 pub fn create_module(vm: &mut VM<'_>) -> Module {
-    let mut module = Module::new(StaticStrings::Base64, vm.interns);
+    let mut module = Module::new(StaticStrings::Base64, vm.symbols);
 
     for (name, func) in BASE64_FUNCTIONS {
         module.set_attr(*name, Value::ModuleFunction(ModuleFunctions::Base64(*func)), vm);

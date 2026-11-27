@@ -12,7 +12,7 @@ fn eval(code: &str) -> MontyObject {
 }
 
 #[test]
-fn interned_string_lengths_count_code_points() {
+fn symbol_lengths_count_code_points() {
     assert_eq!(
         eval("[len(s) for s in ('', 'a', 'ascii literal', 'é', 'aé🦀', 'e\\u0301')]"),
         MontyObject::list([0, 1, 13, 1, 3, 2].map(MontyObject::int)),

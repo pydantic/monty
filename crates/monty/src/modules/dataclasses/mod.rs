@@ -33,11 +33,11 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapRead, HeapReadMut, HeapReadOutput, HeapReader},
-    intern::{Interns, StaticStrings, StringId},
     modules::{
         ModuleFunctions,
         typing::{self, HintFormat, HintsRequest, HintsTask},
     },
+    symbols::{StaticStrings, SymbolId, SymbolTable},
     types::{
         Class, Dict, ForwardRef, GenericAlias, Module, PyTrait, TupleVec, Type, TypeRef, allocate_tuple,
         generic_alias::AliasOrigin,
@@ -67,7 +67,7 @@ pub(crate) enum DataclassesFunctions {
 
 /// Creates the `dataclasses` module.
 pub fn create_module(vm: &mut VM<'_>) -> Module {
-    let mut module = Module::new(StaticStrings::Dataclasses, vm.interns);
+    let mut module = Module::new(StaticStrings::Dataclasses, vm.symbols);
     module.set_attr(
         StaticStrings::Dataclass,
         Value::ModuleFunction(ModuleFunctions::Dataclasses(DataclassesFunctions::Dataclass)),
@@ -298,7 +298,7 @@ fn check_frozen_inheritance(class: &Class, options: DataclassOptions, vm: &VM<'_
         TypeRef::Class(id) => match vm.heap.get(*id) {
             HeapData::Class(base) => base
                 .namespace()
-                .get_by_str("__dataclass_params__", vm.heap, vm.interns)
+                .get_by_str("__dataclass_params__", vm.heap, vm.symbols)
                 .and_then(|params| params.get_as::<DataclassParams>(vm.heap))
                 .map(DataclassParams::options),
             _ => None,
@@ -386,7 +386,7 @@ fn allocate_fields_dict(vm: &mut VM<'_>, fields: Vec<Value>) -> RunResult<Value>
         // by the second, so a replacement does happen — CPython collapses the
         // pair the same way. A dict rejected by the memory limit releases the
         // field it was handed.
-        let replaced = dict.set(Value::InternString(name), Value::Ref(field_id), vm)?;
+        let replaced = dict.set(Value::Symbol(name), Value::Ref(field_id), vm)?;
         replaced.drop_with(vm);
     }
     Ok(guard.into_inner().into_value())
@@ -396,7 +396,7 @@ fn allocate_fields_dict(vm: &mut VM<'_>, fields: Vec<Value>) -> RunResult<Value>
 /// `fields`. Re-decorating replaces the previous mapping, which nothing else
 /// owns once it is out of the namespace.
 fn store_dataclass_fields<'h>(class: &HeapReadMut<'h, Class>, fields: Value, vm: &mut VM<'h>) -> RunResult<()> {
-    let name = Value::InternString(vm.interns.intern_static(StaticStrings::DataclassFields));
+    let name = Value::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::DataclassFields));
     let replaced = class.set_attr(name, fields, vm)?;
     replaced.drop_with(vm);
     Ok(())
@@ -413,7 +413,7 @@ fn store_dataclass_params<'h>(
     vm: &mut VM<'h>,
 ) -> RunResult<()> {
     let params = Value::allocate(DataclassParams::new(options), vm.heap);
-    let name = Value::InternString(vm.interns.intern_static(StaticStrings::DataclassParams));
+    let name = Value::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::DataclassParams));
     let replaced = class.set_attr(name, params, vm)?;
     replaced.drop_with(vm);
     Ok(())
@@ -423,17 +423,17 @@ fn store_dataclass_params<'h>(
 /// definition order, so `case Point(x, y):` binds positionally. A class that
 /// defines its own `__match_args__` keeps it, as in CPython.
 fn store_match_args<'h>(class: &HeapReadMut<'h, Class>, fields_id: HeapId, vm: &mut VM<'h>) -> RunResult<()> {
-    let name_id = vm.interns.intern_static(StaticStrings::MatchArgsDunder);
+    let name_id = vm.symbols.get_or_insert_static_symbol(StaticStrings::MatchArgsDunder);
     let namespace = class.get(vm.heap).namespace();
-    if namespace.get_by_str("__match_args__", vm.heap, vm.interns).is_some() {
+    if namespace.get_by_str("__match_args__", vm.heap, vm.symbols).is_some() {
         return Ok(());
     }
     let names: TupleVec = adopted_field_ids(fields_id, vm.heap)
         .into_iter()
-        .map(|(name, _)| Value::InternString(name))
+        .map(|(name, _)| Value::Symbol(name))
         .collect();
     let match_args = allocate_tuple(names, vm.heap);
-    let replaced = class.set_attr(Value::InternString(name_id), match_args, vm)?;
+    let replaced = class.set_attr(Value::Symbol(name_id), match_args, vm)?;
     replaced.drop_with(vm);
     Ok(())
 }
@@ -456,9 +456,9 @@ fn install_generated_methods<'h>(
     let class_name = class
         .get(installer.heap())
         .name()
-        .as_str(installer.interns())
+        .as_str(installer.symbols())
         .to_owned();
-    let names: Vec<StringId> = adopted_field_ids(fields_id, installer.heap())
+    let names: Vec<SymbolId> = adopted_field_ids(fields_id, installer.heap())
         .into_iter()
         .map(|(name, _)| name)
         .collect();
@@ -511,7 +511,7 @@ fn install_generated_methods<'h>(
 
 /// Each field's `__init__` parameter: its name and the default or factory
 /// captured at decoration, as owned references for the method to hold.
-fn init_fields(fields_id: HeapId, heap: &Heap) -> Vec<(StringId, FieldInit)> {
+fn init_fields(fields_id: HeapId, heap: &Heap) -> Vec<(SymbolId, FieldInit)> {
     adopted_field_ids(fields_id, heap)
         .into_iter()
         .map(|(name, field_id)| {
@@ -537,7 +537,7 @@ enum Installer<'a, 'h> {
     /// kept the class frozen regardless), and no write can fail.
     Upgrade {
         heap: &'a mut HeapReader<'h>,
-        interns: &'a Interns,
+        symbols: &'a SymbolTable,
     },
 }
 
@@ -549,10 +549,10 @@ impl<'h> Installer<'_, 'h> {
         }
     }
 
-    fn interns(&self) -> &Interns {
+    fn symbols(&self) -> &SymbolTable {
         match self {
-            Self::Decorate(vm) => vm.interns,
-            Self::Upgrade { interns, .. } => interns,
+            Self::Decorate(vm) => vm.symbols,
+            Self::Upgrade { symbols, .. } => symbols,
         }
     }
 
@@ -562,7 +562,7 @@ impl<'h> Installer<'_, 'h> {
 
     /// Borrows `name` from the class's own namespace.
     fn member(&self, class_id: HeapId, name: &str) -> Option<&Value> {
-        namespace_member(class_id, name, self.heap(), self.interns())
+        namespace_member(class_id, name, self.heap(), self.symbols())
     }
 
     /// Whether the class's own namespace defines `name`.
@@ -583,12 +583,12 @@ impl<'h> Installer<'_, 'h> {
     fn set_member(&mut self, class: &HeapReadMut<'h, Class>, name: StaticStrings, value: Value) -> RunResult<()> {
         match self {
             Self::Decorate(vm) => {
-                let name = Value::InternString(vm.interns.intern_static(name));
+                let name = Value::Symbol(vm.symbols.get_or_insert_static_symbol(name));
                 let replaced = class.set_attr(name, value, vm)?;
                 replaced.drop_with(&mut **vm);
             }
-            Self::Upgrade { heap, interns } => {
-                let replaced = class.set_interned_attr(interns.intern_static(name), value, heap, interns);
+            Self::Upgrade { heap, symbols } => {
+                let replaced = class.set_symbol_attr(symbols.get_or_insert_static_symbol(name), value, heap, symbols);
                 replaced.drop_with(&mut **heap);
             }
         }
@@ -608,13 +608,13 @@ fn rewrite_field_attributes<'h>(class: &HeapReadMut<'h, Class>, fields_id: HeapI
         let bound = class
             .get(vm.heap)
             .namespace()
-            .get_by_str(vm.interns.get_str(name), vm.heap, vm.interns);
+            .get_by_str(vm.symbols.get_str(name), vm.heap, vm.symbols);
         if !matches!(bound, Some(Value::Ref(id)) if *id == field_id) {
             continue;
         }
         let default =
             field_at_id(vm.heap, field_id).and_then(|field| field.default().map(|v| v.clone_with_heap(vm.heap)));
-        let name = Value::InternString(name);
+        let name = Value::Symbol(name);
         let replaced = match default {
             Some(default) => class.set_attr(name, default, vm)?,
             None => class.pop_attr(&name, vm)?,
@@ -629,14 +629,14 @@ fn rewrite_field_attributes<'h>(class: &HeapReadMut<'h, Class>, fields_id: HeapI
 /// The name is the mapping **key**, not the live `Field.name`: adoption writes
 /// the name into the `field()` object itself, so one object shared by two
 /// classes ends up reporting the *second* class's name.
-fn adopted_field_ids(fields_id: HeapId, heap: &Heap) -> Vec<(StringId, HeapId)> {
+fn adopted_field_ids(fields_id: HeapId, heap: &Heap) -> Vec<(SymbolId, HeapId)> {
     let HeapData::Dict(fields) = heap.get(fields_id) else {
         return Vec::new();
     };
     fields
         .iter()
         .filter_map(|(key, value)| match (key, value) {
-            (Value::InternString(name), Value::Ref(id)) if field_at_id(heap, *id).is_some() => Some((*name, *id)),
+            (Value::Symbol(name), Value::Ref(id)) if field_at_id(heap, *id).is_some() => Some((*name, *id)),
             _ => None,
         })
         .collect()
@@ -662,7 +662,7 @@ fn collect_annotated_fields<'h>(class: &HeapRead<'h, Class>, annotations: &Value
         // Captured now, as CPython bakes it into the generated `__init__`:
         // rebinding the class attribute later must not change it.
         let bound = namespace
-            .get_by_str(vm.interns.get_str(name_id), vm.heap, vm.interns)
+            .get_by_str(vm.symbols.get_str(name_id), vm.heap, vm.symbols)
             .map(|v| v.clone_with_heap(vm.heap));
         let annotation = field_annotation(annotations, name_id, vm);
         // The class body bound a `field()` result: it *is* the field, so it
@@ -687,20 +687,20 @@ fn collect_annotated_fields<'h>(class: &HeapRead<'h, Class>, annotations: &Value
 ///
 /// Names alone, so the collection loop can take the heap mutably instead of
 /// holding a borrow of the annotations dict across an allocation.
-fn annotated_field_names(annotations: &Value, vm: &VM<'_>) -> Vec<StringId> {
+fn annotated_field_names(annotations: &Value, vm: &VM<'_>) -> Vec<SymbolId> {
     annotations_dict(annotations, vm)
         .iter()
         .filter_map(|(key, annotation)| match key {
-            Value::InternString(name_id) if !is_classvar(annotation, vm) => Some(*name_id),
+            Value::Symbol(name_id) if !is_classvar(annotation, vm) => Some(*name_id),
             _ => None,
         })
         .collect()
 }
 
 /// One field's annotation, cloned as an owned reference for the `Field` to hold.
-fn field_annotation(annotations: &Value, name: StringId, vm: &VM<'_>) -> Value {
+fn field_annotation(annotations: &Value, name: SymbolId, vm: &VM<'_>) -> Value {
     annotations_dict(annotations, vm)
-        .get_by_str(vm.interns.get_str(name), vm.heap, vm.interns)
+        .get_by_str(vm.symbols.get_str(name), vm.heap, vm.symbols)
         .map_or(Value::None, |annotation| annotation.clone_with_heap(vm.heap))
 }
 
@@ -719,8 +719,8 @@ fn annotation_text(annotation: &Value, vm: &VM<'_>) -> Option<String> {
         value if let Some(forward_ref) = value.get_as::<ForwardRef>(vm.heap) => forward_ref
             .arg()
             .as_either_str(vm.heap)
-            .map(|s| s.into_string(vm.interns)),
-        _ => annotation.as_either_str(vm.heap).map(|s| s.into_string(vm.interns)),
+            .map(|s| s.into_string(vm.symbols)),
+        _ => annotation.as_either_str(vm.heap).map(|s| s.into_string(vm.symbols)),
     }
 }
 
@@ -736,7 +736,7 @@ fn validate_fields(vm: &mut VM<'_>, fields: &[Value]) -> RunResult<()> {
         };
         defer_drop!(annotation, vm);
         defer_drop!(default, vm);
-        let name = vm.interns.get_str(name).to_owned();
+        let name = vm.symbols.get_str(name).to_owned();
         if annotation.as_ref().is_some_and(|annotation| is_initvar(annotation, vm)) {
             return Err(ExcType::not_implemented(format!(
                 "dataclass() does not yet support InitVar (field {name}), which would become an ordinary field"
@@ -757,7 +757,7 @@ fn validate_fields(vm: &mut VM<'_>, fields: &[Value]) -> RunResult<()> {
     }
     // CPython rejects the class outright rather than failing at construction.
     if let Some((prev, field)) = first_non_default_after_default(fields, vm) {
-        let (prev, field) = (vm.interns.get_str(prev), vm.interns.get_str(field));
+        let (prev, field) = (vm.symbols.get_str(prev), vm.symbols.get_str(field));
         return Err(ExcType::type_error(format!(
             "non-default argument '{field}' follows default argument '{prev}'"
         )));
@@ -767,7 +767,7 @@ fn validate_fields(vm: &mut VM<'_>, fields: &[Value]) -> RunResult<()> {
 
 /// A collected field's name, annotation text, and a **cloned** default — the
 /// three things validation needs, read before it takes the heap mutably.
-fn read_field(field: &Value, vm: &VM<'_>) -> Option<(StringId, Option<Value>, Option<Value>)> {
+fn read_field(field: &Value, vm: &VM<'_>) -> Option<(SymbolId, Option<Value>, Option<Value>)> {
     let field = field.get_as::<DataclassField>(vm.heap)?;
     Some((
         field.name().expect("collection adopts every field"),
@@ -781,7 +781,7 @@ fn read_field(field: &Value, vm: &VM<'_>) -> Option<(StringId, Option<Value>, Op
 ///
 /// A `default_factory` counts as a default, as it does in CPython's generated
 /// signature.
-fn first_non_default_after_default(fields: &[Value], vm: &VM<'_>) -> Option<(StringId, StringId)> {
+fn first_non_default_after_default(fields: &[Value], vm: &VM<'_>) -> Option<(SymbolId, SymbolId)> {
     let mut last_default = None;
     fields.iter().find_map(|field| {
         let field = field.get_as::<DataclassField>(vm.heap)?;

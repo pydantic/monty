@@ -50,7 +50,7 @@ except TypeError as e:
     assert str(e) == "attribute name must be string, not 'NoneType'", str(e)
 
 # === Dynamic names on builtin types ===
-# Same interner round-trip as `getattr`: a runtime-built name must resolve.
+# Same symbol table round-trip as `getattr`: a runtime-built name must resolve.
 import datetime
 
 assert hasattr(datetime.timezone, 'ut' + 'c')

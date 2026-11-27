@@ -146,7 +146,7 @@ pub(crate) trait FromValue: Sized {
                 let got_type = rejected.py_type_heap(vm.heap);
                 let err = match (ctx, Self::EXPECTED_TYPE_NAME) {
                     (ArgErrCtx::BadArgPos { func_name, pos }, Some(expected)) => {
-                        let arg_name = got_type.cpython_arg_name(vm.heap, vm.interns);
+                        let arg_name = got_type.cpython_arg_name(vm.heap, vm.symbols);
                         ExcType::type_error_bad_arg_pos(func_name, pos, expected, arg_name)
                     }
                     (
@@ -156,11 +156,11 @@ pub(crate) trait FromValue: Sized {
                         },
                         Some(expected),
                     ) => {
-                        let arg_name = got_type.cpython_arg_name(vm.heap, vm.interns);
+                        let arg_name = got_type.cpython_arg_name(vm.heap, vm.symbols);
                         ExcType::type_error_bad_arg_named(func_name, name, expected, arg_name)
                     }
                     _ => {
-                        let got = got_type.name(vm.heap, vm.interns);
+                        let got = got_type.name(vm.heap, vm.symbols);
                         Self::type_error(&got)
                     }
                 };

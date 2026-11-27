@@ -6,8 +6,8 @@ use ahash::AHashMap;
 use num_bigint::BigInt;
 
 use super::{
-    BytesId, FILE_SOURCE_ID_BASE, FileSource, InternedString, Interns, LongIntId, SOURCE_ID_BASE, StaticStrings,
-    StringId, next_string_id,
+    BytesId, FILE_SOURCE_ID_BASE, FileSource, LongIntId, SOURCE_ID_BASE, StaticStrings, Symbol, SymbolId, SymbolTable,
+    next_symbol_id,
 };
 use crate::{function::Function, hash::WithHash};
 
@@ -15,17 +15,17 @@ use crate::{function::Function, hash::WithHash};
 /// Existing sessions use a private overlay so rejection retains no products.
 /// Fresh programs may insert directly: the caller discards their tables on failure.
 #[derive(Debug)]
-pub(crate) struct CompileInterns<'i> {
-    base: &'i Interns,
-    pending: Option<PendingInterns>,
+pub(crate) struct CompileSymbols<'i> {
+    base: &'i SymbolTable,
+    pending: Option<PendingSymbols>,
 }
 
 /// An unpublished suffix of a session's tables, discarded unless compilation commits.
 #[derive(Debug, Default)]
-struct PendingInterns {
-    strings: Vec<InternedString>,
-    string_ids: AHashMap<Arc<str>, StringId>,
-    static_string_ids: AHashMap<StaticStrings, StringId>,
+struct PendingSymbols {
+    strings: Vec<Symbol>,
+    symbol_ids: AHashMap<Arc<str>, SymbolId>,
+    static_symbol_ids: AHashMap<StaticStrings, SymbolId>,
     bytes: Vec<WithHash<Vec<u8>>>,
     long_ints: Vec<WithHash<BigInt>>,
     functions: Vec<Function>,
@@ -33,19 +33,19 @@ struct PendingInterns {
     file_sources: Vec<FileSource>,
 }
 
-impl<'i> CompileInterns<'i> {
+impl<'i> CompileSymbols<'i> {
     /// Reserves the next IDs without modifying the committed tables.
-    pub(crate) fn new(base: &'i Interns) -> Self {
+    pub(crate) fn new(base: &'i SymbolTable) -> Self {
         assert!(!base.compiling.replace(true), "overlapping compilations");
         Self {
             base,
-            pending: Some(PendingInterns::default()),
+            pending: Some(PendingSymbols::default()),
         }
     }
 
     /// Compiles directly into exclusively borrowed tables that the caller discards on failure.
     /// Unlike `new`, this does not roll back; it is only for a fresh program, not a REPL feed.
-    pub(crate) fn direct(base: &'i mut Interns) -> Self {
+    pub(crate) fn direct(base: &'i mut SymbolTable) -> Self {
         assert!(!base.compiling.replace(true), "overlapping compilations");
         Self { base, pending: None }
     }
@@ -57,13 +57,13 @@ impl<'i> CompileInterns<'i> {
                 self.base.strings.push(entry);
             }
             self.base
-                .string_id_by_name
+                .symbol_id_by_name
                 .borrow_mut()
-                .extend(pending.string_ids.drain());
+                .extend(pending.symbol_ids.drain());
             self.base
-                .static_string_ids
+                .static_symbol_ids
                 .borrow_mut()
-                .extend(pending.static_string_ids.drain());
+                .extend(pending.static_symbol_ids.drain());
             for entry in pending.bytes.drain(..) {
                 self.base.bytes.push(entry);
             }
@@ -83,38 +83,38 @@ impl<'i> CompileInterns<'i> {
     }
 
     /// Deduplicates against pending and committed text before assigning an ID.
-    pub(crate) fn intern(&mut self, text: &str) -> StringId {
+    pub(crate) fn get_or_insert_symbol(&mut self, text: &str) -> SymbolId {
         if text.is_empty() {
-            StringId::EMPTY
+            SymbolId::EMPTY
         } else if text.len() == 1 {
-            StringId::from_ascii(text.as_bytes()[0])
-        } else if let Some(id) = self.pending.as_ref().and_then(|pending| pending.string_ids.get(text)) {
+            SymbolId::from_ascii(text.as_bytes()[0])
+        } else if let Some(id) = self.pending.as_ref().and_then(|pending| pending.symbol_ids.get(text)) {
             *id
         } else if let Ok(tag) = text.parse::<StaticStrings>() {
-            self.intern_static(tag)
+            self.get_or_insert_static_symbol(tag)
         } else {
-            let existing = self.base.string_id_by_name.borrow().get(text).copied();
+            let existing = self.base.symbol_id_by_name.borrow().get(text).copied();
             if let Some(id) = existing {
                 id
             } else {
-                self.push_string(InternedString::owned(Arc::from(text)))
+                self.push_string(Symbol::owned(Arc::from(text)))
             }
         }
     }
 
-    /// Interns a compiler-generated name without parsing its known static tag again.
-    pub(crate) fn intern_static(&mut self, value: StaticStrings) -> StringId {
+    /// Registers a compiler-generated symbol without parsing its known static tag again.
+    pub(crate) fn get_or_insert_static_symbol(&mut self, value: StaticStrings) -> SymbolId {
         let text: &'static str = value.into();
         if text.is_empty() {
-            StringId::EMPTY
+            SymbolId::EMPTY
         } else if text.len() == 1 {
-            StringId::from_ascii(text.as_bytes()[0])
+            SymbolId::from_ascii(text.as_bytes()[0])
         } else {
             let existing = self.get_static_id(value);
             if let Some(id) = existing {
                 id
             } else {
-                self.push_string(InternedString::static_string(value))
+                self.push_string(Symbol::static_string(value))
             }
         }
     }
@@ -154,8 +154,8 @@ impl<'i> CompileInterns<'i> {
     }
 
     /// Borrows either committed or pending text for preparation and diagnostics.
-    pub(crate) fn get_str(&self, id: StringId) -> &str {
-        let base = next_string_id(self.base.strings.len()).index();
+    pub(crate) fn get_str(&self, id: SymbolId) -> &str {
+        let base = next_symbol_id(self.base.strings.len()).index();
         if let Some(pending) = &self.pending
             && id.index() >= base
         {
@@ -184,25 +184,25 @@ impl<'i> CompileInterns<'i> {
     }
 
     /// Finds a name already present in either table.
-    pub(crate) fn get_string_id_by_name(&self, text: &str) -> Option<StringId> {
+    pub(crate) fn get_symbol_id_by_name(&self, text: &str) -> Option<SymbolId> {
         if text.is_empty() {
-            Some(StringId::EMPTY)
+            Some(SymbolId::EMPTY)
         } else if text.len() == 1 {
-            Some(StringId::from_ascii(text.as_bytes()[0]))
-        } else if let Some(id) = self.pending.as_ref().and_then(|pending| pending.string_ids.get(text)) {
+            Some(SymbolId::from_ascii(text.as_bytes()[0]))
+        } else if let Some(id) = self.pending.as_ref().and_then(|pending| pending.symbol_ids.get(text)) {
             Some(*id)
         } else if let Ok(tag) = text.parse::<StaticStrings>() {
             self.get_static_id(tag)
         } else {
-            self.base.string_id_by_name.borrow().get(text).copied()
+            self.base.symbol_id_by_name.borrow().get(text).copied()
         }
     }
 
     /// Records source separately from canonical strings, preserving equal-string ID equality.
-    pub(crate) fn add_eval_source(&mut self, source: Arc<str>) -> StringId {
+    pub(crate) fn add_eval_source(&mut self, source: Arc<str>) -> SymbolId {
         let pending_len = self.pending.as_ref().map_or(0, |pending| pending.sources.len());
         let index = SOURCE_ID_BASE + self.base.eval_sources.len() + pending_len;
-        let id = StringId(index.try_into().expect("source ID overflow"));
+        let id = SymbolId(index.try_into().expect("source ID overflow"));
         if let Some(pending) = &mut self.pending {
             pending.sources.push(source);
         } else {
@@ -212,10 +212,10 @@ impl<'i> CompileInterns<'i> {
     }
 
     /// Records an imported file's source; tracebacks display `path` and its source lines.
-    pub(crate) fn add_file_source(&mut self, path: Arc<str>, source: Arc<str>) -> StringId {
+    pub(crate) fn add_file_source(&mut self, path: Arc<str>, source: Arc<str>) -> SymbolId {
         let pending_len = self.pending.as_ref().map_or(0, |pending| pending.file_sources.len());
         let index = FILE_SOURCE_ID_BASE + self.base.file_sources.len() + pending_len;
-        let id = StringId(index.try_into().expect("source ID overflow"));
+        let id = SymbolId(index.try_into().expect("source ID overflow"));
         let file = FileSource { path, source };
         if let Some(pending) = &mut self.pending {
             pending.file_sources.push(file);
@@ -242,31 +242,31 @@ impl<'i> CompileInterns<'i> {
     }
 
     /// Finds a known static tag without converting it back to text.
-    fn get_static_id(&self, value: StaticStrings) -> Option<StringId> {
+    fn get_static_id(&self, value: StaticStrings) -> Option<SymbolId> {
         self.pending
             .as_ref()
-            .and_then(|pending| pending.static_string_ids.get(&value).copied())
-            .or_else(|| self.base.static_string_ids.borrow().get(&value).copied())
+            .and_then(|pending| pending.static_symbol_ids.get(&value).copied())
+            .or_else(|| self.base.static_symbol_ids.borrow().get(&value).copied())
     }
 
     /// Assigns an ID to new text and records its reverse lookup in the same compilation mode.
-    fn push_string(&mut self, entry: InternedString) -> StringId {
+    fn push_string(&mut self, entry: Symbol) -> SymbolId {
         if let Some(pending) = &mut self.pending {
-            let id = next_string_id(self.base.strings.len() + pending.strings.len());
+            let id = next_symbol_id(self.base.strings.len() + pending.strings.len());
             if let Some(tag) = entry.static_value() {
-                pending.static_string_ids.insert(tag, id);
+                pending.static_symbol_ids.insert(tag, id);
             } else {
-                pending.string_ids.insert(Arc::clone(entry.owned_text()), id);
+                pending.symbol_ids.insert(Arc::clone(entry.owned_text()), id);
             }
             pending.strings.push(entry);
             id
         } else {
-            let id = next_string_id(self.base.strings.len());
+            let id = next_symbol_id(self.base.strings.len());
             if let Some(tag) = entry.static_value() {
-                self.base.static_string_ids.borrow_mut().insert(tag, id);
+                self.base.static_symbol_ids.borrow_mut().insert(tag, id);
             } else {
                 self.base
-                    .string_id_by_name
+                    .symbol_id_by_name
                     .borrow_mut()
                     .insert(Arc::clone(entry.owned_text()), id);
             }
@@ -276,7 +276,7 @@ impl<'i> CompileInterns<'i> {
     }
 }
 
-impl Drop for CompileInterns<'_> {
+impl Drop for CompileSymbols<'_> {
     fn drop(&mut self) {
         self.base.compiling.set(false);
     }

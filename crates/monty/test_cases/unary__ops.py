@@ -61,7 +61,7 @@ def unary_err(fn):
 # === types with no unary form ===
 assert unary_err(lambda: -'x') == "bad operand type for unary -: 'str'"
 assert unary_err(lambda: +'x') == "bad operand type for unary +: 'str'"
-# a heap-allocated (non-interned) string takes a different dispatch path
+# a heap-allocated string takes a different dispatch path
 built = 'a' + str(1)
 assert unary_err(lambda: -built) == "bad operand type for unary -: 'str'"
 assert unary_err(lambda: -[1]) == "bad operand type for unary -: 'list'"

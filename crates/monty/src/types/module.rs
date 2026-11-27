@@ -8,7 +8,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
-    intern::{Interns, StaticStrings, StringId},
+    symbols::{StaticStrings, SymbolId, SymbolTable},
     types::{Dict, List},
     value::{EitherStr, Value},
 };
@@ -46,23 +46,22 @@ pub(crate) struct FileModule {
     origin: String,
 }
 
-/// A module's name: interned for a bundled module, owned text for a host or
-/// file one, since the VM cannot intern at runtime. Untagged so a bundled name
-/// still dumps as the bare interned id it always has.
+/// Bundled modules store their name as a symbol ID. File and host modules own their names.
+/// The untagged representation preserves the bare ID in older dumps.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
 pub(crate) enum ModuleName {
-    Interned(StringId),
+    Symbol(SymbolId),
     Owned(String),
 }
 
 impl Module {
     /// Creates a new bundled module with an empty attributes dictionary.
     ///
-    /// Attribute names are interned lazily when the module materializes them.
-    pub fn new(name: StaticStrings, interns: &Interns) -> Self {
+    /// Attribute names are registered as symbols when the module materializes them.
+    pub fn new(name: StaticStrings, symbols: &SymbolTable) -> Self {
         Self {
-            name: ModuleName::Interned(interns.intern_static(name)),
+            name: ModuleName::Symbol(symbols.get_or_insert_static_symbol(name)),
             attrs: Dict::new(),
             id: None,
             file: None,
@@ -91,9 +90,9 @@ impl Module {
     }
 
     /// Returns the module's name.
-    pub fn name_str<'a>(&'a self, interns: &'a Interns) -> &'a str {
+    pub fn name_str<'a>(&'a self, symbols: &'a SymbolTable) -> &'a str {
         match &self.name {
-            ModuleName::Interned(id) => interns.get_str(*id),
+            ModuleName::Symbol(id) => symbols.get_str(*id),
             ModuleName::Owned(name) => name.as_str(),
         }
     }
@@ -103,19 +102,19 @@ impl Module {
     /// `Err` holds a rebound `__name__` that is not a `str`.
     pub fn error_name<'a>(&'a self, vm: &'a VM<'_>) -> Result<&'a str, &'a Value> {
         let rebound = self.namespace().and_then(|namespace| match vm.heap.get(namespace) {
-            HeapData::Dict(dict) => dict.get_by_str("__name__", vm.heap, vm.interns),
+            HeapData::Dict(dict) => dict.get_by_str("__name__", vm.heap, vm.symbols),
             _ => None,
         });
         match rebound {
             Some(name) => name.as_str(vm).ok_or(name),
-            None => Ok(self.name_str(vm.interns)),
+            None => Ok(self.name_str(vm.symbols)),
         }
     }
 
     /// `<module 'name'>`, or `<module 'name' from 'path'>` for a file module,
     /// both quoted as `repr()` quotes a string.
-    pub fn repr(&self, interns: &Interns) -> String {
-        let name = StringRepr(self.name_str(interns));
+    pub fn repr(&self, symbols: &SymbolTable) -> String {
+        let name = StringRepr(self.name_str(symbols));
         match self.origin() {
             Some(origin) => format!("<module {name} from {}>", StringRepr(origin)),
             None => format!("<module {name}>"),
@@ -144,15 +143,15 @@ impl Module {
 
     /// Sets an attribute in the module's dictionary.
     ///
-    /// Attribute names are interned lazily when the module materializes them.
+    /// Attribute names are registered as symbols when the module materializes them.
     pub fn set_attr(&mut self, name: StaticStrings, value: Value, vm: &mut VM<'_>) {
-        let key = Value::InternString(vm.interns.intern_static(name));
+        let key = Value::Symbol(vm.symbols.get_or_insert_static_symbol(name));
         // Module construction is infallible (`StandardLib::create`,
         // `VM::load_module`), so this insert must not be able to fail: skipping
-        // the growth preflight leaves hashing, and `InternString` always hashes.
+        // the growth preflight leaves hashing, and `Symbol` always hashes.
         self.attrs
             .set_without_growth_check(key, value, vm)
-            .expect("module attribute keys are interned, so hashing cannot fail");
+            .expect("module attribute keys are symbols, so hashing cannot fail");
     }
 
     /// Sets `__all__` to the module's public attribute names in the order they
@@ -162,14 +161,16 @@ impl Module {
         let names = (&self.attrs)
             .into_iter()
             .filter_map(|(key, _)| match key {
-                Value::InternString(id) => Some(*id),
+                Value::Symbol(id) => Some(*id),
                 _ => None,
             })
             .filter(|&id| {
-                !vm.interns.get_str(id).starts_with('_')
-                    && !excluded.iter().any(|&name| vm.interns.intern_static(name) == id)
+                !vm.symbols.get_str(id).starts_with('_')
+                    && !excluded
+                        .iter()
+                        .any(|&name| vm.symbols.get_or_insert_static_symbol(name) == id)
             })
-            .map(Value::InternString)
+            .map(Value::Symbol)
             .collect();
         let all = Value::allocate(List::new(names), vm.heap);
         self.set_attr(StaticStrings::DunderAll, all, vm);
@@ -208,7 +209,7 @@ impl<'h> HeapRead<'h, Module> {
     /// For `Property` values, invokes the property getter rather than returning
     /// the Property itself - this implements Python's descriptor protocol.
     pub fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> Option<CallResult> {
-        let value = self.attr_value(attr.as_str(vm.interns), vm)?;
+        let value = self.attr_value(attr.as_str(vm.symbols), vm)?;
         // If the value is a Property, invoke its getter to compute the actual value
         if let Value::Property(prop) = value {
             Some(prop.get())
@@ -228,7 +229,7 @@ impl<'h> HeapRead<'h, Module> {
         let mut args_guard = DropGuard::new(args, vm);
         let vm = args_guard.ctx();
 
-        match self.attr_value(attr.as_str(vm.interns), vm) {
+        match self.attr_value(attr.as_str(vm.symbols), vm) {
             Some(value) => {
                 let (args, vm) = args_guard.into_parts();
                 defer_drop!(value, vm);
@@ -236,7 +237,7 @@ impl<'h> HeapRead<'h, Module> {
             }
             None => Err(ExcType::attribute_error_module(
                 self.get(vm.heap).error_name(vm).ok(),
-                attr.as_str(vm.interns),
+                attr.as_str(vm.symbols),
             )),
         }
     }
@@ -246,7 +247,7 @@ impl<'h> HeapRead<'h, Module> {
     pub fn py_set_attr(&self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         let Some(namespace) = self.get(vm.heap).namespace() else {
             value.drop_with(vm);
-            return Err(ExcType::attribute_error_no_setattr("module", name.as_str(vm.interns)));
+            return Err(ExcType::attribute_error_no_setattr("module", name.as_str(vm.symbols)));
         };
         let key = name.as_value(vm.heap);
         let HeapReadOutput::Dict(dict) = vm.heap.read(namespace) else {
@@ -270,7 +271,7 @@ impl<'h> HeapRead<'h, Module> {
             None => &module.attrs,
         };
         attrs
-            .get_by_str(name, vm.heap, vm.interns)
+            .get_by_str(name, vm.heap, vm.symbols)
             .map(|value| value.clone_with_heap(vm.heap))
     }
 }

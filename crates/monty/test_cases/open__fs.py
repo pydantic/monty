@@ -25,6 +25,17 @@ assert text_file.seekable() == True
 text_file.close()
 assert text_file.closed == True
 
+# File lookup reports the requested name for both static and user-defined symbols.
+with open(root / 'hello.txt') as f:
+    for name, call in [('append', lambda: f.append([])), ('missing_file_method', lambda: f.missing_file_method([]))]:
+        for lookup in (lambda: getattr(f, name), call):
+            try:
+                lookup()
+            except AttributeError as exc:
+                assert str(exc).endswith(f"has no attribute '{name}'"), str(exc)
+            else:
+                assert False, f'expected AttributeError for {name}'
+
 # === Binary read ===
 binary_file = open(root / 'data.bin', 'rb')
 assert str(type(binary_file)) == "<class '_io.BufferedReader'>"

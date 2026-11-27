@@ -28,14 +28,14 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
     heap::{DropWithContext, Heap, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
-    intern::{Interns, StaticStrings},
     modules::time,
     py_attrs::{MethodCall, PyAttrs},
     py_value::PyValue,
     string_builder::StringBuilder,
+    symbols::{StaticStrings, SymbolTable},
     types::{
         CmpOrder, LazyHeapSet, PyTrait, TimeDelta, Type, TypeRef, datetime,
-        str::{allocate_string, allocate_string_no_interning},
+        str::{allocate_non_symbol_string, allocate_string},
         timedelta,
         timezone::{format_offset_compact, format_offset_hms, tzname_string},
     },
@@ -254,11 +254,11 @@ pub(crate) fn class_fromordinal(vm: &mut VM<'_>, args: ArgValues) -> RunResult<V
 ///
 /// Parses ISO 8601 date strings in the formats `YYYY-MM-DD` and `YYYYMMDD`,
 /// matching CPython 3.11+ behavior.
-pub(crate) fn class_fromisoformat(heap: &mut Heap, args: ArgValues, interns: &Interns) -> RunResult<Value> {
+pub(crate) fn class_fromisoformat(heap: &mut Heap, args: ArgValues, symbols: &SymbolTable) -> RunResult<Value> {
     let value = args
         .reject_kwargs("date.fromisoformat", heap)?
         .get_one_arg("date.fromisoformat", heap)?;
-    let s = extract_str_arg(&value, "fromisoformat", heap, interns);
+    let s = extract_str_arg(&value, "fromisoformat", heap, symbols);
     value.drop_with(heap);
     let s = s?;
 
@@ -286,9 +286,14 @@ pub(crate) fn allocate_ymd(year: i32, month: i32, day: i32, heap: &Heap) -> Valu
 }
 
 /// Extracts a string from a `Value` for use by classmethods.
-pub(crate) fn extract_str_arg(value: &Value, method_name: &str, heap: &Heap, interns: &Interns) -> RunResult<String> {
+pub(crate) fn extract_str_arg(
+    value: &Value,
+    method_name: &str,
+    heap: &Heap,
+    symbols: &SymbolTable,
+) -> RunResult<String> {
     value
-        .as_str_heap(heap, interns)
+        .as_str_heap(heap, symbols)
         .map(str::to_owned)
         .ok_or_else(|| ExcType::type_error(format!("{method_name}: argument must be str")))
 }
@@ -359,7 +364,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let (year, month, day) = to_ymd(*self.get(vm.heap));
-        match attr.static_string(vm.interns) {
+        match attr.static_string(vm.symbols) {
             Some(StaticStrings::Year) => Ok(Some(CallResult::Value(Value::Int(i64::from(year))))),
             Some(StaticStrings::Month) => Ok(Some(CallResult::Value(Value::Int(i64::from(month))))),
             Some(StaticStrings::Day) => Ok(Some(CallResult::Value(Value::Int(i64::from(day))))),
@@ -594,7 +599,7 @@ fn call_datetime_descriptor<'h>(
     args: ArgValues,
     vm: &mut VM<'h>,
 ) -> RunResult<CallResult> {
-    let name = attr.static_string(vm.interns);
+    let name = attr.static_string(vm.symbols);
     let date = value.get(vm.heap).date();
     match name {
         Some(StaticStrings::Strftime) => {
@@ -646,7 +651,7 @@ impl<'heap> PyAttrs<'heap> for PyDateImpl {
     fn isoformat<'h>(value: &mut HeapObjectRead<'h, Date>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         args.check_zero_args("date.isoformat", vm.heap)?;
         let (year, month, day) = to_ymd(*value.get(vm.heap));
-        Ok(allocate_string_no_interning(
+        Ok(allocate_non_symbol_string(
             format!("{year:04}-{month:02}-{day:02}"),
             vm.heap,
         ))
@@ -716,7 +721,7 @@ impl<'heap> PyAttrs<'heap> for PyDateImpl {
 
     #[pyclassmethod(Fromisoformat)]
     fn fromisoformat(_: StaticStrings, _: TypeRef, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
-        class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value)
+        class_fromisoformat(vm.heap, args, vm.symbols).map(CallResult::Value)
     }
 
     #[pyclassmethod(Fromtimestamp)]

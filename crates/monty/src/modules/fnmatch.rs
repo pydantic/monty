@@ -17,9 +17,9 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::DropGuard,
-    intern::StaticStrings,
     modules::ModuleFunctions,
     os_dispatch::value_as_path_str,
+    symbols::StaticStrings,
     types::{List, Module, str::allocate_string},
     value::Value,
 };
@@ -37,7 +37,7 @@ pub(crate) enum FnmatchFunctions {
 
 /// Creates the `fnmatch` module.
 pub fn create_module(vm: &mut VM<'_>) -> Module {
-    let mut module = Module::new(StaticStrings::Fnmatch, vm.interns);
+    let mut module = Module::new(StaticStrings::Fnmatch, vm.symbols);
     for (name, function) in [
         (StaticStrings::Fnmatch, FnmatchFunctions::Fnmatch),
         (StaticStrings::Fnmatchcase, FnmatchFunctions::Fnmatchcase),
@@ -213,7 +213,7 @@ impl Text {
 
     /// `str`, `bytes` or path-like text, else `None`.
     fn extract(value: &Value, vm: &VM<'_>) -> Option<Self> {
-        value_as_path_str(value, vm.heap, vm.interns)
+        value_as_path_str(value, vm.heap, vm.symbols)
             .map(Self::str)
             .or_else(|| value.as_bytes(vm).map(Self::bytes))
     }
@@ -221,7 +221,7 @@ impl Text {
     /// `str` or `bytes` text only, else `None`.
     fn extract_text(value: &Value, vm: &VM<'_>) -> Option<Self> {
         if value.is_str(vm.heap) {
-            value_as_path_str(value, vm.heap, vm.interns).map(Self::str)
+            value_as_path_str(value, vm.heap, vm.symbols).map(Self::str)
         } else {
             value.as_bytes(vm).map(Self::bytes)
         }

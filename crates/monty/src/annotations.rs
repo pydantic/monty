@@ -14,8 +14,8 @@ use crate::{
     frozen::{FrozenFunction, FrozenFunctions},
     heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     heap_data::FunctionDefaults,
-    intern::{FunctionId, StaticStrings},
     modules::ModuleFunctions,
+    symbols::{FunctionId, StaticStrings},
     types::{Dict, dict},
     value::Value,
 };
@@ -90,7 +90,7 @@ fn function_annotations(func_id: FunctionId, globals: Option<HeapId>, vm: &mut V
 /// The function value of a `def`'s `__annotate__`, sharing the `def`'s exec
 /// globals so it resolves names where the `def` does; `None` when unannotated.
 pub(crate) fn function_annotate(func_id: FunctionId, globals: Option<HeapId>, vm: &mut VM<'_>) -> Value {
-    let Some(annotate_id) = vm.interns.get_function(func_id).annotate else {
+    let Some(annotate_id) = vm.symbols.get_function(func_id).annotate else {
         return Value::None;
     };
     match globals {
@@ -282,7 +282,7 @@ fn class_member(class_id: HeapId, name: StaticStrings, vm: &VM<'_>) -> Option<Va
     };
     class
         .namespace()
-        .get_by_str(name.into(), vm.heap, vm.interns)
+        .get_by_str(name.into(), vm.heap, vm.symbols)
         .map(|value| value.clone_with_heap(vm.heap))
 }
 
@@ -291,7 +291,7 @@ fn has_class_member(class_id: HeapId, name: StaticStrings, vm: &VM<'_>) -> bool 
     let HeapData::Class(class) = vm.heap.get(class_id) else {
         unreachable!("has_class_member takes a class");
     };
-    class.namespace().get_by_str(name.into(), vm.heap, vm.interns).is_some()
+    class.namespace().get_by_str(name.into(), vm.heap, vm.symbols).is_some()
 }
 
 /// Binds `name` to `value` in the class namespace, taking ownership of `value`.
@@ -299,7 +299,7 @@ fn set_class_attr(class_id: HeapId, name: StaticStrings, value: Value, vm: &mut 
     let HeapReadOutput::Class(class) = vm.heap.read(class_id) else {
         unreachable!("set_class_attr takes a class");
     };
-    let name = Value::InternString(vm.interns.intern_static(name));
+    let name = Value::Symbol(vm.symbols.get_or_insert_static_symbol(name));
     let replaced = class.set_attr(name, value, vm)?;
     replaced.drop_with(vm);
     Ok(())

@@ -22,8 +22,8 @@ use crate::{
     defer_drop,
     exception_private::{RunError, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
-    intern::StringId,
     modules::dataclasses,
+    symbols::SymbolId,
     types::{
         Complex, HostClass, HostClassType, LongInt, Module, NamedTuple, OpenFile, Path, PyTrait, TimeZone, Type,
         allocate_tuple,
@@ -175,7 +175,7 @@ impl GraphExporter {
     }
 
     /// Exports a borrowed value and returns its node. Non-`Ref` values need
-    /// only the interner; heap objects go through [`push_ref`](Self::push_ref).
+    /// only the symbol table; heap objects go through [`push_ref`](Self::push_ref).
     pub(crate) fn push(&mut self, value: &Value, vm: &mut VM<'_>) -> NodeId {
         // `finish` discards the graph after an uncatchable error, so skip the rest of the walk.
         if self.error.is_some() {
@@ -187,7 +187,7 @@ impl GraphExporter {
         };
         let vm = &mut *guard;
 
-        let interns = vm.interns;
+        let symbols = vm.symbols;
         let node = match value {
             Value::Undefined => panic!("Undefined found while exporting a value"),
             Value::Ellipsis => MontyNode::Ellipsis,
@@ -196,10 +196,10 @@ impl GraphExporter {
             Value::Bool(b) => MontyNode::Bool(*b),
             Value::Int(i) => MontyNode::Int(*i),
             Value::Float(f) => MontyNode::Float(*f),
-            Value::InternString(string_id) => MontyNode::String(interns.get_str(*string_id).to_owned()),
+            Value::Symbol(symbol_id) => MontyNode::String(symbols.get_str(*symbol_id).to_owned()),
             Value::InlineString(text) => MontyNode::String(text.as_str().to_owned()),
-            Value::InternBytes(bytes_id) => MontyNode::Bytes(interns.get_bytes(*bytes_id).to_owned()),
-            Value::InternLongInt(li_id) => MontyNode::BigInt(interns.get_long_int(*li_id).clone()),
+            Value::InternBytes(bytes_id) => MontyNode::Bytes(symbols.get_bytes(*bytes_id).to_owned()),
+            Value::InternLongInt(li_id) => MontyNode::BigInt(symbols.get_long_int(*li_id).clone()),
             Value::Ref(id) => return self.push_ref(*id, value, vm),
             Value::Builtin(Builtins::Type(t)) => match MontyType::from_internal_static(*t) {
                 Some(ty) => MontyNode::Type(ty),
@@ -305,12 +305,12 @@ impl GraphExporter {
                 MontyNode::Tuple(items)
             }
             HeapReadOutput::NamedTuple(nt) => {
-                let type_name = nt.get(vm.heap).name(vm.interns).to_owned();
+                let type_name = nt.get(vm.heap).name(vm.symbols).to_owned();
                 let field_names = nt
                     .get(vm.heap)
                     .field_names()
                     .iter()
-                    .map(|fname| fname.as_str(vm.interns).to_owned())
+                    .map(|fname| fname.as_str(vm.symbols).to_owned())
                     .collect::<Vec<_>>();
                 let len = nt.get(vm.heap).len();
                 let mut values = Vec::with_capacity(len);
@@ -440,7 +440,7 @@ impl GraphExporter {
             HeapReadOutput::ListIterator(_) => MontyNode::Repr("<list_iterator object>".to_owned()),
             HeapReadOutput::TupleIterator(_) => MontyNode::Repr("<tuple_iterator object>".to_owned()),
             HeapReadOutput::StringIterator(iter) => {
-                MontyNode::Repr(format!("<{} object>", iter.py_type(vm).name(vm.heap, vm.interns)))
+                MontyNode::Repr(format!("<{} object>", iter.py_type(vm).name(vm.heap, vm.symbols)))
             }
             HeapReadOutput::BytesIterator(_) => MontyNode::Repr("<bytes_iterator object>".to_owned()),
             HeapReadOutput::RangeIterator(_) => MontyNode::Repr("<range_iterator object>".to_owned()),
@@ -450,13 +450,13 @@ impl GraphExporter {
             HeapReadOutput::SetIterator(_) => MontyNode::Repr("<set_iterator object>".to_owned()),
             HeapReadOutput::CallableIterator(_) => MontyNode::Repr("<callable_iterator object>".to_owned()),
             HeapReadOutput::MapFilter(iter) => {
-                MontyNode::Repr(format!("<{} object>", iter.py_type(vm).name(vm.heap, vm.interns)))
+                MontyNode::Repr(format!("<{} object>", iter.py_type(vm).name(vm.heap, vm.symbols)))
             }
             HeapReadOutput::DirScan(scan) => MontyNode::Repr(scan.get(vm.heap).boundary_repr()),
             // A placeholder despite the real in-sandbox repr (`count(0)`),
             // which would recurse into `repeat`'s arbitrary object.
             HeapReadOutput::Itertools(iter) => {
-                MontyNode::Repr(format!("<{} object>", iter.py_type(vm).name(vm.heap, vm.interns)))
+                MontyNode::Repr(format!("<{} object>", iter.py_type(vm).name(vm.heap, vm.symbols)))
             }
             HeapReadOutput::LongInt(li) => MontyNode::BigInt(li.get(vm.heap).inner().clone()),
             HeapReadOutput::Complex(c) => {
@@ -470,7 +470,7 @@ impl GraphExporter {
             // file one has no host identity and crosses as its repr.
             HeapReadOutput::Module(m) => {
                 if let Some(id) = m.get(vm.heap).id() {
-                    let name = m.get(vm.heap).name_str(vm.interns).to_owned();
+                    let name = m.get(vm.heap).name_str(vm.symbols).to_owned();
                     let children = snapshot_dict_pairs(m.get(vm.heap).attrs(), vm.heap);
                     defer_drop!(children, vm);
                     MontyNode::Module {
@@ -479,13 +479,13 @@ impl GraphExporter {
                         attrs: self.push_pairs(children, vm),
                     }
                 } else {
-                    MontyNode::Repr(m.get(vm.heap).repr(vm.interns))
+                    MontyNode::Repr(m.get(vm.heap).repr(vm.symbols))
                 }
             }
             HeapReadOutput::Coroutine(coro) => {
                 let func_id = coro.get(vm.heap).func_id;
-                let func = vm.interns.get_function(func_id);
-                let name = vm.interns.get_str(func.name.name_id);
+                let func = vm.symbols.get_function(func_id);
+                let name = vm.symbols.get_str(func.name.name_id);
                 MontyNode::Repr(format!("<coroutine object {name}>"))
             }
             HeapReadOutput::GatherFuture(gather) => {
@@ -558,7 +558,7 @@ impl GraphExporter {
             return *node_id;
         }
         let node = MontyNode::ClassType(Box::new(ClassTypeNode {
-            name: class_name(class_id, vm.heap, vm.interns).into_owned(),
+            name: class_name(class_id, vm.heap, vm.symbols).into_owned(),
             id: vm.heap.boundary_uuid(class_id),
             host_defined: false,
             is_dataclass: dataclasses::is_dataclass_class(class_id, vm),
@@ -584,7 +584,7 @@ impl GraphExporter {
         let HeapReadOutput::HostClassType(ty) = vm.heap.read(type_id) else {
             unreachable!("host class ids always point at a HostClassType entry");
         };
-        let class_type = ty.get(vm.heap).class_type(vm.interns);
+        let class_type = ty.get(vm.heap).class_type(vm.symbols);
         let attrs = if self.in_progress.insert(type_id) {
             let children = snapshot_dict_pairs(ty.get(vm.heap).attrs(), vm.heap);
             defer_drop!(children, vm);
@@ -657,9 +657,9 @@ fn class_hash(class_id: HeapId, vm: &VM<'_>) -> ClassHash {
     }
 }
 
-/// Resolves interned field names to the strings the wire carries.
-fn field_strings(fields: &[StringId], vm: &VM<'_>) -> Vec<String> {
-    fields.iter().map(|name| vm.interns.get_str(*name).to_owned()).collect()
+/// Resolves field name symbols to the strings the wire carries.
+fn field_strings(fields: &[SymbolId], vm: &VM<'_>) -> Vec<String> {
+    fields.iter().map(|name| vm.symbols.get_str(*name).to_owned()).collect()
 }
 
 /// Crate-internal export of call arguments: one arena for every argument.
@@ -686,7 +686,7 @@ impl CallArgsExt for CallArgs {
 /// Crate-internal bridge between [`MontyType`] and the runtime [`Type`].
 ///
 /// `MontyType` lives in `monty-types` (it is pure data), but mapping it to and
-/// from the runtime `Type` needs heap/intern access, so the conversions stay
+/// from the runtime `Type` needs heap and symbol table access, so the conversions stay
 /// here as a `pub(crate)` extension trait.
 pub(crate) trait MontyTypeExt: Sized {
     fn to_internal(&self) -> Type;
@@ -1106,8 +1106,7 @@ fn import_node(
                 let pairs = clone_pairs(&attrs, built, vm);
                 let dict = Dict::from_pairs(pairs, vm)
                     .map_err(|_| InvalidInputError::invalid_type("unhashable class instance attr keys"))?;
-                // Guarded while the class type interns (its attrs can fail
-                // too); `HostClass::new` then takes both.
+                // Keep the instance attributes guarded until class type lookup or allocation succeeds.
                 let mut dict_guard = DropGuard::new(dict, vm);
                 let (_, vm) = dict_guard.as_parts_mut();
                 let class_attrs = clone_pairs(&class.attrs, built, vm);
@@ -1123,7 +1122,7 @@ fn import_node(
                 };
                 Err(InvalidInputError::invalid_type(format!(
                     "sandbox instance of '{}' (id {instance_id}) no longer exists",
-                    class_name(class_id, vm.heap, vm.interns)
+                    class_name(class_id, vm.heap, vm.symbols)
                 )))
             }
         },

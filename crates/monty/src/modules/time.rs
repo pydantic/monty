@@ -25,10 +25,10 @@ use crate::{
     bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropWithContext, HeapReadOutput},
-    intern::StaticStrings,
     modules::ModuleFunctions,
     os_dispatch::PostConversionEffect,
     string_builder::StringBuilder,
+    symbols::StaticStrings,
     types::{
         Module, NamedTuple, PyTrait, date, datetime as datetime_type,
         datetime::{TimestampRounding, sandbox_instant, sandbox_local_wall_clock},
@@ -90,7 +90,7 @@ const FUNCTIONS: [(StaticStrings, TimeFunctions); 18] = [
 
 /// Creates the `time` module.
 pub fn create_module(vm: &mut VM<'_>) -> Module {
-    let mut module = Module::new(StaticStrings::Time, vm.interns);
+    let mut module = Module::new(StaticStrings::Time, vm.symbols);
     for (name, function) in FUNCTIONS {
         module.set_attr(name, Value::ModuleFunction(ModuleFunctions::Time(function)), vm);
     }
@@ -728,10 +728,10 @@ fn struct_time_value(fields: &TimeFields, vm: &mut VM<'_>) -> Value {
         None => (Value::None, Value::None),
     };
     let named_tuple = NamedTuple::new(
-        EitherStr::Interned(vm.interns.intern_static(StaticStrings::StructTime)),
+        EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::StructTime)),
         NAMES
             .into_iter()
-            .map(|name| EitherStr::Interned(vm.interns.intern_static(name)))
+            .map(|name| EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(name)))
             .collect(),
         vec![
             Value::Int(i64::from(wall.year())),

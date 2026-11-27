@@ -20,7 +20,7 @@ use crate::{
     exception_private::{ExcTypeExt, RunResult, SimpleException},
     hash::HashValue,
     heap::{HeapId, HeapItem, HeapObjectRead},
-    intern::FunctionId,
+    symbols::FunctionId,
     types::{LazyHeapSet, LongInt, PyTrait, Type, TypeRef},
     value::{EitherStr, Value},
 };
@@ -571,7 +571,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Closure> {
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _: &mut LazyHeapSet) -> RunResult<()> {
         let func_id = self.get(vm.heap).func_id;
-        Ok(vm.interns.get_function(func_id).py_repr_fmt(f, vm.interns, 0)?)
+        Ok(vm.symbols.get_function(func_id).py_repr_fmt(f, vm.symbols, 0)?)
     }
 
     fn py_call(&mut self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
@@ -584,14 +584,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Closure> {
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let closure = self.get(vm.heap);
         let (func_id, globals) = (closure.func_id, closure.globals);
-        annotations::function_getattr(func_id, globals, attr.as_str(vm.interns), vm).transpose()
+        annotations::function_getattr(func_id, globals, attr.as_str(vm.symbols), vm).transpose()
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let closure = self.get(vm.heap);
         let (func_id, globals) = (closure.func_id, closure.globals);
-        annotations::function_call_attr(func_id, globals, attr.as_str(vm.interns), args, vm)
-            .unwrap_or_else(|| Err(ExcType::attribute_error("function", attr.as_str(vm.interns))))
+        annotations::function_call_attr(func_id, globals, attr.as_str(vm.symbols), args, vm)
+            .unwrap_or_else(|| Err(ExcType::attribute_error("function", attr.as_str(vm.symbols))))
     }
 }
 
@@ -623,7 +623,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, FunctionDefaults> {
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _: &mut LazyHeapSet) -> RunResult<()> {
         let func_id = self.get(vm.heap).func_id;
-        Ok(vm.interns.get_function(func_id).py_repr_fmt(f, vm.interns, 0)?)
+        Ok(vm.symbols.get_function(func_id).py_repr_fmt(f, vm.symbols, 0)?)
     }
 
     fn py_call(&mut self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
@@ -636,14 +636,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, FunctionDefaults> {
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let function = self.get(vm.heap);
         let (func_id, globals) = (function.func_id, function.globals);
-        annotations::function_getattr(func_id, globals, attr.as_str(vm.interns), vm).transpose()
+        annotations::function_getattr(func_id, globals, attr.as_str(vm.symbols), vm).transpose()
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let function = self.get(vm.heap);
         let (func_id, globals) = (function.func_id, function.globals);
-        annotations::function_call_attr(func_id, globals, attr.as_str(vm.interns), args, vm)
-            .unwrap_or_else(|| Err(ExcType::attribute_error("function", attr.as_str(vm.interns))))
+        annotations::function_call_attr(func_id, globals, attr.as_str(vm.symbols), args, vm)
+            .unwrap_or_else(|| Err(ExcType::attribute_error("function", attr.as_str(vm.symbols))))
     }
 }
 

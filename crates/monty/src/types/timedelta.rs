@@ -22,8 +22,8 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
     heap::{Heap, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
-    intern::StaticStrings,
     py_attrs::PyAttrs,
+    symbols::StaticStrings,
     types::{
         CmpOrder, LazyHeapSet, PyTrait, Type, TypeRef, date, datetime, long_int, str::allocate_string,
         tuple::allocate_tuple,
@@ -559,7 +559,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let (days, seconds, microseconds) = components(self.get(vm.heap));
-        match attr.static_string(vm.interns) {
+        match attr.static_string(vm.symbols) {
             Some(StaticStrings::Days) => Ok(Some(CallResult::Value(Value::Int(i64::from(days))))),
             Some(StaticStrings::Seconds) => Ok(Some(CallResult::Value(Value::Int(i64::from(seconds))))),
             Some(StaticStrings::Microseconds) => Ok(Some(CallResult::Value(Value::Int(i64::from(microseconds))))),

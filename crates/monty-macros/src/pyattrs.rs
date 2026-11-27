@@ -77,7 +77,7 @@ pub(crate) fn expand(mut input: ItemImpl) -> syn::Result<TokenStream> {
                     return Err(syn::Error::new_spanned(name, "duplicate Python attribute name"));
                 }
                 let handler = &method.sig.ident;
-                let key = quote!(crate::intern::StaticStrings::#name);
+                let key = quote!(crate::symbols::StaticStrings::#name);
                 let definition = match kind {
                     Kind::Method => {
                         quote! {

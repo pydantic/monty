@@ -20,8 +20,8 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead},
-    intern::Interns,
     py_attrs::PyAttrs,
+    symbols::SymbolTable,
     types::{
         LazyHeapSet, PyTrait, Type, TypeRef,
         str::{StringRepr, allocate_string},
@@ -80,12 +80,12 @@ impl TimeZone {
         // `None`: CPython accepts `timezone(td)` but rejects `timezone(td,
         // None)` with `TypeError: timezone() argument 2 must be str, not None`.
         defer_drop!(offset, vm);
-        let offset_seconds = extract_offset_seconds(offset, vm.heap, vm.interns)?;
+        let offset_seconds = extract_offset_seconds(offset, vm.heap, vm.symbols)?;
         let name_str: Option<String> = match name {
             None => None,
             Some(name) => {
                 defer_drop!(name, vm);
-                extract_name(name, vm.heap, vm.interns)?
+                extract_name(name, vm.heap, vm.symbols)?
             }
         };
 
@@ -133,11 +133,11 @@ impl Hash for TimeZone {
     }
 }
 
-fn extract_offset_seconds(offset_arg: &Value, heap: &Heap, interns: &Interns) -> RunResult<i32> {
+fn extract_offset_seconds(offset_arg: &Value, heap: &Heap, symbols: &SymbolTable) -> RunResult<i32> {
     let bad_type = || {
         ExcType::type_error(format!(
             "timezone() argument 1 must be datetime.timedelta, not {}",
-            offset_arg.py_type_heap(heap).cpython_arg_name(heap, interns),
+            offset_arg.py_type_heap(heap).cpython_arg_name(heap, symbols),
         ))
     };
     let Some(delta) = offset_arg.get_as::<TimeDelta>(heap) else {
@@ -243,13 +243,13 @@ pub(crate) fn allocate_offset(offset_seconds: i32, heap: &Heap) -> Value {
 /// it to be a `datetime` or `None`, and so does this. It names the method
 /// without a class prefix in the message:
 /// `utcoffset(dt) argument must be a datetime instance or None, not int`.
-fn check_tzinfo_dt_arg(method: &str, dt: &Value, heap: &Heap, interns: &Interns) -> RunResult<()> {
+fn check_tzinfo_dt_arg(method: &str, dt: &Value, heap: &Heap, symbols: &SymbolTable) -> RunResult<()> {
     match dt {
         Value::None => Ok(()),
         Value::Ref(id) if matches!(heap.get(*id), HeapData::DateTime(_)) => Ok(()),
         _ => Err(ExcType::type_error(format!(
             "{method}(dt) argument must be a datetime instance or None, not {}",
-            dt.py_type_heap(heap).cpython_arg_name(heap, interns)
+            dt.py_type_heap(heap).cpython_arg_name(heap, symbols)
         ))),
     }
 }
@@ -262,19 +262,19 @@ pub(crate) fn format_offset_timedelta_repr(offset_seconds: i32) -> String {
     timedelta::format_repr(&delta)
 }
 
-fn extract_name(name_arg: &Value, heap: &Heap, interns: &Interns) -> RunResult<Option<String>> {
+fn extract_name(name_arg: &Value, heap: &Heap, symbols: &SymbolTable) -> RunResult<Option<String>> {
     name_arg
-        .try_as_str_heap(heap, interns)
+        .try_as_str_heap(heap, symbols)
         .map(|name| Some(name.to_owned()))
-        .map_err(|_| bad_name_arg(name_arg, heap, interns))
+        .map_err(|_| bad_name_arg(name_arg, heap, symbols))
 }
 
 /// Builds the `timezone() argument 2 must be str, not <type>` error CPython
 /// raises for any non-`str` `name` argument (including explicit `None`).
-fn bad_name_arg(name_arg: &Value, heap: &Heap, interns: &Interns) -> RunError {
+fn bad_name_arg(name_arg: &Value, heap: &Heap, symbols: &SymbolTable) -> RunError {
     ExcType::type_error(format!(
         "timezone() argument 2 must be str, not {}",
-        name_arg.py_type_heap(heap).cpython_arg_name(heap, interns)
+        name_arg.py_type_heap(heap).cpython_arg_name(heap, symbols)
     ))
 }
 
@@ -346,7 +346,7 @@ fn take_dt_arg(qualified_name: &'static str, args: ArgValues, vm: &mut VM<'_>) -
     let (_, method) = qualified_name
         .split_once('.')
         .expect("tzinfo method names are qualified as `timezone.<method>`");
-    check_tzinfo_dt_arg(method, dt, vm.heap, vm.interns)
+    check_tzinfo_dt_arg(method, dt, vm.heap, vm.symbols)
 }
 
 pub(crate) struct PyTimeZoneImpl;

@@ -12,8 +12,8 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     heap::Heap,
-    intern::StaticStrings,
     py_attrs::PyAttrs,
+    symbols::StaticStrings,
     types::{LongInt, TypeRef, allocate_string, allocate_tuple, long_int::bigint_true_divide},
     value::Value,
 };

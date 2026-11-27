@@ -41,9 +41,9 @@ use serde::{Deserialize, Serialize, de::Error as _};
 use crate::{
     dump_upgrade,
     heap::Heap,
-    intern::Interns,
     repl::{MontyRepl, ReplProgress},
     run_progress::RunProgress,
+    symbols::SymbolTable,
 };
 
 /// Prefix distinguishing Monty dumps from unframed CBOR data.
@@ -186,9 +186,9 @@ impl Dump {
             // cannot decode as the shorter valid one it starts with
             if deserializer.into_decoder().position() == payload.len() {
                 if version < DUMP_VERSION
-                    && let Some((heap, interns)) = value.state.heap_and_interns()
+                    && let Some((heap, symbols)) = value.state.heap_and_symbols()
                 {
-                    dump_upgrade::upgrade(version, heap, interns);
+                    dump_upgrade::upgrade(version, heap, symbols);
                 }
                 Ok(value)
             } else {
@@ -217,12 +217,12 @@ pub enum Session {
 }
 
 impl Session {
-    /// The session heap and its interns, or `None` for a one-shot run that has completed.
-    fn heap_and_interns(&mut self) -> Option<(&mut Heap, &mut Interns)> {
+    /// The session heap and its symbols, or `None` for a one-shot run that has completed.
+    fn heap_and_symbols(&mut self) -> Option<(&mut Heap, &mut SymbolTable)> {
         match self {
-            Self::Idle(repl) => Some(repl.heap_and_interns()),
-            Self::Suspended(progress) => Some(progress.heap_and_interns()),
-            Self::Running(progress) => progress.heap_and_interns(),
+            Self::Idle(repl) => Some(repl.heap_and_symbols()),
+            Self::Suspended(progress) => Some(progress.heap_and_symbols()),
+            Self::Running(progress) => progress.heap_and_symbols(),
         }
     }
 }

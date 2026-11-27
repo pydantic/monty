@@ -38,9 +38,9 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, Heap, HeapId, HeapItem, HeapObjectRead, HeapRead},
-    intern::StaticStrings,
     py_attrs::PyAttrs,
     py_value::PyValue,
+    symbols::StaticStrings,
     types::{LazyHeapSet, PyTrait, Type, TypeRef, allocate_string, bytes::allocate_bytes, py_trait::PyObjectIdentity},
     value::{EitherStr, Value},
 };
@@ -470,7 +470,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HashObject> {
     /// `name`, `digest_size` and `block_size`, plus the size constants a
     /// BLAKE2 instance inherits from its class.
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let Some(name) = attr.static_string(vm.interns) else {
+        let Some(name) = attr.static_string(vm.symbols) else {
             return Ok(None);
         };
         let hash = self.get(vm.heap);
@@ -488,20 +488,20 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HashObject> {
 
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         let readonly = matches!(
-            name.static_string(vm.interns),
+            name.static_string(vm.symbols),
             Some(StaticStrings::Name | StaticStrings::DigestSize | StaticStrings::BlockSize)
         );
         if readonly {
             value.drop_with(vm);
-            let type_name = self.py_type(vm).name(vm.heap, vm.interns);
+            let type_name = self.py_type(vm).name(vm.heap, vm.symbols);
             Err(ExcType::attribute_error_not_writable(
-                name.as_str(vm.interns),
+                name.as_str(vm.symbols),
                 &type_name,
             ))
         } else {
             value.drop_with(vm);
             let type_name = self.py_type_name(vm);
-            Err(ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm.interns)))
+            Err(ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm.symbols)))
         }
     }
 }

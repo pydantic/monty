@@ -24,7 +24,7 @@ use crate::{
     builtins::Builtins,
     bytecode::{CallResult, VM},
     exception_private::RunResult,
-    intern::StaticStrings,
+    symbols::StaticStrings,
     types::{Module, Type},
     value::Value,
 };
@@ -55,7 +55,7 @@ pub(crate) enum JsonFunctions {
 /// sufficient for common data interchange and round-tripping use cases inside
 /// the sandbox.
 pub fn create_module(vm: &mut VM<'_>) -> Module {
-    let mut module = Module::new(StaticStrings::Json, vm.interns);
+    let mut module = Module::new(StaticStrings::Json, vm.symbols);
     for (name, function) in [
         (StaticStrings::Loads, JsonFunctions::Loads),
         (StaticStrings::Dumps, JsonFunctions::Dumps),

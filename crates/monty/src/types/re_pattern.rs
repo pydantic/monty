@@ -25,10 +25,10 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{HEAP_ENTRY_SIZE, Heap, HeapId, HeapItem, HeapObjectRead, HeapRead},
-    intern::StaticStrings,
     modules::re::{ASCII, DOTALL, IGNORECASE, MULTILINE, VERBOSE},
     py_attrs::PyAttrs,
     resource_checks::check_estimated_size,
+    symbols::StaticStrings,
     types::{
         LazyHeapSet, List, PyTrait, ReMatch, Type, TypeRef, allocate_tuple, re_syntax,
         str::{allocate_string, string_repr_fmt},
@@ -563,13 +563,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RePattern> {
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        match attr.static_string(vm.interns) {
+        match attr.static_string(vm.symbols) {
             Some(StaticStrings::PatternAttr) => {
                 let v = allocate_string(self.get(vm.heap).pattern.as_str(), vm.heap);
                 Ok(Some(CallResult::Value(v)))
             }
             Some(StaticStrings::Flags) => Ok(Some(CallResult::Value(Value::Int(i64::from(self.get(vm.heap).flags))))),
-            _ => Err(ExcType::attribute_error(Type::RePattern, attr.as_str(vm.interns))),
+            _ => Err(ExcType::attribute_error(Type::RePattern, attr.as_str(vm.symbols))),
         }
     }
 }
@@ -582,10 +582,7 @@ impl HeapItem for RePattern {
 
 /// Argument shape for `Pattern.sub(repl, string, count=0)`.
 ///
-/// `string` uses `static_string = "StringAttr"` because `StringAttr` is the
-/// `StaticStrings` entry that interns `"string"` (the bare `String` variant
-/// is taken by the `re.Pattern.string` attribute name in CPython's class
-/// hierarchy).
+/// [`StaticStrings::StringAttr`] represents the keyword `string`.
 #[derive(FromArgs)]
 #[from_args(name = "sub", style = c_named, at_most_total)]
 struct PatternSubArgs {

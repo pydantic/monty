@@ -332,7 +332,7 @@ for big_count in (2**63, 2**70, -(2**63) - 1, -(2**70)):
         assert str(e) == 'Python int too large to convert to C ssize_t'
 
 # === repeated bumps of the same key hand the key to the dict ===
-# Keys and counts built at runtime are heap values rather than interned ones, so
+# Keys and counts built at runtime are heap values rather than symbol-backed ones, so
 # a bump that replaces an existing entry has to release exactly the old count —
 # leaking it, or dropping the key it just stored, shows up here.
 bump_key = 'k' + str(1)

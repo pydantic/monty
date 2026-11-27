@@ -1,6 +1,6 @@
 //! Implementation of the eval() and exec() builtin functions.
 //!
-//! Both compile their source at runtime against the session's intern tables
+//! Both compile their source at runtime against the session's symbol tables
 //! and push a frame for it, so the snippet runs like a called function: it
 //! can suspend to the host, and its result lands on the caller's stack.
 
@@ -16,13 +16,13 @@ use crate::{
     expressions::{Identifier, Node},
     function::Function,
     heap::{DropGuard, HeapData, HeapId},
-    intern::{CompileInterns, FunctionId, StaticStrings},
     name_map::NameMap,
     parse::{
-        CodeRange, ParseError, ParsedModule, parse_expression_with_interner, parse_module_with_filename_id,
+        CodeRange, ParseError, ParsedModule, parse_expression_with_symbols, parse_module_with_filename_id,
         reject_leading_bom,
     },
     prepare::{SnippetNames, prepare_snippet},
+    symbols::{CompileSymbols, FunctionId, StaticStrings},
     types::{Type, py_trait::PyTrait},
     value::Value,
 };
@@ -181,11 +181,11 @@ pub(crate) fn eval_hint(
         globals_first,
         missing,
     });
-    if let Some(func_id) = vm.interns.hint_snippet(names, &text) {
+    if let Some(func_id) = vm.symbols.hint_snippet(names, &text) {
         vm.push_snippet_frame(func_id, None, namespace)?;
     } else {
         let func_id = compile_and_push(SnippetSource::Eval, &text, names, namespace, vm).map_err(not_expression)?;
-        vm.interns.set_hint_snippet(names, text, func_id);
+        vm.symbols.set_hint_snippet(names, text, func_id);
     }
     Ok(CallResult::FramePushed)
 }
@@ -273,8 +273,8 @@ fn compile_snippet<'h>(
     source: &Arc<str>,
     names: SnippetNames,
     vm: &mut VM<'h>,
-) -> RunResult<(FunctionId, CompileInterns<'h>)> {
-    let mut overlay = CompileInterns::new(vm.interns);
+) -> RunResult<(FunctionId, CompileSymbols<'h>)> {
+    let mut overlay = CompileSymbols::new(vm.symbols);
     let filename_id = match kind {
         SnippetSource::File { path } => overlay.add_file_source(Arc::from(path), Arc::clone(source)),
         SnippetSource::Eval | SnippetSource::Exec => overlay.add_eval_source(Arc::clone(source)),
@@ -312,7 +312,7 @@ fn compile_snippet<'h>(
             inherited_future,
         ),
         SnippetSource::Eval => {
-            parse_expression_with_interner(source, filename_id, &mut overlay, options.source_scan_threshold).map(
+            parse_expression_with_symbols(source, filename_id, &mut overlay, options.source_scan_threshold).map(
                 |expr| ParsedModule {
                     nodes: vec![Node::Return(Some(expr))],
                     future_annotations: inherited_future,
@@ -349,7 +349,7 @@ fn compile_snippet<'h>(
         end_byte: u32::try_from(source.len()).unwrap_or(u32::MAX),
     };
     let function = Function::new(
-        Identifier::new(overlay.intern_static(StaticStrings::Module), position),
+        Identifier::new(overlay.get_or_insert_static_symbol(StaticStrings::Module), position),
         Signature::default(),
         0,
         Vec::new(),
@@ -421,7 +421,7 @@ fn globals_dict(globals: &Value, builtin: Builtin, vm: &mut VM<'_>) -> RunResult
                 Builtin::Eval => ExcType::type_error("globals must be a dict"),
                 Builtin::Exec => ExcType::type_error(format!(
                     "exec() globals must be a dict, not {}",
-                    ty.name(vm.heap, vm.interns)
+                    ty.name(vm.heap, vm.symbols)
                 )),
             })
         }
@@ -437,7 +437,7 @@ fn locals_dict(locals: &Value, builtin: Builtin, vm: &mut VM<'_>) -> RunResult<O
             Builtin::Eval => ExcType::type_error("locals must be a mapping"),
             Builtin::Exec => ExcType::type_error(format!(
                 "locals must be a mapping or None, not {}",
-                other.py_type(vm).name(vm.heap, vm.interns)
+                other.py_type(vm).name(vm.heap, vm.symbols)
             )),
         }),
     }

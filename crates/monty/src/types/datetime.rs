@@ -25,14 +25,14 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
-    intern::{Interns, StaticStrings},
     modules::time as time_module,
     py_attrs::PyAttrs,
     py_value::PyValue,
+    symbols::{StaticStrings, SymbolTable},
     types::{
         CmpOrder, LazyHeapSet, PyTrait, TimeDelta, TimeZone, Type, TypeRef,
         date::{self, StrftimeArgs},
-        str::{StringRepr, allocate_string, allocate_string_no_interning},
+        str::{StringRepr, allocate_non_symbol_string, allocate_string},
         time::{self, Time, TimeSpec},
         timedelta, timezone,
     },
@@ -258,7 +258,7 @@ pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         );
     }
 
-    let (tz, tz_ref) = tzinfo_from_value(tzinfo, vm.heap, vm.interns)?;
+    let (tz, tz_ref) = tzinfo_from_value(tzinfo, vm.heap, vm.symbols)?;
     let dt = from_components(year, month, day, hour, minute, second, microsecond, tz, tz_ref, vm.heap)?;
     Ok(Value::allocate(dt, vm.heap))
 }
@@ -316,7 +316,7 @@ pub(crate) fn class_fromordinal(vm: &mut VM<'_>, args: ArgValues) -> RunResult<V
 pub(crate) fn class_now(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let NowArgs { tz } = NowArgs::from_args(args, vm)?;
     defer_drop!(tz, vm);
-    let (tz, tz_ref) = tzinfo_from_value(tz, vm.heap, vm.interns)?;
+    let (tz, tz_ref) = tzinfo_from_value(tz, vm.heap, vm.symbols)?;
     // Invalid fixed instants raise; only CallHost falls back to the host's clock.
     let Some(utc) = sandbox_instant(vm)? else {
         let tz = tz.map(|tz| MontyTimeZone {
@@ -341,7 +341,7 @@ pub(crate) fn class_fromtimestamp(vm: &mut VM<'_>, args: ArgValues) -> RunResult
     let FromtimestampArgs { timestamp, tz } = FromtimestampArgs::from_args(args, vm)?;
     defer_drop!(timestamp, vm);
     defer_drop!(tz, vm);
-    let (tz, tz_ref) = tzinfo_from_value(tz, vm.heap, vm.interns)?;
+    let (tz, tz_ref) = tzinfo_from_value(tz, vm.heap, vm.symbols)?;
     let (seconds, micros) = timestamp_parts(timestamp, TimestampRounding::HalfEven, vm)?
         .ok_or_else(|| timestamp_not_a_number(timestamp, vm))?;
     let mut dt = if let Some(tz) = tz {
@@ -524,7 +524,7 @@ fn timestamp_not_a_number(value: &Value, vm: &VM<'_>) -> RunError {
 fn astimezone(dt: &DateTime, vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let AstimezoneArgs { tz } = AstimezoneArgs::from_args(args, vm)?;
     defer_drop!(tz, vm);
-    let (tz, tz_ref) = tzinfo_from_value(tz, vm.heap, vm.interns)?;
+    let (tz, tz_ref) = tzinfo_from_value(tz, vm.heap, vm.symbols)?;
     let zone = &vm.env.os_policy.timezone;
     // CPython forms `self - utcoffset()` as a datetime, so the UTC intermediate
     // must be in range as well as the result.
@@ -609,11 +609,11 @@ struct NowArgs {
 /// Parses civil components with Python-compatible microseconds and UTC offsets.
 pub(crate) fn class_strptime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let heap = &mut *vm.heap;
-    let interns = vm.interns;
+    let symbols = vm.symbols;
     let (date_string_val, format_val) = args.get_two_args("datetime.strptime", heap)?;
 
-    let date_string = date::extract_str_arg(&date_string_val, "strptime", heap, interns);
-    let fmt = date::extract_str_arg(&format_val, "strptime", heap, interns);
+    let date_string = date::extract_str_arg(&date_string_val, "strptime", heap, symbols);
+    let fmt = date::extract_str_arg(&format_val, "strptime", heap, symbols);
     date_string_val.drop_with(heap);
     format_val.drop_with(heap);
     let date_string = date_string?;
@@ -653,11 +653,11 @@ pub(crate) fn class_strptime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Valu
 /// - `YYYY-MM-DDTHH:MM:SS` or `YYYY-MM-DD HH:MM:SS`
 /// - `YYYY-MM-DDTHH:MM:SS.ffffff`
 /// - Any of the above with `+HH:MM` or `+HH:MM:SS` timezone suffix
-pub(crate) fn class_fromisoformat(heap: &mut Heap, args: ArgValues, interns: &Interns) -> RunResult<Value> {
+pub(crate) fn class_fromisoformat(heap: &mut Heap, args: ArgValues, symbols: &SymbolTable) -> RunResult<Value> {
     let value = args
         .reject_kwargs("datetime.fromisoformat", heap)?
         .get_one_arg("datetime.fromisoformat", heap)?;
-    let s = date::extract_str_arg(&value, "fromisoformat", heap, interns);
+    let s = date::extract_str_arg(&value, "fromisoformat", heap, symbols);
     value.drop_with(heap);
     let s = s?;
 
@@ -693,7 +693,7 @@ pub(crate) fn class_combine(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value
             combine_allocate(vm, date_part, &time_part, tz)
         }
         Some(tzinfo) => {
-            let tz = tzinfo_from_value(tzinfo, vm.heap, vm.interns)?;
+            let tz = tzinfo_from_value(tzinfo, vm.heap, vm.symbols)?;
             combine_allocate(vm, date_part, &time_part, tz)
         }
     }
@@ -742,7 +742,7 @@ fn combine_date_part(date: &Value, vm: &mut VM<'_>) -> RunResult<(i32, i32, i32)
             "combine",
             1,
             "datetime.date",
-            date.py_type_heap(vm.heap).cpython_arg_name(vm.heap, vm.interns),
+            date.py_type_heap(vm.heap).cpython_arg_name(vm.heap, vm.symbols),
         )
     })?;
     Ok((
@@ -769,7 +769,7 @@ fn combine_bad_time_arg(time: &Value, vm: &VM<'_>) -> RunError {
         "combine",
         2,
         "datetime.time",
-        time.py_type_heap(vm.heap).cpython_arg_name(vm.heap, vm.interns),
+        time.py_type_heap(vm.heap).cpython_arg_name(vm.heap, vm.symbols),
     )
 }
 
@@ -877,13 +877,13 @@ pub(crate) fn py_sub_datetime(a: &DateTime, b: &DateTime, heap: &mut Heap) -> Op
 pub(crate) fn tzinfo_from_value(
     value: &Value,
     heap: &Heap,
-    interns: &Interns,
+    symbols: &SymbolTable,
 ) -> RunResult<(Option<TimeZone>, Option<HeapId>)> {
     match value {
         Value::None => Ok((None, None)),
         Value::Ref(id) => match heap.get(*id) {
             HeapData::TimeZone(tz) => Ok((Some(tz.clone()), Some(*id))),
-            other => Err(ExcType::type_error_tzinfo(&other.py_type().name(heap, interns))),
+            other => Err(ExcType::type_error_tzinfo(&other.py_type().name(heap, symbols))),
         },
         _ => Err(ExcType::type_error_tzinfo(value.py_type_shallow().name())),
     }
@@ -1050,7 +1050,7 @@ fn isoformat_separator(sep: Option<&Value>, vm: &VM<'_>) -> RunResult<char> {
     let Some(sep) = sep else { return Ok('T') };
     // `try_as_str_heap`'s own message is the generic `expected string, not X`, so
     // only its success is used and the rejection is reworded here.
-    match sep.try_as_str_heap(vm.heap, vm.interns).ok() {
+    match sep.try_as_str_heap(vm.heap, vm.symbols).ok() {
         Some(s) if s.chars().count() == 1 => Ok(s.chars().next().expect("just counted one char")),
         Some(s) => Err(ExcType::type_error_bad_arg_pos(
             "isoformat",
@@ -1062,7 +1062,7 @@ fn isoformat_separator(sep: Option<&Value>, vm: &VM<'_>) -> RunResult<char> {
             "isoformat",
             1,
             "a unicode character",
-            sep.py_type_heap(vm.heap).cpython_arg_name(vm.heap, vm.interns),
+            sep.py_type_heap(vm.heap).cpython_arg_name(vm.heap, vm.symbols),
         )),
     }
 }
@@ -1234,7 +1234,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
         // Read only the field being asked for: cloning the whole `DateTime` would
         // copy the timezone name's `String` on every `dt.year`.
         let int_attr = |value: i64| Ok(Some(CallResult::Value(Value::Int(value))));
-        match attr.static_string(vm.interns) {
+        match attr.static_string(vm.symbols) {
             Some(StaticStrings::Year) => Ok(Some(CallResult::Value(Value::Int(i64::from(
                 self.get(vm.heap).naive.date().year(),
             ))))),
@@ -1312,7 +1312,7 @@ impl<'h> HeapObjectRead<'h, DateTime> {
         defer_drop_mut!(tzinfo, vm);
         let (new_tz, new_tz_ref) = match &*tzinfo {
             None => (current_tz, current_tz_ref),
-            Some(tzinfo_value) => tzinfo_from_value(tzinfo_value, vm.heap, vm.interns)?,
+            Some(tzinfo_value) => tzinfo_from_value(tzinfo_value, vm.heap, vm.symbols)?,
         };
 
         let new_dt = from_components(
@@ -1374,7 +1374,7 @@ impl<'heap> PyAttrs<'heap> for PyDateTimeImpl {
         };
         let dt = this.get(vm.heap);
         let s = format_isoformat(dt, separator, spec);
-        Ok(allocate_string_no_interning(s, vm.heap))
+        Ok(allocate_non_symbol_string(s, vm.heap))
     }
 
     pub(crate) fn strftime<'h>(
@@ -1527,7 +1527,7 @@ impl<'heap> PyAttrs<'heap> for PyDateTimeImpl {
 
     #[pyclassmethod(Fromisoformat)]
     fn fromisoformat(_name: StaticStrings, _class: TypeRef, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
-        class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value)
+        class_fromisoformat(vm.heap, args, vm.symbols).map(CallResult::Value)
     }
 
     #[pyclassmethod(Combine)]

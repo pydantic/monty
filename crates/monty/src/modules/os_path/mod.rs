@@ -27,12 +27,12 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::Heap,
-    intern::{StaticStrings, StringId},
     modules::{
         ModuleFunctions,
         os::{PathAccepts, PathArgError, extract_accepted_path, extract_os_path},
     },
     os_dispatch::{PreConversionEffect, Reshaped, bool_reply, invalid_reply, stat_result_field, value_to_owned_string},
+    symbols::{StaticStrings, SymbolId},
     types::{Bytes, Module, PyTrait, Slice, Type, TypeRef, allocate_tuple, collect_iterable, str::allocate_string},
     value::Value,
     virtual_path::posix_join,
@@ -120,28 +120,28 @@ pub fn create_module(vm: &mut VM<'_>) -> Module {
         (StaticStrings::Splitext, function(OsPathFunctions::Splitext)),
         (StaticStrings::Splitroot, function(OsPathFunctions::Splitroot)),
         // POSIX constants — the sandbox path model is POSIX on every host.
-        (StaticStrings::Curdir, Value::InternString(StringId::from_ascii(b'.'))),
+        (StaticStrings::Curdir, Value::Symbol(SymbolId::from_ascii(b'.'))),
         (
             StaticStrings::Pardir,
-            Value::InternString(vm.interns.intern_static(StaticStrings::ParentDirString)),
+            Value::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::ParentDirString)),
         ),
-        (StaticStrings::Extsep, Value::InternString(StringId::from_ascii(b'.'))),
-        (StaticStrings::Sep, Value::InternString(StringId::from_ascii(b'/'))),
-        (StaticStrings::Pathsep, Value::InternString(StringId::from_ascii(b':'))),
+        (StaticStrings::Extsep, Value::Symbol(SymbolId::from_ascii(b'.'))),
+        (StaticStrings::Sep, Value::Symbol(SymbolId::from_ascii(b'/'))),
+        (StaticStrings::Pathsep, Value::Symbol(SymbolId::from_ascii(b':'))),
         (
             StaticStrings::Defpath,
-            Value::InternString(vm.interns.intern_static(StaticStrings::DefpathString)),
+            Value::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::DefpathString)),
         ),
         (StaticStrings::Altsep, Value::None),
         (
             StaticStrings::Devnull,
-            Value::InternString(vm.interns.intern_static(StaticStrings::DevNullString)),
+            Value::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::DevNullString)),
         ),
         // CPython sets this from `sys.platform == 'darwin'`; the sandbox is never darwin.
         (StaticStrings::SupportsUnicodeFilenames, Value::Bool(false)),
     ];
 
-    let mut module = Module::new(StaticStrings::Posixpath, vm.interns);
+    let mut module = Module::new(StaticStrings::Posixpath, vm.symbols);
     for (attr, value) in attrs {
         module.set_attr(attr, value, vm);
     }
@@ -515,8 +515,8 @@ fn extreme<'a>(items: &'a [Value], is_min: bool, vm: &mut VM<'_>) -> RunResult<&
 fn common_leading_slice(s1: &Value, s2: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
     match (s1.py_type_heap(vm.heap).native(), s2.py_type_heap(vm.heap).native()) {
         (Some(Type::Str), Some(Type::Str)) => {
-            let a = value_to_owned_string(s1, vm.heap, vm.interns).expect("checked str");
-            let b = value_to_owned_string(s2, vm.heap, vm.interns).expect("checked str");
+            let a = value_to_owned_string(s1, vm.heap, vm.symbols).expect("checked str");
+            let b = value_to_owned_string(s2, vm.heap, vm.symbols).expect("checked str");
             let mismatch = a.char_indices().zip(b.chars()).find(|((_, x), y)| x != y);
             Ok(match mismatch {
                 Some(((end, _), _)) => allocate_string(&a[..end], vm.heap),
@@ -620,7 +620,7 @@ fn attributes_equal(a: &Value, b: &Value, attr: StaticStrings, vm: &mut VM<'_>) 
 /// `getattr(value, attr)` through the synchronous call path, so any
 /// stat-like object works; a lazy host attribute reads as absent there.
 fn data_attribute(value: &Value, attr: StaticStrings, vm: &mut VM<'_>) -> RunResult<Value> {
-    let name = Value::InternString(vm.interns.intern_static(attr));
+    let name = Value::Symbol(vm.symbols.get_or_insert_static_symbol(attr));
     let getattr = Value::Builtin(Builtins::Function(BuiltinsFunctions::Getattr));
     vm.evaluate_function(&getattr, ArgValues::Two(value.clone_with_heap(vm), name))
 }
@@ -1176,7 +1176,7 @@ impl PathText {
     /// `os.fspath(value)`: `str` and `Path` give text, `bytes` gives bytes,
     /// anything else raises the error `type_error` builds from its type name.
     fn extract(value: &Value, vm: &VM<'_>, type_error: impl FnOnce(&str) -> RunError) -> RunResult<Self> {
-        if let Some(text) = value_to_owned_string(value, vm.heap, vm.interns) {
+        if let Some(text) = value_to_owned_string(value, vm.heap, vm.symbols) {
             Ok(Self {
                 bytes: text.into_bytes(),
                 is_bytes: false,
@@ -1187,7 +1187,7 @@ impl PathText {
                 is_bytes: true,
             })
         } else {
-            Err(type_error(&value.py_type_name_heap(vm.heap, vm.interns)))
+            Err(type_error(&value.py_type_name_heap(vm.heap, vm.symbols)))
         }
     }
 
@@ -1240,7 +1240,7 @@ fn check_arg_types(func: &str, kinds: impl IntoIterator<Item = TypeRef>, vm: &VM
     for kind in kinds {
         match kind {
             TypeRef::Native(Type::Str | Type::Bytes) => {}
-            other => return ExcType::type_error_path_argument(func, &other.dunder_name(vm.heap, vm.interns)),
+            other => return ExcType::type_error_path_argument(func, &other.dunder_name(vm.heap, vm.symbols)),
         }
     }
     ExcType::type_error_mixed_path_components()

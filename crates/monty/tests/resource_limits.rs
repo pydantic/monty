@@ -1176,7 +1176,7 @@ for _ in range(400):
 /// Builtins that collect heap values in a Rust loop polling the time limit.
 ///
 /// Every piece is a heap value (split pieces are at least two characters, so not
-/// interned; repeated items are lists), and a timeout part-way through must release
+/// symbol-backed; repeated items are lists), and a timeout part-way through must release
 /// the pieces built so far: under memory-model-checks a leaked `Value::Ref` panics on
 /// drop. `bytes.splitlines` was already guarded and stays as a regression check.
 const PIECE_BUILDING_EXPRS: &[&str] = &[

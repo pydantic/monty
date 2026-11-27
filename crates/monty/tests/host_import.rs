@@ -311,7 +311,7 @@ fn a_dumped_host_module_restores_as_the_same_module() {
 }
 
 #[test]
-fn star_import_interns_host_export_names_for_later_feeds() {
+fn star_import_registers_host_export_symbols_for_later_feeds() {
     let repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
     let ReplProgress::OsCall(call) = repl
         .feed_start("from tools import *", vec![], PrintWriter::Stdout)

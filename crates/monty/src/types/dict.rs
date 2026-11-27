@@ -22,7 +22,6 @@ use crate::{
         ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead,
         HeapReadMut, HeapReadOutput, HeapReader,
     },
-    intern::{Interns, StaticStrings, StringId},
     modules::{
         collections::{
             counter::{
@@ -34,6 +33,7 @@ use crate::{
         copy::{Memo, PyDeepCopy, deep_copy, deep_copy_pair},
     },
     py_attrs::PyAttrs,
+    symbols::{StaticStrings, SymbolId, SymbolTable},
     types::{
         Type, TypeRef,
         hash_table::{
@@ -391,7 +391,7 @@ impl Dict {
             .raw();
         let key_str = key.as_str(vm).expect("json object keys are always string values");
         let found = self.table.find(hash, |entry| {
-            json_key_equals_str(&entry.key, key_str, vm.heap, vm.interns)
+            json_key_equals_str(&entry.key, key_str, vm.heap, vm.symbols)
         });
 
         if let Some(slot) = found {
@@ -414,8 +414,8 @@ impl Dict {
 ///
 /// This bypasses Python's full equality machinery because JSON object keys are
 /// always strings, so content comparison is sufficient and much cheaper.
-fn json_key_equals_str(key: &Value, expected: &str, heap: &Heap, interns: &Interns) -> bool {
-    key.as_str_heap(heap, interns) == Some(expected)
+fn json_key_equals_str(key: &Value, expected: &str, heap: &Heap, symbols: &SymbolTable) -> bool {
+    key.as_str_heap(heap, symbols) == Some(expected)
 }
 
 impl<'h> HeapRead<'h, Dict> {
@@ -576,14 +576,14 @@ impl Dict {
     ///
     /// This is an O(1) lookup that doesn't require mutable heap access.
     /// Only works for string keys - returns None if the key is not found.
-    pub fn get_by_str(&self, key_str: &str, heap: &Heap, interns: &Interns) -> Option<&Value> {
+    pub fn get_by_str(&self, key_str: &str, heap: &Heap, symbols: &SymbolTable) -> Option<&Value> {
         // Compute hash for the string key
         let mut hasher = DefaultHasher::new();
         key_str.hash(&mut hasher);
         let hash = hasher.finish();
 
         self.table
-            .find(hash, |entry| json_key_equals_str(&entry.key, key_str, heap, interns))
+            .find(hash, |entry| json_key_equals_str(&entry.key, key_str, heap, symbols))
             .map(|slot| &self.table.entry(&slot).value)
     }
 
@@ -629,27 +629,27 @@ impl<'h> HeapReadMut<'h, Dict> {
         self.set_with(key, value, vm, GrowthCheck::Skip)
     }
 
-    /// Sets an interned-string key with no VM and no memory preflight, for a dump
+    /// Sets a symbol key with no VM and no memory preflight, for a dump
     /// upgrade that runs before any VM exists. Keys match by string content alone,
     /// so this suits only a dict whose keys are all strings, such as a class namespace.
     /// Returns the replaced value for the caller to drop.
-    pub(crate) fn set_interned_str(
+    pub(crate) fn set_symbol(
         &self,
-        key: StringId,
+        key: SymbolId,
         value: Value,
         heap: &mut HeapReader<'h>,
-        interns: &Interns,
+        symbols: &SymbolTable,
     ) -> Option<Value> {
-        let key_str = interns.get_str(key);
-        let hash = interns.str_hash(key).raw();
+        let key_str = symbols.get_str(key);
+        let hash = symbols.str_hash(key).raw();
         let found = self
             .get(heap)
             .table
-            .find(hash, |entry| json_key_equals_str(&entry.key, key_str, heap, interns));
+            .find(hash, |entry| json_key_equals_str(&entry.key, key_str, heap, symbols));
         let dict = self.get_mut(heap);
         dict.contains_refs |= matches!(value, Value::Ref(_));
         let entry = DictEntry {
-            key: Value::InternString(key),
+            key: Value::Symbol(key),
             value,
             hash,
         };
@@ -864,10 +864,10 @@ pub(crate) fn probe_native_eq(candidate: &Value, key: &Value, vm: &VM<'_>) -> Op
             Value::Bool(b) => eq_i64(i64::from(*b), key, vm),
             Value::Int(i) => eq_i64(*i, key, vm),
             Value::Float(f) => eq_f64(*f, key, vm),
-            Value::InternLongInt(id) => eq_bigint(vm.interns.get_long_int(*id), key, vm),
-            Value::InternString(id) => eq_str(vm.interns.get_str(*id), key, vm),
+            Value::InternLongInt(id) => eq_bigint(vm.symbols.get_long_int(*id), key, vm),
+            Value::Symbol(id) => eq_str(vm.symbols.get_str(*id), key, vm),
             Value::InlineString(text) => eq_str(text.as_str(), key, vm),
-            Value::InternBytes(id) => eq_bytes(vm.interns.get_bytes(*id), key, vm),
+            Value::InternBytes(id) => eq_bytes(vm.symbols.get_bytes(*id), key, vm),
             Value::Ref(id) => match vm.heap.get(*id) {
                 HeapData::Str(s) => eq_str(s.as_str(), key, vm),
                 HeapData::Bytes(b) => eq_bytes(b.as_slice(), key, vm),
@@ -1304,7 +1304,7 @@ impl<'h> HeapReadMut<'h, Dict> {
     /// attribute on a plain dict — raises the generic no-setattr
     /// `AttributeError`. Consumes `value`.
     fn set_default_factory_attr(&self, attr: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        if self.get(vm.heap).is_defaultdict() && attr.static_string(vm.interns) == Some(StaticStrings::DefaultFactory) {
+        if self.get(vm.heap).is_defaultdict() && attr.static_string(vm.symbols) == Some(StaticStrings::DefaultFactory) {
             // Deliberately unvalidated: CPython's setter is a plain member
             // assignment, so a non-callable is stored and only raises
             // `'int' object is not callable` when a missing key finally calls it.
@@ -1317,7 +1317,7 @@ impl<'h> HeapReadMut<'h, Dict> {
         } else {
             let type_name = self.get(vm.heap).kind_type().name();
             value.drop_with(vm);
-            Err(ExcType::attribute_error_no_setattr(type_name, attr.as_str(vm.interns)))
+            Err(ExcType::attribute_error_no_setattr(type_name, attr.as_str(vm.symbols)))
         }
     }
 }
@@ -1483,7 +1483,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         // A defaultdict exposes `default_factory`; every other attribute (and all
         // attributes on a plain dict) falls through to the caller's generic error.
-        if self.get(vm.heap).is_defaultdict() && attr.static_string(vm.interns) == Some(StaticStrings::DefaultFactory) {
+        if self.get(vm.heap).is_defaultdict() && attr.static_string(vm.symbols) == Some(StaticStrings::DefaultFactory) {
             let factory = self
                 .get(vm.heap)
                 .default_factory()

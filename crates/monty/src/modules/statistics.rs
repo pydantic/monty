@@ -23,10 +23,10 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{DropGuard, HeapReadOutput},
-    intern::StaticStrings,
     modules::{ModuleFunctions, collections::counter_init, math},
     resource_checks::try_vec_with_capacity,
     sorting::{py_lt, sort_values},
+    symbols::StaticStrings,
     types::{
         List, Module, PyTrait, Type,
         iter::collect_owned_iterable,
@@ -56,7 +56,7 @@ pub(crate) enum StatisticsFunctions {
 
 /// Creates the module and its `StatisticsError` exception type.
 pub fn create_module(vm: &mut VM<'_>) -> Module {
-    let mut module = Module::new(StaticStrings::Statistics, vm.interns);
+    let mut module = Module::new(StaticStrings::Statistics, vm.symbols);
     for (name, function) in [
         (StaticStrings::Mean, StatisticsFunctions::Mean),
         (StaticStrings::Fmean, StatisticsFunctions::Fmean),

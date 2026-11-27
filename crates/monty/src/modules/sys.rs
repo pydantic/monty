@@ -25,8 +25,8 @@ use crate::{
 };
 use crate::{
     bytecode::VM,
-    intern::StaticStrings,
     modules::StandardLib,
+    symbols::StaticStrings,
     types::{List, Module, NamedTuple, allocate_string, allocate_tuple, long_int::INT_MAX_STR_DIGITS},
     value::{EitherStr, Marker, Value},
 };
@@ -67,18 +67,21 @@ pub(crate) enum SysFunctions {
 
 /// Creates the `sys` module.
 pub fn create_module(vm: &mut VM<'_>) -> Module {
-    let mut module = Module::new(StaticStrings::Sys, vm.interns);
+    let mut module = Module::new(StaticStrings::Sys, vm.symbols);
 
     // Interpreter identity. `platform` is "monty" rather than the host OS, which
     // the sandbox never reveals.
     module.set_attr(
         StaticStrings::Platform,
-        Value::InternString(vm.interns.intern_static(StaticStrings::Monty)),
+        Value::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::Monty)),
         vm,
     );
     module.set_attr(
         StaticStrings::Version,
-        Value::InternString(vm.interns.intern_static(StaticStrings::MontyVersionString)),
+        Value::Symbol(
+            vm.symbols
+                .get_or_insert_static_symbol(StaticStrings::MontyVersionString),
+        ),
         vm,
     );
     module.set_attr(StaticStrings::VersionInfo, version_info(vm), vm);
@@ -86,7 +89,7 @@ pub fn create_module(vm: &mut VM<'_>) -> Module {
     module.set_attr(StaticStrings::ApiVersion, Value::Int(CPYTHON_API_VERSION), vm);
     module.set_attr(
         StaticStrings::Copyright,
-        Value::InternString(vm.interns.intern_static(StaticStrings::MontyCopyright)),
+        Value::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::MontyCopyright)),
         vm,
     );
     module.set_attr(StaticStrings::BuiltinModuleNames, builtin_module_names(vm), vm);
@@ -97,13 +100,13 @@ pub fn create_module(vm: &mut VM<'_>) -> Module {
     module.set_attr(StaticStrings::Maxunicode, Value::Int(MAXUNICODE), vm);
     module.set_attr(
         StaticStrings::Byteorder,
-        Value::InternString(vm.interns.intern_static(StaticStrings::Little)),
+        Value::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::Little)),
         vm,
     );
     module.set_attr(StaticStrings::FloatInfo, float_info(vm), vm);
     module.set_attr(
         StaticStrings::FloatReprStyle,
-        Value::InternString(vm.interns.intern_static(StaticStrings::Short)),
+        Value::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::Short)),
         vm,
     );
 
@@ -113,37 +116,37 @@ pub fn create_module(vm: &mut VM<'_>) -> Module {
     // usual "am I in a virtualenv?" test correctly.
     module.set_attr(
         StaticStrings::Executable,
-        Value::InternString(vm.interns.intern_static(StaticStrings::EmptyString)),
+        Value::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::EmptyString)),
         vm,
     );
     module.set_attr(
         StaticStrings::Prefix,
-        Value::InternString(vm.interns.intern_static(StaticStrings::EmptyString)),
+        Value::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::EmptyString)),
         vm,
     );
     module.set_attr(
         StaticStrings::ExecPrefix,
-        Value::InternString(vm.interns.intern_static(StaticStrings::EmptyString)),
+        Value::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::EmptyString)),
         vm,
     );
     module.set_attr(
         StaticStrings::BasePrefix,
-        Value::InternString(vm.interns.intern_static(StaticStrings::EmptyString)),
+        Value::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::EmptyString)),
         vm,
     );
     module.set_attr(
         StaticStrings::BaseExecPrefix,
-        Value::InternString(vm.interns.intern_static(StaticStrings::EmptyString)),
+        Value::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::EmptyString)),
         vm,
     );
     module.set_attr(
         StaticStrings::Platlibdir,
-        Value::InternString(vm.interns.intern_static(StaticStrings::Lib)),
+        Value::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::Lib)),
         vm,
     );
     module.set_attr(
         StaticStrings::Abiflags,
-        Value::InternString(vm.interns.intern_static(StaticStrings::EmptyString)),
+        Value::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::EmptyString)),
         vm,
     );
     module.set_attr(StaticStrings::DontWriteBytecode, Value::Bool(true), vm);
@@ -169,19 +172,19 @@ pub fn create_module(vm: &mut VM<'_>) -> Module {
 /// Builds `sys.version_info`: `(major=3, minor=14, micro=0, releaselevel='final', serial=0)`.
 fn version_info(vm: &VM<'_>) -> Value {
     let named_tuple = NamedTuple::new(
-        EitherStr::Interned(vm.interns.intern_static(StaticStrings::SysVersionInfo)),
+        EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::SysVersionInfo)),
         vec![
-            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Major)),
-            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Minor)),
-            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Micro)),
-            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Releaselevel)),
-            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Serial)),
+            EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::Major)),
+            EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::Minor)),
+            EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::Micro)),
+            EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::Releaselevel)),
+            EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::Serial)),
         ],
         vec![
             Value::Int(3),
             Value::Int(14),
             Value::Int(0),
-            Value::InternString(vm.interns.intern_static(StaticStrings::Final)),
+            Value::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::Final)),
             Value::Int(0),
         ],
     );
@@ -209,19 +212,19 @@ fn argv(vm: &VM<'_>) -> Value {
 /// can be in — nothing in the sandbox can change the rounding direction.
 fn float_info(vm: &VM<'_>) -> Value {
     let named_tuple = NamedTuple::new(
-        EitherStr::Interned(vm.interns.intern_static(StaticStrings::SysFloatInfo)),
+        EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::SysFloatInfo)),
         vec![
-            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Max)),
-            EitherStr::Interned(vm.interns.intern_static(StaticStrings::MaxExp)),
-            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Max10Exp)),
-            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Min)),
-            EitherStr::Interned(vm.interns.intern_static(StaticStrings::MinExp)),
-            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Min10Exp)),
-            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Dig)),
-            EitherStr::Interned(vm.interns.intern_static(StaticStrings::MantDig)),
-            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Epsilon)),
-            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Radix)),
-            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Rounds)),
+            EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::Max)),
+            EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::MaxExp)),
+            EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::Max10Exp)),
+            EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::Min)),
+            EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::MinExp)),
+            EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::Min10Exp)),
+            EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::Dig)),
+            EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::MantDig)),
+            EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::Epsilon)),
+            EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::Radix)),
+            EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::Rounds)),
         ],
         vec![
             Value::Float(f64::MAX),
@@ -250,26 +253,29 @@ fn float_info(vm: &VM<'_>) -> Value {
 /// change it.
 fn flags(vm: &VM<'_>) -> Value {
     let named_tuple = NamedTuple::new(
-        EitherStr::Interned(vm.interns.intern_static(StaticStrings::SysFlags)),
+        EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::SysFlags)),
         vec![
-            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Debug)),
-            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Inspect)),
-            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Interactive)),
-            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Optimize)),
-            EitherStr::Interned(vm.interns.intern_static(StaticStrings::DontWriteBytecode)),
-            EitherStr::Interned(vm.interns.intern_static(StaticStrings::NoUserSite)),
-            EitherStr::Interned(vm.interns.intern_static(StaticStrings::NoSite)),
-            EitherStr::Interned(vm.interns.intern_static(StaticStrings::IgnoreEnvironment)),
-            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Verbose)),
-            EitherStr::Interned(vm.interns.intern_static(StaticStrings::BytesWarning)),
-            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Quiet)),
-            EitherStr::Interned(vm.interns.intern_static(StaticStrings::HashRandomization)),
-            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Isolated)),
-            EitherStr::Interned(vm.interns.intern_static(StaticStrings::DevMode)),
-            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Utf8Mode)),
-            EitherStr::Interned(vm.interns.intern_static(StaticStrings::WarnDefaultEncoding)),
-            EitherStr::Interned(vm.interns.intern_static(StaticStrings::SafePath)),
-            EitherStr::Interned(vm.interns.intern_static(StaticStrings::IntMaxStrDigits)),
+            EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::Debug)),
+            EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::Inspect)),
+            EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::Interactive)),
+            EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::Optimize)),
+            EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::DontWriteBytecode)),
+            EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::NoUserSite)),
+            EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::NoSite)),
+            EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::IgnoreEnvironment)),
+            EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::Verbose)),
+            EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::BytesWarning)),
+            EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::Quiet)),
+            EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::HashRandomization)),
+            EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::Isolated)),
+            EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::DevMode)),
+            EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::Utf8Mode)),
+            EitherStr::Symbol(
+                vm.symbols
+                    .get_or_insert_static_symbol(StaticStrings::WarnDefaultEncoding),
+            ),
+            EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::SafePath)),
+            EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::IntMaxStrDigits)),
         ],
         vec![
             Value::Int(0),      // debug

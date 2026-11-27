@@ -9,8 +9,8 @@ use crate::{
     builtins::Builtins,
     bytecode::VM,
     exception_private::{ExcType, RunResult},
-    intern::StaticStrings,
     modules::ModuleFunctions,
+    symbols::StaticStrings,
     types::{
         Module, NamedTupleClass, Type, allocate_string,
         decimal::{
@@ -67,7 +67,7 @@ const ROUNDING_NAMES: [StaticStrings; 8] = [
 
 /// Creates the `decimal` module.
 pub fn create_module(vm: &mut VM<'_>) -> Module {
-    let mut module = Module::new(StaticStrings::DecimalMod, vm.interns);
+    let mut module = Module::new(StaticStrings::DecimalMod, vm.symbols);
     module.set_attr(
         StaticStrings::DecimalType,
         Value::Builtin(Builtins::Type(Type::Decimal)),
@@ -125,14 +125,14 @@ pub fn create_module(vm: &mut VM<'_>) -> Module {
 
 /// `decimal.DecimalTuple`, the named tuple class `Decimal.as_tuple()` builds.
 fn decimal_tuple_class(vm: &mut VM<'_>) -> Value {
-    let field = |name| EitherStr::Interned(vm.interns.intern_static(name));
+    let field = |name| EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(name));
     let fields = vec![
         field(StaticStrings::Sign),
         field(StaticStrings::Digits),
         field(StaticStrings::Exponent),
     ];
     let name = field(StaticStrings::DecimalTuple);
-    let module = Value::InternString(vm.interns.intern_static(StaticStrings::DecimalMod));
+    let module = Value::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::DecimalMod));
     let class = NamedTupleClass::new(name, fields, Vec::new(), module);
     Value::allocate(class, vm.heap)
 }

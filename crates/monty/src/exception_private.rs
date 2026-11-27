@@ -13,10 +13,10 @@ use crate::{
     defer_drop,
     fstring::{FormatError, ascii_escape},
     heap::{DropWithContext, HeapId, HeapRead},
-    intern::{Interns, StaticStrings, StringId},
     parse::CodeRange,
     py_value::PyValue,
     source_map::{SourceMap, StackFrameExt},
+    symbols::{StaticStrings, SymbolId, SymbolTable},
     types::{
         PyTrait, Type, TypeRef, allocate_tuple,
         long_int::INT_MAX_STR_DIGITS,
@@ -68,7 +68,7 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn attribute_error_method(type_name: impl Display, attr: &EitherStr, args: ArgValues, vm: &mut VM<'_>) -> RunError {
         args.drop_with(vm);
-        Self::attribute_error(type_name, attr.as_str(vm.interns))
+        Self::attribute_error(type_name, attr.as_str(vm.symbols))
     }
 
     /// Creates an AttributeError for a missing attribute on a class object.
@@ -3224,7 +3224,7 @@ impl SimpleException {
         f.write_char(')')
     }
 
-    /// Resolves a rejected snippet's location before its provisional intern IDs are discarded.
+    /// Resolves a rejected snippet's location before its provisional symbol IDs are discarded.
     /// Caller frames are still collected from the VM as the error propagates.
     pub(crate) fn with_snippet_position(self, position: CodeRange, source: &str) -> ExceptionRaise {
         let mut frame = StackFrame::from_position(position, "<string>", &mut SourceMap::new(source));
@@ -3246,15 +3246,15 @@ impl<'h> HeapRead<'h, SimpleException> {
     /// any), `__cause__`, `__context__` and `__suppress_context__`. Returns `None`
     /// for all other attributes.
     pub fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> Option<CallResult> {
-        // Interned names match by ID; only `args` can also arrive as a dynamic string.
-        let name = attr.static_string(vm.interns);
+        // Symbols match by ID; only `args` can also arrive as a dynamic string.
+        let name = attr.static_string(vm.symbols);
         let exc = self.get(vm.heap);
         let value = match name {
             Some(StaticStrings::DunderCause) => chained_value(exc.cause(), vm),
             Some(StaticStrings::DunderContext) => chained_value(exc.context(), vm),
             Some(StaticStrings::DunderSuppressContext) => Value::Bool(exc.suppress_context()),
             Some(StaticStrings::Args) => args_tuple(exc.arg.as_deref(), vm),
-            None if attr.as_str(vm.interns) == "args" => args_tuple(exc.arg.as_deref(), vm),
+            None if attr.as_str(vm.symbols) == "args" => args_tuple(exc.arg.as_deref(), vm),
             _ => return None,
         };
         Some(CallResult::Value(value))
@@ -3287,7 +3287,7 @@ pub struct ExceptionRaise {
     pub exc: SimpleException,
     /// Innermost executed frame, with callers linked as parents.
     pub frame: Option<RawStackFrame>,
-    /// Resolved innermost location of a rejected snippet, independent of its discarded intern IDs.
+    /// Resolved innermost location of a rejected snippet, independent of its discarded symbol IDs.
     pub snippet_frame: Option<Box<StackFrame>>,
     /// Whether to hide the caret marker when creating the stack frame.
     ///
@@ -3342,7 +3342,7 @@ impl ExceptionRaise {
     ///
     /// `hide_caret` omits the added frame's carets, as CPython does under an
     /// `import` whose module body raised.
-    pub(crate) fn add_caller_frame(&mut self, position: CodeRange, name: StringId, hide_caret: bool) {
+    pub(crate) fn add_caller_frame(&mut self, position: CodeRange, name: SymbolId, hide_caret: bool) {
         if let Some(ref mut frame) = self.frame {
             // Find the outermost frame (the one with no parent) and add the new frame as its parent
             let mut current = frame;
@@ -3362,7 +3362,7 @@ impl ExceptionRaise {
 
     /// Converts this exception to a `MontyException` for the public API.
     ///
-    /// Uses `Interns` to resolve `StringId` references to actual strings.
+    /// Uses `SymbolTable` to resolve `SymbolId` references to actual strings.
     /// Extracts preview lines from the source code for traceback display.
     /// Converts this exception into a public `MontyException`, expanding each
     /// stack frame's raw byte offsets into lines/columns/preview text via a
@@ -3380,13 +3380,13 @@ impl ExceptionRaise {
     #[must_use]
     pub fn into_python_exception<'s>(
         self,
-        interns: &'s Interns,
+        symbols: &'s SymbolTable,
         source_for: impl Fn(&str) -> Option<&'s str>,
     ) -> MontyException {
         // Per-filename SourceMap cache. Typical tracebacks touch 1-3 unique
         // filenames so a tiny `Vec` beats a HashMap on both allocations and
         // lookup cost.
-        let mut cache: Vec<(StringId, SourceMap<'s>)> = Vec::new();
+        let mut cache: Vec<(SymbolId, SourceMap<'s>)> = Vec::new();
         let mut traceback = self.frame.map_or_default(|frame| {
             let mut frames = Vec::new();
             let mut current = Some(&frame);
@@ -3395,18 +3395,18 @@ impl ExceptionRaise {
                 // An `eval()` / `exec()` snippet resolves against its own
                 // recorded source, never the host's, and prints no source
                 // line: CPython has nothing to read back for `<string>`.
-                let eval_source = interns.eval_source(fname_id);
+                let eval_source = symbols.eval_source(fname_id);
                 let sm_idx = if let Some(i) = cache.iter().position(|(k, _)| *k == fname_id) {
                     i
                 } else {
                     // An imported file also carries its own source, but shows its lines.
                     let src = eval_source
-                        .or_else(|| interns.file_source(fname_id))
-                        .unwrap_or_else(|| source_for(interns.get_filename(fname_id)).unwrap_or(""));
+                        .or_else(|| symbols.file_source(fname_id))
+                        .unwrap_or_else(|| source_for(symbols.get_filename(fname_id)).unwrap_or(""));
                     cache.push((fname_id, SourceMap::new(src)));
                     cache.len() - 1
                 };
-                let mut stack_frame = StackFrame::from_raw(f, interns, &mut cache[sm_idx].1);
+                let mut stack_frame = StackFrame::from_raw(f, symbols, &mut cache[sm_idx].1);
                 if eval_source.is_some() {
                     stack_frame.preview_line = None;
                 }
@@ -3444,13 +3444,13 @@ fn exc_data_clone_size(data: &ExcData) -> usize {
 
 /// A stack frame for traceback information.
 ///
-/// Stores position information and optional function name as StringId.
+/// Stores position information and optional function name as SymbolId.
 /// The actual name string must be looked up externally when formatting the traceback.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RawStackFrame {
     pub position: CodeRange,
     /// The frame's function name, or `<module>` for module-level code; always set.
-    pub frame_name: Option<StringId>,
+    pub frame_name: Option<SymbolId>,
     pub parent: Option<Box<Self>>,
     /// Whether to hide the caret marker in the traceback for this frame.
     ///
@@ -3466,7 +3466,7 @@ impl RawStackFrame {
         mem::size_of::<Self>().saturating_add(self.parent.as_ref().map_or(0, |parent| parent.clone_allocation_size()))
     }
 
-    pub(crate) fn new(position: CodeRange, frame_name: StringId, parent: Option<&Self>) -> Self {
+    pub(crate) fn new(position: CodeRange, frame_name: SymbolId, parent: Option<&Self>) -> Self {
         Self {
             position,
             frame_name: Some(frame_name),
@@ -3476,7 +3476,7 @@ impl RawStackFrame {
     }
 
     /// Creates a new frame for a raise statement (no caret will be shown).
-    pub(crate) fn from_raise(position: CodeRange, frame_name: StringId) -> Self {
+    pub(crate) fn from_raise(position: CodeRange, frame_name: SymbolId) -> Self {
         Self {
             position,
             frame_name: Some(frame_name),
@@ -3590,11 +3590,11 @@ impl RunError {
     #[must_use]
     pub fn into_python_exception<'s>(
         self,
-        interns: &'s Interns,
+        symbols: &'s SymbolTable,
         source_for: impl Fn(&str) -> Option<&'s str>,
     ) -> MontyException {
         match self {
-            Self::Exc(exc) | Self::UncatchableExc(exc) => exc.into_python_exception(interns, source_for),
+            Self::Exc(exc) | Self::UncatchableExc(exc) => exc.into_python_exception(symbols, source_for),
             Self::Internal(err) => MontyException::runtime_error(format!("Internal error in monty: {err}")),
         }
     }

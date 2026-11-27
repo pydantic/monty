@@ -22,8 +22,8 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
-    intern::StaticStrings,
     modules::copy::{Memo, PyDeepCopy, deep_copy, deep_copy_pair},
+    symbols::StaticStrings,
     types::{Dict, LazyHeapSet, PyTrait, Type, TypeRef, list::repr_should_truncate, tuple::allocate_tuple},
     value::{EitherStr, VALUE_SIZE, Value},
 };
@@ -227,7 +227,7 @@ fn merge_keywords(bound: &mut Vec<(Value, Value)>, keywords: impl Iterator<Item 
         }
         let position = match &index {
             Some(index) => name
-                .try_as_str_heap(vm.heap, vm.interns)
+                .try_as_str_heap(vm.heap, vm.symbols)
                 .ok()
                 .and_then(|name| index.get(name).copied()),
             None => keyword_index(bound, &name, vm),
@@ -238,7 +238,7 @@ fn merge_keywords(bound: &mut Vec<(Value, Value)>, keywords: impl Iterator<Item 
             old_value.drop_with(vm);
         } else {
             if let Some(index) = &mut index
-                && let Ok(name) = name.try_as_str_heap(vm.heap, vm.interns)
+                && let Ok(name) = name.try_as_str_heap(vm.heap, vm.symbols)
             {
                 index.insert(name.to_owned(), bound.len());
             }
@@ -252,10 +252,10 @@ fn merge_keywords(bound: &mut Vec<(Value, Value)>, keywords: impl Iterator<Item 
 /// A non-`str` name never matches; the binder rejects it when the merged
 /// arguments reach the wrapped callable.
 fn keyword_index(bound: &[(Value, Value)], name: &Value, vm: &VM<'_>) -> Option<usize> {
-    let name = name.as_str_heap(vm.heap, vm.interns)?;
+    let name = name.as_str_heap(vm.heap, vm.symbols)?;
     bound.iter().position(|(bound, _)| {
         bound
-            .as_str_heap(vm.heap, vm.interns)
+            .as_str_heap(vm.heap, vm.symbols)
             .is_some_and(|bound| bound == name)
     })
 }
@@ -269,7 +269,7 @@ fn keyword_index_map(bound: &[(Value, Value)], vm: &VM<'_>) -> AHashMap<String, 
     bound
         .iter()
         .enumerate()
-        .filter_map(|(position, (name, _))| Some((name.as_str_heap(vm.heap, vm.interns)?.to_owned(), position)))
+        .filter_map(|(position, (name, _))| Some((name.as_str_heap(vm.heap, vm.symbols)?.to_owned(), position)))
         .collect()
 }
 
@@ -394,7 +394,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Partial> {
                 // CPython writes the name unquoted, as keyword syntax rather than
                 // as a dict key. The `repr` fallback is for a non-`str` name, which
                 // Monty rejects at the `**` unpack before it can reach a partial.
-                if let Ok(name) = name.try_as_str_heap(vm.heap, vm.interns) {
+                if let Ok(name) = name.try_as_str_heap(vm.heap, vm.symbols) {
                     write!(f, ", {name}=")?;
                 } else {
                     f.write_str(", ")?;
@@ -413,12 +413,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Partial> {
     /// `args` and `keywords` are rebuilt on each access, so mutating the
     /// returned dict does not change what the partial passes on.
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let attr = match attr.static_string(vm.interns) {
+        let attr = match attr.static_string(vm.symbols) {
             Some(StaticStrings::Func) => "func",
             Some(StaticStrings::Args) => "args",
             Some(StaticStrings::Keywords) => "keywords",
             Some(_) => return Ok(None),
-            None => attr.as_str(vm.interns),
+            None => attr.as_str(vm.symbols),
         };
         match attr {
             "func" => {

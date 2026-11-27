@@ -25,13 +25,13 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::DropWithContext,
-    intern::StaticStrings,
     modules::{
         ModuleFunctions,
         base64::{b64_decode, b64_encode_reserving, binascii_error, decode_input_described},
     },
     py_value::PyValue,
     resource_checks::check_estimated_size,
+    symbols::StaticStrings,
     types::{Module, PyTrait, Type, bytes::allocate_bytes},
     value::Value,
 };
@@ -87,7 +87,7 @@ const BINASCII_FUNCTIONS: &[(StaticStrings, BinasciiFunctions)] = &[
 
 /// Creates the `binascii` module.
 pub fn create_module(vm: &mut VM<'_>) -> Module {
-    let mut module = Module::new(StaticStrings::Binascii, vm.interns);
+    let mut module = Module::new(StaticStrings::Binascii, vm.symbols);
 
     module.set_attr(
         StaticStrings::ErrorClass,

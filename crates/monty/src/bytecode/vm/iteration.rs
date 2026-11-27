@@ -14,9 +14,9 @@ use crate::{
     frozen::{FrozenFunction, FrozenFunctions},
     function::Function,
     heap::DropGuard,
-    intern::{CompileInterns, FunctionId},
     modules::ModuleFunctions,
     parse::CodeRange,
+    symbols::{CompileSymbols, FunctionId},
     types::Type,
     value::Value,
 };
@@ -28,7 +28,7 @@ impl VM<'_> {
         let mut guard = DropGuard::new(call, self);
         let (call, vm) = guard.as_parts();
         let pushed = matches!(call, CallResult::FramePushed);
-        let id = match FrozenFunction::ForIter.resolve(vm.interns) {
+        let id = match FrozenFunction::ForIter.resolve(vm.symbols) {
             Ok(id) => id,
             Err(error) => {
                 if pushed {
@@ -49,7 +49,7 @@ impl VM<'_> {
             vm.current_offset()
         };
         let catcher = CallFrame::new_function(
-            &vm.interns.get_function(id).code,
+            &vm.symbols.get_function(id).code,
             stack_base,
             0,
             vm.exception_stack.len(),
@@ -71,7 +71,7 @@ impl VM<'_> {
     pub(crate) fn end_for_iter(&mut self, args: ArgValues) -> RunResult<CallResult> {
         args.check_zero_args("end_for_iter", self.heap)?;
         if self.current_frame.function_id.is_none()
-            || self.current_frame.function_id != self.interns.frozen_function(FrozenFunction::ForIter)
+            || self.current_frame.function_id != self.symbols.frozen_function(FrozenFunction::ForIter)
         {
             return Err(RunError::internal("end_for_iter outside the iteration catcher"));
         }
@@ -92,11 +92,11 @@ impl VM<'_> {
 
 /// Creates the shared frozen function. Dependencies are constants rather than locals, so inserting
 /// it underneath an installed callee never moves the callee's locals or any pending constructor result.
-pub(crate) fn compile_iteration_catcher(interns: &mut CompileInterns<'_>) -> RunResult<FunctionId> {
-    let index = check_function_count_u16(interns.functions_len(), CodeRange::default())
+pub(crate) fn compile_iteration_catcher(symbols: &mut CompileSymbols<'_>) -> RunResult<FunctionId> {
+    let index = check_function_count_u16(symbols.functions_len(), CodeRange::default())
         .map_err(|err| err.into_run_error(""))?;
-    let name = Identifier::new(interns.intern("__monty_for_iter"), CodeRange::default());
-    interns.push_function(Function::new(
+    let name = Identifier::new(symbols.get_or_insert_symbol("__monty_for_iter"), CodeRange::default());
+    symbols.push_function(Function::new(
         name,
         Signature::default(),
         0,

@@ -60,7 +60,7 @@ except ValueError as e:
     assert args == ('test error',)
 
 # === Dynamic (heap-allocated) attribute name strings ===
-# These test that getattr works with non-interned strings (e.g. from concatenation)
+# These test that getattr works with non-symbols (e.g. from concatenation)
 s2 = slice(5, 15, 3)
 attr_name = 'sta' + 'rt'
 assert getattr(s2, attr_name) == 5
@@ -84,8 +84,8 @@ except TypeError as e:
     assert args == ('dynamic test',)
 
 # === Dynamic names on builtin types ===
-# Builtin attributes dispatch on interned string ids, so a name built at
-# runtime has to be resolved back through the interner before dispatch.
+# Builtin attributes dispatch on symbol IDs, so a name built at
+# runtime has to be resolved back through the symbol table before dispatch.
 import datetime
 
 assert getattr(datetime.timezone, 'ut' + 'c') is datetime.timezone.utc
@@ -93,5 +93,5 @@ assert getattr(datetime.date, 'mi' + 'n') == datetime.date(1, 1, 1)
 assert getattr(datetime.time(12, 30), 'ho' + 'ur') == 12
 assert getattr(datetime.date(2024, 6, 15), 'mon' + 'th') == 6
 assert getattr(datetime.timedelta(hours=1), 'sec' + 'onds') == 3600
-# a name the interner has never seen still misses, rather than erroring oddly
+# a name the symbol table has never seen still misses, rather than erroring oddly
 assert getattr(datetime.date(2024, 6, 15), 'no' + 'pe', 'MISSING') == 'MISSING'

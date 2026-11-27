@@ -20,8 +20,8 @@ use crate::{
     defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropGuard, Heap, HeapId, HeapItem, HeapObjectRead, HeapRead},
-    intern::StaticStrings,
     py_attrs::PyAttrs,
+    symbols::StaticStrings,
     types::{
         Dict, LazyHeapSet, PyTrait, Type, TypeRef, allocate_tuple,
         str::{allocate_string, string_repr_fmt},
@@ -68,7 +68,7 @@ pub(crate) struct ReMatch {
     named_groups: Vec<(String, usize)>,
     /// The searched subject (the `.string` attribute), held as a refcounted heap
     /// reference so every match from one `finditer` shares one copy — tracked
-    /// once, not per match. Always a `str` `Value` (heap `Str` or interned).
+    /// once, not per match. Always a `str` `Value` (heap `Str` or symbol-backed).
     subject: Value,
     /// Whether the subject is pure ASCII, so byte offset == character offset.
     all_ascii: bool,
@@ -344,14 +344,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ReMatch> {
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        match attr.static_string(vm.interns) {
+        match attr.static_string(vm.symbols) {
             Some(StaticStrings::StringAttr) => {
                 // Hand back the same subject object (CPython's `m.string is s`),
                 // bumping its refcount rather than allocating a fresh copy.
                 let v = self.get(vm.heap).subject.clone_with_heap(vm);
                 Ok(Some(CallResult::Value(v)))
             }
-            _ => Err(ExcType::attribute_error(Type::ReMatch, attr.as_str(vm.interns))),
+            _ => Err(ExcType::attribute_error(Type::ReMatch, attr.as_str(vm.symbols))),
         }
     }
 
@@ -369,7 +369,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ReMatch> {
 
 impl HeapItem for ReMatch {
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-        // Release the shared subject reference (no-op for an interned subject).
+        // Release the shared subject reference (no-op for a symbol subject).
         // `dec_ref_forget` neutralises the `Ref` so the struct's own `Drop`
         // does not trip the `memory-model-checks` leak assertion.
         if let Value::Ref(id) = &mut self.subject {

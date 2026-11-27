@@ -6,8 +6,8 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     expressions::CmpOperator,
-    intern::StaticStrings,
     modules::ModuleFunctions,
+    symbols::StaticStrings,
     types::{Module, PyTrait, Range, Type},
     value::{EitherStr, Value},
 };
@@ -25,7 +25,7 @@ pub(crate) enum BisectFunctions {
 
 /// Creates the module and its two aliases.
 pub fn create_module(vm: &mut VM<'_>) -> Module {
-    let mut module = Module::new(StaticStrings::Bisect, vm.interns);
+    let mut module = Module::new(StaticStrings::Bisect, vm.symbols);
     for (name, function) in [
         (StaticStrings::BisectLeft, BisectFunctions::BisectLeft),
         (StaticStrings::BisectRight, BisectFunctions::BisectRight),
@@ -132,7 +132,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: BisectFunctions, args: ArgValues) 
         let argument = x.clone_with_heap(vm);
         let result = a.py_value(vm).py_call_attr(
             vm,
-            &EitherStr::Interned(vm.interns.intern_static(StaticStrings::Insert)),
+            &EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::Insert)),
             ArgValues::Two(Value::Int(index), argument),
         )?;
         let CallResult::Value(result) = result else {

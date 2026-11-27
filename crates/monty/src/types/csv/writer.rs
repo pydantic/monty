@@ -17,9 +17,9 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     fstring::FormatFloat,
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapRead},
-    intern::StaticStrings,
     os_dispatch::{PendingEffect, PostConversionEffect},
     string_builder::StringBuilder,
+    symbols::StaticStrings,
     types::{
         CsvObject, PyTrait, Type, TypeRef,
         csv::dialect::{Dialect, Quoting},
@@ -87,7 +87,7 @@ pub(crate) fn write_method(target: &Value, vm: &mut VM<'_>) -> RunResult<Option<
     if is_native_stream(target, vm.heap) {
         return Ok(Some(Value::None));
     }
-    let name = EitherStr::Interned(vm.interns.intern_static(StaticStrings::Write));
+    let name = EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::Write));
     match target.py_getattr(&name, vm) {
         Ok(CallResult::Value(method)) if method.is_callable(vm) => Ok(Some(method)),
         Ok(result) => {
@@ -179,7 +179,7 @@ pub(super) fn writerow_now(
 ) -> RunResult<()> {
     let line = format_items(dialect, terminator_chars, items, line, vm)?;
     let written = if is_memory_stream(target, vm.heap) {
-        let name = vm.interns.intern_static(StaticStrings::Write);
+        let name = vm.symbols.get_or_insert_static_symbol(StaticStrings::Write);
         vm.call_attr(target.clone_with_heap(vm.heap), name, ArgValues::One(line))?
             .require_synchronous(vm)?
     } else {
@@ -435,7 +435,7 @@ fn row_items(row: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
 /// `write(line)`: called by name on a file or io stream target, otherwise the bound `write`.
 fn write_line(target: &Value, write: &Value, line: Value, vm: &mut VM<'_>) -> RunResult<CallResult> {
     if is_native_stream(target, vm.heap) {
-        let name = vm.interns.intern_static(StaticStrings::Write);
+        let name = vm.symbols.get_or_insert_static_symbol(StaticStrings::Write);
         vm.call_attr(target.clone_with_heap(vm.heap), name, ArgValues::One(line))
     } else {
         vm.call_function(write, ArgValues::One(line))

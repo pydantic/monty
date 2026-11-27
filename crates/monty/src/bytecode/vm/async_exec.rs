@@ -29,10 +29,10 @@ use crate::{
         ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapObjectRead, HeapRead, HeapReadMut,
         HeapReadOutput, HeapReader,
     },
-    intern::{FunctionId, StaticStrings},
     object_bridge::MontyObjectExt,
     run_progress::{ExtFunctionResult, ExtFunctionResultExt},
     string_builder::StringBuilder,
+    symbols::{FunctionId, StaticStrings},
     types::{List, PyTrait, Set, allocate_tuple, collect_iterable, set::SetEntry},
     value::Value,
 };
@@ -931,7 +931,7 @@ impl<'h> VM<'h> {
         globals: Option<HeapId>,
     ) -> Result<(), RunError> {
         let call_offset = self.current_offset();
-        let code = &self.interns.get_function(func_id).code;
+        let code = &self.symbols.get_function(func_id).code;
         let locals_count = u16::try_from(namespace_values.len()).expect("coroutine namespace size exceeds u16");
 
         // Extend the stack with the coroutine's pre-bound locals.
@@ -1127,7 +1127,7 @@ impl<'h> VM<'h> {
 
         // Count this task's recursion depth contribution and subtract it from
         // the global counter so the next task gets a clean budget.
-        let task_depth = frame_recursion_depth(frames.iter().map(|f| f.function_id), self.interns);
+        let task_depth = frame_recursion_depth(frames.iter().map(|f| f.function_id), self.symbols);
         self.recursion_depth -= task_depth;
 
         // Save VM state into the task
@@ -1191,7 +1191,7 @@ impl<'h> VM<'h> {
         let coroutine_id = task.coroutine_id;
 
         // Restore this task's recursion depth contribution to the global counter
-        let task_depth = frame_recursion_depth(frames.iter().map(|f| f.function_id), self.interns);
+        let task_depth = frame_recursion_depth(frames.iter().map(|f| f.function_id), self.symbols);
         self.recursion_depth += task_depth;
 
         if !frames.is_empty() {
@@ -1204,7 +1204,7 @@ impl<'h> VM<'h> {
             let mut frames: Vec<_> = frames
                 .into_iter()
                 .map(|sf| {
-                    let code = frame_code(self.interns, self.module_code, sf.function_id);
+                    let code = frame_code(self.symbols, self.module_code, sf.function_id);
                     CallFrame {
                         code,
                         bytecode: code.bytecode(),
@@ -1278,7 +1278,7 @@ impl<'h> VM<'h> {
         // Push locals onto stack and push frame directly (can't use start_coroutine_frame
         // because that needs a current frame for call_offset, but spawned tasks
         // don't have a parent frame — the coroutine is the root)
-        let code = &self.interns.get_function(func_id).code;
+        let code = &self.symbols.get_function(func_id).code;
         let locals_count = u16::try_from(namespace_values.len()).expect("coroutine namespace size exceeds u16");
 
         let stack_base = self.stack.len();
@@ -2154,7 +2154,7 @@ fn parse_wait_condition(value: Option<&Value>, vm: &mut VM<'_>) -> RunResult<Wai
         (StaticStrings::FirstException, WaitCondition::FirstException),
         (StaticStrings::AllCompleted, WaitCondition::AllCompleted),
     ] {
-        let constant = Value::InternString(vm.interns.intern_static(name));
+        let constant = Value::Symbol(vm.symbols.get_or_insert_static_symbol(name));
         if value.py_eq_operator(&constant, vm)? {
             return Ok(condition);
         }

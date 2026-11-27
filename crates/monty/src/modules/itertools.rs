@@ -16,10 +16,10 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{DropGuard, DropWithContext, HEAP_ENTRY_SIZE, HeapRead},
-    intern::StaticStrings,
     modules::ModuleFunctions,
     py_attrs::PyAttrs,
     resource_checks::check_estimated_size,
+    symbols::StaticStrings,
     types::{
         ItertoolsIter, Module, TupleVec, Type, allocate_tuple,
         iter::collect_owned_iterable,
@@ -79,7 +79,7 @@ const ITERTOOLS_TYPES: &[(StaticStrings, Type)] = &[
 
 /// Creates the `itertools` module.
 pub fn create_module(vm: &mut VM<'_>) -> Module {
-    let mut module = Module::new(StaticStrings::Itertools, vm.interns);
+    let mut module = Module::new(StaticStrings::Itertools, vm.symbols);
 
     for (name, type_) in ITERTOOLS_TYPES {
         module.set_attr(*name, Value::Builtin(Builtins::Type(*type_)), vm);

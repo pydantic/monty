@@ -7,9 +7,9 @@ use crate::{
     args::ArgValues,
     bytecode::VM,
     exception_private::RunResult,
-    intern::StaticStrings,
     py_attrs::{PyAttrs, PyAttrs as NativeAttrs},
     py_value::PyValue,
+    symbols::StaticStrings,
     types::TypeRef,
     value::Value,
 };
@@ -31,7 +31,7 @@ mod value {
 mod exception_private {
     pub type RunResult<T> = Result<T, &'static str>;
 }
-mod intern {
+mod symbols {
     #[derive(Clone, Copy, PartialEq)]
     pub enum StaticStrings {
         Count,

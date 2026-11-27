@@ -2,7 +2,7 @@
 
 use crate::{
     args::ArgValues, bytecode::VM, defer_drop, exception_private::RunResult, py_value::PyValue,
-    types::str::allocate_string_no_interning, value::Value,
+    types::str::allocate_non_symbol_string, value::Value,
 };
 
 /// Converts an integer or `__index__` result to a hexadecimal string prefixed with `0x`.
@@ -15,5 +15,5 @@ pub fn builtin_hex(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let PyValue::Int(integer) = index.py_value(vm) else {
         unreachable!("py_index returned an integer");
     };
-    Ok(allocate_string_no_interning(integer.radix_repr(16, vm), vm.heap))
+    Ok(allocate_non_symbol_string(integer.radix_repr(16, vm), vm.heap))
 }

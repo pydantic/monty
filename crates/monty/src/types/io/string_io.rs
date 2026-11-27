@@ -27,8 +27,8 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{DropGuard, HeapData, HeapId, HeapItem, HeapObjectRead},
-    intern::StaticStrings,
     py_attrs::PyAttrs,
+    symbols::StaticStrings,
     types::{
         LazyHeapSet, List, PyTrait, Type, TypeRef,
         str::{PyStr, allocate_string},
@@ -355,7 +355,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, StringIo> {
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let stream = self.get(vm.heap);
-        let value = match attr.static_string(vm.interns) {
+        let value = match attr.static_string(vm.symbols) {
             Some(StaticStrings::Closed) => Value::Bool(stream.closed),
             Some(StaticStrings::Encoding | StaticStrings::Errors) => Value::None,
             Some(StaticStrings::LineBuffering) => {

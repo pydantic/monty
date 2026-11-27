@@ -18,10 +18,10 @@ use crate::{
     bytecode::{FrameExit, PendingImport, PendingLookupEffect, VM, VMSnapshot},
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropWithContext, Heap, HeapReader},
-    intern::Interns,
     object_bridge::MontyObjectExt,
     os_dispatch::{PendingEffect, PostConversionEffect, SleepDestination, release_pending_effect},
     run::Executor,
+    symbols::SymbolTable,
     value::Value,
 };
 
@@ -50,16 +50,16 @@ pub enum RunProgress {
 }
 
 impl RunProgress {
-    /// The execution heap and its interns for a dump upgrade, or `None` once
+    /// The execution heap and its symbols for a dump upgrade, or `None` once
     /// execution has completed.
-    pub(crate) fn heap_and_interns(&mut self) -> Option<(&mut Heap, &mut Interns)> {
+    pub(crate) fn heap_and_symbols(&mut self) -> Option<(&mut Heap, &mut SymbolTable)> {
         match self {
             Self::FunctionCall(FunctionCall { snapshot, .. })
             | Self::OsCall(OsCall { snapshot, .. })
             | Self::NameLookup(NameLookup { snapshot, .. }) => {
-                Some((&mut snapshot.heap, &mut snapshot.executor.tables.interns))
+                Some((&mut snapshot.heap, &mut snapshot.executor.tables.symbols))
             }
-            Self::ResolveFutures(ResolveFutures { heap, executor, .. }) => Some((heap, &mut executor.tables.interns)),
+            Self::ResolveFutures(ResolveFutures { heap, executor, .. }) => Some((heap, &mut executor.tables.symbols)),
             Self::Complete(_) => None,
         }
     }
@@ -575,9 +575,9 @@ fn import_from_error(err: RunError, name: &str, vm: &VM<'_>) -> RunError {
         return err;
     }
     if let Some(module) = vm.suspended_import_from() {
-        ExcType::cannot_import_name(name, vm.interns.get_str(module), None)
+        ExcType::cannot_import_name(name, vm.symbols.get_str(module), None)
     } else if let Some(path) = vm.suspended_submodule() {
-        ExcType::module_not_found_error(vm.interns.get_str(path), None)
+        ExcType::module_not_found_error(vm.symbols.get_str(path), None)
     } else {
         err
     }
@@ -601,7 +601,7 @@ pub(crate) fn answer_unserved_lookups(mut result: RunResult<FrameExit>, vm: &mut
                     namespace_slot,
                     is_global,
                 };
-                (scope, vm.interns.get_str(name_id).to_owned(), None)
+                (scope, vm.symbols.get_str(name_id).to_owned(), None)
             }
             FrameExit::AttrLookup {
                 name,
@@ -615,7 +615,7 @@ pub(crate) fn answer_unserved_lookups(mut result: RunResult<FrameExit>, vm: &mut
                     class_name,
                     type_object,
                 };
-                (scope, name.into_string(vm.interns), effect)
+                (scope, name.into_string(vm.symbols), effect)
             }
             other => return Ok(other),
         };
@@ -654,7 +654,7 @@ fn undefined_lookup_error(scope: &LookupScope, name: &str) -> RunError {
 /// [`resume`](Self::resume) with some or all of the results.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ResolveFutures {
-    /// The executor containing compiled code and interns.
+    /// The executor containing compiled code and symbols.
     executor: Executor,
     /// The VM state containing stack, frames, globals, and exception state.
     vm_state: VMSnapshot,
@@ -833,7 +833,7 @@ impl ResolveFutures {
 /// public API.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Snapshot {
-    /// The executor containing compiled code and interns.
+    /// The executor containing compiled code and symbols.
     pub(crate) executor: Executor,
     /// The VM state containing stack, frames, globals, and exception state.
     pub(crate) vm_state: VMSnapshot,
@@ -921,7 +921,7 @@ pub(crate) fn resume_with_result(
         return vm.resume_import(pending, result, eager_call_id);
     }
     if let Some(module_id) = vm.suspended_import() {
-        let pending = PendingImport::top_level(vm.interns.get_str(module_id).to_owned());
+        let pending = PendingImport::top_level(vm.symbols.get_str(module_id).to_owned());
         return vm.resume_import(pending, result, eager_call_id);
     }
     // An eager answer and a future both register the call's future; the
@@ -1053,7 +1053,7 @@ impl ExtFunctionResultExt for ExtFunctionResult {}
 /// Pre-converted frame exit data, produced while the VM is still alive.
 ///
 /// This intermediate enum holds `MontyObject`s and `String`s instead of `Value`s
-/// and `StringId`s. It exists to separate the conversion phase (needs `&mut VM`)
+/// and `SymbolId`s. It exists to separate the conversion phase (needs `&mut VM`)
 /// from the snapshot/progress construction phase (needs owned `Heap`).
 pub(crate) enum ConvertedExit {
     /// Execution completed with a final result.
@@ -1104,8 +1104,8 @@ impl ConvertedExit {
 
 /// Converts a `FrameExit` into a `ConvertedExit` while the VM is still alive.
 ///
-/// All `Value` → `MontyObject` and `StringId` → `String` conversions happen here,
-/// while the VM (and its heap/interns) are still accessible.
+/// All `Value` → `MontyObject` and `SymbolId` → `String` conversions happen here,
+/// while the VM (and its heap/symbols) are still accessible.
 pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) -> ConvertedExit {
     // An effect still armed on arrival belongs to an OS call that was answered
     // without consuming it — an eager `resume_with_resolved_futures` never
@@ -1130,7 +1130,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
             ..
         }) => {
             let position = vm.suspension_position();
-            let name = function_name.into_string(vm.interns);
+            let name = function_name.into_string(vm.symbols);
             match vm.export_on_clock(|vm| args.into_call_args(vm)) {
                 Ok(args) => ConvertedExit::FunctionCall {
                     function_name: name,
@@ -1169,7 +1169,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
             object_id,
         }) => {
             let position = vm.suspension_position();
-            let name = method_name.into_string(vm.interns);
+            let name = method_name.into_string(vm.symbols);
             match vm.export_on_clock(|vm| args.into_call_args(vm)) {
                 Ok(args) => ConvertedExit::FunctionCall {
                     function_name: name,
@@ -1194,7 +1194,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
             is_global,
         }) => {
             let position = vm.suspension_position();
-            let name = vm.interns.get_str(name_id).to_owned();
+            let name = vm.symbols.get_str(name_id).to_owned();
             ConvertedExit::NameLookup {
                 name,
                 scope: LookupScope::Namespace {
@@ -1216,7 +1216,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
             // consume the effect (or the next `convert_frame_exit` releases it).
             vm.pending_lookup_effect = effect;
             ConvertedExit::NameLookup {
-                name: name.into_string(vm.interns),
+                name: name.into_string(vm.symbols),
                 scope: LookupScope::Attr {
                     object_id,
                     class_name,
@@ -1310,7 +1310,7 @@ pub(crate) fn build_run_progress(
             new_snapshot!(),
         ))),
         ConvertedExit::Error(err) => {
-            Err(err.into_python_exception(&executor.tables.interns, |_| Some(&*executor.program.code)))
+            Err(err.into_python_exception(&executor.tables.symbols, |_| Some(&*executor.program.code)))
         }
     }
 }

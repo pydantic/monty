@@ -3,19 +3,19 @@
 use crate::{
     bytecode::VM,
     heap::{DropWithContext, HeapData},
-    intern::StaticStrings,
+    symbols::StaticStrings,
     types::{Dict, Module},
     value::Value,
 };
 
 /// Creates the constants and reverse lookup table used by Python error handlers.
 pub fn create_module(vm: &mut VM<'_>) -> Module {
-    let mut module = Module::new(StaticStrings::Errno, vm.interns);
+    let mut module = Module::new(StaticStrings::Errno, vm.symbols);
     let mut errorcode = Dict::new();
 
     for &(name, code) in ERROR_CODES {
         module.set_attr(name, Value::Int(code), vm);
-        let value = Value::InternString(vm.interns.intern_static(name));
+        let value = Value::Symbol(vm.symbols.get_or_insert_static_symbol(name));
         // Integer keys cannot invoke Python; the table has a fixed size.
         let old = errorcode
             .set_without_growth_check(Value::Int(code), value, vm)

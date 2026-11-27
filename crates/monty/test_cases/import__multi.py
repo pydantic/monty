@@ -3,7 +3,7 @@
 import base64
 import sys, math, re
 
-# Avoid a module attribute here: mentioning one would independently intern its
+# Avoid a module attribute here: mentioning one would independently register a symbol for its
 # name and could hide omissions from the module's registration list.
 assert base64 is not None, 'base64 import should succeed'
 

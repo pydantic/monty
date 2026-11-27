@@ -19,11 +19,11 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     expressions::CmpOperator,
     heap::{DropGuard, DropWithContext, HeapData, HeapObjectRead},
-    intern::StaticStrings,
     py_attrs::{self, MethodCall},
     py_value::PyValue,
     resource_checks::check_repeat_size,
     sorting::{py_eq_item, py_lt, sort_indices, sort_indices_by},
+    symbols::StaticStrings,
     types::{
         Dict, List, PyTrait, Type, allocate_tuple, dict::dict_update, iter::collect_owned_iterable,
         key_hash::plain_hash, py_trait::CmpOrder,
@@ -38,7 +38,7 @@ pub(crate) fn call_unbound(
     args: ArgValues,
     vm: &mut VM<'_>,
 ) -> RunResult<CallResult> {
-    let name = attr.static_string(vm.interns);
+    let name = attr.static_string(vm.symbols);
     if !matches!(
         name,
         Some(
@@ -59,7 +59,7 @@ pub(crate) fn call_unbound(
             args.drop_with(vm);
             return Err(ExcType::type_error(format!(
                 "Counter.{}() missing 1 required positional argument: 'self'",
-                attr.as_str(vm.interns)
+                attr.as_str(vm.symbols)
             )));
         }
     };
@@ -359,7 +359,7 @@ fn counter_merge_mapping<'h>(
 fn counter_kwarg_deltas(kwargs: KwargsValues) -> Vec<(Value, Value)> {
     match kwargs {
         KwargsValues::Empty => Vec::new(),
-        KwargsValues::Inline(kvs) => kvs.into_iter().map(|(id, v)| (Value::InternString(id), v)).collect(),
+        KwargsValues::Inline(kvs) => kvs.into_iter().map(|(id, v)| (Value::Symbol(id), v)).collect(),
         KwargsValues::Pairs(kvs) => kvs,
         KwargsValues::Dict(dict) => dict.into_iter().collect(),
     }

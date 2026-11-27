@@ -1,19 +1,18 @@
-//! String, bytes, and long integer interning for efficient storage of literals and identifiers.
+//! Permanent symbols and compiled literals.
 //!
-//! This module provides interners that store unique strings, bytes, and long integers in vectors
-//! and return indices (`StringId`, `BytesId`, `LongIntId`) for efficient storage and comparison.
-//! This avoids the overhead of cloning strings or using atomic reference counting.
+//! The symbol table deduplicates strings and stores bytes and long integer literals.
+//! Compiled code refers to these entries by [`SymbolId`], [`BytesId`], and [`LongIntId`].
 //!
 //! One table serves parsing, preparation, compilation and execution. Runtime paths
 //! can append static strings without invalidating existing borrows.
 //!
-//! StringIds are laid out as follows:
+//! Symbol ID ranges:
 //! * 0 to 127 - single character strings for all 128 ASCII characters
 //! * 128 - the empty string
-//! * 129 to 2³¹-1 - strings interned per executor
+//! * 129 to 2³¹-1 - executor-local symbols
 //! * 2³¹ and above - snippet filename identities, never Python string values
 //!
-//! Other static strings occupy ordinary executor-local slots. Their interner entries
+//! Other static strings occupy ordinary executor-local slots. Their symbol table entries
 //! retain a [`StaticStrings`] tag for dispatch, while snapshots serialize only
 //! their text so another build can load an unknown static string as owned text.
 
@@ -32,10 +31,10 @@ use std::{
 };
 
 use ahash::AHashMap;
-pub(crate) use compile::CompileInterns;
+pub(crate) use compile::CompileSymbols;
 use num_bigint::BigInt;
 use storage::Entries;
-use strum::{EnumString, FromRepr, IntoStaticStr};
+use strum::{EnumString, IntoStaticStr, VariantArray};
 
 use crate::{
     frozen::FrozenFunction,
@@ -44,20 +43,20 @@ use crate::{
     prepare::SnippetNames,
 };
 
-/// Index into the string interner's storage.
+/// Index into the symbol table's storage.
 ///
 /// Uses `u32` to save space (4 bytes vs 8 bytes for `usize`). This limits us to
-/// ~4 billion unique interns, which is more than sufficient.
+/// ~4 billion unique symbols, which is more than sufficient.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
-pub struct StringId(u32);
+pub struct SymbolId(u32);
 
-impl StringId {
+impl SymbolId {
     /// Executor-independent ID for the empty string, immediately after ASCII.
     pub const EMPTY: Self = Self(128);
 
-    /// Creates a StringId from a raw index value.
+    /// Creates a SymbolId from a raw index value.
     ///
-    /// Used by the bytecode VM to reconstruct StringIds from operands stored
+    /// Used by the bytecode VM to reconstruct SymbolIds from operands stored
     /// in bytecode. The caller is responsible for ensuring the index is valid.
     #[inline]
     pub fn from_index(index: u16) -> Self {
@@ -82,15 +81,15 @@ impl StringId {
         Self(raw)
     }
 
-    /// Returns the StringId for an ASCII byte.
+    /// Returns the SymbolId for an ASCII byte.
     #[must_use]
     pub const fn from_ascii(byte: u8) -> Self {
         Self(byte as u32)
     }
 }
 
-/// Executor-local intern IDs follow ASCII and the empty string.
-const INTERN_STRING_ID_OFFSET: usize = RESERVED_STRS.len();
+/// Executor-local symbol IDs follow ASCII and the empty string.
+const SYMBOL_ID_OFFSET: usize = RESERVED_STRS.len();
 
 /// Strings runtime paths can materialize without a corresponding source name.
 const CORE_STATIC_STRINGS: &[StaticStrings] = &[
@@ -132,19 +131,19 @@ pub(crate) static RESERVED_STRS: [&str; 129] = const {
 
 /// Static string values known at compile time.
 ///
-/// The `Ascii*` variants and [`Self::EmptyString`] pin the discriminants
-/// [`get_static_string`] reverses with [`FromRepr`](strum::FromRepr), so they
-/// stay in code-point order. Every variant after them is in alphabetical
+/// The first 129 variants match the reserved symbol IDs: ASCII in code-point
+/// order, followed by [`Self::EmptyString`]. [`get_static_string`] indexes
+/// the variant array by those IDs. Every variant after them is in alphabetical
 /// order by variant name, purely so that two branches adding a string rarely
-/// touch the same line; nothing reads those discriminants. Interner entries
+/// touch the same line; nothing reads those discriminants. Symbol entries
 /// serialize as text and recover a tag only when the loading build recognizes
 /// that text, so reordering them does not invalidate a dump.
 ///
-/// `use_phf` makes the derived `FromStr` (run for every string interned, compiled
+/// `use_phf` makes the derived `FromStr` (used to classify symbols created during compilation
 /// or loaded from a dump) a compile-time perfect-hash lookup. strum's default is
 /// a `match` that LLVM turns into a chain of comparisons per text length.
 #[repr(u16)]
-#[derive(Debug, Clone, Copy, EnumString, FromRepr, IntoStaticStr, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, EnumString, IntoStaticStr, PartialEq, Eq, Hash, VariantArray)]
 #[strum(serialize_all = "snake_case", use_phf)]
 pub enum StaticStrings {
     /// ASCII character 0x00.
@@ -531,7 +530,7 @@ pub enum StaticStrings {
     /// ASCII character 0x7f.
     #[strum(serialize = "\x7f")]
     AsciiDelete = 127,
-    /// The empty string, addressed by [`StringId::EMPTY`] immediately after ASCII.
+    /// The empty string, addressed by [`SymbolId::EMPTY`] immediately after ASCII.
     #[strum(serialize = "")]
     EmptyString = 128,
     /// `binascii.a2b_base64()` function.
@@ -1365,7 +1364,7 @@ pub enum StaticStrings {
     Elibmax,
     #[strum(serialize = "ELIBSCN")]
     Elibscn,
-    /// `repr()`/`str()` text of `Ellipsis`, interned so rendering allocates nothing.
+    /// `repr()`/`str()` text of `Ellipsis`, stored as a symbol so rendering allocates nothing.
     #[strum(serialize = "Ellipsis")]
     EllipsisRepr,
     #[strum(serialize = "ELNRNG")]
@@ -1636,7 +1635,7 @@ pub enum StaticStrings {
     Fabs,
     /// `math.factorial()` function.
     Factorial,
-    /// `repr()`/`str()` text of `False`, interned so rendering allocates nothing.
+    /// `repr()`/`str()` text of `False`, stored as a symbol so rendering allocates nothing.
     #[strum(serialize = "False")]
     FalseRepr,
     /// `fanout` parameter of `hashlib.blake2b()`.
@@ -2386,7 +2385,7 @@ pub enum StaticStrings {
     NodeDepth,
     /// `node_offset` parameter of `hashlib.blake2b()`.
     NodeOffset,
-    /// `repr()`/`str()` text of `None`, interned so rendering allocates nothing.
+    /// `repr()`/`str()` text of `None`, stored as a symbol so rendering allocates nothing.
     #[strum(serialize = "None")]
     NoneRepr,
     /// `unicodedata.normalize()` function.
@@ -3118,7 +3117,7 @@ pub enum StaticStrings {
     Traps,
     /// `random.triangular()` function.
     Triangular,
-    /// `repr()`/`str()` text of `True`, interned so rendering allocates nothing.
+    /// `repr()`/`str()` text of `True`, stored as a symbol so rendering allocates nothing.
     #[strum(serialize = "True")]
     TrueRepr,
     /// `math.trunc()` function.
@@ -3152,7 +3151,7 @@ pub enum StaticStrings {
     /// `datetime.tzinfo` attribute and constructor kwarg.
     Tzinfo,
     /// `tzname()` method of `time`, `datetime` and `timezone`. (`dst()` reuses
-    /// the `Dst` variant already interned for the `os` kwarg of the same name.)
+    /// the `Dst` variant already used as a symbol for the `os` kwarg of the same name.)
     Tzname,
     /// `math.ulp()` function.
     Ulp,
@@ -3314,28 +3313,28 @@ pub enum StaticStrings {
     ZipLongest,
 }
 
-/// One immutable interned string with directly accessible dispatch metadata.
+/// One immutable symbol with directly accessible dispatch metadata.
 /// Snapshots store only text; loading reconstructs the tag, character length and cached hash.
 #[derive(Debug, Clone)]
-struct InternedString {
+struct Symbol {
     /// Runtime classification, independent of the string's executor-local ID.
     static_tag: Option<StaticStrings>,
     /// Cached code-point count; empty strings and counts above `u32::MAX` are recounted.
     char_len: Option<NonZeroU32>,
     /// Text and its eagerly computed Python hash.
-    text: WithHash<InternedText>,
+    text: WithHash<SymbolText>,
 }
 
-/// Ownership of interned text, independent of its dispatch metadata.
+/// Ownership of symbol text, independent of its dispatch metadata.
 #[derive(Debug, Clone)]
-enum InternedText {
+enum SymbolText {
     /// Text recognized by this build, requiring no owned allocation.
     Static(&'static str),
     /// Source or snapshot text shared with its reverse lookup key.
     Owned(Arc<str>),
 }
 
-impl AsRef<str> for InternedText {
+impl AsRef<str> for SymbolText {
     fn as_ref(&self) -> &str {
         match self {
             Self::Static(text) => text,
@@ -3344,7 +3343,7 @@ impl AsRef<str> for InternedText {
     }
 }
 
-impl InternedString {
+impl Symbol {
     /// Fits the count beside the static tag without enlarging each storage slot.
     fn count_chars(text: &str) -> Option<NonZeroU32> {
         let char_len = if text.is_ascii() {
@@ -3360,7 +3359,7 @@ impl InternedString {
         Self {
             static_tag: Some(value),
             char_len: Self::count_chars(value.into()),
-            text: WithHash::for_str(InternedText::Static(value.into())),
+            text: WithHash::for_str(SymbolText::Static(value.into())),
         }
     }
 
@@ -3369,19 +3368,19 @@ impl InternedString {
         Self {
             static_tag: None,
             char_len: Self::count_chars(&value),
-            text: WithHash::for_str(InternedText::Owned(value)),
+            text: WithHash::for_str(SymbolText::Owned(value)),
         }
     }
 
     /// Returns the shared lookup key for a non-static entry.
     fn owned_text(&self) -> &Arc<str> {
-        let InternedText::Owned(text) = self.text.value() else {
+        let SymbolText::Owned(text) = self.text.value() else {
             unreachable!("static entries are indexed by tag");
         };
         text
     }
 
-    /// Returns the interned text.
+    /// Returns the symbol text.
     fn as_str(&self) -> &str {
         self.text.value().as_ref()
     }
@@ -3406,13 +3405,13 @@ impl InternedString {
     }
 }
 
-impl serde::Serialize for InternedString {
+impl serde::Serialize for Symbol {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serde::Serialize::serialize(self.as_str(), serializer)
     }
 }
 
-impl<'de> serde::Deserialize<'de> for InternedString {
+impl<'de> serde::Deserialize<'de> for Symbol {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         // Borrow the CBOR text until it resolves to a static tag or its final allocation.
         #[derive(serde::Deserialize)]
@@ -3427,9 +3426,9 @@ impl<'de> serde::Deserialize<'de> for InternedString {
     }
 }
 
-/// Index into the bytes interner's storage.
+/// Index into the table of bytes literals.
 ///
-/// Separate from `StringId` to distinguish string vs bytes literals at the type level.
+/// Separate from `SymbolId` to distinguish string vs bytes literals at the type level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct BytesId(u32);
 
@@ -3441,10 +3440,10 @@ impl BytesId {
     }
 }
 
-/// Index into the long integer interner's storage.
+/// Index into the table of long integer literals.
 ///
 /// Used for integer literals that exceed i64 range. The actual `BigInt` values
-/// are stored in the `Interns` table and looked up by index at runtime.
+/// are stored in the symbol table and looked up by index at runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct LongIntId(u32);
 
@@ -3477,94 +3476,87 @@ impl FunctionId {
     }
 }
 
-/// Prehashed core strings reused when constructing independent interners.
-static CORE_ENTRIES: LazyLock<Vec<InternedString>> = LazyLock::new(|| {
-    CORE_STATIC_STRINGS
-        .iter()
-        .copied()
-        .map(InternedString::static_string)
-        .collect()
-});
+/// Prehashed core strings reused when constructing independent symbol tables.
+static CORE_ENTRIES: LazyLock<Vec<Symbol>> =
+    LazyLock::new(|| CORE_STATIC_STRINGS.iter().copied().map(Symbol::static_string).collect());
 
-/// Interns a static tag into an append-only executor-local table.
-fn intern_static(
-    static_string_ids: &RefCell<AHashMap<StaticStrings, StringId>>,
-    strings: &Entries<InternedString>,
+/// Registers a static tag into an append-only executor-local table.
+fn get_or_insert_static_symbol(
+    static_symbol_ids: &RefCell<AHashMap<StaticStrings, SymbolId>>,
+    strings: &Entries<Symbol>,
     value: StaticStrings,
-) -> StringId {
+) -> SymbolId {
     let text: &'static str = value.into();
     if text.is_empty() {
-        StringId::EMPTY
+        SymbolId::EMPTY
     } else if text.len() == 1 {
-        StringId::from_ascii(text.as_bytes()[0])
+        SymbolId::from_ascii(text.as_bytes()[0])
     } else {
-        let existing = static_string_ids.borrow().get(&value).copied();
+        let existing = static_symbol_ids.borrow().get(&value).copied();
         if let Some(id) = existing {
             id
         } else {
-            let id = next_string_id(strings.len());
-            strings.push(InternedString::static_string(value));
-            static_string_ids.borrow_mut().insert(value, id);
+            let id = next_symbol_id(strings.len());
+            strings.push(Symbol::static_string(value));
+            static_symbol_ids.borrow_mut().insert(value, id);
             id
         }
     }
 }
 
 /// Returns the next dense executor-local string ID.
-fn next_string_id(strings_len: usize) -> StringId {
-    let index = strings_len + INTERN_STRING_ID_OFFSET;
-    assert!(index < SOURCE_ID_BASE, "StringId overflow");
-    StringId(index.try_into().expect("StringId overflow"))
+fn next_symbol_id(strings_len: usize) -> SymbolId {
+    let index = strings_len + SYMBOL_ID_OFFSET;
+    assert!(index < SOURCE_ID_BASE, "SymbolId overflow");
+    SymbolId(index.try_into().expect("SymbolId overflow"))
 }
 
-/// Reverse of [`get_str`]: the `StringId` for `s`, or `None` if never interned.
-fn get_string_id_by_name(
-    string_map: &AHashMap<Arc<str>, StringId>,
-    static_string_ids: &RefCell<AHashMap<StaticStrings, StringId>>,
+/// Reverse of [`get_str`]: the `SymbolId` for `s`, or `None` if it has no symbol.
+fn get_symbol_id_by_name(
+    string_map: &AHashMap<Arc<str>, SymbolId>,
+    static_symbol_ids: &RefCell<AHashMap<StaticStrings, SymbolId>>,
     s: &str,
-) -> Option<StringId> {
+) -> Option<SymbolId> {
     if s.is_empty() {
-        Some(StringId::EMPTY)
+        Some(SymbolId::EMPTY)
     } else if s.len() == 1 {
-        Some(StringId::from_ascii(s.as_bytes()[0]))
+        Some(SymbolId::from_ascii(s.as_bytes()[0]))
     } else if let Ok(value) = StaticStrings::from_str(s) {
-        static_string_ids.borrow().get(&value).copied()
+        static_symbol_ids.borrow().get(&value).copied()
     } else {
         string_map.get(s).copied()
     }
 }
 
-/// Looks up a string by its `StringId`.
+/// Looks up a string by its `SymbolId`.
 ///
 /// # Panics
 ///
-/// Panics if the ID is neither reserved nor a slot in this interner.
-fn get_str(strings: &Entries<InternedString>, id: StringId) -> &str {
+/// Panics if the ID is neither reserved nor a slot in this symbol table.
+fn get_str(strings: &Entries<Symbol>, id: SymbolId) -> &str {
     if let Some(text) = RESERVED_STRS.get(id.index()) {
         text
     } else {
-        strings[id.index() - INTERN_STRING_ID_OFFSET].as_str()
+        strings[id.index() - SYMBOL_ID_OFFSET].as_str()
     }
 }
 
 /// Returns the static tag stored at `id`, if any.
 #[inline]
-fn get_static_string(strings: &Entries<InternedString>, id: StringId) -> Option<StaticStrings> {
-    if id == StringId::EMPTY {
-        Some(StaticStrings::EmptyString)
-    } else if id.index() < INTERN_STRING_ID_OFFSET {
-        StaticStrings::from_repr(u16::try_from(id.index()).expect("ASCII ID fits u16"))
+fn get_static_string(strings: &Entries<Symbol>, id: SymbolId) -> Option<StaticStrings> {
+    if id.index() < SYMBOL_ID_OFFSET {
+        Some(StaticStrings::VARIANTS[id.index()])
     } else {
-        strings[id.index() - INTERN_STRING_ID_OFFSET].static_tag
+        strings[id.index() - SYMBOL_ID_OFFSET].static_tag
     }
 }
 
 /// Committed strings, literals, functions and snippet sources.
 /// Entries never move or disappear; existing sessions publish private compilation overlays on success.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(try_from = "InternsWire")]
-pub(crate) struct Interns {
-    strings: Entries<InternedString>,
+#[serde(try_from = "SymbolTableWire")]
+pub(crate) struct SymbolTable {
+    strings: Entries<Symbol>,
     bytes: Entries<WithHash<Vec<u8>>>,
     long_ints: Entries<WithHash<BigInt>>,
     /// Boxes keep a mostly empty storage page from reserving hundreds of function bodies.
@@ -3576,9 +3568,9 @@ pub(crate) struct Interns {
     #[serde(default)]
     file_sources: Entries<FileSource>,
     #[serde(skip)]
-    string_id_by_name: RefCell<AHashMap<Arc<str>, StringId>>,
+    symbol_id_by_name: RefCell<AHashMap<Arc<str>, SymbolId>>,
     #[serde(skip)]
-    static_string_ids: RefCell<AHashMap<StaticStrings, StringId>>,
+    static_symbol_ids: RefCell<AHashMap<StaticStrings, SymbolId>>,
     /// Prevents runtime insertion or a second compiler from consuming provisional IDs.
     #[serde(skip)]
     compiling: Cell<bool>,
@@ -3587,7 +3579,7 @@ pub(crate) struct Interns {
     hint_snippets: RefCell<AHashMap<(SnippetNames, Arc<str>), FunctionId>>,
 }
 
-impl Default for Interns {
+impl Default for SymbolTable {
     fn default() -> Self {
         Self::new("")
     }
@@ -3595,8 +3587,8 @@ impl Default for Interns {
 
 /// Serialized tables without the derived lookup maps or compilation lock.
 #[derive(serde::Deserialize)]
-struct InternsWire {
-    strings: Entries<InternedString>,
+struct SymbolTableWire {
+    strings: Entries<Symbol>,
     bytes: Entries<WithHash<Vec<u8>>>,
     long_ints: Entries<WithHash<BigInt>>,
     functions: Entries<Box<Function>>,
@@ -3607,27 +3599,27 @@ struct InternsWire {
     file_sources: Entries<FileSource>,
 }
 
-impl TryFrom<InternsWire> for Interns {
+impl TryFrom<SymbolTableWire> for SymbolTable {
     type Error = String;
 
-    fn try_from(wire: InternsWire) -> Result<Self, Self::Error> {
+    fn try_from(wire: SymbolTableWire) -> Result<Self, Self::Error> {
         let strings = &wire.strings;
         let static_count = strings.iter().filter(|entry| entry.static_value().is_some()).count();
-        let mut string_id_by_name = AHashMap::with_capacity(strings.len() - static_count);
-        let mut static_string_ids = AHashMap::with_capacity(static_count);
+        let mut symbol_id_by_name = AHashMap::with_capacity(strings.len() - static_count);
+        let mut static_symbol_ids = AHashMap::with_capacity(static_count);
 
         for (index, entry) in strings.iter().enumerate() {
             let text = entry.as_str();
-            let invalid_entry = || format!("duplicate or reserved interned string {text:?}");
+            let invalid_entry = || format!("duplicate or reserved symbol {text:?}");
             if text.len() <= 1 {
                 return Err(invalid_entry());
             }
 
-            let id = next_string_id(index);
+            let id = next_symbol_id(index);
             // The decoded tag partitions the text, so duplicates hit the same map.
             let previous = match entry.static_value() {
-                Some(value) => static_string_ids.insert(value, id),
-                None => string_id_by_name.insert(Arc::clone(entry.owned_text()), id),
+                Some(value) => static_symbol_ids.insert(value, id),
+                None => symbol_id_by_name.insert(Arc::clone(entry.owned_text()), id),
             };
             if previous.is_some() {
                 return Err(invalid_entry());
@@ -3642,8 +3634,8 @@ impl TryFrom<InternsWire> for Interns {
             frozen_functions: wire.frozen_functions,
             eval_sources: wire.eval_sources,
             file_sources: wire.file_sources,
-            string_id_by_name: RefCell::new(string_id_by_name),
-            static_string_ids: RefCell::new(static_string_ids),
+            symbol_id_by_name: RefCell::new(symbol_id_by_name),
+            static_symbol_ids: RefCell::new(static_symbol_ids),
             compiling: Cell::new(false),
             hint_snippets: RefCell::default(),
         })
@@ -3664,8 +3656,8 @@ pub(crate) struct FileSource {
     source: Arc<str>,
 }
 
-impl Interns {
-    /// Moves session ownership without initializing another interner.
+impl SymbolTable {
+    /// Moves session ownership without initializing another symbol table.
     pub(crate) fn take(&mut self) -> Self {
         mem::replace(self, Self::placeholder())
     }
@@ -3680,8 +3672,8 @@ impl Interns {
             frozen_functions: RefCell::default(),
             eval_sources: Entries::default(),
             file_sources: Entries::default(),
-            string_id_by_name: RefCell::default(),
-            static_string_ids: RefCell::default(),
+            symbol_id_by_name: RefCell::default(),
+            static_symbol_ids: RefCell::default(),
             compiling: Cell::new(false),
             hint_snippets: RefCell::default(),
         }
@@ -3690,7 +3682,7 @@ impl Interns {
     /// Initializes the core static strings; other entries are appended on demand.
     pub fn new(code: &str) -> Self {
         let capacity = code.bytes().filter(|&b| b == b'"' || b == b'\'').count() >> 1;
-        let interns = Self {
+        let symbols = Self {
             strings: Entries::with_capacity(capacity + CORE_STATIC_STRINGS.len()),
             bytes: Entries::default(),
             long_ints: Entries::default(),
@@ -3698,53 +3690,53 @@ impl Interns {
             frozen_functions: RefCell::default(),
             eval_sources: Entries::default(),
             file_sources: Entries::default(),
-            string_id_by_name: RefCell::new(AHashMap::with_capacity(capacity)),
-            static_string_ids: RefCell::new(AHashMap::with_capacity(CORE_STATIC_STRINGS.len())),
+            symbol_id_by_name: RefCell::new(AHashMap::with_capacity(capacity)),
+            static_symbol_ids: RefCell::new(AHashMap::with_capacity(CORE_STATIC_STRINGS.len())),
             compiling: Cell::new(false),
             hint_snippets: RefCell::default(),
         };
         for entry in CORE_ENTRIES.iter() {
             let value = entry.static_value().expect("core entries are static");
-            let id = next_string_id(interns.strings.len());
-            interns.strings.push(entry.clone());
-            interns.static_string_ids.borrow_mut().insert(value, id);
+            let id = next_symbol_id(symbols.strings.len());
+            symbols.strings.push(entry.clone());
+            symbols.static_symbol_ids.borrow_mut().insert(value, id);
         }
-        interns
+        symbols
     }
 
-    /// Interns runtime static text without invalidating existing string borrows.
-    pub(crate) fn intern_static(&self, value: StaticStrings) -> StringId {
-        assert!(!self.compiling.get(), "runtime interning during compilation");
-        intern_static(&self.static_string_ids, &self.strings, value)
+    /// Registers a static symbol without invalidating existing string borrows.
+    pub(crate) fn get_or_insert_static_symbol(&self, value: StaticStrings) -> SymbolId {
+        assert!(!self.compiling.get(), "runtime symbol insertion during compilation");
+        get_or_insert_static_symbol(&self.static_symbol_ids, &self.strings, value)
     }
 
-    /// Interns a name only known at runtime, reusing its ID if already interned.
+    /// Registers a name only known at runtime, reusing an existing symbol ID.
     ///
     /// For `from m import *` binding a module global slot, which code compiled
     /// later must find by this same ID. Existing string borrows stay valid.
-    pub(crate) fn intern_runtime(&self, text: &str) -> StringId {
-        assert!(!self.compiling.get(), "runtime interning during compilation");
-        if let Some(id) = self.get_string_id_by_name(text) {
+    pub(crate) fn get_or_insert_symbol(&self, text: &str) -> SymbolId {
+        assert!(!self.compiling.get(), "runtime symbol insertion during compilation");
+        if let Some(id) = self.get_symbol_id_by_name(text) {
             id
         } else if let Ok(value) = text.parse::<StaticStrings>() {
-            intern_static(&self.static_string_ids, &self.strings, value)
+            get_or_insert_static_symbol(&self.static_symbol_ids, &self.strings, value)
         } else {
-            let id = next_string_id(self.strings.len());
+            let id = next_symbol_id(self.strings.len());
             let text: Arc<str> = Arc::from(text);
-            self.strings.push(InternedString::owned(Arc::clone(&text)));
-            self.string_id_by_name.borrow_mut().insert(text, id);
+            self.strings.push(Symbol::owned(Arc::clone(&text)));
+            self.symbol_id_by_name.borrow_mut().insert(text, id);
             id
         }
     }
 
     /// Looks up a Python string; filename identities use `get_filename` instead.
     #[inline]
-    pub fn get_str(&self, id: StringId) -> &str {
+    pub fn get_str(&self, id: SymbolId) -> &str {
         get_str(&self.strings, id)
     }
 
     /// Resolves a traceback filename: a snippet displays as `<string>`, an imported file as its path.
-    pub(crate) fn get_filename(&self, id: StringId) -> &str {
+    pub(crate) fn get_filename(&self, id: SymbolId) -> &str {
         if id.index() >= FILE_SOURCE_ID_BASE {
             &self.file_sources[id.index() - FILE_SOURCE_ID_BASE].path
         } else if id.index() >= SOURCE_ID_BASE {
@@ -3759,7 +3751,7 @@ impl Interns {
     }
 
     /// Returns dispatch metadata independent of the executor-local ID.
-    pub(crate) fn static_string(&self, id: StringId) -> Option<StaticStrings> {
+    pub(crate) fn static_string(&self, id: SymbolId) -> Option<StaticStrings> {
         get_static_string(&self.strings, id)
     }
 
@@ -3782,7 +3774,7 @@ impl Interns {
     }
 
     /// Looks up snippet source by its filename-only ID, never by the displayed text.
-    pub(crate) fn eval_source(&self, filename: StringId) -> Option<&str> {
+    pub(crate) fn eval_source(&self, filename: SymbolId) -> Option<&str> {
         let index = filename.index();
         (index < FILE_SOURCE_ID_BASE)
             .then(|| index.checked_sub(SOURCE_ID_BASE))
@@ -3792,9 +3784,9 @@ impl Interns {
     }
 
     /// Every snippet source with its filename-only ID, for a dump upgrade that rewrites positions.
-    pub(crate) fn eval_sources(&self) -> impl Iterator<Item = (StringId, &str)> {
+    pub(crate) fn eval_sources(&self) -> impl Iterator<Item = (SymbolId, &str)> {
         self.eval_sources.iter().enumerate().map(|(index, source)| {
-            let id = StringId((SOURCE_ID_BASE + index).try_into().expect("source ID overflow"));
+            let id = SymbolId((SOURCE_ID_BASE + index).try_into().expect("source ID overflow"));
             (id, source.as_ref())
         })
     }
@@ -3806,7 +3798,7 @@ impl Interns {
     }
 
     /// Looks up an imported file's source by its filename-only ID.
-    pub(crate) fn file_source(&self, filename: StringId) -> Option<&str> {
+    pub(crate) fn file_source(&self, filename: SymbolId) -> Option<&str> {
         filename
             .index()
             .checked_sub(FILE_SOURCE_ID_BASE)
@@ -3816,27 +3808,27 @@ impl Interns {
 
     /// Compares character and byte lengths, using the cached count when available.
     #[inline]
-    pub fn str_is_ascii(&self, id: StringId) -> bool {
+    pub fn str_is_ascii(&self, id: SymbolId) -> bool {
         self.str_char_len(id) == self.get_str(id).len()
     }
 
     /// Returns the Unicode code-point count, recounting when it does not fit the cache.
     #[inline]
-    pub fn str_char_len(&self, id: StringId) -> usize {
+    pub fn str_char_len(&self, id: SymbolId) -> usize {
         if id.index() < RESERVED_STRS.len() {
             RESERVED_STRS[id.index()].len()
         } else {
-            self.strings[id.index() - INTERN_STRING_ID_OFFSET].char_len()
+            self.strings[id.index() - SYMBOL_ID_OFFSET].char_len()
         }
     }
 
     /// Returns the same hash as an equal heap string.
     #[inline]
-    pub fn str_hash(&self, id: StringId) -> HashValue {
+    pub fn str_hash(&self, id: SymbolId) -> HashValue {
         if id.index() < RESERVED_STRS.len() {
             RESERVED_STRING_HASHES.get_or_compute(id.index(), || hash_python_str(RESERVED_STRS[id.index()]))
         } else {
-            self.strings[id.index() - INTERN_STRING_ID_OFFSET].hash()
+            self.strings[id.index() - SYMBOL_ID_OFFSET].hash()
         }
     }
 
@@ -3877,9 +3869,9 @@ impl Interns {
         self.frozen_functions.borrow().values().any(|&function| function == id)
     }
 
-    /// Finds canonical text already interned, excluding snippet filename IDs.
-    pub fn get_string_id_by_name(&self, s: &str) -> Option<StringId> {
-        get_string_id_by_name(&self.string_id_by_name.borrow(), &self.static_string_ids, s)
+    /// Finds canonical text already in the symbol table, excluding snippet filename IDs.
+    pub fn get_symbol_id_by_name(&self, s: &str) -> Option<SymbolId> {
+        get_symbol_id_by_name(&self.symbol_id_by_name.borrow(), &self.static_symbol_ids, s)
     }
 }
 

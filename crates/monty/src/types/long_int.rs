@@ -32,8 +32,8 @@ use crate::{
     hash::{HashValue, hash_python_long_int},
     heap::{DropWithContext, Heap, HeapObjectRead},
     identity::Identity,
-    intern::{LongIntId, StaticStrings},
     resource_checks::{check_div_size, check_lshift_size, check_mult_size, check_pow_size},
+    symbols::{LongIntId, StaticStrings},
     types::{
         LazyHeapSet, PyTrait, Type, TypeRef,
         numeric::{round_bigint, round_digits, round_int},
@@ -111,7 +111,7 @@ impl<'h> PyInt<'h> {
     pub(crate) fn write_decimal(&self, out: &mut impl Write, vm: &VM<'h>) -> RunResult<()> {
         match self {
             Self::Small(value) => Ok(out.write_str(itoa::Buffer::new().format(*value))?),
-            Self::Interned(id) => bigint_repr_fmt(vm.interns.get_long_int(*id), out),
+            Self::Interned(id) => bigint_repr_fmt(vm.symbols.get_long_int(*id), out),
             Self::Heap(value) => bigint_repr_fmt(value.get(vm.heap).inner(), out),
         }
     }
@@ -176,7 +176,7 @@ impl<'h> PyInt<'h> {
     pub(crate) fn with_value<R>(&self, vm: &VM<'h>, small: impl FnOnce(i64) -> R, big: impl FnOnce(&BigInt) -> R) -> R {
         match self {
             Self::Small(value) => small(*value),
-            Self::Interned(id) => big(vm.interns.get_long_int(*id)),
+            Self::Interned(id) => big(vm.symbols.get_long_int(*id)),
             Self::Heap(value) => big(value.get(vm.heap).inner()),
         }
     }
@@ -239,7 +239,7 @@ macro_rules! int_binary {
         fn $method(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
             match self {
                 Self::Small(value) => IntArithmetic::$operation(value, other, vm, $reflected),
-                Self::Interned(id) => IntArithmetic::$operation(vm.interns.get_long_int(*id), other, vm, $reflected),
+                Self::Interned(id) => IntArithmetic::$operation(vm.symbols.get_long_int(*id), other, vm, $reflected),
                 Self::Heap(value) => value.$method(other, vm),
             }
         }
@@ -249,7 +249,7 @@ macro_rules! int_binary {
         fn $method(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
             match self {
                 Self::Small(value) => Ok(value.bitwise(other, vm, |a, b| a $operator b, |a, b| a $operator b)),
-                Self::Interned(id) => Ok(vm.interns.get_long_int(*id).bitwise(other, vm, |a, b| a $operator b, |a, b| a $operator b)),
+                Self::Interned(id) => Ok(vm.symbols.get_long_int(*id).bitwise(other, vm, |a, b| a $operator b, |a, b| a $operator b)),
                 Self::Heap(value) => value.$method(other, vm),
             }
         }
@@ -274,7 +274,7 @@ impl<'h> PyTrait<'h> for PyInt<'h> {
     fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         match self {
             Self::Small(value) => Value::Int(*value).py_hash(vm),
-            Self::Interned(id) => Ok(Some(vm.interns.long_int_hash(*id))),
+            Self::Interned(id) => Ok(Some(vm.symbols.long_int_hash(*id))),
             Self::Heap(value) => value.py_hash(vm),
         }
     }
@@ -381,7 +381,7 @@ impl<'h> PyTrait<'h> for PyInt<'h> {
                 Some(value) => Value::Int(value),
                 None => wide_i128_into_value(-i128::from(*value), vm.heap),
             })),
-            Self::Interned(id) => Ok(Some(LongInt::new(-vm.interns.get_long_int(*id)).into_value(vm.heap))),
+            Self::Interned(id) => Ok(Some(LongInt::new(-vm.symbols.get_long_int(*id)).into_value(vm.heap))),
             Self::Heap(value) => value.py_neg_impl(vm),
         }
     }
@@ -404,8 +404,8 @@ impl<'h> PyTrait<'h> for PyInt<'h> {
                 None => IntArithmetic::pow(value, other, vm, false),
             },
             Self::Interned(id) => match modulus {
-                Some(modulus) => modular_pow(vm.interns.get_long_int(*id), other, modulus, vm),
-                None => IntArithmetic::pow(vm.interns.get_long_int(*id), other, vm, false),
+                Some(modulus) => modular_pow(vm.symbols.get_long_int(*id), other, modulus, vm),
+                None => IntArithmetic::pow(vm.symbols.get_long_int(*id), other, vm, false),
             },
             Self::Heap(value) => value.py_pow_impl(other, modulus, vm),
         }
@@ -416,7 +416,7 @@ impl<'h> PyTrait<'h> for PyInt<'h> {
             Self::Heap(value) => value.py_rpow_impl(other, modulus, vm),
             _ if modulus.is_some() => Ok(None),
             Self::Small(value) => IntArithmetic::pow(value, other, vm, true),
-            Self::Interned(id) => IntArithmetic::pow(vm.interns.get_long_int(*id), other, vm, true),
+            Self::Interned(id) => IntArithmetic::pow(vm.symbols.get_long_int(*id), other, vm, true),
         }
     }
 
@@ -451,7 +451,7 @@ impl<'h> PyTrait<'h> for PyInt<'h> {
                     None => wide_i128_into_value(i128::from(*lhs) * i128::from(rhs), vm.heap),
                 }))
             }
-            Self::Interned(id) => multiply_bigint(vm.interns.get_long_int(*id), other, vm),
+            Self::Interned(id) => multiply_bigint(vm.symbols.get_long_int(*id), other, vm),
             Self::Heap(value) => value.py_mul_impl(other, vm),
         }
     }
@@ -459,7 +459,7 @@ impl<'h> PyTrait<'h> for PyInt<'h> {
     fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         match self {
             Self::Heap(value) => value.py_rmul_impl(other, vm),
-            Self::Interned(id) => multiply_bigint(vm.interns.get_long_int(*id), other, vm),
+            Self::Interned(id) => multiply_bigint(vm.symbols.get_long_int(*id), other, vm),
             Self::Small(_) => Ok(None),
         }
     }
@@ -479,13 +479,13 @@ impl<'h> PyTrait<'h> for PyInt<'h> {
                     None => wide_i128_into_value(i128::from(*lhs) + i128::from(rhs), vm.heap),
                 }))
             }
-            Self::Interned(id) => add_bigint(vm.interns.get_long_int(*id), other, vm),
+            Self::Interned(id) => add_bigint(vm.symbols.get_long_int(*id), other, vm),
             Self::Heap(value) => value.py_add_impl(other, vm),
         }
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        match attr.static_string(vm.interns) {
+        match attr.static_string(vm.symbols) {
             Some(StaticStrings::BitLength) => {
                 args.check_zero_args("int.bit_length", vm.heap)?;
                 Ok(CallResult::Value(self.bit_length(vm)))
@@ -504,7 +504,7 @@ impl<'h> PyTrait<'h> for PyInt<'h> {
             }
             _ => {
                 args.drop_with(vm.heap);
-                Err(ExcType::attribute_error("int", attr.as_str(vm.interns)))
+                Err(ExcType::attribute_error("int", attr.as_str(vm.symbols)))
             }
         }
     }
@@ -1032,7 +1032,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        match attr.static_string(vm.interns) {
+        match attr.static_string(vm.symbols) {
             Some(StaticStrings::BitLength) => {
                 args.check_zero_args("int.bit_length", vm.heap)?;
                 let bits = self.get(vm.heap).bits();
@@ -1053,7 +1053,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
             }
             _ => {
                 args.drop_with(vm.heap);
-                Err(ExcType::attribute_error("int", attr.as_str(vm.interns)))
+                Err(ExcType::attribute_error("int", attr.as_str(vm.symbols)))
             }
         }
     }

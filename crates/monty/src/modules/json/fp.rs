@@ -13,7 +13,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, HeapId, HeapReadOutput},
-    intern::StaticStrings,
+    symbols::StaticStrings,
     types::{io::is_memory_stream, str::allocate_string},
     value::{EitherStr, Value},
 };
@@ -90,7 +90,7 @@ impl FileTarget {
 
     /// `stream.<method>(*args)` on a `StringIO` / `BytesIO`, which always completes.
     pub(super) fn call_stream(id: HeapId, method: StaticStrings, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-        let name = vm.interns.intern_static(method);
+        let name = vm.symbols.get_or_insert_static_symbol(method);
         // `fp` is borrowed, so the call takes a reference of its own.
         vm.heap.inc_ref(id);
         vm.call_attr(Value::Ref(id), name, args)?.require_synchronous(vm)
@@ -108,7 +108,7 @@ impl FileTarget {
         {
             Ok(Self::Stream(*id))
         } else {
-            let attr = EitherStr::Interned(vm.interns.intern_static(method));
+            let attr = EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(method));
             match fp.py_getattr(&attr, vm)? {
                 CallResult::Value(callable) => Ok(Self::Method(callable)),
                 // A host object's attribute would need a round trip the module
@@ -117,7 +117,7 @@ impl FileTarget {
                     suspended.drop_with(vm);
                     Err(SimpleException::new_msg(
                         ExcType::NotImplementedError,
-                        format!("json: `{}` of a host object is not supported", attr.as_str(vm.interns)),
+                        format!("json: `{}` of a host object is not supported", attr.as_str(vm.symbols)),
                     )
                     .into())
                 }

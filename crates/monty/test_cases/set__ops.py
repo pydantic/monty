@@ -182,7 +182,7 @@ assert {*'aab'} == {'a', 'b'}
 # Heap-allocated set: covers the HeapData::Set arm in set_extend
 inner_set = {1, 2, 3}
 assert {*inner_set} == {1, 2, 3}
-# Heap-allocated Str (result of concat, not interned): covers HeapData::Str in set_extend
+# Heap-allocated Str (result of concat, not symbol-backed): covers HeapData::Str in set_extend
 hs = 'hel' + 'lo'
 assert {*hs} == {'h', 'e', 'l', 'o'}
 

@@ -436,7 +436,7 @@ fn json_separator_to_string(value: &Value, role: &str, vm: &VM<'_>) -> RunResult
 ///
 /// Groups the per-call state that every recursive level needs — the JSON output
 /// buffer, the encoder configuration, the `default` callable, the cycle-detection
-/// stack, and the VM (heap + interns) — so the recursive methods can be invoked
+/// stack, and the VM (heap + symbols) — so the recursive methods can be invoked
 /// as `encoder.serialize_value(value, depth)` rather than threading six separate
 /// parameters through every signature.
 ///

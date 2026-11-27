@@ -42,9 +42,9 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{ContainsHeap, DropWithContext, Heap},
-    intern::StaticStrings,
     modules::ModuleFunctions,
     resource_checks::check_estimated_size,
+    symbols::StaticStrings,
     types::{
         BoundedCompileError, Module, RePattern, Type,
         re_pattern::{extract_count, extract_maxsplit, translate_replacement},
@@ -96,7 +96,7 @@ pub(crate) enum ReFunctions {
 /// Creates the `re` module: every [`ReFunctions`] variant plus the flag
 /// constants.
 pub fn create_module(vm: &mut VM<'_>) -> Module {
-    let mut module = Module::new(StaticStrings::Re, vm.interns);
+    let mut module = Module::new(StaticStrings::Re, vm.symbols);
 
     // Functions
     module.set_attr(
@@ -333,8 +333,8 @@ fn call_split(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// Argument shape for `re.sub(pattern, repl, string, count=0, flags=0)`.
 ///
 /// `pattern` / `string` need `static_string =` overrides because the `Pattern` /
-/// `String` interner entries are taken (by the `re.Pattern` class name and
-/// `match.string`); the interned text is still `"pattern"` / `"string"`.
+/// `String` symbol table entries are taken (by the `re.Pattern` class name and
+/// `match.string`); the symbol text is still `"pattern"` / `"string"`.
 ///
 /// Every field is a raw `Value`: CPython's `def` binding never type-checks, so all
 /// coercion happens in the body, in CPython's error order.
@@ -500,7 +500,7 @@ impl PatternArg {
     /// `Compiled` variant transfers ownership in rather than dropping).
     fn extract(value: Value, vm: &mut VM<'_>) -> RunResult<Self> {
         if let Some(either) = value.as_either_str(vm.heap) {
-            let pattern = either.into_string(vm.interns);
+            let pattern = either.into_string(vm.symbols);
             value.drop_with(vm);
             Ok(Self::Str(pattern))
         } else if value.py_type_heap(vm.heap) == Type::RePattern {

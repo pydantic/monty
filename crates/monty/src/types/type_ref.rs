@@ -12,7 +12,7 @@ use crate::{
     builtins::Builtins,
     exception_private::RunResult,
     heap::{Heap, HeapData, HeapId},
-    intern::Interns,
+    symbols::SymbolTable,
     types::{Type, native::NativeMro},
     value::Value,
 };
@@ -80,31 +80,31 @@ impl TypeRef {
     }
 
     /// The Python-visible name: CPython's `tp_name` for a native type, the class
-    /// name otherwise. Borrows only `interns`, so it outlives heap mutation.
+    /// name otherwise. Borrows only `symbols`, so it outlives heap mutation.
     #[must_use]
-    pub(crate) fn name<'i>(self, heap: &Heap, interns: &'i Interns) -> Cow<'i, str> {
+    pub(crate) fn name<'i>(self, heap: &Heap, symbols: &'i SymbolTable) -> Cow<'i, str> {
         match self {
             Self::Native(ty) => Cow::Borrowed(ty.name()),
-            Self::Class(id) => class_like_name(id, heap, interns),
+            Self::Class(id) => class_like_name(id, heap, symbols),
         }
     }
 
     /// The name `__name__` reports: native names lose their module qualifier.
     #[must_use]
-    pub(crate) fn dunder_name<'i>(self, heap: &Heap, interns: &'i Interns) -> Cow<'i, str> {
+    pub(crate) fn dunder_name<'i>(self, heap: &Heap, symbols: &'i SymbolTable) -> Cow<'i, str> {
         match self {
             Self::Native(ty) => Cow::Borrowed(ty.dunder_name()),
-            Self::Class(id) => class_like_name(id, heap, interns),
+            Self::Class(id) => class_like_name(id, heap, symbols),
         }
     }
 
     /// [`name`](Self::name) as CPython's "argument N must be X, not Y" errors
     /// render it, where `NoneType` reads `None`.
     #[must_use]
-    pub(crate) fn cpython_arg_name<'i>(self, heap: &Heap, interns: &'i Interns) -> Cow<'i, str> {
+    pub(crate) fn cpython_arg_name<'i>(self, heap: &Heap, symbols: &'i SymbolTable) -> Cow<'i, str> {
         match self {
             Self::Native(ty) => Cow::Borrowed(ty.cpython_arg_name()),
-            Self::Class(id) => class_like_name(id, heap, interns),
+            Self::Class(id) => class_like_name(id, heap, symbols),
         }
     }
 
@@ -230,11 +230,11 @@ fn class_like_mro(data: &HeapData) -> &[TypeRef] {
 }
 
 /// The name of a class-like heap object.
-fn class_like_name<'i>(id: HeapId, heap: &Heap, interns: &'i Interns) -> Cow<'i, str> {
+fn class_like_name<'i>(id: HeapId, heap: &Heap, symbols: &'i SymbolTable) -> Cow<'i, str> {
     match heap.get(id) {
-        HeapData::Class(class) => class.name().to_cow(interns),
-        HeapData::NamedTupleClass(class) => class.name_either().to_cow(interns),
-        HeapData::HostClassType(class) => class.name_either().to_cow(interns),
+        HeapData::Class(class) => class.name().to_cow(symbols),
+        HeapData::NamedTupleClass(class) => class.name_either().to_cow(symbols),
+        HeapData::HostClassType(class) => class.name_either().to_cow(symbols),
         _ => unreachable!("TypeRef::Class names a class object"),
     }
 }

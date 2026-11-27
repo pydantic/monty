@@ -24,8 +24,8 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     expressions::Identifier,
     heap::{DropGuard, DropWithContext},
-    intern::{Interns, StringId},
     resource_checks::check_estimated_size,
+    symbols::{SymbolId, SymbolTable},
     types::{Dict, allocate_tuple},
     value::{VALUE_SIZE, Value},
 };
@@ -63,7 +63,7 @@ pub(crate) struct Signature {
     ///
     /// These can only be passed by position, not by keyword.
     #[serde(rename = "P")]
-    pos_args: Option<Vec<StringId>>,
+    pos_args: Option<Vec<SymbolId>>,
 
     /// Number of positional-only parameters with defaults (from the end).
     #[serde(rename = "Q")]
@@ -73,7 +73,7 @@ pub(crate) struct Signature {
     ///
     /// These can be passed either by position or by keyword.
     #[serde(rename = "A")]
-    args: Option<Vec<StringId>>,
+    args: Option<Vec<SymbolId>>,
 
     /// Number of positional-or-keyword parameters with defaults (from the end).
     #[serde(rename = "B")]
@@ -83,13 +83,13 @@ pub(crate) struct Signature {
     ///
     /// Collects excess positional arguments into a tuple.
     #[serde(rename = "V")]
-    var_args: Option<StringId>,
+    var_args: Option<SymbolId>,
 
     /// Keyword-only parameters, e.g. `c` in `def f(*, c): ...` or `def f(*args, c): ...`
     ///
     /// These can only be passed by keyword, not by position.
     #[serde(rename = "K")]
-    kwargs: Option<Vec<StringId>>,
+    kwargs: Option<Vec<SymbolId>>,
 
     /// Mapping from each keyword-only parameter to its default index (if any).
     ///
@@ -103,7 +103,7 @@ pub(crate) struct Signature {
     ///
     /// Collects excess keyword arguments into a dict.
     #[serde(rename = "W")]
-    var_kwargs: Option<StringId>,
+    var_kwargs: Option<SymbolId>,
 
     /// How simple the signature is, used for the fast path when binding.
     ///
@@ -168,14 +168,14 @@ impl Signature {
     /// * `var_kwargs` - Variable keyword parameter name (**kwargs)
     #[expect(clippy::too_many_arguments)]
     pub fn new(
-        pos_args: Vec<StringId>,
+        pos_args: Vec<SymbolId>,
         pos_defaults_count: usize,
-        args: Vec<StringId>,
+        args: Vec<SymbolId>,
         arg_defaults_count: usize,
-        var_args: Option<StringId>,
-        kwargs: Vec<StringId>,
+        var_args: Option<SymbolId>,
+        kwargs: Vec<SymbolId>,
         kwarg_default_map: Vec<Option<usize>>,
-        var_kwargs: Option<StringId>,
+        var_kwargs: Option<SymbolId>,
     ) -> Self {
         let pos_args = if pos_args.is_empty() { None } else { Some(pos_args) };
         let has_kwonly = !kwargs.is_empty();
@@ -237,7 +237,7 @@ impl Signature {
     /// * `args` - The arguments from the call site
     /// * `defaults` - Evaluated default values (layout: pos_defaults, arg_defaults, kwarg_defaults)
     /// * `heap` - The heap for allocating *args tuple and **kwargs dict
-    /// * `interns` - For looking up parameter names in error messages
+    /// * `symbols` - For looking up parameter names in error messages
     /// * `func_name` - Function name for error messages
     /// * `namespace` - The namespace to populate with bound arguments. This is mutated in place and will need to be cleaned up on error.
     ///
@@ -301,7 +301,7 @@ impl Signature {
                 }
             }
 
-            return self.wrong_arg_count_error(actual_count, vm.interns, func_name.name_id);
+            return self.wrong_arg_count_error(actual_count, vm.symbols, func_name.name_id);
         }
 
         // Full binding algorithm for complex signatures or kwargs. Convert
@@ -384,21 +384,21 @@ impl Signature {
             if let Some(pos_args) = &self.pos_args
                 && let Some(&param_id) = pos_args
                     .iter()
-                    .find(|&&param_id| keyword_name.matches(param_id, vm.interns))
+                    .find(|&&param_id| keyword_name.matches(param_id, vm.symbols))
             {
-                let func = vm.interns.get_str(func_name.name_id);
-                let param = vm.interns.get_str(param_id);
+                let func = vm.symbols.get_str(func_name.name_id);
+                let param = vm.symbols.get_str(param_id);
                 return Err(ExcType::type_error_positional_only(func, param));
             }
 
             // Try positional-or-keyword params
             if let Some(args) = &self.args {
                 for (i, &param_id) in args.iter().enumerate() {
-                    if keyword_name.matches(param_id, vm.interns) {
+                    if keyword_name.matches(param_id, vm.symbols) {
                         let ns_idx = pos_param_count + i;
                         if !matches!(namespace[namespace_base + ns_idx], Value::Undefined) {
-                            let func = vm.interns.get_str(func_name.name_id);
-                            let param = vm.interns.get_str(param_id);
+                            let func = vm.symbols.get_str(func_name.name_id);
+                            let param = vm.symbols.get_str(param_id);
                             return Err(ExcType::type_error_duplicate_arg(func, param));
                         }
                         let (value, _) = value_guard.into_parts();
@@ -411,11 +411,11 @@ impl Signature {
             // Try keyword-only params
             if let Some(kwargs) = &self.kwargs {
                 for (i, &param_id) in kwargs.iter().enumerate() {
-                    if keyword_name.matches(param_id, vm.interns) {
+                    if keyword_name.matches(param_id, vm.symbols) {
                         let ns_idx = total_positional_params + var_args_offset + i;
                         if !matches!(namespace[namespace_base + ns_idx], Value::Undefined) {
-                            let func = vm.interns.get_str(func_name.name_id);
-                            let param = vm.interns.get_str(param_id);
+                            let func = vm.symbols.get_str(func_name.name_id);
+                            let param = vm.symbols.get_str(param_id);
                             return Err(ExcType::type_error_duplicate_arg(func, param));
                         }
                         let (value, _) = value_guard.into_parts();
@@ -433,8 +433,8 @@ impl Signature {
                 continue 'kwargs;
             }
 
-            let func = vm.interns.get_str(func_name.name_id);
-            let key_str = keyword_name.as_str(vm.interns);
+            let func = vm.symbols.get_str(func_name.name_id);
+            let key_str = keyword_name.as_str(vm.symbols);
             return Err(ExcType::type_error_unexpected_keyword(func, key_str));
         }
 
@@ -453,7 +453,7 @@ impl Signature {
                     )
                 })
                 .count();
-            let func = vm.interns.get_str(func_name.name_id);
+            let func = vm.symbols.get_str(func_name.name_id);
             return Err(ExcType::type_error_too_many_positional_range(
                 func,
                 self.required_positional_count(),
@@ -516,7 +516,7 @@ impl Signature {
             let required_pos_only = pos_args.len().saturating_sub(self.pos_defaults_count);
             for (i, &param_id) in pos_args.iter().enumerate() {
                 if i < required_pos_only && matches!(namespace[namespace_base + i], Value::Undefined) {
-                    missing_positional.push(vm.interns.get_str(param_id));
+                    missing_positional.push(vm.symbols.get_str(param_id));
                 }
             }
         }
@@ -526,14 +526,14 @@ impl Signature {
             let required_args = args_params.len().saturating_sub(self.arg_defaults_count);
             for (i, &param_id) in args_params.iter().enumerate() {
                 if i < required_args && matches!(namespace[namespace_base + pos_param_count + i], Value::Undefined) {
-                    missing_positional.push(vm.interns.get_str(param_id));
+                    missing_positional.push(vm.symbols.get_str(param_id));
                 }
             }
         }
 
         if !missing_positional.is_empty() {
             // Clean up bound values before returning error
-            let func = vm.interns.get_str(func_name.name_id);
+            let func = vm.symbols.get_str(func_name.name_id);
             return Err(ExcType::type_error_missing_positional_with_names(
                 func,
                 &missing_positional,
@@ -548,13 +548,13 @@ impl Signature {
                 let has_default = default_map.and_then(|map| map.get(i)).is_some_and(Option::is_some);
                 let ns_idx = total_positional_params + var_args_offset + i;
                 if !has_default && matches!(namespace[namespace_base + ns_idx], Value::Undefined) {
-                    missing_kwonly.push(vm.interns.get_str(param_id));
+                    missing_kwonly.push(vm.symbols.get_str(param_id));
                 }
             }
         }
 
         if !missing_kwonly.is_empty() {
-            let func = vm.interns.get_str(func_name.name_id);
+            let func = vm.symbols.get_str(func_name.name_id);
             return Err(ExcType::type_error_missing_kwonly_with_names(func, &missing_kwonly));
         }
 
@@ -630,7 +630,7 @@ impl Signature {
 
     /// Returns parameter names in the slot order filled by `bind`:
     /// positional-only, positional-or-keyword, `*args`, keyword-only, `**kwargs`.
-    pub(crate) fn param_names(&self) -> impl Iterator<Item = StringId> + '_ {
+    pub(crate) fn param_names(&self) -> impl Iterator<Item = SymbolId> + '_ {
         let pos_args = self.pos_args.iter().flat_map(|v| v.iter().copied());
         let args = self.args.iter().flat_map(|v| v.iter().copied());
         let var_args = self.var_args.iter().copied();
@@ -658,10 +658,15 @@ impl Signature {
     ///
     /// # Arguments
     /// * `actual_count` - Number of arguments actually provided
-    /// * `interns` - String storage for looking up interned names
+    /// * `symbols` - String storage for looking up symbols
     /// * `func_name_id` - Function name for the message; the VM supplies the traceback frame
-    fn wrong_arg_count_error<T>(&self, actual_count: usize, interns: &Interns, func_name_id: StringId) -> RunResult<T> {
-        let name_str = interns.get_str(func_name_id);
+    fn wrong_arg_count_error<T>(
+        &self,
+        actual_count: usize,
+        symbols: &SymbolTable,
+        func_name_id: SymbolId,
+    ) -> RunResult<T> {
+        let name_str = symbols.get_str(func_name_id);
         let param_count = self.param_count();
         // Only reached from the Simple/SimpleWithDefaults fast paths, so there
         // are no pos-only, kw-only, or `*args` params: every param is
@@ -674,7 +679,7 @@ impl Signature {
                 .param_names()
                 .take(required)
                 .skip(actual_count)
-                .map(|string_id| interns.get_str(string_id).to_string())
+                .map(|symbol_id| symbols.get_str(symbol_id).to_string())
                 .collect();
             let missing_refs: Vec<&str> = missing_names.iter().map(String::as_str).collect();
             ExcType::missing_positional_msg(name_str, &missing_refs)

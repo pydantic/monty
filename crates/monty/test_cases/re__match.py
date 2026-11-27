@@ -3,7 +3,7 @@
 import re
 
 # === Match .string attribute ===
-subject = 'say ' + 'hello'  # concatenate so it isn't interned
+subject = 'say ' + 'hello'  # concatenate to build a runtime string
 m = re.search('hello', subject)
 assert m is not None
 assert m.string == 'say hello'

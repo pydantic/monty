@@ -23,15 +23,15 @@ use monty_types::ResourceError;
 use super::VM;
 use crate::{
     heap::{ContainsHeap, DropWithContext},
-    intern::{FunctionId, Interns},
+    symbols::{FunctionId, SymbolTable},
 };
 
 /// Counts charged frames when restoring a VM or switching tasks.
 /// The first frame is the uncharged root; frozen implementation frames never contribute.
-pub(super) fn frame_recursion_depth(frames: impl Iterator<Item = Option<FunctionId>>, interns: &Interns) -> usize {
+pub(super) fn frame_recursion_depth(frames: impl Iterator<Item = Option<FunctionId>>, symbols: &SymbolTable) -> usize {
     frames
         .skip(1)
-        .filter(|id| id.is_none_or(|id| !interns.is_internal_function(id)))
+        .filter(|id| id.is_none_or(|id| !symbols.is_internal_function(id)))
         .count()
 }
 

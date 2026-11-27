@@ -31,7 +31,7 @@ assert repr(100.0) == '100.0'
 assert repr(-3.14) == '-3.14'
 assert repr(0.1) == '0.1'
 
-# === repr of strings (Value::InternString / HeapData::Str) ===
+# === repr of strings (Value::Symbol / HeapData::Str) ===
 assert repr('') == "''"
 assert repr('hello') == "'hello'"
 assert repr("it's") == '"it\'s"'

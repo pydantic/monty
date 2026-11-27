@@ -77,7 +77,7 @@ try:
 except AttributeError as exc:
     assert str(exc) == "'Counter' object has no attribute 'insert'"
 
-# Interned strings/bytes take a different insertion-error path than heap containers.
+# Symbols/bytes take a different insertion-error path than heap containers.
 for insert in [bisect.insort_left, bisect.insort_right]:
     for sequence, value, message in [
         ('abc', 'b', "'str' object has no attribute 'insert'"),

@@ -352,7 +352,7 @@ pub enum Opcode {
     ///
     /// Stack: [callable, pos_args..., kw_values...]
     /// After the two count bytes, there are kw_count little-endian u16 values,
-    /// each being a StringId index for the corresponding keyword argument name.
+    /// each being a SymbolId index for the corresponding keyword argument name.
     CallFunctionKw = 83,
     /// Call attribute on object. Operands: u16 name_id, u8 arg_count.
     ///
@@ -364,7 +364,7 @@ pub enum Opcode {
     ///
     /// Stack: [obj, pos_args..., kw_values...]
     /// After the operands, there are kw_count little-endian u16 values,
-    /// each being a StringId index for the corresponding keyword argument name.
+    /// each being a SymbolId index for the corresponding keyword argument name.
     CallAttrKw = 85,
     /// Call a defined function with *args tuple and **kwargs dict. Operand: u8 flags.
     ///
@@ -457,7 +457,7 @@ pub enum Opcode {
     Nop = 105,
 
     // === Module Operations ===
-    /// Load a top-level module. Operand: u16 module-name StringId.
+    /// Load a top-level module. Operand: u16 module-name SymbolId.
     /// Pushes a built-in module or suspends with an import OS call for the host's value.
     /// A name of only dots (`..`) loads a relative import's package, found from `__package__` or `__name__`.
     LoadModule = 106,

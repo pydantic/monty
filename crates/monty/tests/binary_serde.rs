@@ -57,7 +57,7 @@ fn monty_run_round_trip_simple() {
 
 /// Directly compiled tables and later overlays share canonical names after loading and reuse.
 #[test]
-fn monty_run_round_trip_with_runtime_interns() {
+fn monty_run_round_trip_with_runtime_symbols() {
     let code = r#"
 def keepends(custom_parameter='owned-name'):
     return custom_parameter.splitlines(keepends=False)[0]
@@ -157,9 +157,9 @@ fn monty_run_round_trip_comprehension_closure() {
 }
 
 /// A static tag is not part of the wire identity: text unknown to the loading
-/// build remains a usable owned interner entry at the same `StringId`.
+/// build remains a usable owned symbol table entry at the same `SymbolId`.
 #[test]
-fn static_interns_deserialize_as_unknown_text() {
+fn static_symbols_deserialize_as_unknown_text() {
     let runner = MontyRun::new("'partial'".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let mut bytes = minicbor_serde::to_vec(&runner).unwrap();
     let positions: Vec<_> = bytes
@@ -167,7 +167,7 @@ fn static_interns_deserialize_as_unknown_text() {
         .enumerate()
         .filter_map(|(index, value)| (value == b"partial").then_some(index))
         .collect();
-    assert_eq!(positions.len(), 2, "expected interner text and source text");
+    assert_eq!(positions.len(), 2, "expected symbols text and source text");
     bytes[positions[0]..positions[0] + b"mystery".len()].copy_from_slice(b"mystery");
 
     let mut loaded: MontyRun = minicbor_serde::from_slice(&bytes).unwrap();
@@ -226,10 +226,10 @@ assert len({value: 1 for value in values}) == 1
     );
 }
 
-/// Module attributes are absent from compiled snapshots and interned lazily
+/// Module attributes are absent from compiled snapshots and registered as symbols
 /// during execution, including when running the same loaded program twice.
 #[test]
-fn execution_interns_module_static_strings() {
+fn execution_registers_static_module_symbols() {
     let runner = MontyRun::new(
         "import functools\n1".to_owned(),
         "test.py",
@@ -251,7 +251,7 @@ fn execution_interns_module_static_strings() {
 }
 
 /// Each module can lazily construct its complete namespace after loading,
-/// without source attribute references masking missing interner entries.
+/// without source attribute references masking missing symbol table entries.
 #[test]
 fn module_imports_after_snapshot() {
     for module in [
@@ -345,7 +345,7 @@ fn run_progress_round_trip_at_external_call() {
     assert_eq!(result.into_complete().unwrap(), MontyObject::int(101)); // 100 + 1
 }
 
-/// Interned integer roots retain their identities and interner references across suspension and restore.
+/// Interned integer roots retain their identities and symbol table references across suspension and restore.
 #[test]
 fn run_progress_round_trip_interned_integers() {
     let code = "

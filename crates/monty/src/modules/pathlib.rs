@@ -9,7 +9,7 @@
 use crate::{
     builtins::Builtins,
     bytecode::VM,
-    intern::StaticStrings,
+    symbols::StaticStrings,
     types::{Module, Type},
     value::Value,
 };
@@ -17,7 +17,7 @@ use crate::{
 /// Creates the `pathlib` module.
 ///
 pub fn create_module(vm: &mut VM<'_>) -> Module {
-    let mut module = Module::new(StaticStrings::Pathlib, vm.interns);
+    let mut module = Module::new(StaticStrings::Pathlib, vm.symbols);
 
     // pathlib.Path - the Path class (callable to create Path instances)
     module.set_attr(StaticStrings::PathClass, Value::Builtin(Builtins::Type(Type::Path)), vm);

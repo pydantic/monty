@@ -11,10 +11,10 @@ use crate::{
         MatchCase, NameScope, Node, Pattern, PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
     },
     fstring::{FStringPart, FormatSpec},
-    intern::{CompileInterns, StringId},
     name_map::{NameMap, namespace_overflow},
     namespace::NamespaceId,
     parse::{CodeRange, ExceptHandler, ParseError, ParseNode, ParsedSignature, RawFunctionDef, Try},
+    symbols::{CompileSymbols, SymbolId},
 };
 
 /// Mutable handle to the module's global [`NameMap`], threaded through
@@ -33,7 +33,7 @@ struct GlobalsRef<'g> {
 
 impl GlobalsRef<'_> {
     /// Returns the slot for `name`, allocating a new module-level slot if absent.
-    fn ensure_slot(&mut self, name: StringId, position: CodeRange) -> Result<NamespaceId, ParseError> {
+    fn ensure_slot(&mut self, name: SymbolId, position: CodeRange) -> Result<NamespaceId, ParseError> {
         self.globals.ensure_slot(name, position)
     }
 
@@ -51,10 +51,10 @@ impl GlobalsRef<'_> {
 /// (plus any slots already appended, which are stable and harmless).
 pub(crate) fn prepare_with_existing_names(
     nodes: Vec<ParseNode>,
-    interner: &CompileInterns<'_>,
+    symbols: &CompileSymbols<'_>,
     globals: &mut NameMap,
 ) -> Result<Vec<PreparedNode>, ParseError> {
-    let mut prepare = Prepare::new_module(globals, interner);
+    let mut prepare = Prepare::new_module(globals, symbols);
     prepare.has_star_import = has_star_import(&nodes);
     let mut prepared_nodes = prepare.prepare_nodes(nodes)?;
 
@@ -95,11 +95,11 @@ pub(crate) enum SnippetNames {
 /// inside a dict-namespaced snippet never consume session slots.
 pub(crate) fn prepare_snippet(
     nodes: Vec<ParseNode>,
-    interner: &CompileInterns<'_>,
+    symbols: &CompileSymbols<'_>,
     globals: &mut NameMap,
     names: SnippetNames,
 ) -> Result<Vec<PreparedNode>, ParseError> {
-    let mut prepare = Prepare::new_module(globals, interner);
+    let mut prepare = Prepare::new_module(globals, symbols);
     prepare.has_star_import = has_star_import(&nodes);
     if names != SnippetNames::Slots {
         prepare.top_level_by_name = true;
@@ -112,7 +112,7 @@ pub(crate) fn prepare_snippet(
                 &mut prepare.module_global_names,
                 &mut nonlocals,
                 &mut assigned,
-                interner,
+                symbols,
             );
         }
     }
@@ -152,16 +152,16 @@ fn has_star_import(nodes: &[ParseNode]) -> bool {
 /// [`PrepareState`] so module and function paths don't share a single
 /// `Option<...>` for "is this function scope?" sentinel.
 ///
-/// The interner is borrowed immutably — every `StringId` we need already
-/// arrived through the AST (parse-time interning), so no new strings are
+/// The symbol table is borrowed immutably — every `SymbolId` we need already
+/// arrived through the AST (parse-time symbol creation), so no new strings are
 /// allocated during prepare.
 #[expect(
     clippy::struct_excessive_bools,
     reason = "independent scope flags, not a state machine"
 )]
 struct Prepare<'i, 'g> {
-    /// String interner for resolving names in error messages.
-    interner: &'i CompileInterns<'i>,
+    /// symbol table for resolving names in error messages.
+    symbols: &'i CompileSymbols<'i>,
     /// Live mutable handle to the module's global [`NameMap`].
     ///
     /// At module scope this points to the same `NameMap` that PrepareState
@@ -180,7 +180,7 @@ struct Prepare<'i, 'g> {
     /// declaration" diagnostic. Tracked at module scope too — the
     /// validation only runs at function scope, but unconditionally
     /// populating the set keeps the code paths uniform.
-    names_assigned_in_order: AHashSet<StringId>,
+    names_assigned_in_order: AHashSet<SymbolId>,
     /// Names read or written so far during the second pass.
     ///
     /// Drives the "name 'x' is used prior to global/nonlocal declaration"
@@ -189,7 +189,7 @@ struct Prepare<'i, 'g> {
     /// Distinct from `names_assigned_in_order` because the corresponding
     /// error messages differ — assignments report "assigned to before",
     /// non-assignment uses report "used prior to".
-    names_used: AHashSet<StringId>,
+    names_used: AHashSet<SymbolId>,
     /// Number of comprehension-variable slots currently in use.
     ///
     /// Allocated bottom-up as comprehension target names are encountered and
@@ -224,7 +224,7 @@ struct Prepare<'i, 'g> {
     top_level_by_name: bool,
     /// Names declared `global` at a by-name snippet's top level; they keep
     /// slot resolution. Empty otherwise.
-    module_global_names: AHashSet<StringId>,
+    module_global_names: AHashSet<SymbolId>,
     /// Whether the module runs a `from m import *`, which may rebind any
     /// builtin name, so module-scope reads never substitute builtins.
     has_star_import: bool,
@@ -244,7 +244,7 @@ struct Prepare<'i, 'g> {
     /// read of a not-yet-bound member falls back to a late-bound global load
     /// (see [`Self::get_id_read`]). If class bodies ever allow conditional
     /// bindings this must become a runtime-fallback opcode instead.
-    bound_class_members: AHashSet<StringId>,
+    bound_class_members: AHashSet<SymbolId>,
     /// Aliased class-body local slot holding the implicit `__class__` cell when a
     /// method or nested closure in this class references `__class__`.
     class_cell_slot: Option<NamespaceId>,
@@ -257,7 +257,7 @@ struct Prepare<'i, 'g> {
 }
 
 /// Insertion-ordered bindings for one active comprehension's lexical scope.
-type CompNameScope = IndexMap<StringId, CompBinding, RandomState>;
+type CompNameScope = IndexMap<SymbolId, CompBinding, RandomState>;
 
 /// Preparation metadata for a target in an active comprehension scope.
 #[derive(Clone, Copy)]
@@ -312,10 +312,10 @@ struct FunctionState {
     /// `locals.len()` is the function's runtime `namespace_size`.
     locals: NameMap,
     /// Names declared `global` in this function — resolve to module globals.
-    global_names: AHashSet<StringId>,
+    global_names: AHashSet<SymbolId>,
     /// Names bound in THIS scope (params + body-assigned, minus globals).
     /// A read of any of these resolves to `NameScope::Local`.
-    assigned_names: AHashSet<StringId>,
+    assigned_names: AHashSet<SymbolId>,
     /// Names bound in ANY enclosing function scope (transitive closure).
     ///
     /// Includes each ancestor's params, locals, cells, and pass-through
@@ -326,18 +326,18 @@ struct FunctionState {
     ///
     /// Empty for a top-level function (defined directly in a module body) —
     /// at that point there's no enclosing function to capture from.
-    enclosing_locals: AHashSet<StringId>,
+    enclosing_locals: AHashSet<SymbolId>,
     /// Free variables: name → namespace slot of the cell reference.
     ///
     /// Pre-populated with nonlocal declarations and implicit captures at
     /// initialization, then extended as new captures are discovered while
     /// nested functions are prepared.
-    free_var_map: AHashMap<StringId, NamespaceId>,
+    free_var_map: AHashMap<SymbolId, NamespaceId>,
     /// Cell variables (locals captured by nested functions): name → slot.
     ///
     /// Pre-populated with names that scope analysis identified as
     /// captured (excluding pass-throughs that are also free vars here).
-    cell_var_map: AHashMap<StringId, NamespaceId>,
+    cell_var_map: AHashMap<SymbolId, NamespaceId>,
 }
 
 impl<'i, 'g> Prepare<'i, 'g> {
@@ -354,7 +354,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
     /// where the slot must exist before the comprehension's body is walked,
     /// independent of whether the enclosing scope is module-level or a
     /// function body.
-    fn ensure_scope_slot(&mut self, name_id: StringId, position: CodeRange) -> Result<NamespaceId, ParseError> {
+    fn ensure_scope_slot(&mut self, name_id: SymbolId, position: CodeRange) -> Result<NamespaceId, ParseError> {
         match &mut self.state {
             PrepareState::Module => self.globals.ensure_slot(name_id, position),
             PrepareState::Function(state) => state.locals.ensure_slot(name_id, position),
@@ -376,7 +376,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
     /// local binding here, so a nested function referencing it must resolve to
     /// the module global rather than capture a (non-existent) cell — e.g.
     /// `def mid(): global x; x = 1; def inner(): return x` reads the global `x`.
-    fn child_enclosing_locals(&self) -> AHashSet<StringId> {
+    fn child_enclosing_locals(&self) -> AHashSet<SymbolId> {
         let mut locals = match &self.state {
             PrepareState::Module => AHashSet::new(),
             PrepareState::Function(state) if self.is_class_scope => {
@@ -386,10 +386,10 @@ impl<'i, 'g> Prepare<'i, 'g> {
                 // (`free_var_map`) plus what we can reach further up
                 // (`enclosing_locals`) — but must NOT see sibling methods or class
                 // variables by bare name.
-                let mut locals: AHashSet<StringId> = state.free_var_map.keys().copied().collect();
+                let mut locals: AHashSet<SymbolId> = state.free_var_map.keys().copied().collect();
                 locals.extend(state.enclosing_locals.iter().copied());
                 locals.retain(|name| !state.global_names.contains(name));
-                if let Some(dunder_class_id) = self.interner.get_string_id_by_name("__class__") {
+                if let Some(dunder_class_id) = self.symbols.get_symbol_id_by_name("__class__") {
                     locals.insert(dunder_class_id);
                 }
                 locals
@@ -426,7 +426,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
     /// - At module scope, the module globals (a top-level function's free
     ///   var must resolve to a module slot — practically unreachable
     ///   because top-level functions can't have implicit captures).
-    fn lookup_captured_slot(&mut self, name_id: StringId) -> CaptureSource {
+    fn lookup_captured_slot(&mut self, name_id: SymbolId) -> CaptureSource {
         for scope in self.comp_name_scopes.iter_mut().rev() {
             if let Some(binding) = scope.get_mut(&name_id) {
                 binding.captured = true;
@@ -434,7 +434,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             }
         }
         if self.is_class_scope
-            && self.interner.get_str(name_id) == "__class__"
+            && self.symbols.get_str(name_id) == "__class__"
             && let Some(slot) = self.class_cell_slot
         {
             return CaptureSource::Namespace(slot);
@@ -450,7 +450,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
         if let Some(slot) = self.globals.globals.get(name_id) {
             return CaptureSource::Namespace(slot);
         }
-        let name_str = self.interner.get_str(name_id);
+        let name_str = self.symbols.get_str(name_id);
         panic!("free_var '{name_str}' not found in enclosing scope's cells, comprehension targets, or globals");
     }
 
@@ -472,7 +472,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
     ///   pass-through free var here so the cell propagates upward.
     /// - Otherwise the child shouldn't have added it to `free_var_map` in
     ///   the first place; we surface a panic naming the offending variable.
-    fn bubble_up_captured_name(&mut self, captured_name: StringId, position: CodeRange) -> Result<(), ParseError> {
+    fn bubble_up_captured_name(&mut self, captured_name: SymbolId, position: CodeRange) -> Result<(), ParseError> {
         for scope in self.comp_name_scopes.iter_mut().rev() {
             if let Some(binding) = scope.get_mut(&captured_name) {
                 binding.captured = true;
@@ -484,7 +484,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             return Ok(());
         };
 
-        if self.is_class_scope && self.interner.get_str(captured_name) == "__class__" {
+        if self.is_class_scope && self.symbols.get_str(captured_name) == "__class__" {
             if self.class_cell_slot.is_none() {
                 let slot = state.locals.push_aliased_slot(captured_name, position)?;
                 self.class_cell_slot = Some(slot);
@@ -503,7 +503,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             let slot = state.locals.ensure_slot(captured_name, position)?;
             state.free_var_map.insert(captured_name, slot);
         } else {
-            let name_str = self.interner.get_str(captured_name);
+            let name_str = self.symbols.get_str(captured_name);
             panic!("bubble-up captured '{name_str}' that is bound nowhere — scope analysis bug");
         }
         Ok(())
@@ -519,7 +519,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
     /// child slot so they stay index-aligned.
     fn build_free_var_slots(
         &mut self,
-        inner_free_var_map: AHashMap<StringId, NamespaceId>,
+        inner_free_var_map: AHashMap<SymbolId, NamespaceId>,
     ) -> (Vec<NamespaceId>, Vec<CaptureSource>) {
         let mut entries: Vec<_> = inner_free_var_map.into_iter().collect();
         entries.sort_by_key(|(_, inner_slot)| *inner_slot);
@@ -543,9 +543,9 @@ impl<'i, 'g> Prepare<'i, 'g> {
     /// (see [`Self::bubble_up_captured_name`]).
     fn finalize_child_scope(
         &mut self,
-        inner_free_var_map: AHashMap<StringId, NamespaceId>,
-        inner_cell_var_map: AHashMap<StringId, NamespaceId>,
-        param_names: &[StringId],
+        inner_free_var_map: AHashMap<SymbolId, NamespaceId>,
+        inner_cell_var_map: AHashMap<SymbolId, NamespaceId>,
+        param_names: &[SymbolId],
         position: CodeRange,
     ) -> Result<FinalizedScope, ParseError> {
         // Bubble-up: each captured name in the child's `free_var_map` must be
@@ -573,9 +573,9 @@ impl<'i, 'g> Prepare<'i, 'g> {
 
     /// Borrows the caller's global slots so nested functions can assign new ones.
     /// The caller restores those provisional slots if compilation fails.
-    fn new_module(globals: &'g mut NameMap, interner: &'i CompileInterns<'i>) -> Self {
+    fn new_module(globals: &'g mut NameMap, symbols: &'i CompileSymbols<'i>) -> Self {
         Self {
-            interner,
+            symbols,
             globals: GlobalsRef { globals },
             state: PrepareState::Module,
             names_assigned_in_order: AHashSet::new(),
@@ -600,7 +600,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
     /// and `cell_var_map` with cell variables (excluding pass-through variables).
     ///
     /// # Arguments
-    /// * `params` - Function parameter `StringId`s (pre-registered in the local namespace).
+    /// * `params` - Function parameter `SymbolId`s (pre-registered in the local namespace).
     /// * `position` - Source position of the function header, used to anchor namespace-overflow errors.
     /// * `assigned_names` - Names bound in this function (params ∪ body-assigned, minus globals).
     /// * `global_names` - Names declared as `global` in this function.
@@ -609,19 +609,19 @@ impl<'i, 'g> Prepare<'i, 'g> {
     /// * `globals` - Live handle to the module-level `NameMap`.
     /// * `enclosing_locals` - Names bound in ANY enclosing function (transitive closure).
     /// * `cell_var_names` - Names that nested functions capture from this scope.
-    /// * `interner` - String interner for looking up names in diagnostics.
+    /// * `symbols` - symbol table for looking up names in diagnostics.
     #[expect(clippy::too_many_arguments)]
     fn new_function(
-        params: &[StringId],
+        params: &[SymbolId],
         position: CodeRange,
-        assigned_names: AHashSet<StringId>,
-        global_names: AHashSet<StringId>,
-        nonlocal_names: &AHashSet<StringId>,
-        implicit_captures: &AHashSet<StringId>,
+        assigned_names: AHashSet<SymbolId>,
+        global_names: AHashSet<SymbolId>,
+        nonlocal_names: &AHashSet<SymbolId>,
+        implicit_captures: &AHashSet<SymbolId>,
         globals: GlobalsRef<'g>,
-        enclosing_locals: AHashSet<StringId>,
-        cell_var_names: &AHashSet<StringId>,
-        interner: &'i CompileInterns<'i>,
+        enclosing_locals: AHashSet<SymbolId>,
+        cell_var_names: &AHashSet<SymbolId>,
+        symbols: &'i CompileSymbols<'i>,
     ) -> Result<Self, ParseError> {
         // Reject duplicate parameter names while building `locals`.
         // Ruff's parser accepts `def f(x, x)` that CPython rejects at
@@ -632,7 +632,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
         let mut locals = NameMap::with_capacity(params.len() + cell_var_names.len());
         for &name_id in params {
             if locals.contains(name_id) {
-                let name_str = interner.get_str(name_id);
+                let name_str = symbols.get_str(name_id);
                 return Err(ParseError::syntax(
                     format!("duplicate argument '{name_str}' in function definition"),
                     position,
@@ -686,7 +686,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
         }
 
         Ok(Self {
-            interner,
+            symbols,
             globals,
             state: PrepareState::Function(Box::new(FunctionState {
                 locals,
@@ -966,15 +966,15 @@ impl<'i, 'g> Prepare<'i, 'g> {
                     // The actual effect happens in get_id where we check global_names.
                     if !self.is_module_scope() {
                         // Validate that names weren't already used/assigned before `global` declaration
-                        for string_id in names {
-                            if self.names_assigned_in_order.contains(&string_id) {
-                                let name_str = self.interner.get_str(string_id);
+                        for symbol_id in names {
+                            if self.names_assigned_in_order.contains(&symbol_id) {
+                                let name_str = self.symbols.get_str(symbol_id);
                                 return Err(ParseError::syntax(
                                     format!("name '{name_str}' is assigned to before global declaration"),
                                     position,
                                 ));
-                            } else if self.names_used.contains(&string_id) {
-                                let name_str = self.interner.get_str(string_id);
+                            } else if self.names_used.contains(&symbol_id) {
+                                let name_str = self.symbols.get_str(symbol_id);
                                 return Err(ParseError::syntax(
                                     format!("name '{name_str}' is used prior to global declaration"),
                                     position,
@@ -994,23 +994,23 @@ impl<'i, 'g> Prepare<'i, 'g> {
                     };
                     // Validate that names weren't already used/assigned before `nonlocal` declaration
                     // and that the binding exists in an enclosing scope.
-                    for string_id in names {
-                        if self.names_assigned_in_order.contains(&string_id) {
-                            let name_str = self.interner.get_str(string_id);
+                    for symbol_id in names {
+                        if self.names_assigned_in_order.contains(&symbol_id) {
+                            let name_str = self.symbols.get_str(symbol_id);
                             return Err(ParseError::syntax(
                                 format!("name '{name_str}' is assigned to before nonlocal declaration"),
                                 position,
                             ));
-                        } else if self.names_used.contains(&string_id) {
-                            let name_str = self.interner.get_str(string_id);
+                        } else if self.names_used.contains(&symbol_id) {
+                            let name_str = self.symbols.get_str(symbol_id);
                             return Err(ParseError::syntax(
                                 format!("name '{name_str}' is used prior to nonlocal declaration"),
                                 position,
                             ));
                         }
                         // The binding must exist somewhere in the enclosing function chain.
-                        if !fn_state.enclosing_locals.contains(&string_id) {
-                            let name_str = self.interner.get_str(string_id);
+                        if !fn_state.enclosing_locals.contains(&symbol_id) {
+                            let name_str = self.symbols.get_str(symbol_id);
                             return Err(ParseError::syntax(
                                 format!("no binding for nonlocal '{name_str}' found"),
                                 position,
@@ -1388,7 +1388,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
         // A star import can bind any name. A later REPL snippet sees the slots it
         // bound, but within this snippet nothing tells which names it binds.
         if self.is_module_scope() && !self.top_level_by_name && !self.has_star_import {
-            let name_str = self.interner.get_str(name.name_id);
+            let name_str = self.symbols.get_str(name.name_id);
             let already_bound =
                 self.names_assigned_in_order.contains(&name.name_id) || self.globals.globals.contains(name.name_id);
             if !already_bound && let Ok(builtin) = name_str.parse::<Builtins>() {
@@ -1435,18 +1435,18 @@ impl<'i, 'g> Prepare<'i, 'g> {
         // Pre-register walrus targets so they exist in the enclosing namespace BEFORE the
         // comp-name scope is pushed — that way `get_id_for_store_target` resolves them
         // straight to enclosing-scope slots without seeing comp-var.
-        let mut walrus_targets: AHashSet<StringId> = AHashSet::new();
+        let mut walrus_targets: AHashSet<SymbolId> = AHashSet::new();
         if let Some(ref e) = elt {
-            collect_assigned_names_from_expr(e, &mut walrus_targets, self.interner);
+            collect_assigned_names_from_expr(e, &mut walrus_targets, self.symbols);
         }
         if let Some((ref k, ref v)) = key_value {
-            collect_assigned_names_from_expr(k, &mut walrus_targets, self.interner);
-            collect_assigned_names_from_expr(v, &mut walrus_targets, self.interner);
+            collect_assigned_names_from_expr(k, &mut walrus_targets, self.symbols);
+            collect_assigned_names_from_expr(v, &mut walrus_targets, self.symbols);
         }
         for generator in &generators {
             // Note: we don't scan iter expressions here because walrus in iterable is not allowed
             for cond in &generator.ifs {
-                collect_assigned_names_from_expr(cond, &mut walrus_targets, self.interner);
+                collect_assigned_names_from_expr(cond, &mut walrus_targets, self.symbols);
             }
         }
         // Pre-allocate slots for walrus targets in the enclosing scope.
@@ -1788,7 +1788,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
     /// Repeated targets in one comprehension share a slot because the whole
     /// comprehension is one lexical scope. New slots use a `u16` operand and
     /// report namespace overflow consistently with regular namespace slots.
-    fn alloc_comp_var_slot(&mut self, name_id: StringId, position: CodeRange) -> Result<u16, ParseError> {
+    fn alloc_comp_var_slot(&mut self, name_id: SymbolId, position: CodeRange) -> Result<u16, ParseError> {
         let top = self
             .comp_name_scopes
             .last_mut()
@@ -1870,10 +1870,10 @@ impl<'i, 'g> Prepare<'i, 'g> {
         let annotate = annotate.map(|def| self.prepare_annotate(*def)).transpose()?;
 
         // Extract param names from the parsed signature for scope analysis
-        let param_names: Vec<StringId> = parsed_sig.param_names().collect();
+        let param_names: Vec<SymbolId> = parsed_sig.param_names().collect();
 
         // Pass 1: Collect scope information from the function body
-        let scope_info = collect_function_scope_info(&body, &param_names, self.interner);
+        let scope_info = collect_function_scope_info(&body, &param_names, self.symbols);
 
         // Build `enclosing_locals` for the new function: the union of every
         // ancestor function scope's locals (see `child_enclosing_locals` for the
@@ -1888,7 +1888,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
         // Filter potential_captures to get actual implicit captures.
         // Only names that are ALSO in enclosing_locals are true implicit captures.
         // Names NOT in enclosing_locals are either builtins or globals (handled at runtime).
-        let implicit_captures: AHashSet<StringId> = scope_info
+        let implicit_captures: AHashSet<SymbolId> = scope_info
             .potential_captures
             .into_iter()
             .filter(|name| enclosing_locals.contains(name))
@@ -1909,7 +1909,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             globals,
             enclosing_locals,
             &scope_info.cell_var_names,
-            self.interner,
+            self.symbols,
         )?;
 
         // Prepare the function body
@@ -1947,11 +1947,11 @@ impl<'i, 'g> Prepare<'i, 'g> {
         } = self.finalize_child_scope(inner_free_var_map, inner_cell_var_map, &param_names, name.position)?;
 
         // Build the runtime Signature from the parsed signature
-        let pos_args: Vec<StringId> = parsed_sig.pos_args.iter().map(|p| p.name).collect();
+        let pos_args: Vec<SymbolId> = parsed_sig.pos_args.iter().map(|p| p.name).collect();
         let pos_defaults_count = parsed_sig.pos_args.iter().filter(|p| p.default.is_some()).count();
-        let args: Vec<StringId> = parsed_sig.args.iter().map(|p| p.name).collect();
+        let args: Vec<SymbolId> = parsed_sig.args.iter().map(|p| p.name).collect();
         let arg_defaults_count = parsed_sig.args.iter().filter(|p| p.default.is_some()).count();
-        let mut kwargs: Vec<StringId> = Vec::with_capacity(parsed_sig.kwargs.len());
+        let mut kwargs: Vec<SymbolId> = Vec::with_capacity(parsed_sig.kwargs.len());
         let mut kwarg_default_map: Vec<Option<usize>> = Vec::with_capacity(parsed_sig.kwargs.len());
         let mut kwarg_default_index = 0;
         for param in &parsed_sig.kwargs {
@@ -2088,18 +2088,18 @@ impl<'i, 'g> Prepare<'i, 'g> {
             body: body_nodes,
             ..
         } = body;
-        let param_names: Vec<StringId> = Vec::new();
+        let param_names: Vec<SymbolId> = Vec::new();
 
         // Pass 1: collect scope info over the class-body statements. The class
         // body's own locals are never cells (no nested scope may capture them —
         // see the doc above), so drop any cell-var candidates the generic
         // pre-pass flagged: keeping every member a plain local.
-        let mut scope_info = collect_function_scope_info(&body_nodes, &param_names, self.interner);
+        let mut scope_info = collect_function_scope_info(&body_nodes, &param_names, self.symbols);
         scope_info.cell_var_names.clear();
 
         // Names the class body may capture from scopes enclosing the class.
         let enclosing_locals = self.child_enclosing_locals();
-        let implicit_captures: AHashSet<StringId> = scope_info
+        let implicit_captures: AHashSet<SymbolId> = scope_info
             .potential_captures
             .into_iter()
             .filter(|n| enclosing_locals.contains(n))
@@ -2119,7 +2119,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             globals,
             enclosing_locals,
             &scope_info.cell_var_names,
-            self.interner,
+            self.symbols,
         )?;
         inner_prepare.is_class_scope = true;
 
@@ -2147,7 +2147,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             .into_iter()
             .map(|member| {
                 let slot = inner_locals.get(member.name_id).unwrap_or_else(|| {
-                    let member_name = self.interner.get_str(member.name_id);
+                    let member_name = self.symbols.get_str(member.name_id);
                     panic!("class member '{member_name}' missing from class-body locals")
                 });
                 Identifier::new_with_scope(member.name_id, member.position, slot, NameScope::Local)
@@ -2161,7 +2161,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
         // to a single slot, so it cannot represent both. Reject cleanly rather than
         // miscompile (the alternative is a runtime "expected cell reference" crash).
         if let Some(&name_id) = inner_cell_var_map.keys().next() {
-            let name_str = self.interner.get_str(name_id);
+            let name_str = self.symbols.get_str(name_id);
             return Err(ParseError::not_implemented(
                 format!(
                     "class member '{name_str}' that shadows a captured variable of the same name from an enclosing scope"
@@ -2230,7 +2230,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
     /// - Returns `ExprLoc` with `Expr::Lambda` instead of `PreparedNode`
     fn prepare_lambda(
         &mut self,
-        lambda_name_id: StringId,
+        lambda_name_id: SymbolId,
         parsed_sig: &ParsedSignature,
         body: &ExprLoc,
         position: CodeRange,
@@ -2250,18 +2250,18 @@ impl<'i, 'g> Prepare<'i, 'g> {
         let body_nodes = vec![body_as_node];
 
         // Extract param names from the parsed signature for scope analysis
-        let param_names: Vec<StringId> = parsed_sig.param_names().collect();
+        let param_names: Vec<SymbolId> = parsed_sig.param_names().collect();
 
         // Pass 1: Collect scope information from the lambda body
         // (Lambdas can't have global/nonlocal declarations, but can have nested functions)
-        let scope_info = collect_function_scope_info(&body_nodes, &param_names, self.interner);
+        let scope_info = collect_function_scope_info(&body_nodes, &param_names, self.symbols);
 
         // Build enclosing_locals: names that are local to this scope or
         // captured from any enclosing scope (see `child_enclosing_locals`).
         let enclosing_locals = self.child_enclosing_locals();
 
         // Filter potential_captures to get actual implicit captures
-        let implicit_captures: AHashSet<StringId> = scope_info
+        let implicit_captures: AHashSet<SymbolId> = scope_info
             .potential_captures
             .into_iter()
             .filter(|name| enclosing_locals.contains(name))
@@ -2281,7 +2281,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             globals,
             enclosing_locals,
             &scope_info.cell_var_names,
-            self.interner,
+            self.symbols,
         )?;
 
         // Prepare the lambda body
@@ -2311,11 +2311,11 @@ impl<'i, 'g> Prepare<'i, 'g> {
         } = self.finalize_child_scope(inner_free_var_map, inner_cell_var_map, &param_names, position)?;
 
         // Build the runtime Signature from the parsed signature
-        let pos_args: Vec<StringId> = parsed_sig.pos_args.iter().map(|p| p.name).collect();
+        let pos_args: Vec<SymbolId> = parsed_sig.pos_args.iter().map(|p| p.name).collect();
         let pos_defaults_count = parsed_sig.pos_args.iter().filter(|p| p.default.is_some()).count();
-        let args: Vec<StringId> = parsed_sig.args.iter().map(|p| p.name).collect();
+        let args: Vec<SymbolId> = parsed_sig.args.iter().map(|p| p.name).collect();
         let arg_defaults_count = parsed_sig.args.iter().filter(|p| p.default.is_some()).count();
-        let mut kwargs: Vec<StringId> = Vec::with_capacity(parsed_sig.kwargs.len());
+        let mut kwargs: Vec<SymbolId> = Vec::with_capacity(parsed_sig.kwargs.len());
         let mut kwarg_default_map: Vec<Option<usize>> = Vec::with_capacity(parsed_sig.kwargs.len());
         let mut kwarg_default_index = 0;
         for param in &parsed_sig.kwargs {
@@ -2477,7 +2477,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
                 return Ok(Identifier::new_with_scope(name_id, position, slot, NameScope::Cell));
             }
             if fn_state.enclosing_locals.contains(&name_id) {
-                let name = self.interner.get_str(name_id);
+                let name = self.symbols.get_str(name_id);
                 return Err(ParseError::not_implemented(
                     format!(
                         "class member '{name}' that shadows a captured variable of the same name from an enclosing scope"
@@ -2638,18 +2638,18 @@ struct FinalizedScope {
 /// preparation and for closure analysis.
 struct FunctionScopeInfo {
     /// Names declared as `global`
-    global_names: AHashSet<StringId>,
+    global_names: AHashSet<SymbolId>,
     /// Names declared as `nonlocal`
-    nonlocal_names: AHashSet<StringId>,
+    nonlocal_names: AHashSet<SymbolId>,
     /// Names that are assigned in this scope
-    assigned_names: AHashSet<StringId>,
+    assigned_names: AHashSet<SymbolId>,
     /// Names that are captured by nested functions (must be stored in cells)
-    cell_var_names: AHashSet<StringId>,
+    cell_var_names: AHashSet<SymbolId>,
     /// Names that are referenced but not local, global, or nonlocal.
     /// These are POTENTIAL implicit captures - they may be captures from an enclosing function
     /// OR they may be builtin/global reads. The actual implicit captures are determined
     /// by filtering against enclosing_locals in new_function.
-    potential_captures: AHashSet<StringId>,
+    potential_captures: AHashSet<SymbolId>,
 }
 
 /// Builds the parallel owned-cell vectors for a nested scope from its cell-var
@@ -2659,10 +2659,10 @@ struct FunctionScopeInfo {
 /// where each fresh cell is installed at call time, and the parameter index it
 /// should be seeded from when the cell is for one of `params` (else `None`).
 fn build_cell_slots(
-    cell_var_map: AHashMap<StringId, NamespaceId>,
-    params: &[StringId],
+    cell_var_map: AHashMap<SymbolId, NamespaceId>,
+    params: &[SymbolId],
 ) -> (Vec<NamespaceId>, Vec<Option<usize>>) {
-    let param_name_to_index: AHashMap<StringId, usize> = params
+    let param_name_to_index: AHashMap<SymbolId, usize> = params
         .iter()
         .enumerate()
         .map(|(idx, &name_id)| (name_id, idx))
@@ -2695,8 +2695,8 @@ fn build_cell_slots(
 /// to the local namespace, global namespace, or an enclosing scope via cells.
 fn collect_function_scope_info(
     nodes: &[ParseNode],
-    params: &[StringId],
-    interner: &CompileInterns<'_>,
+    params: &[SymbolId],
+    symbols: &CompileSymbols<'_>,
 ) -> FunctionScopeInfo {
     let mut global_names = AHashSet::new();
     let mut nonlocal_names = AHashSet::new();
@@ -2711,14 +2711,14 @@ fn collect_function_scope_info(
             &mut global_names,
             &mut nonlocal_names,
             &mut assigned_names,
-            interner,
+            symbols,
         );
     }
 
     // Build the set of our locals: params + assigned_names (excluding globals)
-    let param_names: AHashSet<StringId> = params.iter().copied().collect();
+    let param_names: AHashSet<SymbolId> = params.iter().copied().collect();
 
-    let our_locals: AHashSet<StringId> = param_names
+    let our_locals: AHashSet<SymbolId> = param_names
         .iter()
         .copied()
         .chain(assigned_names.iter().copied())
@@ -2727,7 +2727,7 @@ fn collect_function_scope_info(
 
     // Second pass: find what nested functions capture from us
     for node in nodes {
-        collect_cell_vars_from_node(node, &our_locals, &mut cell_var_names, interner);
+        collect_cell_vars_from_node(node, &our_locals, &mut cell_var_names, symbols);
     }
 
     // Third pass: collect all referenced names to identify potential implicit captures.
@@ -2735,7 +2735,7 @@ fn collect_function_scope_info(
     // We can't fully determine implicit captures here because we don't know yet what
     // the enclosing scope's locals are - that's determined later when we call new_function.
     for node in nodes {
-        collect_referenced_names_from_node(node, &mut referenced_names, interner);
+        collect_referenced_names_from_node(node, &mut referenced_names, symbols);
     }
 
     // Potential implicit captures are names that are:
@@ -2744,7 +2744,7 @@ fn collect_function_scope_info(
     // - Not declared global
     // - Not declared nonlocal (those are handled separately)
     // The actual implicit captures will be filtered against enclosing_locals in new_function.
-    let potential_captures: AHashSet<StringId> = referenced_names
+    let potential_captures: AHashSet<SymbolId> = referenced_names
         .into_iter()
         .filter(|name| !our_locals.contains(name) && !global_names.contains(name) && !nonlocal_names.contains(name))
         .collect();
@@ -2761,73 +2761,73 @@ fn collect_function_scope_info(
 /// Helper to collect scope info from a single node.
 fn collect_scope_info_from_node(
     node: &ParseNode,
-    global_names: &mut AHashSet<StringId>,
-    nonlocal_names: &mut AHashSet<StringId>,
-    assigned_names: &mut AHashSet<StringId>,
-    interner: &CompileInterns<'_>,
+    global_names: &mut AHashSet<SymbolId>,
+    nonlocal_names: &mut AHashSet<SymbolId>,
+    assigned_names: &mut AHashSet<SymbolId>,
+    symbols: &CompileSymbols<'_>,
 ) {
     match node {
         Node::Global { names, .. } => {
-            for string_id in names {
-                global_names.insert(*string_id);
+            for symbol_id in names {
+                global_names.insert(*symbol_id);
             }
         }
         Node::Nonlocal { names, .. } => {
-            for string_id in names {
-                nonlocal_names.insert(*string_id);
+            for symbol_id in names {
+                nonlocal_names.insert(*symbol_id);
             }
         }
         Node::Assign { target, object } => {
             assigned_names.insert(target.name_id);
             // Scan value expression for walrus operators
-            collect_assigned_names_from_expr(object, assigned_names, interner);
+            collect_assigned_names_from_expr(object, assigned_names, symbols);
         }
         Node::UnpackAssign { targets, object, .. } => {
             // Recursively collect all names from nested unpack targets
             for target in targets {
-                collect_names_from_unpack_target(target, assigned_names, interner);
+                collect_names_from_unpack_target(target, assigned_names, symbols);
             }
             // Scan value expression for walrus operators
-            collect_assigned_names_from_expr(object, assigned_names, interner);
+            collect_assigned_names_from_expr(object, assigned_names, symbols);
         }
         Node::OpAssign { target, value, .. } => {
             assigned_names.insert(target.name_id);
             // Scan value expression for walrus operators
-            collect_assigned_names_from_expr(value, assigned_names, interner);
+            collect_assigned_names_from_expr(value, assigned_names, symbols);
         }
         Node::SubscriptOpAssign {
             target, index, value, ..
         } => {
-            collect_assigned_names_from_expr(target, assigned_names, interner);
-            collect_assigned_names_from_expr(index, assigned_names, interner);
-            collect_assigned_names_from_expr(value, assigned_names, interner);
+            collect_assigned_names_from_expr(target, assigned_names, symbols);
+            collect_assigned_names_from_expr(index, assigned_names, symbols);
+            collect_assigned_names_from_expr(value, assigned_names, symbols);
         }
         Node::SubscriptAssign {
             target, index, value, ..
         } => {
             // Subscript assignment doesn't create a new name, it modifies existing container
             // But scan expressions for walrus operators
-            collect_assigned_names_from_expr(target, assigned_names, interner);
-            collect_assigned_names_from_expr(index, assigned_names, interner);
-            collect_assigned_names_from_expr(value, assigned_names, interner);
+            collect_assigned_names_from_expr(target, assigned_names, symbols);
+            collect_assigned_names_from_expr(index, assigned_names, symbols);
+            collect_assigned_names_from_expr(value, assigned_names, symbols);
         }
         Node::AttrOpAssign { object, value, .. } => {
-            collect_assigned_names_from_expr(object, assigned_names, interner);
-            collect_assigned_names_from_expr(value, assigned_names, interner);
+            collect_assigned_names_from_expr(object, assigned_names, symbols);
+            collect_assigned_names_from_expr(value, assigned_names, symbols);
         }
         Node::AttrAssign { object, value, .. } => {
             // Attribute assignment doesn't create a new name, it modifies existing object
             // But scan expressions for walrus operators
-            collect_assigned_names_from_expr(object, assigned_names, interner);
-            collect_assigned_names_from_expr(value, assigned_names, interner);
+            collect_assigned_names_from_expr(object, assigned_names, symbols);
+            collect_assigned_names_from_expr(value, assigned_names, symbols);
         }
         Node::ChainAssign { targets, object } => {
             // Each target sees the same shared RHS; treat it like each per-target
             // assignment would be treated individually.
             for target in targets {
-                collect_assigned_names_from_assign_target(target, assigned_names, interner);
+                collect_assigned_names_from_assign_target(target, assigned_names, symbols);
             }
-            collect_assigned_names_from_expr(object, assigned_names, interner);
+            collect_assigned_names_from_expr(object, assigned_names, symbols);
         }
         Node::For {
             target,
@@ -2836,37 +2836,37 @@ fn collect_scope_info_from_node(
             or_else,
         } => {
             // For loop target is assigned - collect all names from the target
-            collect_names_from_unpack_target(target, assigned_names, interner);
+            collect_names_from_unpack_target(target, assigned_names, symbols);
             // Scan iter expression for walrus operators
-            collect_assigned_names_from_expr(iter, assigned_names, interner);
+            collect_assigned_names_from_expr(iter, assigned_names, symbols);
             // Recurse into body and else
             for n in body {
-                collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
+                collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, symbols);
             }
             for n in or_else {
-                collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
+                collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, symbols);
             }
         }
         Node::While { test, body, or_else } => {
             // Scan test expression for walrus operators
-            collect_assigned_names_from_expr(test, assigned_names, interner);
+            collect_assigned_names_from_expr(test, assigned_names, symbols);
             // Recurse into body and else blocks
             for n in body {
-                collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
+                collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, symbols);
             }
             for n in or_else {
-                collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
+                collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, symbols);
             }
         }
         Node::If { test, body, or_else } => {
             // Scan test expression for walrus operators
-            collect_assigned_names_from_expr(test, assigned_names, interner);
+            collect_assigned_names_from_expr(test, assigned_names, symbols);
             // Recurse into branches
             for n in body {
-                collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
+                collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, symbols);
             }
             for n in or_else {
-                collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
+                collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, symbols);
             }
         }
         Node::FunctionDef {
@@ -2878,11 +2878,11 @@ fn collect_scope_info_from_node(
             assigned_names.insert(name.name_id);
             // Decorators evaluate in *this* scope, so a walrus in one binds here.
             for decorator in decorators {
-                collect_assigned_names_from_expr(decorator, assigned_names, interner);
+                collect_assigned_names_from_expr(decorator, assigned_names, symbols);
             }
             // Defaults also evaluate in this scope, unlike the function body.
             for default in signature.default_exprs() {
-                collect_assigned_names_from_expr(default, assigned_names, interner);
+                collect_assigned_names_from_expr(default, assigned_names, symbols);
             }
         }
         Node::ClassDef {
@@ -2898,16 +2898,16 @@ fn collect_scope_info_from_node(
             for base in bases {
                 match base {
                     SequenceItem::Value(e) | SequenceItem::Unpack(e) => {
-                        collect_assigned_names_from_expr(e, assigned_names, interner);
+                        collect_assigned_names_from_expr(e, assigned_names, symbols);
                     }
                 }
             }
             for kw in keywords {
-                collect_assigned_names_from_expr(&kw.value, assigned_names, interner);
+                collect_assigned_names_from_expr(&kw.value, assigned_names, symbols);
             }
             // Decorators evaluate in *this* scope, so a walrus in one binds here.
             for decorator in decorators {
-                collect_assigned_names_from_expr(decorator, assigned_names, interner);
+                collect_assigned_names_from_expr(decorator, assigned_names, symbols);
             }
         }
         Node::Try(Try {
@@ -2918,7 +2918,7 @@ fn collect_scope_info_from_node(
         }) => {
             // Recurse into all blocks
             for n in body {
-                collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
+                collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, symbols);
             }
             for handler in handlers {
                 // Exception variable name is assigned
@@ -2926,28 +2926,28 @@ fn collect_scope_info_from_node(
                     assigned_names.insert(name.name_id);
                 }
                 for n in &handler.body {
-                    collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
+                    collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, symbols);
                 }
             }
             for n in or_else {
-                collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
+                collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, symbols);
             }
             for n in finally {
-                collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
+                collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, symbols);
             }
         }
         Node::Match { subject, cases, .. } => {
-            collect_assigned_names_from_expr(subject, assigned_names, interner);
+            collect_assigned_names_from_expr(subject, assigned_names, symbols);
             for case in cases {
                 collect_pattern_captures(&case.pattern, assigned_names);
                 for_each_pattern_expr(&case.pattern, &mut |expr| {
-                    collect_assigned_names_from_expr(expr, assigned_names, interner);
+                    collect_assigned_names_from_expr(expr, assigned_names, symbols);
                 });
                 if let Some(guard) = &case.guard {
-                    collect_assigned_names_from_expr(guard, assigned_names, interner);
+                    collect_assigned_names_from_expr(guard, assigned_names, symbols);
                 }
                 for n in &case.body {
-                    collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
+                    collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, symbols);
                 }
             }
         }
@@ -2956,12 +2956,12 @@ fn collect_scope_info_from_node(
         } => {
             // The `as TARGET` binds names like a for-loop target does.
             if let Some(t) = target {
-                collect_names_from_unpack_target(t, assigned_names, interner);
+                collect_names_from_unpack_target(t, assigned_names, symbols);
             }
             // Scan the context expression for walrus operators.
-            collect_assigned_names_from_expr(context, assigned_names, interner);
+            collect_assigned_names_from_expr(context, assigned_names, symbols);
             for n in body {
-                collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
+                collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, symbols);
             }
         }
         // A star import is rejected in function scopes, which this walks.
@@ -2980,17 +2980,17 @@ fn collect_scope_info_from_node(
         }
         // Statements with expressions that may contain walrus operators
         Node::Expr(expr) | Node::Return(Some(expr)) => {
-            collect_assigned_names_from_expr(expr, assigned_names, interner);
+            collect_assigned_names_from_expr(expr, assigned_names, symbols);
         }
         Node::Raise { exc, cause } => {
             for expr in exc.iter().chain(cause) {
-                collect_assigned_names_from_expr(expr, assigned_names, interner);
+                collect_assigned_names_from_expr(expr, assigned_names, symbols);
             }
         }
         Node::Assert { test, msg } => {
-            collect_assigned_names_from_expr(test, assigned_names, interner);
+            collect_assigned_names_from_expr(test, assigned_names, symbols);
             if let Some(m) = msg {
-                collect_assigned_names_from_expr(m, assigned_names, interner);
+                collect_assigned_names_from_expr(m, assigned_names, symbols);
             }
         }
         // These don't create new names
@@ -3005,15 +3005,15 @@ fn collect_scope_info_from_node(
 /// It does NOT recurse into lambda bodies as those have their own scope.
 fn collect_assigned_names_from_expr(
     expr: &ExprLoc,
-    assigned_names: &mut AHashSet<StringId>,
-    interner: &CompileInterns<'_>,
+    assigned_names: &mut AHashSet<SymbolId>,
+    symbols: &CompileSymbols<'_>,
 ) {
     match &expr.expr {
         Expr::Named { target, value } => {
             // The target of a walrus operator is assigned in this scope
             assigned_names.insert(target.name_id);
             // Also scan the value expression
-            collect_assigned_names_from_expr(value, assigned_names, interner);
+            collect_assigned_names_from_expr(value, assigned_names, symbols);
         }
         // Recurse into sub-expressions
         Expr::List(items) | Expr::Tuple(items) | Expr::Set(items) => {
@@ -3021,28 +3021,28 @@ fn collect_assigned_names_from_expr(
                 let expr = match item {
                     SequenceItem::Value(e) | SequenceItem::Unpack(e) => e,
                 };
-                collect_assigned_names_from_expr(expr, assigned_names, interner);
+                collect_assigned_names_from_expr(expr, assigned_names, symbols);
             }
         }
         Expr::Dict(dict_items) => {
             for item in dict_items {
                 match item {
                     DictItem::Pair(key, value) => {
-                        collect_assigned_names_from_expr(key, assigned_names, interner);
-                        collect_assigned_names_from_expr(value, assigned_names, interner);
+                        collect_assigned_names_from_expr(key, assigned_names, symbols);
+                        collect_assigned_names_from_expr(value, assigned_names, symbols);
                     }
-                    DictItem::Unpack(e) => collect_assigned_names_from_expr(e, assigned_names, interner),
+                    DictItem::Unpack(e) => collect_assigned_names_from_expr(e, assigned_names, symbols),
                 }
             }
         }
         Expr::Op { left, right, .. } | Expr::CmpOp { left, right, .. } => {
-            collect_assigned_names_from_expr(left, assigned_names, interner);
-            collect_assigned_names_from_expr(right, assigned_names, interner);
+            collect_assigned_names_from_expr(left, assigned_names, symbols);
+            collect_assigned_names_from_expr(right, assigned_names, symbols);
         }
         Expr::ChainCmp { left, comparisons } => {
-            collect_assigned_names_from_expr(left, assigned_names, interner);
+            collect_assigned_names_from_expr(left, assigned_names, symbols);
             for (_, expr) in comparisons {
-                collect_assigned_names_from_expr(expr, assigned_names, interner);
+                collect_assigned_names_from_expr(expr, assigned_names, symbols);
             }
         }
         Expr::Not(operand)
@@ -3050,69 +3050,69 @@ fn collect_assigned_names_from_expr(
         | Expr::UnaryPlus(operand)
         | Expr::UnaryInvert(operand)
         | Expr::Await(operand) => {
-            collect_assigned_names_from_expr(operand, assigned_names, interner);
+            collect_assigned_names_from_expr(operand, assigned_names, symbols);
         }
         Expr::Subscript { object, index } => {
-            collect_assigned_names_from_expr(object, assigned_names, interner);
-            collect_assigned_names_from_expr(index, assigned_names, interner);
+            collect_assigned_names_from_expr(object, assigned_names, symbols);
+            collect_assigned_names_from_expr(index, assigned_names, symbols);
         }
         Expr::Call { args, .. } => {
-            collect_assigned_names_from_args(args, assigned_names, interner);
+            collect_assigned_names_from_args(args, assigned_names, symbols);
         }
         Expr::AttrCall { object, args, .. } => {
-            collect_assigned_names_from_expr(object, assigned_names, interner);
-            collect_assigned_names_from_args(args, assigned_names, interner);
+            collect_assigned_names_from_expr(object, assigned_names, symbols);
+            collect_assigned_names_from_args(args, assigned_names, symbols);
         }
         Expr::IndirectCall { callable, args } => {
-            collect_assigned_names_from_expr(callable, assigned_names, interner);
-            collect_assigned_names_from_args(args, assigned_names, interner);
+            collect_assigned_names_from_expr(callable, assigned_names, symbols);
+            collect_assigned_names_from_args(args, assigned_names, symbols);
         }
         Expr::AttrGet { object, .. } => {
-            collect_assigned_names_from_expr(object, assigned_names, interner);
+            collect_assigned_names_from_expr(object, assigned_names, symbols);
         }
         Expr::IfElse { test, body, orelse } => {
-            collect_assigned_names_from_expr(test, assigned_names, interner);
-            collect_assigned_names_from_expr(body, assigned_names, interner);
-            collect_assigned_names_from_expr(orelse, assigned_names, interner);
+            collect_assigned_names_from_expr(test, assigned_names, symbols);
+            collect_assigned_names_from_expr(body, assigned_names, symbols);
+            collect_assigned_names_from_expr(orelse, assigned_names, symbols);
         }
         // Per PEP 572, walrus in comprehensions assigns to the ENCLOSING scope
         Expr::ListComp { elt, generators, .. } | Expr::SetComp { elt, generators, .. } => {
-            collect_assigned_names_from_expr(elt, assigned_names, interner);
+            collect_assigned_names_from_expr(elt, assigned_names, symbols);
             for generator in generators {
-                collect_assigned_names_from_expr(&generator.iter, assigned_names, interner);
+                collect_assigned_names_from_expr(&generator.iter, assigned_names, symbols);
                 for cond in &generator.ifs {
-                    collect_assigned_names_from_expr(cond, assigned_names, interner);
+                    collect_assigned_names_from_expr(cond, assigned_names, symbols);
                 }
             }
         }
         Expr::DictComp {
             key, value, generators, ..
         } => {
-            collect_assigned_names_from_expr(key, assigned_names, interner);
-            collect_assigned_names_from_expr(value, assigned_names, interner);
+            collect_assigned_names_from_expr(key, assigned_names, symbols);
+            collect_assigned_names_from_expr(value, assigned_names, symbols);
             for generator in generators {
-                collect_assigned_names_from_expr(&generator.iter, assigned_names, interner);
+                collect_assigned_names_from_expr(&generator.iter, assigned_names, symbols);
                 for cond in &generator.ifs {
-                    collect_assigned_names_from_expr(cond, assigned_names, interner);
+                    collect_assigned_names_from_expr(cond, assigned_names, symbols);
                 }
             }
         }
         Expr::FString(parts) => {
             for part in parts {
                 if let FStringPart::Interpolation { expr, .. } = part {
-                    collect_assigned_names_from_expr(expr, assigned_names, interner);
+                    collect_assigned_names_from_expr(expr, assigned_names, symbols);
                 }
             }
         }
         Expr::Slice { lower, upper, step } => {
             if let Some(e) = lower {
-                collect_assigned_names_from_expr(e, assigned_names, interner);
+                collect_assigned_names_from_expr(e, assigned_names, symbols);
             }
             if let Some(e) = upper {
-                collect_assigned_names_from_expr(e, assigned_names, interner);
+                collect_assigned_names_from_expr(e, assigned_names, symbols);
             }
             if let Some(e) = step {
-                collect_assigned_names_from_expr(e, assigned_names, interner);
+                collect_assigned_names_from_expr(e, assigned_names, symbols);
             }
         }
         // Lambda bodies have their own scope - walrus inside them doesn't affect us
@@ -3125,24 +3125,24 @@ fn collect_assigned_names_from_expr(
 /// Helper to collect assigned names from argument expressions.
 fn collect_assigned_names_from_args(
     args: &ArgExprs,
-    assigned_names: &mut AHashSet<StringId>,
-    interner: &CompileInterns<'_>,
+    assigned_names: &mut AHashSet<SymbolId>,
+    symbols: &CompileSymbols<'_>,
 ) {
     match args {
         ArgExprs::Empty => {}
-        ArgExprs::One(arg) => collect_assigned_names_from_expr(arg, assigned_names, interner),
+        ArgExprs::One(arg) => collect_assigned_names_from_expr(arg, assigned_names, symbols),
         ArgExprs::Two(arg1, arg2) => {
-            collect_assigned_names_from_expr(arg1, assigned_names, interner);
-            collect_assigned_names_from_expr(arg2, assigned_names, interner);
+            collect_assigned_names_from_expr(arg1, assigned_names, symbols);
+            collect_assigned_names_from_expr(arg2, assigned_names, symbols);
         }
         ArgExprs::Args(args) => {
             for arg in args {
-                collect_assigned_names_from_expr(arg, assigned_names, interner);
+                collect_assigned_names_from_expr(arg, assigned_names, symbols);
             }
         }
         ArgExprs::Kwargs(kwargs) => {
             for kwarg in kwargs {
-                collect_assigned_names_from_expr(&kwarg.value, assigned_names, interner);
+                collect_assigned_names_from_expr(&kwarg.value, assigned_names, symbols);
             }
         }
         ArgExprs::ArgsKargs {
@@ -3153,36 +3153,36 @@ fn collect_assigned_names_from_args(
         } => {
             if let Some(args) = args {
                 for arg in args {
-                    collect_assigned_names_from_expr(arg, assigned_names, interner);
+                    collect_assigned_names_from_expr(arg, assigned_names, symbols);
                 }
             }
             if let Some(kwargs) = kwargs {
                 for kwarg in kwargs {
-                    collect_assigned_names_from_expr(&kwarg.value, assigned_names, interner);
+                    collect_assigned_names_from_expr(&kwarg.value, assigned_names, symbols);
                 }
             }
             if let Some(var_args) = var_args {
-                collect_assigned_names_from_expr(var_args, assigned_names, interner);
+                collect_assigned_names_from_expr(var_args, assigned_names, symbols);
             }
             if let Some(var_kwargs) = var_kwargs {
-                collect_assigned_names_from_expr(var_kwargs, assigned_names, interner);
+                collect_assigned_names_from_expr(var_kwargs, assigned_names, symbols);
             }
         }
         ArgExprs::GeneralizedCall { args, kwargs } => {
             for arg in args {
                 match arg {
                     CallArg::Value(e) | CallArg::Unpack(e) => {
-                        collect_assigned_names_from_expr(e, assigned_names, interner);
+                        collect_assigned_names_from_expr(e, assigned_names, symbols);
                     }
                 }
             }
             for kwarg in kwargs {
                 match kwarg {
                     CallKwarg::Named(kw) => {
-                        collect_assigned_names_from_expr(&kw.value, assigned_names, interner);
+                        collect_assigned_names_from_expr(&kw.value, assigned_names, symbols);
                     }
                     CallKwarg::Unpack(e) => {
-                        collect_assigned_names_from_expr(e, assigned_names, interner);
+                        collect_assigned_names_from_expr(e, assigned_names, symbols);
                     }
                 }
             }
@@ -3197,9 +3197,9 @@ fn collect_assigned_names_from_args(
 /// (not as a local of the nested function) becomes a cell_var.
 fn collect_cell_vars_from_node(
     node: &ParseNode,
-    our_locals: &AHashSet<StringId>,
-    cell_vars: &mut AHashSet<StringId>,
-    interner: &CompileInterns<'_>,
+    our_locals: &AHashSet<SymbolId>,
+    cell_vars: &mut AHashSet<SymbolId>,
+    symbols: &CompileSymbols<'_>,
 ) {
     match node {
         // A class body's `__annotate__` captures nothing (see `Prepare::is_annotate`).
@@ -3211,11 +3211,11 @@ fn collect_cell_vars_from_node(
             def: RawFunctionDef { signature, body, .. },
             decorators,
         } => {
-            collect_cell_vars_from_function(signature, body, our_locals, cell_vars, interner);
+            collect_cell_vars_from_function(signature, body, our_locals, cell_vars, symbols);
             // A nested scope inside a decorator expression (a lambda in decorator
             // position, or one passed to a factory) can capture our locals too.
             for decorator in decorators {
-                collect_cell_vars_from_expr(decorator, our_locals, cell_vars, interner);
+                collect_cell_vars_from_expr(decorator, our_locals, cell_vars, symbols);
             }
         }
         Node::ClassDef {
@@ -3228,22 +3228,22 @@ fn collect_cell_vars_from_node(
             for base in bases {
                 match base {
                     SequenceItem::Value(e) | SequenceItem::Unpack(e) => {
-                        collect_cell_vars_from_expr(e, our_locals, cell_vars, interner);
+                        collect_cell_vars_from_expr(e, our_locals, cell_vars, symbols);
                     }
                 }
             }
             for kw in keywords {
-                collect_cell_vars_from_expr(&kw.value, our_locals, cell_vars, interner);
+                collect_cell_vars_from_expr(&kw.value, our_locals, cell_vars, symbols);
             }
             // The class body is a nested scope of *this* scope, like a `def`: any
             // of our locals referenced from the class-var values or (transitively)
             // the method bodies becomes a cell var. `collect_cell_vars_from_function`
             // recurses into the nested method bodies for us.
-            collect_cell_vars_from_function(&body.signature, &body.body, our_locals, cell_vars, interner);
+            collect_cell_vars_from_function(&body.signature, &body.body, our_locals, cell_vars, symbols);
             // A nested scope inside a decorator expression (a lambda in decorator
             // position, or one passed to a factory) can capture our locals too.
             for decorator in decorators {
-                collect_cell_vars_from_expr(decorator, our_locals, cell_vars, interner);
+                collect_cell_vars_from_expr(decorator, our_locals, cell_vars, symbols);
             }
         }
         // Recurse into control flow structures
@@ -3254,31 +3254,31 @@ fn collect_cell_vars_from_node(
             or_else,
         } => {
             // Attribute/subscript targets embed expressions that may hold lambdas.
-            collect_cell_vars_from_unpack_target(target, our_locals, cell_vars, interner);
-            collect_cell_vars_from_expr(iter, our_locals, cell_vars, interner);
+            collect_cell_vars_from_unpack_target(target, our_locals, cell_vars, symbols);
+            collect_cell_vars_from_expr(iter, our_locals, cell_vars, symbols);
             for n in body {
-                collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
+                collect_cell_vars_from_node(n, our_locals, cell_vars, symbols);
             }
             for n in or_else {
-                collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
+                collect_cell_vars_from_node(n, our_locals, cell_vars, symbols);
             }
         }
         Node::While { test, body, or_else } => {
-            collect_cell_vars_from_expr(test, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(test, our_locals, cell_vars, symbols);
             for n in body {
-                collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
+                collect_cell_vars_from_node(n, our_locals, cell_vars, symbols);
             }
             for n in or_else {
-                collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
+                collect_cell_vars_from_node(n, our_locals, cell_vars, symbols);
             }
         }
         Node::If { test, body, or_else } => {
-            collect_cell_vars_from_expr(test, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(test, our_locals, cell_vars, symbols);
             for n in body {
-                collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
+                collect_cell_vars_from_node(n, our_locals, cell_vars, symbols);
             }
             for n in or_else {
-                collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
+                collect_cell_vars_from_node(n, our_locals, cell_vars, symbols);
             }
         }
         Node::Try(Try {
@@ -3288,102 +3288,102 @@ fn collect_cell_vars_from_node(
             finally,
         }) => {
             for n in body {
-                collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
+                collect_cell_vars_from_node(n, our_locals, cell_vars, symbols);
             }
             for handler in handlers {
                 if let Some(exc_type) = &handler.exc_type {
-                    collect_cell_vars_from_expr(exc_type, our_locals, cell_vars, interner);
+                    collect_cell_vars_from_expr(exc_type, our_locals, cell_vars, symbols);
                 }
                 for n in &handler.body {
-                    collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
+                    collect_cell_vars_from_node(n, our_locals, cell_vars, symbols);
                 }
             }
             for n in or_else {
-                collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
+                collect_cell_vars_from_node(n, our_locals, cell_vars, symbols);
             }
             for n in finally {
-                collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
+                collect_cell_vars_from_node(n, our_locals, cell_vars, symbols);
             }
         }
         Node::Match { subject, cases, .. } => {
-            collect_cell_vars_from_expr(subject, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(subject, our_locals, cell_vars, symbols);
             for case in cases {
                 for_each_pattern_expr(&case.pattern, &mut |expr| {
-                    collect_cell_vars_from_expr(expr, our_locals, cell_vars, interner);
+                    collect_cell_vars_from_expr(expr, our_locals, cell_vars, symbols);
                 });
                 if let Some(guard) = &case.guard {
-                    collect_cell_vars_from_expr(guard, our_locals, cell_vars, interner);
+                    collect_cell_vars_from_expr(guard, our_locals, cell_vars, symbols);
                 }
                 for n in &case.body {
-                    collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
+                    collect_cell_vars_from_node(n, our_locals, cell_vars, symbols);
                 }
             }
         }
         Node::With {
             context, target, body, ..
         } => {
-            collect_cell_vars_from_expr(context, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(context, our_locals, cell_vars, symbols);
             if let Some(target) = target {
-                collect_cell_vars_from_unpack_target(target, our_locals, cell_vars, interner);
+                collect_cell_vars_from_unpack_target(target, our_locals, cell_vars, symbols);
             }
             for n in body {
-                collect_cell_vars_from_node(n, our_locals, cell_vars, interner);
+                collect_cell_vars_from_node(n, our_locals, cell_vars, symbols);
             }
         }
         // Handle expressions that may contain lambdas
         Node::Expr(expr) | Node::Return(Some(expr)) => {
-            collect_cell_vars_from_expr(expr, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(expr, our_locals, cell_vars, symbols);
         }
         Node::Raise { exc, cause } => {
             for expr in exc.iter().chain(cause) {
-                collect_cell_vars_from_expr(expr, our_locals, cell_vars, interner);
+                collect_cell_vars_from_expr(expr, our_locals, cell_vars, symbols);
             }
         }
         Node::Assert { test, msg } => {
-            collect_cell_vars_from_expr(test, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(test, our_locals, cell_vars, symbols);
             if let Some(msg) = msg {
-                collect_cell_vars_from_expr(msg, our_locals, cell_vars, interner);
+                collect_cell_vars_from_expr(msg, our_locals, cell_vars, symbols);
             }
         }
         Node::Assign { object, .. } => {
-            collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(object, our_locals, cell_vars, symbols);
         }
         Node::UnpackAssign { targets, object, .. } => {
             for target in targets {
-                collect_cell_vars_from_unpack_target(target, our_locals, cell_vars, interner);
+                collect_cell_vars_from_unpack_target(target, our_locals, cell_vars, symbols);
             }
-            collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(object, our_locals, cell_vars, symbols);
         }
         Node::OpAssign { value, .. } => {
-            collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(value, our_locals, cell_vars, symbols);
         }
         Node::SubscriptOpAssign {
             target, index, value, ..
         } => {
-            collect_cell_vars_from_expr(target, our_locals, cell_vars, interner);
-            collect_cell_vars_from_expr(index, our_locals, cell_vars, interner);
-            collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(target, our_locals, cell_vars, symbols);
+            collect_cell_vars_from_expr(index, our_locals, cell_vars, symbols);
+            collect_cell_vars_from_expr(value, our_locals, cell_vars, symbols);
         }
         Node::SubscriptAssign {
             target, index, value, ..
         } => {
-            collect_cell_vars_from_expr(target, our_locals, cell_vars, interner);
-            collect_cell_vars_from_expr(index, our_locals, cell_vars, interner);
-            collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(target, our_locals, cell_vars, symbols);
+            collect_cell_vars_from_expr(index, our_locals, cell_vars, symbols);
+            collect_cell_vars_from_expr(value, our_locals, cell_vars, symbols);
         }
         Node::AttrOpAssign { object, value, .. } => {
-            collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
-            collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(object, our_locals, cell_vars, symbols);
+            collect_cell_vars_from_expr(value, our_locals, cell_vars, symbols);
         }
         Node::AttrAssign { object, value, .. } => {
-            collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
-            collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(object, our_locals, cell_vars, symbols);
+            collect_cell_vars_from_expr(value, our_locals, cell_vars, symbols);
         }
         Node::ChainAssign { targets, object } => {
             for target in targets {
-                collect_cell_vars_from_assign_target(target, our_locals, cell_vars, interner);
+                collect_cell_vars_from_assign_target(target, our_locals, cell_vars, symbols);
             }
-            collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(object, our_locals, cell_vars, symbols);
         }
         // Listed rather than matched by `_`: a missed capture compiles a local's
         // stores as plain stores and its later loads as cell loads.
@@ -3413,9 +3413,9 @@ fn collect_cell_vars_from_node(
 fn collect_cell_vars_from_function(
     signature: &ParsedSignature,
     body: &[ParseNode],
-    our_locals: &AHashSet<StringId>,
-    cell_vars: &mut AHashSet<StringId>,
-    interner: &CompileInterns<'_>,
+    our_locals: &AHashSet<SymbolId>,
+    cell_vars: &mut AHashSet<SymbolId>,
+    symbols: &CompileSymbols<'_>,
 ) {
     // This nested function's *default* expressions are evaluated in OUR
     // scope at definition time, not inside the nested function — so any
@@ -3425,7 +3425,7 @@ fn collect_cell_vars_from_function(
     // Body references are filtered below; defaults are not.
     for default in signature.default_exprs() {
         let mut default_referenced = AHashSet::new();
-        collect_referenced_names_from_expr(default, &mut default_referenced, interner);
+        collect_referenced_names_from_expr(default, &mut default_referenced, symbols);
         for name in &default_referenced {
             if our_locals.contains(name) {
                 cell_vars.insert(*name);
@@ -3436,11 +3436,11 @@ fn collect_cell_vars_from_function(
     // Find what names are referenced inside this nested function
     let mut referenced = AHashSet::new();
     for n in body {
-        collect_referenced_names_from_node(n, &mut referenced, interner);
+        collect_referenced_names_from_node(n, &mut referenced, symbols);
     }
 
     // Extract param names from signature for scope analysis
-    let param_names: Vec<StringId> = signature.param_names().collect();
+    let param_names: Vec<SymbolId> = signature.param_names().collect();
 
     // Collect *only* this nested function's own bindings (params +
     // assigned + global/nonlocal declarations). Use
@@ -3459,7 +3459,7 @@ fn collect_cell_vars_from_function(
             &mut nested_global,
             &mut nested_nonlocal,
             &mut nested_assigned,
-            interner,
+            symbols,
         );
     }
 
@@ -3469,7 +3469,7 @@ fn collect_cell_vars_from_function(
     // - Not declared global in the nested function
     // - In our locals
     // becomes a cell_var
-    let nested_param_set: AHashSet<StringId> = param_names.iter().copied().collect();
+    let nested_param_set: AHashSet<SymbolId> = param_names.iter().copied().collect();
     for name in &referenced {
         if !nested_assigned.contains(name)
             && !nested_param_set.contains(name)
@@ -3507,7 +3507,7 @@ fn collect_cell_vars_from_function(
     }
     if !deeper_locals.is_empty() {
         for n in body {
-            collect_cell_vars_from_node(n, &deeper_locals, cell_vars, interner);
+            collect_cell_vars_from_node(n, &deeper_locals, cell_vars, symbols);
         }
     }
 }
@@ -3518,9 +3518,9 @@ fn collect_cell_vars_from_function(
 /// that capture variables from the enclosing scope.
 fn collect_cell_vars_from_expr(
     expr: &ExprLoc,
-    our_locals: &AHashSet<StringId>,
-    cell_vars: &mut AHashSet<StringId>,
-    interner: &CompileInterns<'_>,
+    our_locals: &AHashSet<SymbolId>,
+    cell_vars: &mut AHashSet<SymbolId>,
+    symbols: &CompileSymbols<'_>,
 ) {
     use crate::expressions::Expr;
     match &expr.expr {
@@ -3535,7 +3535,7 @@ fn collect_cell_vars_from_expr(
             // are filtered below; defaults are not.
             for default in signature.default_exprs() {
                 let mut default_referenced = AHashSet::new();
-                collect_referenced_names_from_expr(default, &mut default_referenced, interner);
+                collect_referenced_names_from_expr(default, &mut default_referenced, symbols);
                 for name in &default_referenced {
                     if our_locals.contains(name) {
                         cell_vars.insert(*name);
@@ -3545,15 +3545,15 @@ fn collect_cell_vars_from_expr(
 
             // Find what names are referenced in the lambda body
             let mut referenced = AHashSet::new();
-            collect_referenced_names_from_expr(body, &mut referenced, interner);
+            collect_referenced_names_from_expr(body, &mut referenced, symbols);
 
             // Extract param names from signature
-            let param_names: Vec<StringId> = signature.param_names().collect();
+            let param_names: Vec<SymbolId> = signature.param_names().collect();
 
             // A body reference becomes a cell_var if it is not one of the
             // lambda's own params (which the lambda binds itself) and is one of
             // our locals.
-            let lambda_param_set: AHashSet<StringId> = param_names.iter().copied().collect();
+            let lambda_param_set: AHashSet<SymbolId> = param_names.iter().copied().collect();
             for name in &referenced {
                 if !lambda_param_set.contains(name) && our_locals.contains(name) {
                     cell_vars.insert(*name);
@@ -3567,7 +3567,7 @@ fn collect_cell_vars_from_expr(
             for param_id in &param_names {
                 extended_locals.insert(*param_id);
             }
-            collect_cell_vars_from_expr(body, &extended_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(body, &extended_locals, cell_vars, symbols);
         }
         // Recurse into sub-expressions
         Expr::List(items) | Expr::Tuple(items) | Expr::Set(items) => {
@@ -3575,90 +3575,90 @@ fn collect_cell_vars_from_expr(
                 let expr = match item {
                     SequenceItem::Value(e) | SequenceItem::Unpack(e) => e,
                 };
-                collect_cell_vars_from_expr(expr, our_locals, cell_vars, interner);
+                collect_cell_vars_from_expr(expr, our_locals, cell_vars, symbols);
             }
         }
         Expr::Dict(dict_items) => {
             for item in dict_items {
                 match item {
                     DictItem::Pair(key, value) => {
-                        collect_cell_vars_from_expr(key, our_locals, cell_vars, interner);
-                        collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
+                        collect_cell_vars_from_expr(key, our_locals, cell_vars, symbols);
+                        collect_cell_vars_from_expr(value, our_locals, cell_vars, symbols);
                     }
-                    DictItem::Unpack(e) => collect_cell_vars_from_expr(e, our_locals, cell_vars, interner),
+                    DictItem::Unpack(e) => collect_cell_vars_from_expr(e, our_locals, cell_vars, symbols),
                 }
             }
         }
         Expr::Op { left, right, .. } | Expr::CmpOp { left, right, .. } => {
-            collect_cell_vars_from_expr(left, our_locals, cell_vars, interner);
-            collect_cell_vars_from_expr(right, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(left, our_locals, cell_vars, symbols);
+            collect_cell_vars_from_expr(right, our_locals, cell_vars, symbols);
         }
         Expr::ChainCmp { left, comparisons } => {
-            collect_cell_vars_from_expr(left, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(left, our_locals, cell_vars, symbols);
             for (_, expr) in comparisons {
-                collect_cell_vars_from_expr(expr, our_locals, cell_vars, interner);
+                collect_cell_vars_from_expr(expr, our_locals, cell_vars, symbols);
             }
         }
         Expr::Not(operand) | Expr::UnaryMinus(operand) | Expr::UnaryPlus(operand) | Expr::UnaryInvert(operand) => {
-            collect_cell_vars_from_expr(operand, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(operand, our_locals, cell_vars, symbols);
         }
         Expr::Subscript { object, index } => {
-            collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
-            collect_cell_vars_from_expr(index, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(object, our_locals, cell_vars, symbols);
+            collect_cell_vars_from_expr(index, our_locals, cell_vars, symbols);
         }
         Expr::Call { args, .. } => {
-            collect_cell_vars_from_args(args, our_locals, cell_vars, interner);
+            collect_cell_vars_from_args(args, our_locals, cell_vars, symbols);
         }
         Expr::AttrCall { object, args, .. } => {
-            collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
-            collect_cell_vars_from_args(args, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(object, our_locals, cell_vars, symbols);
+            collect_cell_vars_from_args(args, our_locals, cell_vars, symbols);
         }
         Expr::IndirectCall { callable, args } => {
-            collect_cell_vars_from_expr(callable, our_locals, cell_vars, interner);
-            collect_cell_vars_from_args(args, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(callable, our_locals, cell_vars, symbols);
+            collect_cell_vars_from_args(args, our_locals, cell_vars, symbols);
         }
         Expr::AttrGet { object, .. } => {
-            collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(object, our_locals, cell_vars, symbols);
         }
         Expr::IfElse { test, body, orelse } => {
-            collect_cell_vars_from_expr(test, our_locals, cell_vars, interner);
-            collect_cell_vars_from_expr(body, our_locals, cell_vars, interner);
-            collect_cell_vars_from_expr(orelse, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(test, our_locals, cell_vars, symbols);
+            collect_cell_vars_from_expr(body, our_locals, cell_vars, symbols);
+            collect_cell_vars_from_expr(orelse, our_locals, cell_vars, symbols);
         }
         Expr::ListComp { elt, generators, .. } | Expr::SetComp { elt, generators, .. } => {
-            collect_cell_vars_from_expr(elt, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(elt, our_locals, cell_vars, symbols);
             for generator in generators {
-                collect_cell_vars_from_expr(&generator.iter, our_locals, cell_vars, interner);
+                collect_cell_vars_from_expr(&generator.iter, our_locals, cell_vars, symbols);
                 for cond in &generator.ifs {
-                    collect_cell_vars_from_expr(cond, our_locals, cell_vars, interner);
+                    collect_cell_vars_from_expr(cond, our_locals, cell_vars, symbols);
                 }
             }
         }
         Expr::DictComp {
             key, value, generators, ..
         } => {
-            collect_cell_vars_from_expr(key, our_locals, cell_vars, interner);
-            collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(key, our_locals, cell_vars, symbols);
+            collect_cell_vars_from_expr(value, our_locals, cell_vars, symbols);
             for generator in generators {
-                collect_cell_vars_from_expr(&generator.iter, our_locals, cell_vars, interner);
+                collect_cell_vars_from_expr(&generator.iter, our_locals, cell_vars, symbols);
                 for cond in &generator.ifs {
-                    collect_cell_vars_from_expr(cond, our_locals, cell_vars, interner);
+                    collect_cell_vars_from_expr(cond, our_locals, cell_vars, symbols);
                 }
             }
         }
         Expr::FString(parts) => {
             for part in parts {
                 if let FStringPart::Interpolation { expr, .. } = part {
-                    collect_cell_vars_from_expr(expr, our_locals, cell_vars, interner);
+                    collect_cell_vars_from_expr(expr, our_locals, cell_vars, symbols);
                 }
             }
         }
         Expr::Named { value, .. } => {
             // Only scan the value expression for cell vars
-            collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(value, our_locals, cell_vars, symbols);
         }
         Expr::Await(value) => {
-            collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(value, our_locals, cell_vars, symbols);
         }
         // Leaf expressions
         Expr::Literal(_) | Expr::Builtin(_) | Expr::Name(_) | Expr::Lambda { .. } | Expr::Slice { .. } => {}
@@ -3668,25 +3668,25 @@ fn collect_cell_vars_from_expr(
 /// Helper to collect cell vars from argument expressions.
 fn collect_cell_vars_from_args(
     args: &ArgExprs,
-    our_locals: &AHashSet<StringId>,
-    cell_vars: &mut AHashSet<StringId>,
-    interner: &CompileInterns<'_>,
+    our_locals: &AHashSet<SymbolId>,
+    cell_vars: &mut AHashSet<SymbolId>,
+    symbols: &CompileSymbols<'_>,
 ) {
     match args {
         ArgExprs::Empty => {}
-        ArgExprs::One(arg) => collect_cell_vars_from_expr(arg, our_locals, cell_vars, interner),
+        ArgExprs::One(arg) => collect_cell_vars_from_expr(arg, our_locals, cell_vars, symbols),
         ArgExprs::Two(arg1, arg2) => {
-            collect_cell_vars_from_expr(arg1, our_locals, cell_vars, interner);
-            collect_cell_vars_from_expr(arg2, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(arg1, our_locals, cell_vars, symbols);
+            collect_cell_vars_from_expr(arg2, our_locals, cell_vars, symbols);
         }
         ArgExprs::Args(args) => {
             for arg in args {
-                collect_cell_vars_from_expr(arg, our_locals, cell_vars, interner);
+                collect_cell_vars_from_expr(arg, our_locals, cell_vars, symbols);
             }
         }
         ArgExprs::Kwargs(kwargs) => {
             for kwarg in kwargs {
-                collect_cell_vars_from_expr(&kwarg.value, our_locals, cell_vars, interner);
+                collect_cell_vars_from_expr(&kwarg.value, our_locals, cell_vars, symbols);
             }
         }
         ArgExprs::ArgsKargs {
@@ -3697,36 +3697,36 @@ fn collect_cell_vars_from_args(
         } => {
             if let Some(args) = args {
                 for arg in args {
-                    collect_cell_vars_from_expr(arg, our_locals, cell_vars, interner);
+                    collect_cell_vars_from_expr(arg, our_locals, cell_vars, symbols);
                 }
             }
             if let Some(kwargs) = kwargs {
                 for kwarg in kwargs {
-                    collect_cell_vars_from_expr(&kwarg.value, our_locals, cell_vars, interner);
+                    collect_cell_vars_from_expr(&kwarg.value, our_locals, cell_vars, symbols);
                 }
             }
             if let Some(var_args) = var_args {
-                collect_cell_vars_from_expr(var_args, our_locals, cell_vars, interner);
+                collect_cell_vars_from_expr(var_args, our_locals, cell_vars, symbols);
             }
             if let Some(var_kwargs) = var_kwargs {
-                collect_cell_vars_from_expr(var_kwargs, our_locals, cell_vars, interner);
+                collect_cell_vars_from_expr(var_kwargs, our_locals, cell_vars, symbols);
             }
         }
         ArgExprs::GeneralizedCall { args, kwargs } => {
             for arg in args {
                 match arg {
                     CallArg::Value(e) | CallArg::Unpack(e) => {
-                        collect_cell_vars_from_expr(e, our_locals, cell_vars, interner);
+                        collect_cell_vars_from_expr(e, our_locals, cell_vars, symbols);
                     }
                 }
             }
             for kwarg in kwargs {
                 match kwarg {
                     CallKwarg::Named(kw) => {
-                        collect_cell_vars_from_expr(&kw.value, our_locals, cell_vars, interner);
+                        collect_cell_vars_from_expr(&kw.value, our_locals, cell_vars, symbols);
                     }
                     CallKwarg::Unpack(e) => {
-                        collect_cell_vars_from_expr(e, our_locals, cell_vars, interner);
+                        collect_cell_vars_from_expr(e, our_locals, cell_vars, symbols);
                     }
                 }
             }
@@ -3739,66 +3739,66 @@ fn collect_cell_vars_from_args(
 /// This is used to find what names a nested function references from enclosing scopes.
 fn collect_referenced_names_from_node(
     node: &ParseNode,
-    referenced: &mut AHashSet<StringId>,
-    interner: &CompileInterns<'_>,
+    referenced: &mut AHashSet<SymbolId>,
+    symbols: &CompileSymbols<'_>,
 ) {
     match node {
         Node::Expr(expr) | Node::Return(Some(expr)) => {
-            collect_referenced_names_from_expr(expr, referenced, interner);
+            collect_referenced_names_from_expr(expr, referenced, symbols);
         }
         Node::Raise { exc, cause } => {
             for expr in exc.iter().chain(cause) {
-                collect_referenced_names_from_expr(expr, referenced, interner);
+                collect_referenced_names_from_expr(expr, referenced, symbols);
             }
         }
         Node::Return(None) => {}
         Node::Assert { test, msg } => {
-            collect_referenced_names_from_expr(test, referenced, interner);
+            collect_referenced_names_from_expr(test, referenced, symbols);
             if let Some(m) = msg {
-                collect_referenced_names_from_expr(m, referenced, interner);
+                collect_referenced_names_from_expr(m, referenced, symbols);
             }
         }
         Node::Assign { object, .. } => {
-            collect_referenced_names_from_expr(object, referenced, interner);
+            collect_referenced_names_from_expr(object, referenced, symbols);
         }
         Node::UnpackAssign { targets, object, .. } => {
             for target in targets {
-                collect_referenced_names_from_unpack_target(target, referenced, interner);
+                collect_referenced_names_from_unpack_target(target, referenced, symbols);
             }
-            collect_referenced_names_from_expr(object, referenced, interner);
+            collect_referenced_names_from_expr(object, referenced, symbols);
         }
         Node::OpAssign { target, value, .. } => {
             // OpAssign reads the target before writing
             referenced.insert(target.name_id);
-            collect_referenced_names_from_expr(value, referenced, interner);
+            collect_referenced_names_from_expr(value, referenced, symbols);
         }
         Node::SubscriptOpAssign {
             target, index, value, ..
         } => {
-            collect_referenced_names_from_expr(target, referenced, interner);
-            collect_referenced_names_from_expr(index, referenced, interner);
-            collect_referenced_names_from_expr(value, referenced, interner);
+            collect_referenced_names_from_expr(target, referenced, symbols);
+            collect_referenced_names_from_expr(index, referenced, symbols);
+            collect_referenced_names_from_expr(value, referenced, symbols);
         }
         Node::SubscriptAssign {
             target, index, value, ..
         } => {
-            collect_referenced_names_from_expr(target, referenced, interner);
-            collect_referenced_names_from_expr(index, referenced, interner);
-            collect_referenced_names_from_expr(value, referenced, interner);
+            collect_referenced_names_from_expr(target, referenced, symbols);
+            collect_referenced_names_from_expr(index, referenced, symbols);
+            collect_referenced_names_from_expr(value, referenced, symbols);
         }
         Node::AttrOpAssign { object, value, .. } => {
-            collect_referenced_names_from_expr(object, referenced, interner);
-            collect_referenced_names_from_expr(value, referenced, interner);
+            collect_referenced_names_from_expr(object, referenced, symbols);
+            collect_referenced_names_from_expr(value, referenced, symbols);
         }
         Node::AttrAssign { object, value, .. } => {
-            collect_referenced_names_from_expr(object, referenced, interner);
-            collect_referenced_names_from_expr(value, referenced, interner);
+            collect_referenced_names_from_expr(object, referenced, symbols);
+            collect_referenced_names_from_expr(value, referenced, symbols);
         }
         Node::ChainAssign { targets, object } => {
             for target in targets {
-                collect_referenced_names_from_assign_target(target, referenced, interner);
+                collect_referenced_names_from_assign_target(target, referenced, symbols);
             }
-            collect_referenced_names_from_expr(object, referenced, interner);
+            collect_referenced_names_from_expr(object, referenced, symbols);
         }
         Node::For {
             target,
@@ -3806,31 +3806,31 @@ fn collect_referenced_names_from_node(
             body,
             or_else,
         } => {
-            collect_referenced_names_from_unpack_target(target, referenced, interner);
-            collect_referenced_names_from_expr(iter, referenced, interner);
+            collect_referenced_names_from_unpack_target(target, referenced, symbols);
+            collect_referenced_names_from_expr(iter, referenced, symbols);
             for n in body {
-                collect_referenced_names_from_node(n, referenced, interner);
+                collect_referenced_names_from_node(n, referenced, symbols);
             }
             for n in or_else {
-                collect_referenced_names_from_node(n, referenced, interner);
+                collect_referenced_names_from_node(n, referenced, symbols);
             }
         }
         Node::While { test, body, or_else } => {
-            collect_referenced_names_from_expr(test, referenced, interner);
+            collect_referenced_names_from_expr(test, referenced, symbols);
             for n in body {
-                collect_referenced_names_from_node(n, referenced, interner);
+                collect_referenced_names_from_node(n, referenced, symbols);
             }
             for n in or_else {
-                collect_referenced_names_from_node(n, referenced, interner);
+                collect_referenced_names_from_node(n, referenced, symbols);
             }
         }
         Node::If { test, body, or_else } => {
-            collect_referenced_names_from_expr(test, referenced, interner);
+            collect_referenced_names_from_expr(test, referenced, symbols);
             for n in body {
-                collect_referenced_names_from_node(n, referenced, interner);
+                collect_referenced_names_from_node(n, referenced, symbols);
             }
             for n in or_else {
-                collect_referenced_names_from_node(n, referenced, interner);
+                collect_referenced_names_from_node(n, referenced, symbols);
             }
         }
         // A class body's `__annotate__` references nothing from enclosing scopes.
@@ -3844,16 +3844,16 @@ fn collect_referenced_names_from_node(
         } => {
             // Default parameter expressions evaluate in *our* scope at function-definition time.
             for default in signature.default_exprs() {
-                collect_referenced_names_from_expr(default, referenced, interner);
+                collect_referenced_names_from_expr(default, referenced, symbols);
             }
             // Recurse into the nested function's body so transitively-captured
             // names propagate out of it. Without this, an intermediate scope
             // that doesn't itself reference a deep capture would not see it
             // — the bug behind issue #477's multi-hop closures.
-            collect_nested_function_references(signature, body, referenced, interner);
+            collect_nested_function_references(signature, body, referenced, symbols);
             // Decorators evaluate in *our* scope, so their names are ours to collect.
             for decorator in decorators {
-                collect_referenced_names_from_expr(decorator, referenced, interner);
+                collect_referenced_names_from_expr(decorator, referenced, symbols);
             }
         }
         Node::ClassDef {
@@ -3865,18 +3865,18 @@ fn collect_referenced_names_from_node(
             for base in bases {
                 match base {
                     SequenceItem::Value(e) | SequenceItem::Unpack(e) => {
-                        collect_referenced_names_from_expr(e, referenced, interner);
+                        collect_referenced_names_from_expr(e, referenced, symbols);
                     }
                 }
             }
             for kw in keywords {
-                collect_referenced_names_from_expr(&kw.value, referenced, interner);
+                collect_referenced_names_from_expr(&kw.value, referenced, symbols);
             }
             // The class body is a separate scope and the name is a binding, so
             // neither is a reference here — but decorators evaluate in *our*
             // scope, so their names are ours to collect.
             for decorator in decorators {
-                collect_referenced_names_from_expr(decorator, referenced, interner);
+                collect_referenced_names_from_expr(decorator, referenced, symbols);
             }
         }
         Node::Try(Try {
@@ -3886,35 +3886,35 @@ fn collect_referenced_names_from_node(
             finally,
         }) => {
             for n in body {
-                collect_referenced_names_from_node(n, referenced, interner);
+                collect_referenced_names_from_node(n, referenced, symbols);
             }
             for handler in handlers {
                 // Exception type expression may reference names
                 if let Some(ref exc_type) = handler.exc_type {
-                    collect_referenced_names_from_expr(exc_type, referenced, interner);
+                    collect_referenced_names_from_expr(exc_type, referenced, symbols);
                 }
                 for n in &handler.body {
-                    collect_referenced_names_from_node(n, referenced, interner);
+                    collect_referenced_names_from_node(n, referenced, symbols);
                 }
             }
             for n in or_else {
-                collect_referenced_names_from_node(n, referenced, interner);
+                collect_referenced_names_from_node(n, referenced, symbols);
             }
             for n in finally {
-                collect_referenced_names_from_node(n, referenced, interner);
+                collect_referenced_names_from_node(n, referenced, symbols);
             }
         }
         Node::Match { subject, cases, .. } => {
-            collect_referenced_names_from_expr(subject, referenced, interner);
+            collect_referenced_names_from_expr(subject, referenced, symbols);
             for case in cases {
                 for_each_pattern_expr(&case.pattern, &mut |expr| {
-                    collect_referenced_names_from_expr(expr, referenced, interner);
+                    collect_referenced_names_from_expr(expr, referenced, symbols);
                 });
                 if let Some(guard) = &case.guard {
-                    collect_referenced_names_from_expr(guard, referenced, interner);
+                    collect_referenced_names_from_expr(guard, referenced, symbols);
                 }
                 for n in &case.body {
-                    collect_referenced_names_from_node(n, referenced, interner);
+                    collect_referenced_names_from_node(n, referenced, symbols);
                 }
             }
         }
@@ -3922,11 +3922,11 @@ fn collect_referenced_names_from_node(
             context, target, body, ..
         } => {
             if let Some(target) = target {
-                collect_referenced_names_from_unpack_target(target, referenced, interner);
+                collect_referenced_names_from_unpack_target(target, referenced, symbols);
             }
-            collect_referenced_names_from_expr(context, referenced, interner);
+            collect_referenced_names_from_expr(context, referenced, symbols);
             for n in body {
-                collect_referenced_names_from_node(n, referenced, interner);
+                collect_referenced_names_from_node(n, referenced, symbols);
             }
         }
         // Imports create bindings but don't reference names
@@ -3948,15 +3948,15 @@ fn collect_referenced_names_from_node(
 fn collect_nested_function_references(
     signature: &ParsedSignature,
     body: &[ParseNode],
-    referenced: &mut AHashSet<StringId>,
-    interner: &CompileInterns<'_>,
+    referenced: &mut AHashSet<SymbolId>,
+    symbols: &CompileSymbols<'_>,
 ) {
     // First collect everything the nested function references — this recurses
     // into still-deeper FunctionDefs via the same path, so the transitive
     // closure builds up bottom-up.
-    let mut nested_referenced: AHashSet<StringId> = AHashSet::new();
+    let mut nested_referenced: AHashSet<SymbolId> = AHashSet::new();
     for n in body {
-        collect_referenced_names_from_node(n, &mut nested_referenced, interner);
+        collect_referenced_names_from_node(n, &mut nested_referenced, symbols);
     }
 
     // Anything the nested function binds for itself does NOT propagate out.
@@ -3974,10 +3974,10 @@ fn collect_nested_function_references(
             &mut nested_global,
             &mut nested_nonlocal,
             &mut nested_assigned,
-            interner,
+            symbols,
         );
     }
-    let nested_params: AHashSet<StringId> = signature.param_names().collect();
+    let nested_params: AHashSet<SymbolId> = signature.param_names().collect();
     for name in nested_referenced {
         if nested_assigned.contains(&name) || nested_params.contains(&name) || nested_global.contains(&name) {
             continue;
@@ -3989,8 +3989,8 @@ fn collect_nested_function_references(
 /// Collects all names referenced in an expression.
 fn collect_referenced_names_from_expr(
     expr: &ExprLoc,
-    referenced: &mut AHashSet<StringId>,
-    interner: &CompileInterns<'_>,
+    referenced: &mut AHashSet<SymbolId>,
+    symbols: &CompileSymbols<'_>,
 ) {
     match &expr.expr {
         Expr::Name(ident) => {
@@ -4003,79 +4003,79 @@ fn collect_referenced_names_from_expr(
                 let expr = match item {
                     SequenceItem::Value(e) | SequenceItem::Unpack(e) => e,
                 };
-                collect_referenced_names_from_expr(expr, referenced, interner);
+                collect_referenced_names_from_expr(expr, referenced, symbols);
             }
         }
         Expr::Dict(dict_items) => {
             for item in dict_items {
                 match item {
                     DictItem::Pair(key, value) => {
-                        collect_referenced_names_from_expr(key, referenced, interner);
-                        collect_referenced_names_from_expr(value, referenced, interner);
+                        collect_referenced_names_from_expr(key, referenced, symbols);
+                        collect_referenced_names_from_expr(value, referenced, symbols);
                     }
-                    DictItem::Unpack(e) => collect_referenced_names_from_expr(e, referenced, interner),
+                    DictItem::Unpack(e) => collect_referenced_names_from_expr(e, referenced, symbols),
                 }
             }
         }
         Expr::Op { left, right, .. } | Expr::CmpOp { left, right, .. } => {
-            collect_referenced_names_from_expr(left, referenced, interner);
-            collect_referenced_names_from_expr(right, referenced, interner);
+            collect_referenced_names_from_expr(left, referenced, symbols);
+            collect_referenced_names_from_expr(right, referenced, symbols);
         }
         Expr::ChainCmp { left, comparisons } => {
-            collect_referenced_names_from_expr(left, referenced, interner);
+            collect_referenced_names_from_expr(left, referenced, symbols);
             for (_, expr) in comparisons {
-                collect_referenced_names_from_expr(expr, referenced, interner);
+                collect_referenced_names_from_expr(expr, referenced, symbols);
             }
         }
         Expr::Not(operand) | Expr::UnaryMinus(operand) | Expr::UnaryPlus(operand) | Expr::UnaryInvert(operand) => {
-            collect_referenced_names_from_expr(operand, referenced, interner);
+            collect_referenced_names_from_expr(operand, referenced, symbols);
         }
         Expr::FString(parts) => {
-            collect_referenced_names_from_fstring_parts(parts, referenced, interner);
+            collect_referenced_names_from_fstring_parts(parts, referenced, symbols);
         }
         Expr::Subscript { object, index } => {
-            collect_referenced_names_from_expr(object, referenced, interner);
-            collect_referenced_names_from_expr(index, referenced, interner);
+            collect_referenced_names_from_expr(object, referenced, symbols);
+            collect_referenced_names_from_expr(index, referenced, symbols);
         }
         Expr::Call { callable, args } => {
             // Check if the callable is a Name reference
             if let Callable::Name(ident) = callable {
                 referenced.insert(ident.name_id);
             }
-            collect_referenced_names_from_args(args, referenced, interner);
+            collect_referenced_names_from_args(args, referenced, symbols);
         }
         Expr::AttrCall { object, args, .. } => {
-            collect_referenced_names_from_expr(object, referenced, interner);
-            collect_referenced_names_from_args(args, referenced, interner);
+            collect_referenced_names_from_expr(object, referenced, symbols);
+            collect_referenced_names_from_args(args, referenced, symbols);
         }
         Expr::AttrGet { object, .. } => {
-            collect_referenced_names_from_expr(object, referenced, interner);
+            collect_referenced_names_from_expr(object, referenced, symbols);
         }
         Expr::IndirectCall { callable, args } => {
             // Collect references from the callable expression and arguments
-            collect_referenced_names_from_expr(callable, referenced, interner);
-            collect_referenced_names_from_args(args, referenced, interner);
+            collect_referenced_names_from_expr(callable, referenced, symbols);
+            collect_referenced_names_from_args(args, referenced, symbols);
         }
         Expr::IfElse { test, body, orelse } => {
-            collect_referenced_names_from_expr(test, referenced, interner);
-            collect_referenced_names_from_expr(body, referenced, interner);
-            collect_referenced_names_from_expr(orelse, referenced, interner);
+            collect_referenced_names_from_expr(test, referenced, symbols);
+            collect_referenced_names_from_expr(body, referenced, symbols);
+            collect_referenced_names_from_expr(orelse, referenced, symbols);
         }
         Expr::ListComp { elt, generators, .. } | Expr::SetComp { elt, generators, .. } => {
-            collect_referenced_names_from_comprehension(generators, Some(elt), None, referenced, interner);
+            collect_referenced_names_from_comprehension(generators, Some(elt), None, referenced, symbols);
         }
         Expr::DictComp {
             key, value, generators, ..
         } => {
-            collect_referenced_names_from_comprehension(generators, None, Some((key, value)), referenced, interner);
+            collect_referenced_names_from_comprehension(generators, None, Some((key, value)), referenced, symbols);
         }
         Expr::LambdaRaw { signature, body, .. } => {
             // Build set of parameter names (these are local to the lambda, not free variables)
-            let lambda_params: AHashSet<StringId> = signature.param_names().collect();
+            let lambda_params: AHashSet<SymbolId> = signature.param_names().collect();
 
             // Collect references from the body expression into a temporary set
-            let mut body_refs: AHashSet<StringId> = AHashSet::new();
-            collect_referenced_names_from_expr(body, &mut body_refs, interner);
+            let mut body_refs: AHashSet<SymbolId> = AHashSet::new();
+            collect_referenced_names_from_expr(body, &mut body_refs, symbols);
 
             // Filter out the lambda's own parameters before adding to referenced set.
             // The lambda's parameters are bound by the lambda, not free from outer scope.
@@ -4089,17 +4089,17 @@ fn collect_referenced_names_from_expr(
             // scope, so they can reference outer scope without filtering.
             for param in &signature.pos_args {
                 if let Some(ref default) = param.default {
-                    collect_referenced_names_from_expr(default, referenced, interner);
+                    collect_referenced_names_from_expr(default, referenced, symbols);
                 }
             }
             for param in &signature.args {
                 if let Some(ref default) = param.default {
-                    collect_referenced_names_from_expr(default, referenced, interner);
+                    collect_referenced_names_from_expr(default, referenced, symbols);
                 }
             }
             for param in &signature.kwargs {
                 if let Some(ref default) = param.default {
-                    collect_referenced_names_from_expr(default, referenced, interner);
+                    collect_referenced_names_from_expr(default, referenced, symbols);
                 }
             }
         }
@@ -4109,21 +4109,21 @@ fn collect_referenced_names_from_expr(
         }
         Expr::Named { value, .. } => {
             // Only the value is referenced; target is being assigned, not read
-            collect_referenced_names_from_expr(value, referenced, interner);
+            collect_referenced_names_from_expr(value, referenced, symbols);
         }
         Expr::Slice { lower, upper, step } => {
             if let Some(expr) = lower {
-                collect_referenced_names_from_expr(expr, referenced, interner);
+                collect_referenced_names_from_expr(expr, referenced, symbols);
             }
             if let Some(expr) = upper {
-                collect_referenced_names_from_expr(expr, referenced, interner);
+                collect_referenced_names_from_expr(expr, referenced, symbols);
             }
             if let Some(expr) = step {
-                collect_referenced_names_from_expr(expr, referenced, interner);
+                collect_referenced_names_from_expr(expr, referenced, symbols);
             }
         }
         Expr::Await(value) => {
-            collect_referenced_names_from_expr(value, referenced, interner);
+            collect_referenced_names_from_expr(value, referenced, symbols);
         }
     }
 }
@@ -4136,44 +4136,44 @@ fn collect_referenced_names_from_comprehension(
     generators: &[Comprehension],
     elt: Option<&ExprLoc>,
     key_value: Option<(&ExprLoc, &ExprLoc)>,
-    referenced: &mut AHashSet<StringId>,
-    interner: &CompileInterns<'_>,
+    referenced: &mut AHashSet<SymbolId>,
+    symbols: &CompileSymbols<'_>,
 ) {
     // Track loop variable names (these are local to the comprehension)
-    let mut comp_locals: AHashSet<StringId> = AHashSet::new();
+    let mut comp_locals: AHashSet<SymbolId> = AHashSet::new();
 
     // Collect references from expressions that can see prior loop variables.
     // These need to be filtered against comp_locals before adding to referenced.
-    let mut inner_refs: AHashSet<StringId> = AHashSet::new();
+    let mut inner_refs: AHashSet<SymbolId> = AHashSet::new();
 
     for (i, comp) in generators.iter().enumerate() {
         if i == 0 {
             // FIRST generator's iter expression truly references enclosing scope
             // (evaluated before any loop variable is defined).
-            collect_referenced_names_from_expr(&comp.iter, referenced, interner);
+            collect_referenced_names_from_expr(&comp.iter, referenced, symbols);
         } else {
             // SUBSEQUENT generators' iter expressions can reference prior loop variables.
             // For example, in `[y for x in xs for y in x]`, the `x` in the second
             // generator's iter is the first generator's loop variable, not outer scope.
-            collect_referenced_names_from_expr(&comp.iter, &mut inner_refs, interner);
+            collect_referenced_names_from_expr(&comp.iter, &mut inner_refs, symbols);
         }
 
         // Add this generator's target(s) to local set
-        collect_names_from_unpack_target(&comp.target, &mut comp_locals, interner);
+        collect_names_from_unpack_target(&comp.target, &mut comp_locals, symbols);
 
         // Filter conditions can see prior loop variables - collect separately
         for cond in &comp.ifs {
-            collect_referenced_names_from_expr(cond, &mut inner_refs, interner);
+            collect_referenced_names_from_expr(cond, &mut inner_refs, symbols);
         }
     }
 
     // Element expression(s) can see all loop variables - collect separately
     if let Some(e) = elt {
-        collect_referenced_names_from_expr(e, &mut inner_refs, interner);
+        collect_referenced_names_from_expr(e, &mut inner_refs, symbols);
     }
     if let Some((k, v)) = key_value {
-        collect_referenced_names_from_expr(k, &mut inner_refs, interner);
-        collect_referenced_names_from_expr(v, &mut inner_refs, interner);
+        collect_referenced_names_from_expr(k, &mut inner_refs, symbols);
+        collect_referenced_names_from_expr(v, &mut inner_refs, symbols);
     }
 
     // Add inner references that are NOT comprehension-locals to the outer referenced set.
@@ -4188,24 +4188,24 @@ fn collect_referenced_names_from_comprehension(
 /// Collects referenced names from argument expressions.
 fn collect_referenced_names_from_args(
     args: &ArgExprs,
-    referenced: &mut AHashSet<StringId>,
-    interner: &CompileInterns<'_>,
+    referenced: &mut AHashSet<SymbolId>,
+    symbols: &CompileSymbols<'_>,
 ) {
     match args {
         ArgExprs::Empty => {}
-        ArgExprs::One(e) => collect_referenced_names_from_expr(e, referenced, interner),
+        ArgExprs::One(e) => collect_referenced_names_from_expr(e, referenced, symbols),
         ArgExprs::Two(e1, e2) => {
-            collect_referenced_names_from_expr(e1, referenced, interner);
-            collect_referenced_names_from_expr(e2, referenced, interner);
+            collect_referenced_names_from_expr(e1, referenced, symbols);
+            collect_referenced_names_from_expr(e2, referenced, symbols);
         }
         ArgExprs::Args(exprs) => {
             for e in exprs {
-                collect_referenced_names_from_expr(e, referenced, interner);
+                collect_referenced_names_from_expr(e, referenced, symbols);
             }
         }
         ArgExprs::Kwargs(kwargs) => {
             for kwarg in kwargs {
-                collect_referenced_names_from_expr(&kwarg.value, referenced, interner);
+                collect_referenced_names_from_expr(&kwarg.value, referenced, symbols);
             }
         }
         ArgExprs::ArgsKargs {
@@ -4216,36 +4216,36 @@ fn collect_referenced_names_from_args(
         } => {
             if let Some(args) = args {
                 for e in args {
-                    collect_referenced_names_from_expr(e, referenced, interner);
+                    collect_referenced_names_from_expr(e, referenced, symbols);
                 }
             }
             if let Some(kwargs) = kwargs {
                 for kwarg in kwargs {
-                    collect_referenced_names_from_expr(&kwarg.value, referenced, interner);
+                    collect_referenced_names_from_expr(&kwarg.value, referenced, symbols);
                 }
             }
             if let Some(e) = var_args {
-                collect_referenced_names_from_expr(e, referenced, interner);
+                collect_referenced_names_from_expr(e, referenced, symbols);
             }
             if let Some(e) = var_kwargs {
-                collect_referenced_names_from_expr(e, referenced, interner);
+                collect_referenced_names_from_expr(e, referenced, symbols);
             }
         }
         ArgExprs::GeneralizedCall { args, kwargs } => {
             for arg in args {
                 match arg {
                     CallArg::Value(e) | CallArg::Unpack(e) => {
-                        collect_referenced_names_from_expr(e, referenced, interner);
+                        collect_referenced_names_from_expr(e, referenced, symbols);
                     }
                 }
             }
             for kwarg in kwargs {
                 match kwarg {
                     CallKwarg::Named(kw) => {
-                        collect_referenced_names_from_expr(&kw.value, referenced, interner);
+                        collect_referenced_names_from_expr(&kw.value, referenced, symbols);
                     }
                     CallKwarg::Unpack(e) => {
-                        collect_referenced_names_from_expr(e, referenced, interner);
+                        collect_referenced_names_from_expr(e, referenced, symbols);
                     }
                 }
             }
@@ -4256,22 +4256,22 @@ fn collect_referenced_names_from_args(
 /// Collects referenced names from f-string parts (both expressions and dynamic format specs).
 fn collect_referenced_names_from_fstring_parts(
     parts: &[FStringPart],
-    referenced: &mut AHashSet<StringId>,
-    interner: &CompileInterns<'_>,
+    referenced: &mut AHashSet<SymbolId>,
+    symbols: &CompileSymbols<'_>,
 ) {
     for part in parts {
         if let FStringPart::Interpolation { expr, format_spec, .. } = part {
-            collect_referenced_names_from_expr(expr, referenced, interner);
+            collect_referenced_names_from_expr(expr, referenced, symbols);
             // Also check dynamic format specs which can contain interpolated expressions
             if let Some(FormatSpec::Dynamic(spec_parts)) = format_spec {
-                collect_referenced_names_from_fstring_parts(spec_parts, referenced, interner);
+                collect_referenced_names_from_fstring_parts(spec_parts, referenced, symbols);
             }
         }
     }
 }
 
 /// Adds every name a pattern binds (`case x`, `*rest`, `**rest`, `as name`) to `names`.
-fn collect_pattern_captures(pattern: &Pattern, names: &mut AHashSet<StringId>) {
+fn collect_pattern_captures(pattern: &Pattern, names: &mut AHashSet<SymbolId>) {
     match pattern {
         Pattern::Value(_) | Pattern::Singleton(_) => {}
         Pattern::Sequence { patterns, .. } | Pattern::Or { patterns, .. } => {
@@ -4355,25 +4355,25 @@ fn for_each_pattern_expr(pattern: &Pattern, f: &mut impl FnMut(&ExprLoc)) {
 /// they are scanned for walrus assignments instead.
 fn collect_names_from_unpack_target(
     target: &UnpackTarget,
-    names: &mut AHashSet<StringId>,
-    interner: &CompileInterns<'_>,
+    names: &mut AHashSet<SymbolId>,
+    symbols: &CompileSymbols<'_>,
 ) {
     match target {
         UnpackTarget::Name(ident) => {
             names.insert(ident.name_id);
         }
-        UnpackTarget::Starred(inner) => collect_names_from_unpack_target(inner, names, interner),
+        UnpackTarget::Starred(inner) => collect_names_from_unpack_target(inner, names, symbols),
         UnpackTarget::Tuple { targets, .. } => {
             for t in targets {
-                collect_names_from_unpack_target(t, names, interner);
+                collect_names_from_unpack_target(t, names, symbols);
             }
         }
         UnpackTarget::Attr { object, .. } => {
-            collect_assigned_names_from_expr(object, names, interner);
+            collect_assigned_names_from_expr(object, names, symbols);
         }
         UnpackTarget::Subscript { container, index, .. } => {
-            collect_assigned_names_from_expr(container, names, interner);
-            collect_assigned_names_from_expr(index, names, interner);
+            collect_assigned_names_from_expr(container, names, symbols);
+            collect_assigned_names_from_expr(index, names, symbols);
         }
     }
 }
@@ -4384,21 +4384,21 @@ fn collect_names_from_unpack_target(
 /// must be evaluated at store time, so `obj.x, y = pair` references `obj`.
 fn collect_referenced_names_from_unpack_target(
     target: &UnpackTarget,
-    referenced: &mut AHashSet<StringId>,
-    interner: &CompileInterns<'_>,
+    referenced: &mut AHashSet<SymbolId>,
+    symbols: &CompileSymbols<'_>,
 ) {
     match target {
         UnpackTarget::Name(_) => {}
-        UnpackTarget::Starred(inner) => collect_referenced_names_from_unpack_target(inner, referenced, interner),
+        UnpackTarget::Starred(inner) => collect_referenced_names_from_unpack_target(inner, referenced, symbols),
         UnpackTarget::Tuple { targets, .. } => {
             for t in targets {
-                collect_referenced_names_from_unpack_target(t, referenced, interner);
+                collect_referenced_names_from_unpack_target(t, referenced, symbols);
             }
         }
-        UnpackTarget::Attr { object, .. } => collect_referenced_names_from_expr(object, referenced, interner),
+        UnpackTarget::Attr { object, .. } => collect_referenced_names_from_expr(object, referenced, symbols),
         UnpackTarget::Subscript { container, index, .. } => {
-            collect_referenced_names_from_expr(container, referenced, interner);
-            collect_referenced_names_from_expr(index, referenced, interner);
+            collect_referenced_names_from_expr(container, referenced, symbols);
+            collect_referenced_names_from_expr(index, referenced, symbols);
         }
     }
 }
@@ -4406,22 +4406,22 @@ fn collect_referenced_names_from_unpack_target(
 /// Collects cell vars captured by lambdas inside an unpack target's expressions.
 fn collect_cell_vars_from_unpack_target(
     target: &UnpackTarget,
-    our_locals: &AHashSet<StringId>,
-    cell_vars: &mut AHashSet<StringId>,
-    interner: &CompileInterns<'_>,
+    our_locals: &AHashSet<SymbolId>,
+    cell_vars: &mut AHashSet<SymbolId>,
+    symbols: &CompileSymbols<'_>,
 ) {
     match target {
         UnpackTarget::Name(_) => {}
-        UnpackTarget::Starred(inner) => collect_cell_vars_from_unpack_target(inner, our_locals, cell_vars, interner),
+        UnpackTarget::Starred(inner) => collect_cell_vars_from_unpack_target(inner, our_locals, cell_vars, symbols),
         UnpackTarget::Tuple { targets, .. } => {
             for t in targets {
-                collect_cell_vars_from_unpack_target(t, our_locals, cell_vars, interner);
+                collect_cell_vars_from_unpack_target(t, our_locals, cell_vars, symbols);
             }
         }
-        UnpackTarget::Attr { object, .. } => collect_cell_vars_from_expr(object, our_locals, cell_vars, interner),
+        UnpackTarget::Attr { object, .. } => collect_cell_vars_from_expr(object, our_locals, cell_vars, symbols),
         UnpackTarget::Subscript { container, index, .. } => {
-            collect_cell_vars_from_expr(container, our_locals, cell_vars, interner);
-            collect_cell_vars_from_expr(index, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(container, our_locals, cell_vars, symbols);
+            collect_cell_vars_from_expr(index, our_locals, cell_vars, symbols);
         }
     }
 }
@@ -4434,23 +4434,23 @@ fn collect_cell_vars_from_unpack_target(
 /// existing container rather than introducing a new binding.
 fn collect_assigned_names_from_assign_target(
     target: &AssignTarget,
-    assigned_names: &mut AHashSet<StringId>,
-    interner: &CompileInterns<'_>,
+    assigned_names: &mut AHashSet<SymbolId>,
+    symbols: &CompileSymbols<'_>,
 ) {
     match target {
         AssignTarget::Name(ident) => {
             assigned_names.insert(ident.name_id);
         }
         AssignTarget::Subscript { target, index, .. } => {
-            collect_assigned_names_from_expr(target, assigned_names, interner);
-            collect_assigned_names_from_expr(index, assigned_names, interner);
+            collect_assigned_names_from_expr(target, assigned_names, symbols);
+            collect_assigned_names_from_expr(index, assigned_names, symbols);
         }
         AssignTarget::Attr { object, .. } => {
-            collect_assigned_names_from_expr(object, assigned_names, interner);
+            collect_assigned_names_from_expr(object, assigned_names, symbols);
         }
         AssignTarget::Unpack { targets, .. } => {
             for t in targets {
-                collect_names_from_unpack_target(t, assigned_names, interner);
+                collect_names_from_unpack_target(t, assigned_names, symbols);
             }
         }
     }
@@ -4463,22 +4463,22 @@ fn collect_assigned_names_from_assign_target(
 /// therefore contribute nothing to the cell-variable set.
 fn collect_cell_vars_from_assign_target(
     target: &AssignTarget,
-    our_locals: &AHashSet<StringId>,
-    cell_vars: &mut AHashSet<StringId>,
-    interner: &CompileInterns<'_>,
+    our_locals: &AHashSet<SymbolId>,
+    cell_vars: &mut AHashSet<SymbolId>,
+    symbols: &CompileSymbols<'_>,
 ) {
     match target {
         AssignTarget::Subscript { target, index, .. } => {
-            collect_cell_vars_from_expr(target, our_locals, cell_vars, interner);
-            collect_cell_vars_from_expr(index, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(target, our_locals, cell_vars, symbols);
+            collect_cell_vars_from_expr(index, our_locals, cell_vars, symbols);
         }
         AssignTarget::Attr { object, .. } => {
-            collect_cell_vars_from_expr(object, our_locals, cell_vars, interner);
+            collect_cell_vars_from_expr(object, our_locals, cell_vars, symbols);
         }
         AssignTarget::Name(_) => {}
         AssignTarget::Unpack { targets, .. } => {
             for t in targets {
-                collect_cell_vars_from_unpack_target(t, our_locals, cell_vars, interner);
+                collect_cell_vars_from_unpack_target(t, our_locals, cell_vars, symbols);
             }
         }
     }
@@ -4491,21 +4491,21 @@ fn collect_cell_vars_from_assign_target(
 /// reference any names on the read side.
 fn collect_referenced_names_from_assign_target(
     target: &AssignTarget,
-    referenced: &mut AHashSet<StringId>,
-    interner: &CompileInterns<'_>,
+    referenced: &mut AHashSet<SymbolId>,
+    symbols: &CompileSymbols<'_>,
 ) {
     match target {
         AssignTarget::Subscript { target, index, .. } => {
-            collect_referenced_names_from_expr(target, referenced, interner);
-            collect_referenced_names_from_expr(index, referenced, interner);
+            collect_referenced_names_from_expr(target, referenced, symbols);
+            collect_referenced_names_from_expr(index, referenced, symbols);
         }
         AssignTarget::Attr { object, .. } => {
-            collect_referenced_names_from_expr(object, referenced, interner);
+            collect_referenced_names_from_expr(object, referenced, symbols);
         }
         AssignTarget::Name(_) => {}
         AssignTarget::Unpack { targets, .. } => {
             for t in targets {
-                collect_referenced_names_from_unpack_target(t, referenced, interner);
+                collect_referenced_names_from_unpack_target(t, referenced, symbols);
             }
         }
     }

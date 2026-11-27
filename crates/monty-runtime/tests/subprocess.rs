@@ -1993,7 +1993,7 @@ fn overlapping_dict_merges_are_not_charged_for_absent_growth() {
 }
 
 /// A rejected `eval()` / `exec()` snippet leaves nothing behind: the filename,
-/// source and anything the failed parse interned are dropped again, so a loop
+/// source and symbols created by the failed parse are dropped again, so a loop
 /// of failing calls stays inside a budget that all their leftovers would blow.
 #[test]
 fn rejected_snippets_are_not_retained() {

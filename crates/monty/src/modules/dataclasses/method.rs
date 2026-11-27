@@ -23,7 +23,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::{HashValue, identity_hash},
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
-    intern::{Interns, StaticStrings, StringId},
+    symbols::{StaticStrings, SymbolId, SymbolTable},
     types::{
         LazyHeapSet, PyTrait, Type, TypeRef,
         host_class::write_dataclass_repr,
@@ -60,11 +60,11 @@ pub(crate) enum MethodKind {
     /// `__init__`: binds arguments to the fields, then runs `__post_init__`.
     Init(InitPlan),
     /// `__repr__`: `C(x=1, y=2)`.
-    Repr(Vec<StringId>),
+    Repr(Vec<SymbolId>),
     /// `__eq__`: field-wise, against an instance of the same class only.
-    Eq(Vec<StringId>),
+    Eq(Vec<SymbolId>),
     /// `__hash__` for `eq=True, frozen=True`: the hash of the field tuple.
-    Hash(Vec<StringId>),
+    Hash(Vec<SymbolId>),
     /// `frozen=True`'s `__setattr__`: refuses every assignment.
     FrozenSetattr,
     /// `frozen=True`'s `__delattr__`: refuses every deletion.
@@ -74,13 +74,13 @@ pub(crate) enum MethodKind {
 impl MethodKind {
     /// Every parameter, `self` first, with whether each is optional, as the
     /// generated `def` declares them.
-    fn params<'a>(&self, interns: &'a Interns) -> Vec<(&'a str, bool)> {
-        let mut params = vec![(self.self_param(interns), false)];
+    fn params<'a>(&self, symbols: &'a SymbolTable) -> Vec<(&'a str, bool)> {
+        let mut params = vec![(self.self_param(symbols), false)];
         match self {
             Self::Init(plan) => params.extend(
                 plan.fields
                     .iter()
-                    .map(|field| (interns.get_str(field.name), field.init.is_optional())),
+                    .map(|field| (symbols.get_str(field.name), field.init.is_optional())),
             ),
             Self::Repr(_) | Self::Hash(_) => {}
             Self::Eq(_) => params.push(("other", false)),
@@ -92,9 +92,9 @@ impl MethodKind {
 
     /// The name of the `self` parameter: CPython's `__init__` renames it to
     /// `__dataclass_self__` when a field is called `self`.
-    fn self_param(&self, interns: &Interns) -> &'static str {
+    fn self_param(&self, symbols: &SymbolTable) -> &'static str {
         match self {
-            Self::Init(plan) if plan.fields.iter().any(|field| interns.get_str(field.name) == "self") => {
+            Self::Init(plan) if plan.fields.iter().any(|field| symbols.get_str(field.name) == "self") => {
                 "__dataclass_self__"
             }
             _ => "self",
@@ -132,7 +132,7 @@ pub(crate) struct InitPlan {
 /// One parameter of a generated `__init__`.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct InitField {
-    name: StringId,
+    name: SymbolId,
     /// The default or factory captured at decoration; [`FieldInit::Unsupplied`]
     /// for a required field.
     init: FieldInit,
@@ -189,7 +189,7 @@ impl<C: ContainsHeap> DropWithContext<C> for FieldInit {
 
 impl DataclassMethod {
     /// A generated `__init__` taking ownership of the captured defaults in `fields`.
-    pub fn init(class_name: String, fields: Vec<(StringId, FieldInit)>, post_init: bool, frozen: bool) -> Self {
+    pub fn init(class_name: String, fields: Vec<(SymbolId, FieldInit)>, post_init: bool, frozen: bool) -> Self {
         let fields = fields
             .into_iter()
             .map(|(name, init)| InitField { name, init })
@@ -298,11 +298,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DataclassMethod> {
 /// sandbox class: CPython's methods accept any object with the right
 /// attributes, a documented divergence.
 fn call_method(method_id: HeapId, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let interns = vm.interns;
+    let symbols = vm.symbols;
     let method = method_at(method_id, vm);
     let qualname = method.qualname();
     let dunder = method.dunder();
-    let params = method.kind.params(interns);
+    let params = method.kind.params(symbols);
     // Binding leaves every required slot filled, `self` among them; only an
     // `__init__` field with a default can still be empty.
     let mut slots = bind_def(&qualname, &params, false, args, vm)?.into_iter();
@@ -358,7 +358,7 @@ fn method_at<'a>(method_id: HeapId, vm: &'a VM<'_>) -> &'a DataclassMethod {
 
 /// A repr/eq/hash method's field names, cloned out so the heap is free while
 /// the fields are read (which can run user `__eq__`/`__repr__`).
-fn field_names(method_id: HeapId, vm: &VM<'_>) -> Vec<StringId> {
+fn field_names(method_id: HeapId, vm: &VM<'_>) -> Vec<SymbolId> {
     match &method_at(method_id, vm).kind {
         MethodKind::Repr(names) | MethodKind::Eq(names) | MethodKind::Hash(names) => names.clone(),
         _ => Vec::new(),
@@ -390,7 +390,7 @@ pub(crate) fn generated_method(class_id: HeapId, dunder: &str, vm: &VM<'_>) -> O
 }
 
 /// [`generated_method`] for a repr/eq/hash dunder, returning its field names.
-pub(crate) fn generated_fields(class_id: HeapId, dunder: &str, vm: &VM<'_>) -> Option<Vec<StringId>> {
+pub(crate) fn generated_fields(class_id: HeapId, dunder: &str, vm: &VM<'_>) -> Option<Vec<SymbolId>> {
     generated_method(class_id, dunder, vm).map(|id| field_names(id, vm))
 }
 
@@ -442,7 +442,7 @@ pub(crate) fn run_init(vm: &mut VM<'_>, init: &Value, instance: Value, args: Arg
     };
     let method = method_at(method_id, vm);
     let qualname = method.qualname();
-    let params = method.kind.params(vm.interns);
+    let params = method.kind.params(vm.symbols);
     // `self` is the new instance, already bound; its slot holds a placeholder.
     let slots = bind_def(&qualname, &params, true, args, vm)?;
     init_instance(method_id, instance_id, slots.into_iter().skip(1).collect(), vm)?;
@@ -463,7 +463,7 @@ fn init_instance(method_id: HeapId, instance_id: HeapId, slots: Vec<Option<Value
         unreachable!("init_instance on a non-__init__ method")
     };
     let (post_init, frozen) = (plan.post_init, plan.frozen);
-    let names: Vec<StringId> = plan.fields.iter().map(|field| field.name).collect();
+    let names: Vec<SymbolId> = plan.fields.iter().map(|field| field.name).collect();
     fill_unbound_fields(method_id, slots, vm)?;
     let (slots, vm) = guard.into_parts();
     let values = slots
@@ -529,7 +529,7 @@ fn snapshot_field_inits(method_id: HeapId, slots: &[Option<Value>], vm: &VM<'_>)
 /// value is discarded.
 fn run_post_init(instance_id: HeapId, vm: &mut VM<'_>) -> RunResult<()> {
     let Some(post_init) = instance_attr(instance_id, "__post_init__", vm) else {
-        let class_name = class_name(instance_class(instance_id, vm), vm.heap, vm.interns).into_owned();
+        let class_name = class_name(instance_class(instance_id, vm), vm.heap, vm.symbols).into_owned();
         return Err(ExcType::attribute_error(&class_name, "__post_init__"));
     };
     defer_drop!(post_init, vm);
@@ -545,7 +545,7 @@ fn run_post_init(instance_id: HeapId, vm: &mut VM<'_>) -> RunResult<()> {
 /// so a frozen `__setattr__` installed by a later decoration refuses it.
 fn store_fields(
     instance_id: HeapId,
-    names: &[StringId],
+    names: &[SymbolId],
     values: Vec<Value>,
     frozen: bool,
     vm: &mut VM<'_>,
@@ -556,7 +556,7 @@ fn store_fields(
     };
     for i in 0..values.len() {
         let value = mem::replace(&mut values[i], Value::None);
-        let name = Value::InternString(names[i]);
+        let name = Value::Symbol(names[i]);
         let replaced = if frozen {
             instance.set_attr_unchecked(name, value, vm)?
         } else {
@@ -654,7 +654,7 @@ fn bind_keyword_args(
         let name = key
             .as_either_str(vm.heap)
             .expect("DictMerge rejects non-string keys before the call")
-            .as_str(vm.interns)
+            .as_str(vm.symbols)
             .to_owned();
         // Resolved before the value is guarded, which borrows the VM.
         let slot = params.iter().position(|(param, _)| *param == name);
@@ -676,7 +676,7 @@ fn bind_keyword_args(
 /// pair, each compared with the `==` *operator* rather than container equality.
 pub(crate) fn dataclass_eq(
     self_id: HeapId,
-    field_names: &[StringId],
+    field_names: &[SymbolId],
     other: &Value,
     vm: &mut VM<'_>,
 ) -> RunResult<Option<bool>> {
@@ -696,7 +696,7 @@ pub(crate) fn dataclass_eq(
     let mut guard = vm.recursion_guard()?;
     let vm = &mut *guard;
     for name_id in field_names {
-        let field_name = vm.interns.get_str(*name_id).to_owned();
+        let field_name = vm.symbols.get_str(*name_id).to_owned();
         // Both reads are guarded so a failing comparison below (or an early
         // return) cannot strand either value.
         let a = instance_attr(self_id, &field_name, vm);
@@ -709,7 +709,7 @@ pub(crate) fn dataclass_eq(
             // The generated `__eq__` reads each field as an attribute, so one
             // that resolves nowhere raises rather than comparing unequal.
             _ => {
-                let class_name = class_name(class_id, vm.heap, vm.interns).into_owned();
+                let class_name = class_name(class_id, vm.heap, vm.symbols).into_owned();
                 return Err(ExcType::attribute_error(&class_name, &field_name));
             }
         }
@@ -722,7 +722,7 @@ pub(crate) fn dataclass_eq(
 ///
 /// An unhashable field raises naming *its* type, as hashing that tuple would;
 /// fields are read as attributes, so an uninitialised one raises too.
-pub(crate) fn dataclass_hash(self_id: HeapId, field_names: &[StringId], vm: &mut VM<'_>) -> RunResult<HashValue> {
+pub(crate) fn dataclass_hash(self_id: HeapId, field_names: &[SymbolId], vm: &mut VM<'_>) -> RunResult<HashValue> {
     let class_id = instance_class(self_id, vm);
     // Charge a recursion level, as `dataclass_eq` does: instances can cycle
     // through a field, which would otherwise re-enter here per level.
@@ -731,11 +731,11 @@ pub(crate) fn dataclass_hash(self_id: HeapId, field_names: &[StringId], vm: &mut
     // Same walk as `Tuple::py_hash`, so `hash(Point(1, 2)) == hash((1, 2))`.
     let mut hasher = DefaultHasher::new();
     for name_id in field_names {
-        let field_name = vm.interns.get_str(*name_id).to_owned();
+        let field_name = vm.symbols.get_str(*name_id).to_owned();
         let value = instance_attr(self_id, &field_name, vm);
         defer_drop!(value, vm);
         let Some(value) = value else {
-            let class_name = class_name(class_id, vm.heap, vm.interns).into_owned();
+            let class_name = class_name(class_id, vm.heap, vm.symbols).into_owned();
             return Err(ExcType::attribute_error(&class_name, &field_name));
         };
         plain_hash(value, vm)?.hash(&mut hasher);
@@ -749,7 +749,7 @@ pub(crate) fn dataclass_hash(self_id: HeapId, field_names: &[StringId], vm: &mut
 /// [`write_dataclass_repr`] so the two cannot drift.
 pub(crate) fn dataclass_repr_fmt(
     self_id: HeapId,
-    field_names: &[StringId],
+    field_names: &[SymbolId],
     f: &mut impl Write,
     vm: &mut VM<'_>,
     heap_ids: &mut LazyHeapSet,
@@ -758,13 +758,13 @@ pub(crate) fn dataclass_repr_fmt(
         return Ok(f.write_str("...")?);
     }
     let class_id = instance_class(self_id, vm);
-    let name = class_name(class_id, vm.heap, vm.interns).to_string();
+    let name = class_name(class_id, vm.heap, vm.symbols).to_string();
     heap_ids.insert(self_id);
     // Each field is read as an attribute at the point it is written, so a field
     // whose `__repr__` mutates a later one is observed, exactly as CPython's
     // generated f-string does. A field that resolves nowhere raises.
     let result = write_dataclass_repr(f, &name, field_names.len(), vm, heap_ids, |i, vm| {
-        let field_name = vm.interns.get_str(field_names[i]).to_owned();
+        let field_name = vm.symbols.get_str(field_names[i]).to_owned();
         match instance_attr(self_id, &field_name, vm) {
             Some(value) => Ok((field_name, Some(value))),
             None => Err(ExcType::attribute_error(&name, &field_name)),

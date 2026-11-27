@@ -32,9 +32,9 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropGuard, DropWithContext},
-    intern::StaticStrings,
     modules::ModuleFunctions,
     os_dispatch::{PostConversionEffect, urandom_reply_error},
+    symbols::StaticStrings,
     types::{
         List, LongInt, Module, PyTrait, Tuple, Type,
         bytes::allocate_bytes,
@@ -77,7 +77,7 @@ pub(crate) enum RandomFunctions {
     Binomialvariate = 23,
 }
 
-/// Every function with the interned name it is bound to, for the module
+/// Every function with the symbol it is bound to, for the module
 /// namespace and for method lookup on `random.Random`.
 const RANDOM_FUNCTIONS: &[(StaticStrings, RandomFunctions)] = &[
     (StaticStrings::Random, RandomFunctions::Random),
@@ -108,7 +108,7 @@ const RANDOM_FUNCTIONS: &[(StaticStrings, RandomFunctions)] = &[
 
 /// Creates the `random` module.
 pub fn create_module(vm: &mut VM<'_>) -> Module {
-    let mut module = Module::new(StaticStrings::Random, vm.interns);
+    let mut module = Module::new(StaticStrings::Random, vm.symbols);
     for (name, function) in RANDOM_FUNCTIONS {
         module.set_attr(*name, Value::ModuleFunction(ModuleFunctions::Random(*function)), vm);
     }
@@ -356,7 +356,7 @@ fn setstate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult
         other => {
             let text = other.py_str(vm)?;
             defer_drop!(text, vm);
-            let text = text.as_str_heap(vm.heap, vm.interns).expect("py_str returns str");
+            let text = text.as_str_heap(vm.heap, vm.symbols).expect("py_str returns str");
             return Err(ExcType::value_error(format!(
                 "state with version {text} passed to Random.setstate() of version 3"
             )));
@@ -940,7 +940,7 @@ fn choices(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<
             defer_drop!(k, vm);
             return Err(ExcType::type_error(format!(
                 "The number of choices must be a keyword argument: k={}",
-                k.as_str_heap(vm.heap, vm.interns).expect("py_str returns str")
+                k.as_str_heap(vm.heap, vm.symbols).expect("py_str returns str")
             )));
         } else {
             Some(cumulative_weights(weights, vm)?)

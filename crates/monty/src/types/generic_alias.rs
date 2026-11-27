@@ -30,7 +30,7 @@ use crate::{
     heap::{
         ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput,
     },
-    intern::StaticStrings,
+    symbols::StaticStrings,
     types::{
         LazyHeapSet, List, PyTrait, Tuple, Type, TypeRef, Union,
         instance::class_name,
@@ -388,7 +388,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
     /// and unknown names report `list`, and is an error on a `typing` form.
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let origin = self.get(vm.heap).origin;
-        match attr.static_string(vm.interns) {
+        match attr.static_string(vm.symbols) {
             Some(StaticStrings::DunderOrigin) => Ok(Some(CallResult::Value(self.get(vm.heap).origin_value(vm.heap)))),
             Some(StaticStrings::DunderArgs) => Ok(Some(CallResult::Value(self.dunder_args(vm)))),
             Some(StaticStrings::DunderParameters) => Ok(Some(CallResult::Value(vm.heap.get_empty_tuple()))),
@@ -411,7 +411,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
                 // CPython's `_BaseGenericAlias.__getattr__`: a dunder raises with
                 // the bare name, anything else is looked up on the origin.
                 AliasOrigin::Special(_) => {
-                    let name = attr.as_str(vm.interns);
+                    let name = attr.as_str(vm.symbols);
                     if is_dunder(name) {
                         Err(SimpleException::new_msg(ExcType::AttributeError, name).into())
                     } else {
@@ -442,7 +442,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
     /// the origin's own attributes.
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let own_attribute = matches!(
-            attr.static_string(vm.interns),
+            attr.static_string(vm.symbols),
             Some(
                 StaticStrings::DunderOrigin
                     | StaticStrings::DunderArgs
@@ -458,7 +458,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
             // lookup may suspend for the host, which only a call-attr carries. A
             // form's own markers take the lookup path below, for its errors.
             AliasOrigin::Special(_)
-                if !own_attribute && !is_dunder(attr.as_str(vm.interns)) && !matches!(origin, Value::Marker(_)) =>
+                if !own_attribute && !is_dunder(attr.as_str(vm.symbols)) && !matches!(origin, Value::Marker(_)) =>
             {
                 origin.py_value(vm).py_call_attr(vm, attr, args)
             }
@@ -866,9 +866,9 @@ pub(crate) fn repr_type_arg(
         Value::Ellipsis => Ok(f.write_str("...")?),
         Value::Builtin(Builtins::Type(ty)) => Ok(f.write_str(ty.name())?),
         Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Class(_) => Ok(f.write_str(&class_name(*id, vm.heap, vm.interns))?),
-            HeapData::NamedTupleClass(class) => Ok(f.write_str(class.name(vm.interns))?),
-            HeapData::HostClassType(class) => Ok(f.write_str(class.name(vm.interns))?),
+            HeapData::Class(_) => Ok(f.write_str(&class_name(*id, vm.heap, vm.symbols))?),
+            HeapData::NamedTupleClass(class) => Ok(f.write_str(class.name(vm.symbols))?),
+            HeapData::HostClassType(class) => Ok(f.write_str(class.name(vm.symbols))?),
             _ => item.py_repr_fmt(f, vm, heap_ids),
         },
         _ => item.py_repr_fmt(f, vm, heap_ids),

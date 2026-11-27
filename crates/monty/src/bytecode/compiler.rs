@@ -6,7 +6,7 @@
 //!
 //! Functions are compiled recursively: when a `PreparedFunctionDef` is encountered,
 //! its body is compiled to bytecode and a `Function` struct is created. All compiled
-//! functions are appended to the session's intern table.
+//! functions are appended to the session's symbol table.
 
 use std::borrow::Cow;
 
@@ -32,12 +32,12 @@ use crate::{
     },
     fstring::{ConversionFlag, FStringPart, FormatSpec},
     function::Function,
-    intern::{CompileInterns, FunctionId, StaticStrings, StringId},
     name_map::NameMap,
     namespace::NamespaceId,
     parse::{CodeRange, ExceptHandler, Try, syntax_error_in_snippet},
     run::CompileOptions,
     source_map::{SourceMap, StackFrameExt},
+    symbols::{CompileSymbols, FunctionId, StaticStrings, SymbolId},
     types::Type,
     value::{EitherStr, Value},
 };
@@ -187,7 +187,7 @@ fn collection_too_large(count: usize, position: CodeRange) -> CompileError {
     )
 }
 
-/// Checks that an index in the interner's function table fits the `u16` bytecode operand.
+/// Checks that an index in the symbol table's function table fits the `u16` bytecode operand.
 /// Nested definitions and frozen functions created at runtime share that table.
 pub(super) fn check_function_count_u16(func_id: usize, position: CodeRange) -> Result<u16, CompileError> {
     u16::try_from(func_id).map_err(|_| too_many_functions(func_id, position))
@@ -206,13 +206,13 @@ fn too_many_functions(func_id: usize, position: CodeRange) -> CompileError {
     )
 }
 
-/// Converts a `StringId` (intern pool index) into the `u16` operand used by
+/// Converts a `SymbolId` (symbol table index) into the `u16` operand used by
 /// every name-bearing opcode (`LoadAttr`, `StoreAttr`, `LoadGlobal`,
 /// `CallFunctionKw` keyword names, etc.). Called inline at every emission
-/// site — overflow only happens when the intern pool exceeded `u16::MAX`
+/// site — overflow only happens when the symbol table exceeded `u16::MAX`
 /// during parse/prepare, so the error construction is `#[cold]` and the
 /// success path inlines to a single `as u16`.
-fn check_name_index_u16(name_id: StringId, position: CodeRange) -> Result<u16, CompileError> {
+fn check_name_index_u16(name_id: SymbolId, position: CodeRange) -> Result<u16, CompileError> {
     u16::try_from(name_id.index()).map_err(|_| name_index_too_large(position))
 }
 
@@ -221,7 +221,7 @@ fn check_name_index_u16(name_id: StringId, position: CodeRange) -> Result<u16, C
 fn name_index_too_large(position: CodeRange) -> CompileError {
     CompileError::new(
         format!(
-            "module has too many distinct names; the bytecode format supports up to {} interned strings",
+            "module has too many distinct names; the bytecode format supports up to {} symbols",
             usize::from(u16::MAX) + 1,
         ),
         position,
@@ -248,7 +248,7 @@ fn too_many_call_args(count: usize, kind: &'static str, position: CodeRange) -> 
 /// `CodeBuilder`. It handles variable scoping, control flow, and expression
 /// evaluation order following Python semantics.
 ///
-/// Functions are compiled recursively through [`CompileInterns`].
+/// Functions are compiled recursively through [`CompileSymbols`].
 /// Each function's body is compiled before registering it, so nested functions
 /// receive lower IDs. Those IDs become MakeFunction/MakeClosure operands.
 pub struct Compiler<'a, 'i> {
@@ -256,7 +256,7 @@ pub struct Compiler<'a, 'i> {
     pub(super) code: CodeBuilder,
 
     /// Compilation tables: private overlay for an existing session, direct insertion for a fresh program.
-    pub(super) interns: &'a mut CompileInterns<'i>,
+    pub(super) symbols: &'a mut CompileSymbols<'i>,
 
     /// Enclosing control blocks whose cleanup is emitted by non-local exits.
     /// This mirrors CPython's compiler `fblockinfo` stack and keeps each
@@ -528,12 +528,12 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// Creates a compiler for a module or function.
     /// `frame_locals` is zero at module scope or the function namespace size;
     /// comprehension slots follow it on the operand stack.
-    fn new(interns: &'a mut CompileInterns<'i>, is_module_scope: bool, frame_locals: u16, flags: ScopeFlags) -> Self {
+    fn new(symbols: &'a mut CompileSymbols<'i>, is_module_scope: bool, frame_locals: u16, flags: ScopeFlags) -> Self {
         let mut code = CodeBuilder::new();
         code.new_code_region(0);
         Self {
             code,
-            interns,
+            symbols,
             fblocks: Vec::new(),
             finally_copies: 0,
             is_module_scope,
@@ -544,23 +544,23 @@ impl<'a, 'i> Compiler<'a, 'i> {
     }
 
     /// Compiles module-level statements, returning the last expression or None.
-    /// On failure the caller discards the overlay, or the whole interner in direct mode.
+    /// On failure the caller discards the overlay, or the whole symbol table in direct mode.
     pub fn compile_module(
         nodes: &[PreparedNode],
-        interns: &mut CompileInterns<'_>,
+        symbols: &mut CompileSymbols<'_>,
         globals: &NameMap,
         options: CompileOptions,
         future_annotations: bool,
     ) -> Result<Code, CompileError> {
-        Self::compile_module_inner(nodes, interns, globals, options, None, future_annotations)
+        Self::compile_module_inner(nodes, symbols, globals, options, None, future_annotations)
     }
 
     /// Compiles a prepared `eval()` / `exec()` snippet, rejecting top-level await.
     /// `globals_by_name` selects name lookups for an explicit globals dict.
-    /// The caller must discard the private intern overlay on failure.
+    /// The caller must discard the private symbol overlay on failure.
     pub(crate) fn compile_snippet(
         nodes: &[PreparedNode],
-        interns: &mut CompileInterns<'_>,
+        symbols: &mut CompileSymbols<'_>,
         globals: &NameMap,
         options: CompileOptions,
         globals_by_name: bool,
@@ -568,7 +568,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
     ) -> Result<Code, CompileError> {
         Self::compile_module_inner(
             nodes,
-            interns,
+            symbols,
             globals,
             options,
             Some(globals_by_name),
@@ -579,7 +579,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// Shared module compiler; `snippet` is `Some(globals_by_name)` for eval/exec.
     fn compile_module_inner(
         nodes: &[PreparedNode],
-        interns: &mut CompileInterns<'_>,
+        symbols: &mut CompileSymbols<'_>,
         globals: &NameMap,
         options: CompileOptions,
         snippet: Option<bool>,
@@ -600,7 +600,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             await_scope,
             future_annotations,
         };
-        let mut compiler = Compiler::new(interns, true, 0, flags);
+        let mut compiler = Compiler::new(symbols, true, 0, flags);
 
         // All globals are "local names" in the module
         compiler.code.register_local_names(globals.names());
@@ -619,14 +619,14 @@ impl<'a, 'i> Compiler<'a, 'i> {
         self.code.build().with_future_annotations(self.flags.future_annotations)
     }
 
-    /// Compiles a function body to bytecode, appending any nested functions to `interns`.
+    /// Compiles a function body to bytecode, appending any nested functions to `symbols`.
     ///
     /// Used internally when compiling function definitions. The function body is
     /// compiled to bytecode with an implicit `return None` at the end if there's
     /// no explicit return statement.
     fn compile_function_body(
         func_def: &PreparedFunctionDef,
-        interns: &mut CompileInterns<'_>,
+        symbols: &mut CompileSymbols<'_>,
         num_locals: u16,
         flags: ScopeFlags,
     ) -> Result<Code, CompileError> {
@@ -639,10 +639,10 @@ impl<'a, 'i> Compiler<'a, 'i> {
             AwaitScope::OutsideAsyncFunction
         };
         let flags = ScopeFlags { await_scope, ..flags };
-        let mut compiler = Compiler::new(interns, false, num_locals, flags);
+        let mut compiler = Compiler::new(symbols, false, num_locals, flags);
         // Parameters, and the cells captured parameters live in, are named up
         // front: a body that never mentions one still reports it from `locals()`.
-        let param_names: Vec<StringId> = func_def.signature.param_names().collect();
+        let param_names: Vec<SymbolId> = func_def.signature.param_names().collect();
         compiler.code.register_local_names(&param_names);
         for (cell_slot, param_index) in func_def.cell_var_slots.iter().zip(&func_def.cell_param_indices) {
             if let Some(name) = param_index.and_then(|index| param_names.get(index)) {
@@ -759,7 +759,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
                         *target_position,
                     ));
                 };
-                let name_id = attr.string_id().expect("LoadAttr requires interned attr name");
+                let name_id = attr.symbol_id().expect("LoadAttr requires an attribute symbol");
                 let name_idx = check_name_index_u16(name_id, *target_position)?;
                 // Stack: compile object, dup for later store, load attr, apply op, rotate, store
                 self.compile_expr(object)?; // [obj]
@@ -866,7 +866,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// This involves:
     /// 1. Recursively compiling the function body to bytecode
     /// 2. Creating a Function struct with the compiled Code
-    /// 3. Adding the Function to the session's intern table
+    /// 3. Adding the Function to the session's symbol table
     /// 4. Emitting bytecode to evaluate defaults and create the function at runtime
     fn compile_function_def(
         &mut self,
@@ -915,8 +915,8 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// variables are captured, the pushed cells are consumed by `MakeClosure`.
     fn emit_make_function(&mut self, func_def: &PreparedFunctionDef, what: &'static str) -> Result<(), CompileError> {
         let flags = self.flags;
-        self.emit_make_callable(func_def, what, |interns, namespace_size| {
-            Self::compile_function_body(func_def, interns, namespace_size, flags)
+        self.emit_make_callable(func_def, what, |symbols, namespace_size| {
+            Self::compile_function_body(func_def, symbols, namespace_size, flags)
         })
     }
 
@@ -930,14 +930,14 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// use [`compile_function_body`](Self::compile_function_body) (implicit
     /// `return None` tail), while a class body uses
     /// [`compile_class_body`](Self::compile_class_body) (assemble-namespace +
-    /// return-class tail). It receives the intern tables (nested functions are
+    /// return-class tail). It receives the symbol tables (nested functions are
     /// appended to them first, so they get lower ids) and this body's namespace
     /// size; it returns the compiled body code.
     fn emit_make_callable(
         &mut self,
         func_def: &PreparedFunctionDef,
         what: &'static str,
-        compile_body: impl FnOnce(&mut CompileInterns<'_>, u16) -> Result<Code, CompileError>,
+        compile_body: impl FnOnce(&mut CompileSymbols<'_>, u16) -> Result<Code, CompileError>,
     ) -> Result<(), CompileError> {
         let func_pos = func_def.name.position;
 
@@ -954,7 +954,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             .map(|annotate| self.compile_annotate(annotate))
             .transpose()?;
         let namespace_size = check_namespace_size_u16(func_def.namespace_size, what)?;
-        let body_code = compile_body(self.interns, namespace_size)?;
+        let body_code = compile_body(self.symbols, namespace_size)?;
 
         // 2. Create the compiled Function and add it to the table
         // `Function` retains the legacy numeric source metadata for serialized-code
@@ -982,7 +982,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             body_code,
         )
         .with_annotate(annotate);
-        let func_id = self.interns.push_function(function);
+        let func_id = self.symbols.push_function(function);
 
         // 3. Compile and push default values (evaluated at definition time)
         for default_expr in &func_def.default_exprs {
@@ -1017,7 +1017,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         Ok(())
     }
 
-    /// Compiles a `def`'s `__annotate__(format)` body and interns it, returning
+    /// Compiles a `def`'s `__annotate__(format)` body and registers it, returning
     /// its id for the owning [`Function`]. No `MakeFunction` is emitted: the
     /// function value is built on `f.__annotate__` access from the owner's
     /// globals, since it has no defaults or captured cells of its own.
@@ -1027,7 +1027,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             "an annotate function captures nothing and has no defaults"
         );
         let namespace_size = check_namespace_size_u16(annotate.namespace_size, "annotate function")?;
-        let code = Self::compile_function_body(annotate, self.interns, namespace_size, self.flags)?;
+        let code = Self::compile_function_body(annotate, self.symbols, namespace_size, self.flags)?;
         let function = Function::new(
             self.function_name(annotate),
             annotate.signature.clone(),
@@ -1040,7 +1040,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             false,
             code,
         );
-        let func_id = self.interns.push_function(function);
+        let func_id = self.symbols.push_function(function);
         Ok(FunctionId::from_index(check_function_count_u16(
             func_id,
             annotate.name.position,
@@ -1052,7 +1052,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
     fn function_name(&mut self, func_def: &PreparedFunctionDef) -> Identifier {
         let mut name = func_def.name;
         if func_def.is_annotate {
-            name.name_id = self.interns.intern_static(StaticStrings::DunderAnnotate);
+            name.name_id = self.symbols.get_or_insert_static_symbol(StaticStrings::DunderAnnotate);
         }
         name
     }
@@ -1085,7 +1085,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
 
         if keywords.is_empty() {
             // Fast path: Arguments for type(name, bases, dict):
-            let class_name_const = self.code.add_const(Value::InternString(name.name_id))?;
+            let class_name_const = self.code.add_const(Value::Symbol(name.name_id))?;
             self.code.emit_u16(Opcode::LoadConst, class_name_const)?;
 
             // Evaluate bases in the enclosing scope in source order
@@ -1108,7 +1108,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             let type_const = self.code.add_const(Value::Builtin(Builtins::Type(Type::Type)))?;
             self.code.emit_u16(Opcode::LoadConst, type_const)?;
 
-            let class_name_const = self.code.add_const(Value::InternString(name.name_id))?;
+            let class_name_const = self.code.add_const(Value::Symbol(name.name_id))?;
             self.code.emit_u16(Opcode::LoadConst, class_name_const)?;
 
             self.compile_tuple_sequence(bases, position)?;
@@ -1167,13 +1167,13 @@ impl<'a, 'i> Compiler<'a, 'i> {
             "class body owns at most the implicit __class__ cell"
         );
         let class_cell_slot = body.cell_var_slots.first().copied();
-        self.emit_make_callable(body, "class body", |interns, namespace_size| {
+        self.emit_make_callable(body, "class body", |symbols, namespace_size| {
             Self::compile_class_body(
                 &body.body,
                 members,
                 class_cell_slot,
                 position,
-                interns,
+                symbols,
                 namespace_size,
                 flags,
             )
@@ -1228,11 +1228,11 @@ impl<'a, 'i> Compiler<'a, 'i> {
         members: &[Identifier],
         class_cell_slot: Option<NamespaceId>,
         position: CodeRange,
-        interns: &mut CompileInterns<'_>,
+        symbols: &mut CompileSymbols<'_>,
         num_locals: u16,
         flags: ScopeFlags,
     ) -> Result<Code, CompileError> {
-        let mut compiler = Compiler::new(interns, false, num_locals, flags);
+        let mut compiler = Compiler::new(symbols, false, num_locals, flags);
         compiler.compile_block(body)?;
 
         // Assembly errors (e.g. resource limits while building the dict)
@@ -1241,13 +1241,15 @@ impl<'a, 'i> Compiler<'a, 'i> {
 
         // Build the namespace dict: (name, value) for each member in order.
         for member in members {
-            let name_const = compiler.code.add_const(Value::InternString(member.name_id))?;
+            let name_const = compiler.code.add_const(Value::Symbol(member.name_id))?;
             compiler.code.emit_u16(Opcode::LoadConst, name_const)?;
             compiler.compile_name(member)?;
         }
         if let Some(cell_slot) = class_cell_slot {
-            let classcell_id = compiler.interns.intern_static(StaticStrings::DunderClasscell);
-            let name_const = compiler.code.add_const(Value::InternString(classcell_id))?;
+            let classcell_id = compiler
+                .symbols
+                .get_or_insert_static_symbol(StaticStrings::DunderClasscell);
+            let name_const = compiler.code.add_const(Value::Symbol(classcell_id))?;
             compiler.code.emit_u16(Opcode::LoadConst, name_const)?;
             compiler.code.emit_load_local(cell_slot.as_u16())?;
         }
@@ -1290,9 +1292,9 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// Missing modules and attributes raise only when execution reaches the import.
     fn compile_import_from(
         &mut self,
-        module_name: StringId,
+        module_name: SymbolId,
         submodules: &[Submodule],
-        names: &[(StringId, Identifier)],
+        names: &[(SymbolId, Identifier)],
         position: CodeRange,
     ) -> Result<(), CompileError> {
         self.code.set_location(position, None);
@@ -1328,7 +1330,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// suspend for the host and resume with its value on the stack.
     fn compile_import_star(
         &mut self,
-        module_name: StringId,
+        module_name: SymbolId,
         submodules: &[Submodule],
         position: CodeRange,
     ) -> Result<(), CompileError> {
@@ -1525,7 +1527,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 self.compile_expr(object)?;
                 // Restore the full expression's position for traceback caret range
                 self.code.set_location(expr_loc.position, None);
-                let name_id = attr.string_id().expect("LoadAttr requires interned attr name");
+                let name_id = attr.symbol_id().expect("LoadAttr requires an attribute symbol");
                 let name_idx = check_name_index_u16(name_id, expr_loc.position)?;
                 self.code.emit_u16(Opcode::LoadAttr, name_idx)?;
             }
@@ -1672,7 +1674,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             Literal::Ellipsis => Value::Ellipsis,
             Literal::Int(n) => Value::Int(*n),
             Literal::Float(v) => Value::Float(*v),
-            Literal::Str(string_id) => Value::InternString(*string_id),
+            Literal::Str(symbol_id) => Value::Symbol(*symbol_id),
             Literal::Bytes(bytes_id) => Value::InternBytes(*bytes_id),
             Literal::LongInt(long_int_id) => Value::InternLongInt(*long_int_id),
             Literal::Marker(marker) => Value::Marker(*marker),
@@ -1825,7 +1827,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// Only stores to slot-backed module globals invoke this; explicit globals
     /// dicts and function locals may bind these names.
     fn check_reserved_dunder_store(&self, target: &Identifier) -> Result<(), CompileError> {
-        let name = self.interns.get_str(target.name_id);
+        let name = self.symbols.get_str(target.name_id);
         if RESERVED_MODULE_DUNDERS.contains(&name) {
             Err(CompileError::not_implemented(
                 format!("cannot reassign read-only module attribute '{name}'"),
@@ -2325,8 +2327,8 @@ impl<'a, 'i> Compiler<'a, 'i> {
             let kw_count = kwargs.map_or(0, Vec::len);
             if let Some(kwargs) = kwargs {
                 for kwarg in kwargs {
-                    // Push key as interned string constant
-                    let key_const = self.code.add_const(Value::InternString(kwarg.key.name_id))?;
+                    // Push key as symbol constant
+                    let key_const = self.code.add_const(Value::Symbol(kwarg.key.name_id))?;
                     self.code.emit_u16(Opcode::LoadConst, key_const)?;
                     // Push value
                     self.compile_expr(&kwarg.value)?;
@@ -2403,7 +2405,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         var_kwargs: Option<&ExprLoc>,
         call_pos: CodeRange,
     ) -> Result<(), CompileError> {
-        // Get function name for error messages. Builtins use their real interned name
+        // Get function name for error messages. Builtins use their real name symbol
         // so duplicate-kwargs errors from **unpacking match CPython.
         let func_name_id = self.get_callable_name_id(callable)?;
 
@@ -2434,8 +2436,8 @@ impl<'a, 'i> Compiler<'a, 'i> {
             let kw_count = kwargs.map_or(0, Vec::len);
             if let Some(kwargs) = kwargs {
                 for kwarg in kwargs {
-                    // Push key as interned string constant
-                    let key_const = self.code.add_const(Value::InternString(kwarg.key.name_id))?;
+                    // Push key as symbol constant
+                    let key_const = self.code.add_const(Value::Symbol(kwarg.key.name_id))?;
                     self.code.emit_u16(Opcode::LoadConst, key_const)?;
                     // Push value
                     self.compile_expr(&kwarg.value)?;
@@ -2464,7 +2466,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// duplicate-key and non-mapping errors can mention the actual callee name.
     /// When the callable is not a named local/global, we still try to resolve
     /// builtin functions, builtin exception constructors, and builtin types to
-    /// their interned public names.
+    /// their public name symbols.
     fn get_callable_name_id(&self, callable: &Callable) -> Result<u16, CompileError> {
         match callable {
             Callable::Name(ident) => check_name_index_u16(ident.name_id, ident.position),
@@ -2472,18 +2474,18 @@ impl<'a, 'i> Compiler<'a, 'i> {
         }
     }
 
-    /// Resolves a builtin callable to its interned public name, if available.
+    /// Resolves a builtin callable to its public name symbol, if available.
     ///
     /// Returning `None` falls back to `<unknown>` in the VM, which is still
     /// correct but less helpful. In practice these names should already be
-    /// interned during preparation because builtin names are resolved from source.
+    /// in the symbol table after preparation because builtin names are resolved from source.
     fn get_builtin_name_id(&self, builtin: Builtins) -> Option<u16> {
         let name_id = match builtin {
             Builtins::Function(function) => {
                 let name: &'static str = function.into();
-                self.interns.get_string_id_by_name(name)?
+                self.symbols.get_symbol_id_by_name(name)?
             }
-            Builtins::Type(type_) => self.interns.get_string_id_by_name(type_.builtin_name()?)?,
+            Builtins::Type(type_) => self.symbols.get_symbol_id_by_name(type_.builtin_name()?)?,
         };
 
         u16::try_from(name_id.index()).ok()
@@ -2499,9 +2501,9 @@ impl<'a, 'i> Compiler<'a, 'i> {
         args: &ArgExprs,
         call_pos: CodeRange,
     ) -> Result<(), CompileError> {
-        // Get the interned attribute name, converted up-front so the limit check
+        // Get the attribute symbol, converted up-front so the limit check
         // happens once per method call rather than at every emit-site below.
-        let name_id = attr.string_id().expect("CallAttr requires interned attr name");
+        let name_id = attr.symbol_id().expect("CallAttr requires an attribute symbol");
         let name_idx = check_name_index_u16(name_id, call_pos)?;
 
         // Compile arguments based on the argument type
@@ -2640,7 +2642,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
                     for kwarg in kwargs {
                         match kwarg {
                             CallKwarg::Named(kw) => {
-                                let key_const = self.code.add_const(Value::InternString(kw.key.name_id))?;
+                                let key_const = self.code.add_const(Value::Symbol(kw.key.name_id))?;
                                 self.code.emit_u16(Opcode::LoadConst, key_const)?;
                                 self.compile_expr(&kw.value)?;
                                 self.code.emit_u16(Opcode::BuildDict, 1)?;
@@ -2669,7 +2671,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// and optional kwargs dict, then emits `CallAttrExtended`.
     fn compile_method_call_with_unpacking(
         &mut self,
-        name_id: StringId,
+        name_id: SymbolId,
         args: Option<&Vec<ExprLoc>>,
         var_args: Option<&ExprLoc>,
         kwargs: Option<&Vec<Kwarg>>,
@@ -2707,8 +2709,8 @@ impl<'a, 'i> Compiler<'a, 'i> {
             let kw_count = kwargs.map_or(0, Vec::len);
             if let Some(kwargs) = kwargs {
                 for kwarg in kwargs {
-                    // Push key as interned string constant
-                    let key_const = self.code.add_const(Value::InternString(kwarg.key.name_id))?;
+                    // Push key as symbol constant
+                    let key_const = self.code.add_const(Value::Symbol(kwarg.key.name_id))?;
                     self.code.emit_u16(Opcode::LoadConst, key_const)?;
                     // Push value
                     self.compile_expr(&kwarg.value)?;
@@ -2779,7 +2781,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 match kwarg {
                     CallKwarg::Named(kw) => {
                         // Wrap key+value in a single-item dict, then merge into kwargs dict.
-                        let key_const = self.code.add_const(Value::InternString(kw.key.name_id))?;
+                        let key_const = self.code.add_const(Value::Symbol(kw.key.name_id))?;
                         self.code.emit_u16(Opcode::LoadConst, key_const)?;
                         self.compile_expr(&kw.value)?;
                         self.code.emit_u16(Opcode::BuildDict, 1)?;
@@ -3597,7 +3599,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         attr: &EitherStr,
         target_position: CodeRange,
     ) -> Result<(), CompileError> {
-        let name_id = attr.string_id().expect("attribute name in AST must be interned");
+        let name_id = attr.symbol_id().expect("attribute name in AST must be a symbol");
         let name_idx = check_name_index_u16(name_id, target_position)?;
         self.compile_expr(object)?;
         self.code.set_location(target_position, None);
@@ -3711,16 +3713,16 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// Compiles f-string parts, returning the number of string parts to concatenate.
     ///
     /// Each part is compiled to leave a string value on the stack:
-    /// - `Literal(StringId)`: Push the interned string directly
+    /// - `Literal(SymbolId)`: Push the symbol directly
     /// - `Interpolation`: Compile expr, emit FormatValue to convert to string
     fn compile_fstring_parts(&mut self, parts: &[FStringPart]) -> Result<u16, CompileError> {
         let mut count = 0u16;
 
         for part in parts {
             match part {
-                FStringPart::Literal(string_id) => {
-                    // Push the interned string as a constant
-                    let const_idx = self.code.add_const(Value::InternString(*string_id))?;
+                FStringPart::Literal(symbol_id) => {
+                    // Push the symbol as a constant
+                    let const_idx = self.code.add_const(Value::Symbol(*symbol_id))?;
                     self.code.emit_u16(Opcode::LoadConst, const_idx)?;
                     count += 1;
                 }
@@ -3732,7 +3734,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 } => {
                     // If debug prefix present, push it first
                     if let Some(prefix_id) = debug_prefix {
-                        let const_idx = self.code.add_const(Value::InternString(*prefix_id))?;
+                        let const_idx = self.code.add_const(Value::Symbol(*prefix_id))?;
                         self.code.emit_u16(Opcode::LoadConst, const_idx)?;
                         count += 1;
                     }

@@ -48,7 +48,6 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput, HeapReader},
     heap_data::{CellValue, Closure, FunctionDefaults},
-    intern::{FunctionId, Interns, StaticStrings, StringId},
     modules::{
         StandardLib,
         json::{JsonStringCache, apply_json_load},
@@ -65,6 +64,7 @@ use crate::{
     parse::CodeRange,
     py_value::PyValue,
     run::{Program, SessionTables, VmEnv},
+    symbols::{FunctionId, StaticStrings, SymbolId, SymbolTable},
     types::{
         Dict, PyTrait, SessionRandom,
         file::{
@@ -188,7 +188,7 @@ pub enum FrameExit {
     /// with the result. The `call_id` allows the host to use async resolution
     /// by calling `run_pending()` instead of `run(result)`.
     ExternalCall {
-        /// Name of the external function to call (interned or heap-owned).
+        /// Name of the external function to call (symbol-backed or heap-owned).
         function_name: EitherStr,
         /// Arguments for the external function (includes both positional and keyword args).
         args: ArgValues,
@@ -280,8 +280,8 @@ pub enum FrameExit {
     /// This enables auto-detection of external functions without requiring upfront
     /// declaration: unresolved names are lazily resolved by the host at runtime.
     NameLookup {
-        /// The interned name being looked up.
-        name_id: StringId,
+        /// The name symbol being looked up.
+        name_id: SymbolId,
         /// The namespace slot where the resolved value should be cached.
         namespace_slot: u16,
         /// Whether this is a global slot (true) or a local/function slot (false).
@@ -375,7 +375,7 @@ pub struct CallFrame<'code> {
     /// Module name for `LoadAttrImport` errors, set by `LoadModule`/`LoadSubmodule`.
     /// Keeping it on the frame avoids another opcode operand; the compiler emits
     /// no intervening instructions that change it.
-    import_from_module: Option<StringId>,
+    import_from_module: Option<SymbolId>,
 }
 
 /// Narrows a VM stack index to the frame's `u32` field.
@@ -388,11 +388,11 @@ pub(super) fn stack_index(index: usize) -> u32 {
 /// The code a saved frame runs: its function's, or `module_code` for the
 /// module-level frame, which has no function ID.
 pub(super) fn frame_code<'code>(
-    interns: &'code Interns,
+    symbols: &'code SymbolTable,
     module_code: &'code Code,
     function_id: Option<FunctionId>,
 ) -> &'code Code {
-    function_id.map_or(module_code, |id| &interns.get_function(id).code)
+    function_id.map_or(module_code, |id| &symbols.get_function(id).code)
 }
 
 impl<'code> CallFrame<'code> {
@@ -621,7 +621,7 @@ pub struct SerializedFrame {
 
     /// The `from ... import` in progress, if the frame suspended inside one.
     #[serde(default, rename = "M")]
-    import_from_module: Option<StringId>,
+    import_from_module: Option<SymbolId>,
 }
 
 impl CallFrame<'_> {
@@ -797,7 +797,7 @@ pub struct VM<'h> {
     pub(crate) heap: &'h mut HeapReader<'h>,
 
     /// Stable committed entries, which remain borrowable across runtime compilation.
-    pub(crate) interns: &'h Interns,
+    pub(crate) symbols: &'h SymbolTable,
 
     /// Module-level global names, slot by slot; extended alongside
     /// [`globals`](Self::globals) when runtime-compiled code binds a new name.
@@ -905,7 +905,7 @@ pub struct VM<'h> {
 impl<'h> VM<'h> {
     /// Creates a new VM ready to run `program`'s module code.
     ///
-    /// The global-name map is borrowed mutably; committed intern entries and
+    /// The global-name map is borrowed mutably; committed symbol entries and
     /// `program` remain shared while runtime compilation appends new entries.
     pub fn new(
         globals: Vec<Value>,
@@ -914,14 +914,14 @@ impl<'h> VM<'h> {
         heap: &'h mut HeapReader<'h>,
         print_writer: PrintWriter<'h>,
     ) -> Self {
-        let SessionTables { global_names, interns } = tables;
+        let SessionTables { global_names, symbols } = tables;
         Self {
             stack: Vec::with_capacity(64),
             globals,
             current_frame: CallFrame::new_module(&program.module_code, 0),
             suspended_frames: Vec::with_capacity(16),
             heap,
-            interns,
+            symbols,
             global_names,
             print_writer,
             exception_stack: Vec::new(),
@@ -945,7 +945,7 @@ impl<'h> VM<'h> {
     /// Reconstructs a VM from a snapshot.
     ///
     /// The heap must already be deserialized. `FunctionId` values in frames
-    /// are used to look up pre-compiled `Code` objects from the intern table;
+    /// are used to look up pre-compiled `Code` objects from the symbol table;
     /// `program.module_code` serves frames with `function_id = None`. The
     /// snapshot's working directory overrides the program's.
     pub fn restore(
@@ -955,13 +955,13 @@ impl<'h> VM<'h> {
         heap: &'h mut HeapReader<'h>,
         print_writer: PrintWriter<'h>,
     ) -> Self {
-        let SessionTables { global_names, interns } = tables;
+        let SessionTables { global_names, symbols } = tables;
         // Reconstruct call frames from serialized form
         let frames: Vec<CallFrame<'_>> = snapshot
             .frames
             .into_iter()
             .map(|sf| {
-                let code = frame_code(interns, &program.module_code, sf.function_id);
+                let code = frame_code(symbols, &program.module_code, sf.function_id);
                 CallFrame {
                     code,
                     bytecode: code.bytecode(),
@@ -980,7 +980,7 @@ impl<'h> VM<'h> {
             })
             .collect();
 
-        let current_frame_depth = frame_recursion_depth(frames.iter().map(|f| f.function_id), interns);
+        let current_frame_depth = frame_recursion_depth(frames.iter().map(|f| f.function_id), symbols);
         let mut frames = frames;
         let current_frame = frames
             .pop()
@@ -992,7 +992,7 @@ impl<'h> VM<'h> {
             current_frame,
             suspended_frames: frames,
             heap,
-            interns,
+            symbols,
             global_names,
             print_writer,
             exception_stack: snapshot.exception_stack,
@@ -1432,7 +1432,7 @@ impl<'h> VM<'h> {
                 }
                 Opcode::RaiseUnboundLocal => {
                     let name_idx = self.current_frame.fetch_u16();
-                    let name_id = StringId::from_index(name_idx);
+                    let name_id = SymbolId::from_index(name_idx);
                     catch!(self, self.unbound_local_error(0, Some(name_id)));
                 }
                 Opcode::DeleteLocal => {
@@ -1446,15 +1446,15 @@ impl<'h> VM<'h> {
                 // Variables - runtime name resolution (eval/exec snippets)
                 Opcode::LoadName => {
                     let (slot, name_idx, flags) = self.current_frame.fetch_u16_u16_u8();
-                    handle_load_result!(self, self.load_name(slot, StringId::from_index(name_idx), flags));
+                    handle_load_result!(self, self.load_name(slot, SymbolId::from_index(name_idx), flags));
                 }
                 Opcode::StoreName => {
                     let (slot, name_idx, flags) = self.current_frame.fetch_u16_u16_u8();
-                    try_catch!(self, self.store_name(slot, StringId::from_index(name_idx), flags));
+                    try_catch!(self, self.store_name(slot, SymbolId::from_index(name_idx), flags));
                 }
                 Opcode::DeleteName => {
                     let (slot, name_idx, flags) = self.current_frame.fetch_u16_u16_u8();
-                    try_catch!(self, self.delete_name(slot, StringId::from_index(name_idx), flags));
+                    try_catch!(self, self.delete_name(slot, SymbolId::from_index(name_idx), flags));
                 }
                 // Variables - Global Operations
                 Opcode::LoadGlobal => {
@@ -1463,7 +1463,7 @@ impl<'h> VM<'h> {
                 }
                 Opcode::LoadGlobalCallable => {
                     let (slot, name_idx) = self.current_frame.fetch_u16_u16();
-                    let name_id = StringId::from_index(name_idx);
+                    let name_id = SymbolId::from_index(name_idx);
                     self.load_global_callable(slot, name_id);
                 }
                 Opcode::StoreGlobal => {
@@ -1628,19 +1628,19 @@ impl<'h> VM<'h> {
                 }
                 Opcode::LoadAttr => {
                     let name_idx = self.current_frame.fetch_u16();
-                    let name_id = StringId::from_index(name_idx);
+                    let name_id = SymbolId::from_index(name_idx);
                     handle_call_result!(self, self.load_attr(name_id));
                 }
                 Opcode::LoadSubmodule => {
                     let (name_idx, path_idx) = self.current_frame.fetch_u16_u16();
-                    let path_id = StringId::from_index(path_idx);
+                    let path_id = SymbolId::from_index(path_idx);
                     // the module a following `LoadAttrImport` names in its `ImportError`
                     self.current_frame.import_from_module = Some(path_id);
-                    handle_call_result!(self, self.load_submodule(StringId::from_index(name_idx), path_id));
+                    handle_call_result!(self, self.load_submodule(SymbolId::from_index(name_idx), path_id));
                 }
                 Opcode::LoadAttrImport => {
                     let name_idx = self.current_frame.fetch_u16();
-                    let name_id = StringId::from_index(name_idx);
+                    let name_id = SymbolId::from_index(name_idx);
                     // the compiler emits this only after the statement's `LoadModule`
                     let module_id = self
                         .current_frame
@@ -1650,7 +1650,7 @@ impl<'h> VM<'h> {
                 }
                 Opcode::StoreAttr => {
                     let name_idx = self.current_frame.fetch_u16();
-                    let name_id = StringId::from_index(name_idx);
+                    let name_id = SymbolId::from_index(name_idx);
                     try_catch!(self, self.store_attr(name_id));
                 }
                 // Control Flow - use self.current_frame.ip directly for jumps
@@ -1759,7 +1759,7 @@ impl<'h> VM<'h> {
                     // CallAttr: u16 name_id, u8 arg_count
                     // Stack: [obj, arg1, arg2, ..., argN] -> [result]
                     let (name_idx, arg_count) = self.current_frame.fetch_u16_u8();
-                    let name_id = StringId::from_index(name_idx);
+                    let name_id = SymbolId::from_index(name_idx);
                     let arg_count = arg_count as usize;
 
                     handle_call_result!(self, self.exec_call_attr(name_id, arg_count));
@@ -1768,7 +1768,7 @@ impl<'h> VM<'h> {
                     // CallAttrKw: u16 name_id, u8 pos_count, u8 kw_count, then kw_count u16 name indices
                     // Stack: [obj, pos_args..., kw_values...] -> [result]
                     let (name_idx, pos_count, kw_count) = self.current_frame.fetch_u16_u8_u8();
-                    let name_id = StringId::from_index(name_idx);
+                    let name_id = SymbolId::from_index(name_idx);
                     let (pos_count, kw_count) = (pos_count as usize, kw_count as usize);
 
                     handle_call_result!(self, self.exec_call_attr_kw(name_id, pos_count, kw_count));
@@ -1781,7 +1781,7 @@ impl<'h> VM<'h> {
                 }
                 Opcode::CallAttrExtended => {
                     let (name_idx, flags) = self.current_frame.fetch_u16_u8();
-                    let name_id = StringId::from_index(name_idx);
+                    let name_id = SymbolId::from_index(name_idx);
                     let has_kwargs = (flags & 0x01) != 0;
 
                     handle_call_result!(self, self.exec_call_attr_extended(name_id, has_kwargs));
@@ -2080,7 +2080,7 @@ impl<'h> VM<'h> {
                 Opcode::LoadModule => {
                     let module_id = self.current_frame.fetch_u16();
                     // for the `LoadAttrImport`s of a `from ... import`; harmless for a bare `import`
-                    self.current_frame.import_from_module = Some(StringId::from_index(module_id));
+                    self.current_frame.import_from_module = Some(SymbolId::from_index(module_id));
                     handle_call_result!(self, self.load_module(module_id));
                 }
                 // Context Managers
@@ -2100,13 +2100,13 @@ impl<'h> VM<'h> {
     /// Loads the first module in an import: a top-level name or the package named by leading dots.
     /// `LoadSubmodule` resolves the remaining dotted components.
     fn load_module(&mut self, module_id: u16) -> RunResult<CallResult> {
-        let name_id = StringId::from_index(module_id);
-        let name = self.interns.get_str(name_id);
+        let name_id = SymbolId::from_index(module_id);
+        let name = self.symbols.get_str(name_id);
         if name.starts_with('.') {
             // `from . import x`: the compiler names the package by its dots alone
             self.import_relative_package(name.len())
         } else {
-            self.import_absolute(name, self.interns.static_string(name_id))
+            self.import_absolute(name, self.symbols.static_string(name_id))
         }
     }
 
@@ -2619,7 +2619,7 @@ impl<'h> VM<'h> {
                 .main_task()
                 .and_then(|task| {
                     let (frame, callers) = task.frames.split_last()?;
-                    let code = |id| frame_code(self.interns, self.module_code, id);
+                    let code = |id| frame_code(self.symbols, self.module_code, id);
                     self.code_position(code(frame.function_id), task.instruction_ip)
                         .or_else(|| self.code_position(code(callers.last()?.function_id), frame.call_offset? as usize))
                 })
@@ -2632,7 +2632,7 @@ impl<'h> VM<'h> {
         code.location_for_offset(offset).map(|entry| {
             let range = entry.range();
             SourceRange::new(
-                self.interns.get_filename(range.filename),
+                self.symbols.get_filename(range.filename),
                 range.start_byte,
                 range.end_byte,
             )
@@ -2692,7 +2692,7 @@ impl<'h> VM<'h> {
     /// (see [`builtin_for_name`]) so `f()` style calls into a builtin still work when
     /// the name happens to have a module slot allocated (e.g. because the module also
     /// `def`-binds the same name elsewhere) but that slot is currently `Undefined`.
-    fn load_global_callable(&mut self, slot: u16, name_id: StringId) {
+    fn load_global_callable(&mut self, slot: u16, name_id: SymbolId) {
         let value = self.globals[slot as usize].clone_with_heap(self);
 
         if matches!(value, Value::Undefined) {
@@ -2709,7 +2709,7 @@ impl<'h> VM<'h> {
             }
             // Save the load instruction's IP so NameError tracebacks point to the name
             self.ext_function_load_ip = Some(self.instruction_ip);
-            let function = self.heap.get_ext_function(self.interns.get_str(name_id), false);
+            let function = self.heap.get_ext_function(self.symbols.get_str(name_id), false);
             self.push(function);
         } else {
             self.push(value);
@@ -2717,9 +2717,9 @@ impl<'h> VM<'h> {
     }
 
     /// Creates an UnboundLocalError for a local variable accessed before assignment.
-    fn unbound_local_error(&self, slot: u16, name: Option<StringId>) -> RunError {
+    fn unbound_local_error(&self, slot: u16, name: Option<SymbolId>) -> RunError {
         let name_str = match name {
-            Some(id) => self.interns.get_str(id).to_string(),
+            Some(id) => self.symbols.get_str(id).to_string(),
             None => format!("<local {slot}>"),
         };
         ExcType::unbound_local_error(&name_str).into()
@@ -2743,8 +2743,8 @@ impl<'h> VM<'h> {
     /// The first call hits `globals[sum_slot] = Undefined` and falls back here to
     /// the builtin; once `def sum` runs, the slot holds the user function and the
     /// fallback isn't taken anymore.
-    fn builtin_for_name(&self, name_id: StringId) -> Option<Value> {
-        Builtins::value_from_name(self.interns.get_str(name_id))
+    fn builtin_for_name(&self, name_id: SymbolId) -> Option<Value> {
+        Builtins::value_from_name(self.symbols.get_str(name_id))
     }
 
     /// Returns the fixed value for a module-level dunder, or `None` if `name_id`
@@ -2760,9 +2760,9 @@ impl<'h> VM<'h> {
     /// *not* exposed: CPython only ever puts a loader object there (never
     /// `None`), so rather than diverge on the type we let it raise `NameError`
     /// like other unexposed dunders (`__cached__`, …).
-    fn module_dunder(&self, name_id: StringId) -> Option<Value> {
-        let value = match self.interns.get_str(name_id) {
-            "__name__" => Value::InternString(self.interns.intern_static(StaticStrings::DunderMain)),
+    fn module_dunder(&self, name_id: SymbolId) -> Option<Value> {
+        let value = match self.symbols.get_str(name_id) {
+            "__name__" => Value::Symbol(self.symbols.get_or_insert_static_symbol(StaticStrings::DunderMain)),
             "__debug__" => Value::Bool(true),
             "__file__" => allocate_string(self.env.file(), self.heap),
             "__annotations__" => Value::allocate(Dict::new(), self.heap),
@@ -2773,9 +2773,9 @@ impl<'h> VM<'h> {
     }
 
     /// Creates a NameError for an undefined global variable.
-    fn name_error(&self, slot: u16, name: Option<StringId>) -> RunError {
+    fn name_error(&self, slot: u16, name: Option<SymbolId>) -> RunError {
         let name_str = match name {
-            Some(id) => self.interns.get_str(id).to_string(),
+            Some(id) => self.symbols.get_str(id).to_string(),
             None => format!("<global {slot}>"),
         };
         ExcType::name_error(&name_str).into()
@@ -2832,11 +2832,11 @@ impl<'h> VM<'h> {
         }
     }
 
-    /// Returns the interned name of a module-level global at `slot`, if known.
+    /// Returns the name symbol of a module-level global at `slot`, if known.
     ///
     /// Read from the live name map rather than the module `Code`, so slots
     /// first allocated after the module was compiled are named too.
-    fn global_name(&self, slot: u16) -> Option<StringId> {
+    fn global_name(&self, slot: u16) -> Option<SymbolId> {
         self.global_names.names().get(usize::from(slot)).copied()
     }
 
@@ -2918,7 +2918,7 @@ impl<'h> VM<'h> {
     /// cells are inlined-comprehension captures.
     fn is_free_var_slot(&self, slot: u16) -> bool {
         self.current_frame().function_id.is_some_and(|id| {
-            self.interns
+            self.symbols
                 .get_function(id)
                 .free_var_slots
                 .iter()
@@ -2927,9 +2927,9 @@ impl<'h> VM<'h> {
     }
 
     /// Creates a NameError for an unbound free variable.
-    fn free_var_error(&self, name: Option<StringId>) -> RunError {
+    fn free_var_error(&self, name: Option<SymbolId>) -> RunError {
         let name_str = match name {
-            Some(id) => self.interns.get_str(id).to_string(),
+            Some(id) => self.symbols.get_str(id).to_string(),
             None => "<free var>".to_string(),
         };
         ExcType::name_error_free_variable(&name_str).into()

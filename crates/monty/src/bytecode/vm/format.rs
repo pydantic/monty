@@ -12,8 +12,8 @@ use crate::{
         validate_string_spec,
     },
     heap::HeapReadOutput,
-    intern::StringId,
     string_builder::StringBuilder,
+    symbols::SymbolId,
     types::{
         ForwardRef, PyTrait, Type,
         date::format_date_strftime,
@@ -33,7 +33,7 @@ impl VM<'_> {
         }
         let this = self;
         if count == 0 {
-            this.push(Value::InternString(StringId::EMPTY));
+            this.push(Value::Symbol(SymbolId::EMPTY));
             return Ok(());
         }
 
@@ -43,7 +43,7 @@ impl VM<'_> {
         let mut total_len = 0_usize;
         for part in parts.as_slice() {
             let s = part
-                .as_str_heap(this.heap, this.interns)
+                .as_str_heap(this.heap, this.symbols)
                 .expect("f-string parts are strings");
             total_len = total_len.saturating_add(s.len());
         }
@@ -53,7 +53,7 @@ impl VM<'_> {
 
         for part in parts.as_slice() {
             let s = part
-                .as_str_heap(this.heap, this.interns)
+                .as_str_heap(this.heap, this.symbols)
                 .expect("f-string parts are strings");
             result.push_str(s);
         }

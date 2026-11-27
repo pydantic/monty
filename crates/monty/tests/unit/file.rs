@@ -4,8 +4,8 @@ use super::*;
 use crate::{
     defer_drop_mut,
     heap::HeapReader,
-    intern::CompileInterns,
     run::{Program, SessionTables},
+    symbols::CompileSymbols,
 };
 
 #[test]
@@ -13,7 +13,7 @@ fn binary_file_reads_interned_bytes_from_buffer() {
     let mut heap = Heap::new(16, ResourceTracker::default());
     let mut tables = SessionTables::default();
     let program = Program::for_tests();
-    let id = CompileInterns::direct(&mut tables.interns).intern_bytes(b"\xff\n");
+    let id = CompileSymbols::direct(&mut tables.symbols).intern_bytes(b"\xff\n");
     HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
         let vm = &mut VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
         let file = vm

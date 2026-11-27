@@ -19,9 +19,9 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_f64},
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead},
-    intern::StaticStrings,
     py_attrs::PyAttrs,
     py_value::PyValue,
+    symbols::StaticStrings,
     types::{
         LazyHeapSet, PyTrait, Type, TypeRef,
         str::{StringRepr, allocate_string},
@@ -381,7 +381,7 @@ fn init_single(value: Value, vm: &mut VM<'_>) -> RunResult<Value> {
     }
     defer_drop!(value, vm);
     let parsed = match value.as_either_str(vm.heap) {
-        Some(text) => Some(parse(text.as_str(vm.interns))?),
+        Some(text) => Some(parse(text.as_str(vm.symbols))?),
         // `Decimal.__complex__`; Decimals take no part in complex arithmetic.
         None if let PyValue::Decimal(d) = value.py_value(vm) => Some(Complex::new(d.get(vm.heap).to_f64()?, 0.0)),
         None => operand(value, vm)?.map(widen),
@@ -752,7 +752,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let c = *self.get(vm.heap);
-        Ok(match attr.static_string(vm.interns) {
+        Ok(match attr.static_string(vm.symbols) {
             Some(StaticStrings::Real) => Some(CallResult::Value(Value::Float(c.real))),
             Some(StaticStrings::Imag) => Some(CallResult::Value(Value::Float(c.imag))),
             _ => None,
@@ -763,9 +763,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
     /// from a missing attribute.
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         value.drop_with(vm);
-        Err(match name.static_string(vm.interns) {
+        Err(match name.static_string(vm.symbols) {
             Some(StaticStrings::Real | StaticStrings::Imag) => ExcType::attribute_error_readonly(),
-            _ => ExcType::attribute_error_no_setattr(&self.py_type_name(vm), name.as_str(vm.interns)),
+            _ => ExcType::attribute_error_no_setattr(&self.py_type_name(vm), name.as_str(vm.symbols)),
         })
     }
 }

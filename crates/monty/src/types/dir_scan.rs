@@ -30,9 +30,9 @@ use crate::{
     hash::{HashValue, identity_hash},
     heap::{ContainsHeap, HeapData, HeapId, HeapItem, HeapObjectRead},
     identity::Identity,
-    intern::StaticStrings,
     os_dispatch::value_as_path_str,
     py_attrs::PyAttrs,
+    symbols::StaticStrings,
     types::{
         LazyHeapSet, List, Path, PyTrait, Type, TypeRef, allocate_tuple,
         list::ListIterator,
@@ -271,10 +271,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DirScan> {
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let value = match (self.get(vm.heap), attr.static_string(vm.interns)) {
+        let value = match (self.get(vm.heap), attr.static_string(vm.symbols)) {
             (DirScan::Entry(entry), Some(StaticStrings::Name)) => allocate_string(entry.name.as_str(), vm.heap),
             (DirScan::Entry(entry), Some(StaticStrings::Path)) => allocate_string(entry.path.as_str(), vm.heap),
-            _ => return Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns))),
+            _ => return Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.symbols))),
         };
         Ok(Some(CallResult::Value(value)))
     }
@@ -283,7 +283,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DirScan> {
         value.drop_with(vm);
         let readonly = matches!(self.get(vm.heap), DirScan::Entry(_))
             && matches!(
-                name.static_string(vm.interns),
+                name.static_string(vm.symbols),
                 Some(StaticStrings::Name | StaticStrings::Path)
             );
         if readonly {
@@ -291,7 +291,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DirScan> {
         } else {
             Err(ExcType::attribute_error_no_setattr(
                 &self.py_type_name(vm),
-                name.as_str(vm.interns),
+                name.as_str(vm.symbols),
             ))
         }
     }
@@ -438,10 +438,10 @@ fn descend_into_dirnames<'h>(
     let items = list.items();
     let total = items
         .map(|item| {
-            let Some(name) = value_as_path_str(item, vm.heap, vm.interns) else {
+            let Some(name) = value_as_path_str(item, vm.heap, vm.symbols) else {
                 return Err(ExcType::type_error(format!(
                     "join() argument must be str, bytes, or os.PathLike object, not '{}'",
-                    item.py_type_name_heap(vm.heap, vm.interns)
+                    item.py_type_name_heap(vm.heap, vm.symbols)
                 )));
             };
             Ok(name.len() * 3 + relative.len() + spelled.len() + size_of::<WalkStep>())
@@ -449,7 +449,7 @@ fn descend_into_dirnames<'h>(
         .try_fold(0_usize, |total, size| size.map(|size| total.saturating_add(size)))?;
     vm.heap.tracker.check_allocation(total)?;
     let names: Vec<String> = items
-        .filter_map(|item| value_as_path_str(item, vm.heap, vm.interns).map(str::to_owned))
+        .filter_map(|item| value_as_path_str(item, vm.heap, vm.symbols).map(str::to_owned))
         .collect();
     let walk = walk_mut(this, vm);
     for name in names.iter().rev() {

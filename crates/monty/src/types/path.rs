@@ -23,9 +23,9 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     hash::HashValue,
     heap::{DropWithContext, Heap, HeapId, HeapItem, HeapObjectRead},
-    intern::{Interns, StaticStrings},
     os_dispatch::{build_path_os_call, value_as_path_str},
     py_attrs::PyAttrs,
+    symbols::{StaticStrings, SymbolTable},
     types::{
         LazyHeapSet, List, PyTrait, Type, TypeRef, allocate_tuple,
         dir_scan::{glob_call, walk_call},
@@ -367,7 +367,7 @@ pub(crate) fn class_cwd(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     if !matches!(args, ArgValues::Empty) {
         let (pos, kwargs) = args.into_parts();
         let given = pos.len();
-        let first_kwarg = kwargs.first_key(vm.heap, vm.interns);
+        let first_kwarg = kwargs.first_key(vm.heap, vm.symbols);
         pos.drop_with(vm);
         kwargs.drop_with(vm);
         // CPython reports a stray keyword before the positional count.
@@ -444,7 +444,7 @@ fn path_glob(
 ) -> RunResult<CallResult> {
     defer_drop!(pattern, vm);
     defer_drop!(case_sensitive, vm);
-    let pattern_text = match value_as_path_str(pattern, vm.heap, vm.interns) {
+    let pattern_text = match value_as_path_str(pattern, vm.heap, vm.symbols) {
         Some(text) => text.to_owned(),
         // CPython's `bytes` handling trips over its own `str` separator.
         None if pattern.py_type(vm) == Type::Bytes => {
@@ -471,7 +471,7 @@ fn path_glob(
 
 /// Extracts a string from a Value for use as a path.
 fn extract_path_string<'a>(val: &'a Value, vm: &'a VM<'_>) -> RunResult<&'a str> {
-    value_as_path_str(val, vm.heap, vm.interns)
+    value_as_path_str(val, vm.heap, vm.symbols)
         .ok_or_else(|| ExcType::type_error(format!("expected str or Path, got {}", val.py_type_name(vm))))
 }
 
@@ -483,15 +483,15 @@ fn fold_joinpath(mut path: Path, parts: &[Value], vm: &VM<'_>) -> RunResult<Path
 }
 
 /// Joins a `Path` with a path-like right operand for `Path.__truediv__`.
-fn path_div(path: &Path, other: &Value, heap: &Heap, interns: &Interns) -> Option<Value> {
-    let other = value_as_path_str(other, heap, interns)?;
+fn path_div(path: &Path, other: &Value, heap: &Heap, symbols: &SymbolTable) -> Option<Value> {
+    let other = value_as_path_str(other, heap, symbols)?;
     let result = path.joinpath(other);
     Some(Value::allocate(Path::new(result), heap))
 }
 
 /// Prepends a path-like left operand for `Path.__rtruediv__`.
-fn path_rdiv(path: &Path, other: &Value, heap: &Heap, interns: &Interns) -> Option<Value> {
-    let base = value_as_path_str(other, heap, interns)?;
+fn path_rdiv(path: &Path, other: &Value, heap: &Heap, symbols: &SymbolTable) -> Option<Value> {
+    let base = value_as_path_str(other, heap, symbols)?;
     let result = Path::new(base.to_owned()).joinpath(path.as_str());
     Some(Value::allocate(Path::new(result), heap))
 }
@@ -552,7 +552,7 @@ impl Path {
     /// Returns `Some(value)` for recognized property names (`name`, `parent`,
     /// `stem`, `suffix`, `suffixes`, `parts`), or `None` if the variant doesn't
     /// correspond to a Path attribute. Used by `py_getattr` to share logic between
-    /// the interned fast path and the heap string slow path.
+    /// the symbol fast path and the heap string slow path.
     pub(crate) fn getattr_by_static(&self, ss: StaticStrings, heap: &Heap) -> Option<Value> {
         let v = match ss {
             StaticStrings::Name => allocate_string(self.name(), heap),
@@ -628,11 +628,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
     }
 
     fn py_truediv_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        Ok(path_div(self.get(vm.heap), other, vm.heap, vm.interns))
+        Ok(path_div(self.get(vm.heap), other, vm.heap, vm.symbols))
     }
 
     fn py_rtruediv_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        Ok(path_rdiv(self.get(vm.heap), other, vm.heap, vm.interns))
+        Ok(path_rdiv(self.get(vm.heap), other, vm.heap, vm.symbols))
     }
 
     fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
@@ -644,15 +644,15 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        // Fast path: interned strings can be matched by ID without string comparison
-        if let Some(ss) = attr.static_string(vm.interns) {
+        // Fast path: symbols can be matched by ID without string comparison
+        if let Some(ss) = attr.static_string(vm.symbols) {
             if let Some(v) = self.get(vm.heap).getattr_by_static(ss, vm.heap) {
                 return Ok(Some(CallResult::Value(v)));
             }
-            return Err(ExcType::attribute_error(Type::Path, attr.as_str(vm.interns)));
+            return Err(ExcType::attribute_error(Type::Path, attr.as_str(vm.symbols)));
         }
         // Slow path: heap-allocated strings need string comparison
-        let attr_str = attr.as_str(vm.interns);
+        let attr_str = attr.as_str(vm.symbols);
         let ss = match attr_str {
             "anchor" => StaticStrings::Anchor,
             "drive" => StaticStrings::Drive,
@@ -745,7 +745,7 @@ impl<'heap> PyAttrs<'heap> for PyPathImpl {
             Value::None => true,
             value => value.py_bool(vm)?,
         };
-        let Some(pattern_text) = value_as_path_str(path_pattern, vm.heap, vm.interns) else {
+        let Some(pattern_text) = value_as_path_str(path_pattern, vm.heap, vm.symbols) else {
             return Err(ExcType::type_error(format!(
                 "argument should be a str or an os.PathLike object where __fspath__ returns a str, not '{}'",
                 path_pattern.py_type_name(vm)

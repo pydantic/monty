@@ -15,8 +15,8 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::DropGuard,
-    intern::StaticStrings,
     modules::ModuleFunctions,
+    symbols::StaticStrings,
     types::{Module, Type, str::allocate_string},
     value::Value,
 };
@@ -35,7 +35,7 @@ pub(crate) enum IoFunctions {
 
 /// Creates the `_io` module. The vendored `io.py` imports every name it defines.
 pub fn create_module(vm: &mut VM<'_>) -> Module {
-    let mut module = Module::new(StaticStrings::UnderIo, vm.interns);
+    let mut module = Module::new(StaticStrings::UnderIo, vm.symbols);
     let ty = |ty| Value::Builtin(Builtins::Type(ty));
     let function = |function| Value::ModuleFunction(ModuleFunctions::Io(function));
     for (name, value) in [

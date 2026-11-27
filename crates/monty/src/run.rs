@@ -16,16 +16,16 @@ use crate::{
     bytecode::{Code, CodeBuilder, Compiler, FrameExit, Opcode, VM},
     exception_private::{ExcTypeExt, RunError, RunResult},
     heap::{DropWithContext, Heap, HeapReader},
-    intern::{CompileInterns, Interns, StringId},
     name_map::NameMap,
     namespace::NamespaceId,
     object_bridge::MontyObjectExt,
-    parse::{CodeRange, parse_with_interner, source_nesting_exception},
+    parse::{CodeRange, parse_with_symbols, source_nesting_exception},
     prepare::prepare_with_existing_names,
     run_progress::{
         RunProgress, answer_unserved_lookups, build_run_progress, check_snapshot_from_converted, convert_frame_exit,
         resume_with_result,
     },
+    symbols::{CompileSymbols, SymbolId, SymbolTable},
     types::str::StringRepr,
     value::Value,
     virtual_path::{canonical_cwd, posix_join},
@@ -57,7 +57,7 @@ use crate::{
 /// ```
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MontyRun {
-    /// The underlying executor containing compiled bytecode and interns.
+    /// The underlying executor containing compiled bytecode and symbols.
     executor: Executor,
 }
 
@@ -227,7 +227,7 @@ impl MontyRun {
 }
 
 /// Compiled program and session tables used by `MontyRun`, `run_progress` and `repl`.
-/// The VM borrows the program and committed intern entries immutably, but the
+/// The VM borrows the program and committed symbol entries immutably, but the
 /// global-name map mutably so runtime compilation can add module slots.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Executor {
@@ -240,13 +240,14 @@ pub(crate) struct Executor {
 }
 
 /// Session-owned compiler tables, transferred to each snippet's executor.
-/// The VM borrows names mutably and committed intern entries immutably.
+/// The VM borrows names mutably and committed symbol entries immutably.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct SessionTables {
     /// Module-level global names, slot by slot.
     pub(crate) global_names: NameMap,
-    /// Interned strings and compiled functions used during execution.
-    pub(crate) interns: Interns,
+    /// Symbols and compiled functions used during execution.
+    #[serde(rename = "interns")]
+    pub(crate) symbols: SymbolTable,
 }
 
 /// The module code, source and environment, borrowed immutably during execution.
@@ -374,13 +375,13 @@ impl Executor {
     ) -> Result<Self, MontyException> {
         check_identifier(&input_names)?;
         source_nesting_exception(&code, script_name, options.source_scan_threshold)?;
-        let mut interns = Interns::new(&code);
+        let mut symbols = SymbolTable::new(&code);
         let mut globals = NameMap::new();
         let (module_code, _) = compile_module_source(
             &code,
             script_name,
             &mut globals,
-            CompileInterns::direct(&mut interns),
+            CompileSymbols::direct(&mut symbols),
             input_names,
             options,
             false,
@@ -390,7 +391,7 @@ impl Executor {
         Ok(Self {
             tables: SessionTables {
                 global_names: globals,
-                interns,
+                symbols,
             },
             program: Program {
                 module_code: Arc::new(module_code),
@@ -421,20 +422,20 @@ impl Executor {
         code: Arc<str>,
         script_name: &str,
         globals: &mut NameMap,
-        interns: &mut Interns,
+        symbols: &mut SymbolTable,
         input_names: &[String],
         options: CompileOptions,
         session: ReplSession<'_>,
     ) -> Result<Self, MontyException> {
         check_identifier(input_names)?;
 
-        // Preparation assigns provisional global slots alongside the private intern IDs.
+        // Preparation assigns provisional global slots alongside the private symbol IDs.
         let globals_len = globals.len();
         let compiled = compile_module_source(
             &code,
             script_name,
             globals,
-            CompileInterns::new(interns),
+            CompileSymbols::new(symbols),
             input_names,
             options,
             session.future_annotations,
@@ -447,7 +448,7 @@ impl Executor {
         Ok(Self {
             tables: SessionTables {
                 global_names: mem::take(globals),
-                interns: interns.take(),
+                symbols: symbols.take(),
             },
             program: Program {
                 module_code: Arc::new(module_code),
@@ -469,21 +470,20 @@ impl Executor {
     /// The argument tuple occupies a namespace slot named `<monty-call-args>`,
     /// which no Python source can spell; the caller commits the map back after
     /// the call (the function may have bound new globals) and clears that slot,
-    /// so it is reused by the next call. The session's [`Interns`] are extended
-    /// in place (two ids, no parse) and moved into the executor on success; on
-    /// failure they stay with the caller.
+    /// so it is reused by the next call. On success the executor takes the session's [`SymbolTable`]
+    /// with entries for the filename and argument slot. On failure the caller retains the table.
     #[expect(
         clippy::too_many_arguments,
         reason = "synthetic calls combine existing REPL and call-site metadata"
     )]
     pub(crate) fn new_repl_function_call(
         name: &str,
-        name_id: StringId,
+        name_id: SymbolId,
         callable_slot: NamespaceId,
         arg_count: usize,
         script_name: &str,
         mut existing_globals: NameMap,
-        interns: &mut Interns,
+        symbols: &mut SymbolTable,
         options: CompileOptions,
         session: ReplSession<'_>,
     ) -> Result<Self, MontyException> {
@@ -494,14 +494,14 @@ impl Executor {
         } else {
             format!("{name}(...)")
         };
-        let mut overlay = CompileInterns::new(interns);
-        let filename = overlay.intern(script_name);
+        let mut overlay = CompileSymbols::new(symbols);
+        let filename = overlay.get_or_insert_symbol(script_name);
         let range = CodeRange {
             filename,
             start_byte: 0,
             end_byte: u32::try_from(code.len()).unwrap_or(u32::MAX),
         };
-        let args_name_id = overlay.intern(CALL_ARGS_NAME);
+        let args_name_id = overlay.get_or_insert_symbol(CALL_ARGS_NAME);
         let args_slot = existing_globals
             .ensure_slot(args_name_id, range)
             .map_err(|e| e.into_python_exc(script_name, &code))?;
@@ -527,7 +527,7 @@ impl Executor {
         overlay.commit();
         let tables = SessionTables {
             global_names: existing_globals,
-            interns: interns.take(),
+            symbols: symbols.take(),
         };
 
         Ok(Self {
@@ -586,7 +586,7 @@ impl Executor {
 
         // Non-REPL execution has exactly one source, so every frame's filename
         // resolves to the same `self.code`.
-        result.map_err(|e| e.into_python_exception(&self.tables.interns, |_| Some(&*self.program.code)))
+        result.map_err(|e| e.into_python_exception(&self.tables.symbols, |_| Some(&*self.program.code)))
     }
 
     /// Executes the code and returns both the result and reference count data, used for testing only.
@@ -651,7 +651,7 @@ impl Executor {
                 if idx < globals.len()
                     && let Value::Ref(id) = &globals[idx]
                 {
-                    counts.insert(vm.interns.get_str(name_id).to_owned(), vm.heap.get_refcount(*id));
+                    counts.insert(vm.symbols.get_str(name_id).to_owned(), vm.heap.get_refcount(*id));
                     roots.push(*id);
                 }
             }
@@ -666,14 +666,14 @@ impl Executor {
                 .heap
                 .unreachable_entries(roots)
                 .into_iter()
-                .map(|(id, ty)| format!("{} (id {})", ty.name(vm.heap, vm.interns), id.index()))
+                .map(|(id, ty)| format!("{} (id {})", ty.name(vm.heap, vm.symbols), id.index()))
                 .collect();
             let heap_count = vm.heap.entry_count();
 
-            // Convert return value while VM is still alive (needs access to interns).
+            // Convert return value while VM is still alive (needs access to symbols).
             // Non-REPL: single source, so every frame resolves to `executor.code`.
             let value = frame_exit_to_object(frame_exit_result, &mut vm)
-                .map_err(|e| e.into_python_exception(vm.interns, |_| Some(&*executor.program.code)))?;
+                .map_err(|e| e.into_python_exception(vm.symbols, |_| Some(&*executor.program.code)))?;
 
             // Drop globals with proper ref counting
             globals.drop_with(vm.heap);
@@ -759,7 +759,7 @@ impl Program {
                     if let Some(load_ip) = name_load_ip {
                         vm.set_instruction_ip(load_ip);
                     }
-                    let err = ExcType::name_error(function_name.as_str(vm.interns)).into();
+                    let err = ExcType::name_error(function_name.as_str(vm.symbols)).into();
                     args.drop_with(vm);
                     frame_exit_result = vm.resume_with_exception(err);
                 }
@@ -823,7 +823,7 @@ pub(crate) fn frame_exit_to_object(frame_exit_result: RunResult<FrameExit>, vm: 
         FrameExit::Return(_) => unreachable!("returns are handled above"),
         FrameExit::ExternalCall { function_name, .. } => ExcType::not_implemented(format!(
             "External function '{}' not implemented with standard execution",
-            function_name.as_str(vm.interns)
+            function_name.as_str(vm.symbols)
         ))
         .into(),
         FrameExit::OsCall { function_call, .. } => ExcType::not_implemented(format!(
@@ -832,7 +832,7 @@ pub(crate) fn frame_exit_to_object(frame_exit_result: RunResult<FrameExit>, vm: 
         ))
         .into(),
         FrameExit::MethodCall { method_name, .. } => {
-            let name = method_name.as_str(vm.interns);
+            let name = method_name.as_str(vm.symbols);
             ExcType::not_implemented(format!("Method call '{name}' not implemented with standard execution")).into()
         }
         FrameExit::ResolveFutures(_) => {
@@ -876,7 +876,7 @@ fn compile_module_source(
     code: &str,
     script_name: &str,
     globals: &mut NameMap,
-    mut interns: CompileInterns<'_>,
+    mut symbols: CompileSymbols<'_>,
     input_names: impl IntoIterator<Item = impl AsRef<str>>,
     options: CompileOptions,
     future_annotations: bool,
@@ -884,19 +884,19 @@ fn compile_module_source(
     let input_names = input_names.into_iter();
     let mut input_slots = Vec::with_capacity(input_names.size_hint().0);
     for name in input_names {
-        let name_id = interns.intern(name.as_ref());
+        let name_id = symbols.get_or_insert_symbol(name.as_ref());
         let slot = globals
             .ensure_slot(name_id, CodeRange::default())
             .map_err(|e| e.into_python_exc(script_name, code))?;
         input_slots.push(slot);
     }
-    let parsed = parse_with_interner(code, script_name, &mut interns, future_annotations)
+    let parsed = parse_with_symbols(code, script_name, &mut symbols, future_annotations)
         .map_err(|e| e.into_python_exc(script_name, code))?;
-    let nodes = prepare_with_existing_names(parsed.nodes, &interns, globals)
+    let nodes = prepare_with_existing_names(parsed.nodes, &symbols, globals)
         .map_err(|e| e.into_python_exc(script_name, code))?;
-    let module_code = Compiler::compile_module(&nodes, &mut interns, globals, options, parsed.future_annotations)
+    let module_code = Compiler::compile_module(&nodes, &mut symbols, globals, options, parsed.future_annotations)
         .map_err(|e| e.into_python_exc(script_name, code))?;
-    interns.commit();
+    symbols.commit();
     Ok((module_code, input_slots))
 }
 

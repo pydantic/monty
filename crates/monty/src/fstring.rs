@@ -20,10 +20,10 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     expressions::ExprLoc,
     heap::HeapData,
-    intern::StringId,
     py_value::PyValue,
     resource_checks::check_repeat_size,
     string_builder::StringBuilder,
+    symbols::SymbolId,
     types::{
         Complex, PyTrait, Type,
         long_int::{PyInt, check_bits_str_digits_limit},
@@ -58,14 +58,14 @@ pub enum ConversionFlag {
 ///
 /// F-strings are composed of literal text segments and interpolated expressions.
 /// For example, `f"Hello {name}!"` has three parts:
-/// - `Literal(interned_hello)` (StringId for "Hello ")
+/// - `Literal(hello_symbol)` (SymbolId for "Hello ")
 /// - `Interpolation { expr: name, ... }`
-/// - `Literal(interned_exclaim)` (StringId for "!")
+/// - `Literal(exclaim_symbol)` (SymbolId for "!")
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum FStringPart {
     /// Literal text segment (e.g., "Hello " in `f"Hello {name}"`)
-    /// The StringId references the interned string in the Interns table.
-    Literal(StringId),
+    /// The SymbolId references the symbol in the symbol table.
+    Literal(SymbolId),
     /// Interpolated expression with optional conversion and format spec
     Interpolation {
         /// The expression to evaluate
@@ -77,7 +77,7 @@ pub enum FStringPart {
         /// Debug prefix for `=` specifier (e.g., "a=" for f'{a=}', " a = " for f'{ a = }').
         /// When present, this text is prepended to the output and repr conversion is used
         /// by default (unless an explicit conversion is specified).
-        debug_prefix: Option<StringId>,
+        debug_prefix: Option<SymbolId>,
     },
 }
 
@@ -748,7 +748,7 @@ pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>)
             format!(
                 "Unknown format code '{}' for object of type '{}'",
                 c.as_char(),
-                value_type_ref.name(vm.heap, vm.interns)
+                value_type_ref.name(vm.heap, vm.symbols)
             ),
         )
         .into());
@@ -883,7 +883,7 @@ pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>)
             format!(
                 "Unknown format code '{}' for object of type '{}'",
                 c.as_char(),
-                value_type_ref.name(vm.heap, vm.interns)
+                value_type_ref.name(vm.heap, vm.symbols)
             ),
         )
         .into()),

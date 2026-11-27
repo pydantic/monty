@@ -6,7 +6,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData},
-    intern::StringId,
+    symbols::SymbolId,
     types::Module,
     value::{EitherStr, Value},
 };
@@ -74,33 +74,33 @@ impl VM<'_> {
     /// Loads an attribute from an object and pushes it onto the stack.
     ///
     /// Returns an AttributeError if the attribute doesn't exist.
-    pub(super) fn load_attr(&mut self, name_id: StringId) -> Result<CallResult, RunError> {
+    pub(super) fn load_attr(&mut self, name_id: SymbolId) -> Result<CallResult, RunError> {
         let this = self;
 
         let obj = this.pop();
         defer_drop!(obj, this);
 
-        let attr = EitherStr::Interned(name_id);
+        let attr = EitherStr::Symbol(name_id);
         obj.py_getattr(&attr, this)
     }
 
     /// Loads a `from ... import` attribute, raising `ImportError` if missing.
     /// A file package's missing attribute may be a submodule, imported here.
     /// `module_id` supplies the error's module name because host values need not be `Module`s.
-    pub(super) fn load_attr_import(&mut self, name_id: StringId, module_id: StringId) -> Result<CallResult, RunError> {
+    pub(super) fn load_attr_import(&mut self, name_id: SymbolId, module_id: SymbolId) -> Result<CallResult, RunError> {
         let this = self;
 
         let obj = this.pop();
         defer_drop!(obj, this);
 
-        let attr = EitherStr::Interned(name_id);
+        let attr = EitherStr::Symbol(name_id);
         match obj.py_getattr(&attr, this) {
             Ok(result) => Ok(result),
             Err(RunError::Exc(exc)) if exc.exc.exc_type() == ExcType::AttributeError => {
                 this.import_file_attr(obj, name_id).unwrap_or_else(|| {
                     let module = this.import_target_name(module_id, obj, None);
                     Err(ExcType::cannot_import_name(
-                        this.interns.get_str(name_id),
+                        this.symbols.get_str(name_id),
                         &module,
                         None,
                     ))
@@ -115,7 +115,7 @@ impl VM<'_> {
     /// reject non-module attributes (`math.pi`, the host-served `os.environ`); bundled
     /// ones add "is not a package" to errors, host modules being packages. A file
     /// package imports the submodule's own file, whatever attribute it has.
-    pub(super) fn load_submodule(&mut self, name_id: StringId, path_id: StringId) -> Result<CallResult, RunError> {
+    pub(super) fn load_submodule(&mut self, name_id: SymbolId, path_id: SymbolId) -> Result<CallResult, RunError> {
         let this = self;
 
         let obj = this.pop();
@@ -127,7 +127,7 @@ impl VM<'_> {
         }
         let package = module_package(obj, this.heap);
         let is_builtin = package == Some(false);
-        let attr = EitherStr::Interned(name_id);
+        let attr = EitherStr::Symbol(name_id);
         match obj.py_getattr(&attr, this) {
             Ok(CallResult::Value(value)) if package.is_some() && module_package(&value, this.heap).is_some() => {
                 Ok(CallResult::Value(value))
@@ -147,13 +147,13 @@ impl VM<'_> {
 
     /// The name an import error gives for `path_id`, which is a relative import's dotted
     /// path (`..pkg`) when it starts with a dot: then `module` names it, plus `leaf` if given.
-    fn import_target_name(&self, path_id: StringId, module: &Value, leaf: Option<StringId>) -> String {
-        let path = self.interns.get_str(path_id);
+    fn import_target_name(&self, path_id: SymbolId, module: &Value, leaf: Option<SymbolId>) -> String {
+        let path = self.symbols.get_str(path_id);
         match module.ref_id().map(|id| self.heap.get(id)) {
             Some(HeapData::Module(module)) if path.starts_with('.') => {
-                let name = module.name_str(self.interns);
+                let name = module.name_str(self.symbols);
                 match leaf {
-                    Some(leaf) => format!("{name}.{}", self.interns.get_str(leaf)),
+                    Some(leaf) => format!("{name}.{}", self.symbols.get_str(leaf)),
                     None => name.to_owned(),
                 }
             }
@@ -162,17 +162,17 @@ impl VM<'_> {
     }
 
     /// Returns the suspended `LoadSubmodule` path for errors from lazy attribute lookups.
-    pub(crate) fn suspended_submodule(&self) -> Option<StringId> {
+    pub(crate) fn suspended_submodule(&self) -> Option<SymbolId> {
         let ip = self.instruction_ip;
         let bytecode = self.current_frame.bytecode;
         (bytecode.get(ip) == Some(&(Opcode::LoadSubmodule as u8))).then(|| {
             // operands: u16 attribute name_id, then u16 path name_id, little-endian
-            StringId::from_index(u16::from_le_bytes([bytecode[ip + 3], bytecode[ip + 4]]))
+            SymbolId::from_index(u16::from_le_bytes([bytecode[ip + 3], bytecode[ip + 4]]))
         })
     }
 
     /// Returns the suspended `LoadAttrImport` module for errors from lazy attribute lookups.
-    pub(crate) fn suspended_import_from(&self) -> Option<StringId> {
+    pub(crate) fn suspended_import_from(&self) -> Option<SymbolId> {
         let frame = &self.current_frame;
         (frame.bytecode.get(self.instruction_ip) == Some(&(Opcode::LoadAttrImport as u8)))
             .then_some(frame.import_from_module)
@@ -180,19 +180,19 @@ impl VM<'_> {
     }
 
     /// Returns the suspended `LoadModule` name, distinguishing imports from calls to `__import__`.
-    pub(crate) fn suspended_import(&self) -> Option<StringId> {
+    pub(crate) fn suspended_import(&self) -> Option<SymbolId> {
         let ip = self.instruction_ip;
         let bytecode = self.current_frame.bytecode;
         (bytecode.get(ip) == Some(&(Opcode::LoadModule as u8))).then(|| {
             // operand: u16 module name_id, little-endian
-            StringId::from_index(u16::from_le_bytes([bytecode[ip + 1], bytecode[ip + 2]]))
+            SymbolId::from_index(u16::from_le_bytes([bytecode[ip + 1], bytecode[ip + 2]]))
         })
     }
 
     /// Stores a value as an attribute on an object.
     ///
     /// Returns an AttributeError if the attribute cannot be set.
-    pub(super) fn store_attr(&mut self, name_id: StringId) -> Result<(), RunError> {
+    pub(super) fn store_attr(&mut self, name_id: SymbolId) -> Result<(), RunError> {
         let this = self;
 
         let obj = this.pop();
@@ -200,7 +200,7 @@ impl VM<'_> {
 
         let value = this.pop();
         // py_set_attr takes ownership of value and drops it on error
-        obj.py_set_attr(&EitherStr::Interned(name_id), value, this)
+        obj.py_set_attr(&EitherStr::Symbol(name_id), value, this)
     }
 }
 

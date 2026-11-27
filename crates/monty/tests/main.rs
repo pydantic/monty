@@ -44,7 +44,7 @@ fn cloned_runners_compile_independently() {
 }
 
 #[test]
-fn test_get_interned_string() {
+fn test_get_symbol() {
     let mut ex = MontyRun::new("'foobar'".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     let r = ex.run_no_limits(vec![]).unwrap();

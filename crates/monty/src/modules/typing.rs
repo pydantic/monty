@@ -27,8 +27,8 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     frozen::{FrozenFunction, FrozenFunctions},
     heap::{HeapData, HeapId},
-    intern::{FunctionId, StaticStrings},
     modules::ModuleFunctions,
+    symbols::{FunctionId, StaticStrings},
     types::{
         LazyHeapSet, Module, PyTrait, Type, allocate_string, allocate_tuple, forward_ref::format_code,
         generic_alias::repr_type_arg,
@@ -39,7 +39,7 @@ use crate::{
 /// Creates the `typing` module.
 ///
 pub fn create_module(vm: &mut VM<'_>) -> Module {
-    let mut module = Module::new(StaticStrings::Typing, vm.interns);
+    let mut module = Module::new(StaticStrings::Typing, vm.symbols);
 
     // typing.TYPE_CHECKING - always False
     module.set_attr(StaticStrings::TypeChecking, Value::Bool(false), vm);
@@ -806,7 +806,7 @@ fn class_attr_is_true(class_id: HeapId, name: &str, vm: &mut VM<'_>) -> RunResul
     let HeapData::Class(class) = vm.heap.get(class_id) else {
         unreachable!("hint_source classified a class");
     };
-    let Some(value) = class.namespace().get_by_str(name, vm.heap, vm.interns) else {
+    let Some(value) = class.namespace().get_by_str(name, vm.heap, vm.symbols) else {
         return Ok(false);
     };
     let value = value.clone_with_heap(vm.heap);

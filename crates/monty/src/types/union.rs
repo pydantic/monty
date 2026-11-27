@@ -19,7 +19,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_one},
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapPayload},
-    intern::StaticStrings,
+    symbols::StaticStrings,
     types::{
         LazyHeapSet, PyTrait, Tuple, Type, TypeRef, generic_alias::repr_type_arg, list::repr_should_truncate,
         tuple::allocate_tuple,
@@ -380,7 +380,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Union> {
     /// (always `()`); nothing is delegated, so any other name is an
     /// `AttributeError` on the union.
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        match attr.static_string(vm.interns) {
+        match attr.static_string(vm.symbols) {
             Some(StaticStrings::DunderArgs) => Ok(Some(CallResult::Value(self.get(vm.heap).args(vm.heap)))),
             Some(StaticStrings::DunderOrigin) => {
                 Ok(Some(CallResult::Value(Value::Builtin(Builtins::Type(Type::Union)))))

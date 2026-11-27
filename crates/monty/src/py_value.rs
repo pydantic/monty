@@ -24,8 +24,8 @@ use crate::{
     heap::{DropWithContext, Heap, HeapId, HeapObjectRead, HeapReadOutput, HeapReader},
     heap_data::heap_payloads,
     identity::Identity,
-    intern::{FunctionId, StaticStrings},
     modules::{ModuleFunctions, asyncio::task_call_method, collections::defaultdict::defaultdict_missing},
+    symbols::{FunctionId, StaticStrings},
     types::{
         GenericAlias, LazyHeapSet, LongInt, Property, PyTrait, Type, TypeRef, Union, allocate_string, allocate_tuple,
         bytes::PyBytes,
@@ -326,7 +326,7 @@ impl<'h> PyValue<'h> {
             Self::Task(value) => task_call_method(value, attr, args, vm),
             Self::Builtin(Builtins::Type(ty)) => ty.call_class_method(attr, args, vm),
             Self::Bool(value) => {
-                match attr.static_string(vm.interns) {
+                match attr.static_string(vm.symbols) {
                     Some(StaticStrings::BitLength) => {
                         args.check_zero_args("int.bit_length", vm.heap)?;
                         Ok(CallResult::Value(Value::Int(i64::from(*value))))
@@ -348,19 +348,19 @@ impl<'h> PyValue<'h> {
                     }
                     _ => {
                         args.drop_with(vm);
-                        Err(ExcType::attribute_error("bool", attr.as_str(vm.interns)))
+                        Err(ExcType::attribute_error("bool", attr.as_str(vm.symbols)))
                     }
                 }
             }
             Self::DefFunction(func_id) => {
-                match annotations::function_call_attr(*func_id, None, attr.as_str(vm.interns), args, vm) {
+                match annotations::function_call_attr(*func_id, None, attr.as_str(vm.symbols), args, vm) {
                     Some(result) => result,
-                    None => Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns))),
+                    None => Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.symbols))),
                 }
             }
             _ => {
                 args.drop_with(vm);
-                Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns)))
+                Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.symbols)))
             }
         })
     }
@@ -395,18 +395,18 @@ impl<'h> PyValue<'h> {
             Self::DefFunction(id) => {
                 let py_id = self.py_identity().into_value(vm.heap);
                 defer_drop!(py_id, vm);
-                Ok(vm.interns
+                Ok(vm.symbols
                     .get_function(*id)
-                    .py_repr_fmt(f, vm.interns, PythonIdDisplay::new(py_id, vm.heap))?)
+                    .py_repr_fmt(f, vm.symbols, PythonIdDisplay::new(py_id, vm.heap))?)
             }
             Self::Marker(value) => Ok(value.py_repr_fmt(f)?),
             Self::Property(value) => Ok(write!(f, "<property {value:?}>")?),
             Self::Cell(cell) => Ok(write!(f, "<cell: {} object>", cell.get(vm.heap).0.py_type_name(vm))?),
             Self::Exception(e) => Ok(e.get(vm.heap).py_repr_fmt(f)?),
-            Self::Module(m) => Ok(f.write_str(&m.get(vm.heap).repr(vm.interns))?),
+            Self::Module(m) => Ok(f.write_str(&m.get(vm.heap).repr(vm.symbols))?),
             Self::Coroutine(coro) => {
-                let func = vm.interns.get_function(coro.get(vm.heap).func_id);
-                Ok(write!(f, "<coroutine object {}>", vm.interns.get_str(func.name.name_id))?)
+                let func = vm.symbols.get_function(coro.get(vm.heap).func_id);
+                Ok(write!(f, "<coroutine object {}>", vm.symbols.get_str(func.name.name_id))?)
             }
             Self::GatherFuture(gather) => Ok(write!(f, "<gather({})>", gather.get(vm.heap).item_count())?),
             Self::ExternalFuture(fut) => Ok(write!(f, "<coroutine external_future({})>", fut.get(vm.heap).call_id.raw())?),
@@ -535,7 +535,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
                 let type_name = self.py_type_name(vm);
                 Err(ExcType::attribute_error_no_setattr(
                     &type_name,
-                    name.as_str(vm.interns),
+                    name.as_str(vm.symbols),
                 ))
             }
         )
@@ -610,7 +610,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     }
 
     fn py_type_name(&self, vm: &VM<'h>) -> Cow<'h, str> {
-        forward_py_value!(self, |value| value.py_type_name(vm), else self.py_type(vm).name(vm.heap, vm.interns))
+        forward_py_value!(self, |value| value.py_type_name(vm), else self.py_type(vm).name(vm.heap, vm.symbols))
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
@@ -990,9 +990,9 @@ mod tests {
         defer_drop_mut,
         heap::{DropGuard, HeapData, HeapReader},
         heap_data::CellValue,
-        intern::{BytesId, CompileInterns, LongIntId, StringId},
         modules::math::MathFunctions,
         run::Executor,
+        symbols::{BytesId, CompileSymbols, LongIntId, SymbolId},
         types::{
             Bytes, List,
             property::ZeroArgOsProperty,
@@ -1001,7 +1001,7 @@ mod tests {
     };
 
     struct TestIds {
-        string: StringId,
+        string: SymbolId,
         bytes: BytesId,
         integer: LongIntId,
         function: FunctionId,
@@ -1016,11 +1016,11 @@ mod tests {
         )
         .unwrap();
         let ids = {
-            let mut interns = CompileInterns::direct(&mut executor.tables.interns);
+            let mut symbols = CompileSymbols::direct(&mut executor.tables.symbols);
             TestIds {
-                string: interns.intern("aé🐍b"),
-                bytes: interns.intern_bytes(b"a\0\xff"),
-                integer: interns.intern_long_int(BigInt::from(1_u128 << 100)),
+                string: symbols.get_or_insert_symbol("aé🐍b"),
+                bytes: symbols.intern_bytes(b"a\0\xff"),
+                integer: symbols.intern_long_int(BigInt::from(1_u128 << 100)),
                 function: FunctionId::from_index(0),
             }
         };
@@ -1058,7 +1058,7 @@ mod tests {
                 Value::Int(42),
                 Value::InternLongInt(ids.integer),
                 LongInt::new(BigInt::from(1_u128 << 100)).into_value(vm.heap),
-                Value::InternString(ids.string),
+                Value::Symbol(ids.string),
                 Value::InlineString(InlineStr::new("aé🐍b").unwrap()),
                 allocate_string_on_heap("aé🐍b", vm.heap),
                 Value::InternBytes(ids.bytes),
@@ -1090,7 +1090,7 @@ mod tests {
     fn normalized_iterators_retain_their_source_and_preserve_items() {
         with_vm(|vm, ids| {
             let values = vec![
-                Value::InternString(ids.string),
+                Value::Symbol(ids.string),
                 Value::InlineString(InlineStr::new("aé🐍b").unwrap()),
                 allocate_string_on_heap("aé🐍b", vm.heap),
                 Value::InternBytes(ids.bytes),
