@@ -8,16 +8,16 @@
 //! missing-key read (`0`, no insert), `most_common`/`elements`/`total`/`update`/
 //! `subtract`, and the `+ - & |` algebra are added on top.
 
-use std::{cmp::Ordering, mem};
+use std::mem;
 
 use smallvec::smallvec;
 
 use crate::{
     args::{ArgValues, KwargsValues},
     bytecode::{CallResult, VM},
+    comparison::RichCompareOp,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    expressions::CmpOperator,
     heap::{DropGuard, DropWithContext, HeapData, HeapObjectRead},
     intern::StaticStrings,
     py_attrs::{self, MethodCall},
@@ -26,7 +26,7 @@ use crate::{
     sorting::{py_eq_item, py_lt, sort_indices, sort_indices_by},
     types::{
         Dict, List, PyTrait, Type, allocate_tuple, dict::dict_update, iter::collect_owned_iterable,
-        key_hash::plain_hash, py_trait::CmpOrder,
+        key_hash::plain_hash,
     },
     value::{EitherStr, VALUE_SIZE, Value},
 };
@@ -111,66 +111,11 @@ fn count_arith(lhs: &Value, rhs: &Value, subtract: bool, vm: &mut VM<'_>) -> Run
     }
 }
 
-/// A Python ordering comparison used inside the `Counter` algebra.
-///
-/// CPython's Counter methods run different comparisons (`<=` for `<=`/`<`, `>=`
-/// for `>=`/`>`, `<` when picking a min/max, `>` for the `> 0` keep-positive
-/// filter), and the operator embedded in an unorderable-count `TypeError` is the
-/// one that actually ran — so the caller picks the variant to keep CPython's
-/// wording. It also decides how `NaN` (an *unordered* pair) resolves.
-#[derive(Clone, Copy)]
-enum CountCmp {
-    Le,
-    Lt,
-    Ge,
-    Gt,
-}
-
-impl CountCmp {
-    /// The operator symbol CPython names in the `TypeError`.
-    fn symbol(self) -> &'static str {
-        match self {
-            Self::Le => "<=",
-            Self::Lt => "<",
-            Self::Ge => ">=",
-            Self::Gt => ">",
-        }
-    }
-
-    /// Whether `lhs <op> rhs` holds given the three-way `ordering` of the pair.
-    fn holds(self, ordering: Ordering) -> bool {
-        match self {
-            Self::Le => ordering != Ordering::Greater,
-            Self::Lt => ordering == Ordering::Less,
-            Self::Ge => ordering != Ordering::Less,
-            Self::Gt => ordering == Ordering::Greater,
-        }
-    }
-}
-
-/// Evaluates `lhs <op> rhs` between two counts, raising CPython's operator-
-/// specific `TypeError` when the pair has no ordering at all.
-///
-/// `NaN` makes a pair *unordered* rather than incomparable, and every IEEE
-/// ordering comparison against `NaN` is false — so `nan <= nan` is `false`, which
-/// is exactly what CPython's element-wise `Counter` comparisons observe.
-fn count_holds(lhs: &Value, rhs: &Value, op: CountCmp, vm: &mut VM<'_>) -> RunResult<bool> {
-    match lhs.py_cmp(rhs, vm)? {
-        CmpOrder::Ordered(ordering) => Ok(op.holds(ordering)),
-        CmpOrder::Unordered => Ok(false),
-        CmpOrder::Incomparable => Err(ExcType::type_error_ordering(
-            op.symbol(),
-            &lhs.py_type_name(vm),
-            &rhs.py_type_name(vm),
-        )),
-    }
-}
-
 /// Whether a count is strictly greater than zero (the `Counter` algebra keeps
 /// only positive results). CPython's `_keep_positive` filters with `count > 0`,
 /// so an unorderable count reports `>` and a `NaN` count is not positive.
 fn count_is_positive(value: &Value, vm: &mut VM<'_>) -> RunResult<bool> {
-    count_holds(value, &Value::Int(0), CountCmp::Gt, vm)
+    value.py_gt_operator(&Value::Int(0), vm)
 }
 
 /// Converts a count to a repetition length for `elements()`.
@@ -535,7 +480,7 @@ fn nlargest(n: usize, counts: &[Value], vm: &mut VM<'_>) -> RunResult<Vec<usize>
         let mut best = 0;
         for i in 1..counts.len() {
             vm.heap.tracker.check_time_every(i)?;
-            if vm.cmp_values(CmpOperator::Gt, &counts[i], &counts[best])? {
+            if counts[i].py_gt_operator(&counts[best], vm)? {
                 best = i;
             }
         }
@@ -782,7 +727,7 @@ fn counter_binary_extreme<'h>(
         let (other_count, vm) = other.as_parts_mut();
         // `count < other`: `|` keeps `count` when it is *not* smaller, `&` keeps
         // it when it *is* smaller. The loser is released.
-        let count_is_smaller = count_holds(count, other_count, CountCmp::Lt, vm)?;
+        let count_is_smaller = count.py_lt_operator(other_count, vm)?;
         let keep_count = match op {
             ExtremeOp::Max => !count_is_smaller,
             ExtremeOp::Min => count_is_smaller,
@@ -822,19 +767,6 @@ fn counter_binary_extreme<'h>(
     Ok(())
 }
 
-/// The multiset comparisons CPython defines between two Counters.
-#[derive(Clone, Copy)]
-pub(crate) enum CounterCmp {
-    /// `<=` — every count in the left is at most the matching right count.
-    Le,
-    /// `<` — `<=` and not equal.
-    Lt,
-    /// `>=` — every count in the left is at least the matching right count.
-    Ge,
-    /// `>` — `>=` and not equal.
-    Gt,
-}
-
 /// Evaluates a multiset comparison between two Counters.
 ///
 /// CPython walks the union of both key sets with a missing key reading as `0`
@@ -845,99 +777,30 @@ pub(crate) enum CounterCmp {
 pub(crate) fn counter_compare<'h>(
     lhs: &HeapObjectRead<'h, Dict>,
     rhs: &HeapObjectRead<'h, Dict>,
-    cmp: CounterCmp,
+    cmp: RichCompareOp,
     vm: &mut VM<'h>,
 ) -> RunResult<bool> {
-    // `<` is `<= and !=` and `>` is `>= and !=`, so both strict forms run the
-    // loose comparison — whose operator is what an unorderable pair reports — and
-    // add the inequality via the separately tracked `equal`.
     let (op, strict) = match cmp {
-        CounterCmp::Le => (CountCmp::Le, false),
-        CounterCmp::Lt => (CountCmp::Le, true),
-        CounterCmp::Ge => (CountCmp::Ge, false),
-        CounterCmp::Gt => (CountCmp::Ge, true),
+        RichCompareOp::Le => (RichCompareOp::Le, false),
+        RichCompareOp::Lt => (RichCompareOp::Le, true),
+        RichCompareOp::Ge => (RichCompareOp::Ge, false),
+        RichCompareOp::Gt => (RichCompareOp::Ge, true),
+        _ => unreachable!("Counter ordering requires an ordering operator"),
     };
-    // `holds` is false as soon as any pair breaks the loose ordering; `equal`
-    // tracks whether every compared pair matched, which the strict forms need.
-    let mut holds = true;
-    let mut equal = true;
-    // `counter_union_counts` hands back owned pairs the caller must drop. The
-    // guard covers every exit — a short-circuit (`!holds`), a failing comparison,
-    // and normal exhaustion — releasing whatever the loop never compared.
-    let pairs = counter_union_counts(lhs, rhs, vm)?.into_iter();
-    defer_drop_mut!(pairs, vm);
-    for pair in pairs.by_ref() {
-        defer_drop!(pair, vm);
-        let (l, r) = pair;
-        // One `py_cmp` yields both the loose check and the equality the strict
-        // forms need. A `NaN` pair is unordered: the loose comparison fails (as
-        // in CPython, `nan <= x` is false) and the pair counts as not-equal.
-        match l.py_cmp(r, vm)? {
-            CmpOrder::Ordered(Ordering::Equal) => {}
-            CmpOrder::Ordered(ordering) => {
-                holds &= op.holds(ordering);
-                equal = false;
-            }
-            CmpOrder::Unordered => {
-                holds = false;
-                equal = false;
-            }
-            CmpOrder::Incomparable => {
-                return Err(ExcType::type_error_ordering(
-                    op.symbol(),
-                    &l.py_type_name(vm),
-                    &r.py_type_name(vm),
-                ));
-            }
-        }
-        if !holds {
-            break;
-        }
-    }
-    Ok(holds && (!strict || !equal))
-}
-
-/// Pairs up the counts of two Counters over the union of their keys, with a
-/// key missing from either side reading as `0`.
-///
-/// Returns owned clones so the caller can run comparisons that need `&mut VM`.
-/// Every returned pair must be dropped by the caller.
-fn counter_union_counts<'h>(
-    lhs: &HeapObjectRead<'h, Dict>,
-    rhs: &HeapObjectRead<'h, Dict>,
-    vm: &mut VM<'h>,
-) -> RunResult<Vec<(Value, Value)>> {
-    // Three guards, so a failing lookup is a plain `?`: the pairs accumulated so
-    // far, the entries not yet visited, and the entry in flight all get released.
-    let mut pairs = DropGuard::new(Vec::new(), vm);
-    // Left keys against their right counterparts, then the right-only keys.
-    for (keys, other, flip) in [(lhs, rhs, false), (rhs, lhs, true)] {
-        let (collected, vm) = pairs.as_parts_mut();
-        let entries = keys.clone_all_pairs(vm)?.into_iter();
-        defer_drop_mut!(entries, vm);
-        for entry in entries.by_ref() {
-            let mut entry = DropGuard::new(entry, vm);
-            let ((key, _), vm) = entry.as_parts_mut();
-            let other = other.dict_get(key, vm)?;
-            // On the second pass only keys absent from the left are new; the
-            // shared ones were already paired, so skip them (the guard releases
-            // the entry); otherwise the count moves into `collected`.
-            match (flip, other) {
-                (true, Some(other)) => other.drop_with(vm),
-                (true, None) => {
-                    let ((key, count), vm) = entry.into_parts();
-                    key.drop_with(vm);
-                    collected.push((Value::Int(0), count));
-                }
-                (false, other) => {
-                    let ((key, count), vm) = entry.into_parts();
-                    key.drop_with(vm);
-                    collected.push((count, other.unwrap_or(Value::Int(0))));
-                }
+    for keys in [lhs, rhs] {
+        let iter = keys.iter(vm)?;
+        defer_drop_mut!(iter, vm);
+        while let Some((key, _)) = iter.next(vm)? {
+            let left = lhs.dict_get(key, vm)?.unwrap_or(Value::Int(0));
+            defer_drop!(left, vm);
+            let right = rhs.dict_get(key, vm)?.unwrap_or(Value::Int(0));
+            defer_drop!(right, vm);
+            if !left.py_richcompare_bool(right, op, vm)? {
+                return Ok(false);
             }
         }
     }
-    Ok(pairs.into_inner())
+    Ok(!strict || !lhs.eq_counter(rhs, vm)?)
 }
 
 /// Applies a `Counter` algebra operator **in place**, mutating `counter`.
@@ -983,7 +846,7 @@ pub(crate) fn counter_inplace_op<'h>(
                 // A key absent from `self` reads as 0 (`self[elem]`).
                 let count = counter.dict_get(key, vm)?.unwrap_or(Value::Int(0));
                 // `other_count > self[elem]`: other first, so the TypeError names it first.
-                let bigger = count_holds(other_count, &count, CountCmp::Gt, vm);
+                let bigger = other_count.py_gt_operator(&count, vm);
                 count.drop_with(vm);
                 // A count that is not bigger leaves `self` alone, and the guard
                 // releases the entry — as it does if the comparison raised.
@@ -1011,7 +874,7 @@ pub(crate) fn counter_inplace_op<'h>(
                 let mut other_count = DropGuard::new(other_count, vm);
                 let (other, vm) = other_count.as_parts_mut();
                 // `other[elem] < count`: other first, matching CPython's wording.
-                let is_smaller = count_holds(other, count, CountCmp::Lt, vm)?;
+                let is_smaller = other.py_lt_operator(count, vm)?;
                 // Only the smaller of the two survives; the guards release the
                 // loser, the whole entry when nothing changes, and both if the
                 // comparison raised.
@@ -1059,7 +922,7 @@ pub(crate) fn counter_unary_op<'h>(
             // count, dropping a NaN), then stores `0 - count`. `+c` copies the count
             // through and lets the trailing `retain_positive` apply the `> 0` strip.
             let negated = if negate {
-                if !count_holds(count, &Value::Int(0), CountCmp::Lt, vm)? {
+                if !count.py_lt_operator(&Value::Int(0), vm)? {
                     // Not negative, so nothing is stored; the guard releases the entry.
                     continue;
                 }

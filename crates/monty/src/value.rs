@@ -15,27 +15,22 @@ use crate::{
     annotations,
     builtins::Builtins,
     bytecode::{CallResult, VM},
+    comparison::{Number, RichCompareOp, compare_bytes, compare_str},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    expressions::CmpOperator,
     hash::{HashValue, hash_f64, hash_named, hash_one},
     heap::{
-        ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapObjectRead, HeapPayload, HeapReadOutput,
-        HeapReader,
+        ContainsHeap, DropWithContext, Heap, HeapData, HeapId, HeapObjectRead, HeapPayload, HeapReadOutput, HeapReader,
     },
     identity::Identity,
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
     modules::ModuleFunctions,
     py_value::PyValue,
     types::{
-        Bytes, BytesIterator, CmpOrder, Complex, HeapStr, LazyHeapSet, LongInt, Property, PyTrait, Type, TypeRef,
+        Bytes, BytesIterator, Complex, HeapStr, LazyHeapSet, LongInt, Property, PyTrait, Type, TypeRef,
         bytes::PyBytes,
-        decimal,
-        instance::{class_defines, instance_getattr, instance_str, instance_user_eq, subclass_overrides},
-        long_int::{
-            PyInt, bigint_cmp_f64, bigint_cmp_i64, bigint_divmod_tuple, bigint_eq_f64, bigint_eq_i64, i64_cmp_f64,
-        },
-        namedtuple::cmp_item_seqs,
+        instance::{class_defines, instance_getattr, instance_str, subclass_overrides},
+        long_int::{PyInt, bigint_divmod_tuple, bigint_eq_f64, bigint_eq_i64, i64_cmp_f64},
         str::{InlineStr, PyStr, allocate_string},
         tuple::allocate_tuple,
     },
@@ -327,90 +322,18 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
-    fn py_cmp(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<CmpOrder> {
-        let interns = vm.interns;
-        // py_cmp handles numbers, strings, bytes, tuples, and lists.
-        // Recursion depth tracking for tuples/lists is handled by their iterators.
-        //
-        // `from_numeric` maps a `None` from a numeric helper to
-        // `CmpOrder::Unordered` (only `NaN` yields `None` there), while
-        // `from_total` maps `None` from a total-order comparison to
-        // `CmpOrder::Incomparable`. Any operand pair with no comparison at all
-        // falls through to the catch-alls below, which try a `Decimal` operand last so
-        // the common types never pay for that check.
-        match (self, other) {
-            (Self::Int(s), Self::Int(o)) => Ok(CmpOrder::Ordered(s.cmp(o))),
-            (Self::Float(s), Self::Float(o)) => Ok(CmpOrder::from_numeric(s.partial_cmp(o))),
-            // Int/float ordering is exact (no rounding of either operand).
-            (Self::Int(s), Self::Float(o)) => Ok(CmpOrder::from_numeric(i64_cmp_f64(*s, *o))),
-            (Self::Float(s), Self::Int(o)) => Ok(CmpOrder::from_numeric(i64_cmp_f64(*o, *s).map(Ordering::reverse))),
-            (Self::Int(a), rhs) if let Some(b) = rhs.as_long_int(vm) => {
-                Ok(CmpOrder::Ordered(bigint_cmp_i64(b, *a).reverse()))
-            }
-            (lhs, Self::Int(b)) if let Some(a) = lhs.as_long_int(vm) => Ok(CmpOrder::Ordered(bigint_cmp_i64(a, *b))),
-            (Self::Float(a), rhs) if let Some(b) = rhs.as_long_int(vm) => {
-                Ok(CmpOrder::from_numeric(bigint_cmp_f64(b, *a).map(Ordering::reverse)))
-            }
-            (lhs, Self::Float(b)) if let Some(a) = lhs.as_long_int(vm) => {
-                Ok(CmpOrder::from_numeric(bigint_cmp_f64(a, *b)))
-            }
-            (Self::InternLongInt(a), rhs) if let Some(b) = rhs.as_long_int(vm) => {
-                Ok(CmpOrder::Ordered(interns.get_long_int(*a).cmp(b)))
-            }
-            (lhs, Self::InternLongInt(b)) if let Some(a) = lhs.as_long_int(vm) => {
-                Ok(CmpOrder::Ordered(a.cmp(interns.get_long_int(*b))))
-            }
-            // Bool promotion: convert to Int and re-dispatch. Recursion is bounded
-            // to at most 2 levels (Bool→Int, then Int matches directly above).
-            (Self::Bool(s), _) => Self::Int(i64::from(*s)).py_cmp(other, vm),
-            (_, Self::Bool(s)) => self.py_cmp(&Self::Int(i64::from(*s)), vm),
-            // Ref vs Ref comparison: same-kind heap values, then a `Decimal` operand
-            (Self::Ref(id1), Self::Ref(id2)) => {
-                let order = cmp_heap_pair(*id1, *id2, vm)?;
-                if order == CmpOrder::Incomparable {
-                    decimal_cmp_or_incomparable(self, other, vm)
-                } else {
-                    Ok(order)
-                }
-            }
-            // Interned string comparisons
-            (Self::InternString(s1), Self::InternString(s2)) => {
-                Ok(CmpOrder::Ordered(interns.get_str(*s1).cmp(interns.get_str(*s2))))
-            }
-            (Self::InlineString(text), Self::Ref(id)) if let HeapData::Str(value) = vm.heap.get(*id) => {
-                Ok(CmpOrder::Ordered(text.as_bytes().cmp(value.as_str().as_bytes())))
-            }
-            (Self::Ref(id), Self::InlineString(text)) if let HeapData::Str(value) = vm.heap.get(*id) => {
-                Ok(CmpOrder::Ordered(value.as_str().as_bytes().cmp(text.as_bytes())))
-            }
-            (Self::InlineString(left), Self::InlineString(right)) => {
-                // UTF-8 byte order matches Unicode scalar order, including prefixes.
-                Ok(CmpOrder::Ordered(left.as_bytes().cmp(right.as_bytes())))
-            }
-            (Self::InlineString(text), Self::InternString(id)) => {
-                Ok(CmpOrder::Ordered(text.as_bytes().cmp(interns.get_str(*id).as_bytes())))
-            }
-            (Self::InternString(id), Self::InlineString(text)) => {
-                Ok(CmpOrder::Ordered(interns.get_str(*id).as_bytes().cmp(text.as_bytes())))
-            }
-            // Cross-type string comparisons: interned vs heap-allocated
-            (Self::InternString(s1), Self::Ref(id2)) if let HeapData::Str(s2) = vm.heap.get(*id2) => {
-                Ok(CmpOrder::Ordered(interns.get_str(*s1).cmp(s2.as_str())))
-            }
-            (Self::Ref(id1), Self::InternString(s2)) if let HeapData::Str(s1) = vm.heap.get(*id1) => {
-                Ok(CmpOrder::Ordered(s1.as_str().cmp(interns.get_str(*s2))))
-            }
-            (Self::InternBytes(b1), Self::InternBytes(b2)) => {
-                Ok(CmpOrder::Ordered(interns.get_bytes(*b1).cmp(interns.get_bytes(*b2))))
-            }
-            // Cross-type bytes comparisons: interned vs heap-allocated
-            (Self::InternBytes(b1), Self::Ref(id2)) if let HeapData::Bytes(b2) = vm.heap.get(*id2) => {
-                Ok(CmpOrder::Ordered(interns.get_bytes(*b1).cmp(b2.as_slice())))
-            }
-            (Self::Ref(id1), Self::InternBytes(b2)) if let HeapData::Bytes(b1) = vm.heap.get(*id1) => {
-                Ok(CmpOrder::Ordered(b1.as_slice().cmp(interns.get_bytes(*b2))))
-            }
-            _ => decimal_cmp_or_incomparable(self, other, vm),
+    fn py_richcompare_impl(&self, other: &Self, op: RichCompareOp, vm: &mut VM<'_>) -> RunResult<Self> {
+        match self {
+            Self::Bool(b) => Ok(Number::Int(i64::from(*b)).richcompare(other, op, vm)),
+            Self::Int(i) => Ok(Number::Int(*i).richcompare(other, op, vm)),
+            Self::Float(f) => Ok(Number::Float(*f).richcompare(other, op, vm)),
+            Self::InternLongInt(id) => Ok(Number::BigInt(vm.interns.get_long_int(*id)).richcompare(other, op, vm)),
+            Self::InternString(id) => Ok(compare_str(vm.interns.get_str(*id), other, op, vm)),
+            Self::InlineString(text) => Ok(compare_str(text.as_str(), other, op, vm)),
+            Self::InternBytes(id) => Ok(compare_bytes(vm.interns.get_bytes(*id), other, op, vm)),
+            Self::Ref(id) => PyValue::from_heap(*id, vm.heap).py_richcompare_impl(other, op, vm),
+            _ if op.is_equality() => Ok(op.equality_result(self.py_eq_impl(other, vm)?)),
+            _ => Ok(Self::NotImplemented),
         }
     }
 
@@ -554,14 +477,6 @@ impl<'h> PyTrait<'h> for Value {
             PyValue::from_heap(*id, vm.heap).py_ior_impl(other, vm)
         } else {
             Ok(false)
-        }
-    }
-
-    fn py_cmp_op(&self, other: &Self, op: CmpOperator, vm: &mut VM<'_>) -> RunResult<Option<bool>> {
-        if let Self::Ref(id) = self {
-            PyValue::from_heap(*id, vm.heap).py_cmp_op(other, op, vm)
-        } else {
-            Ok(None)
         }
     }
 
@@ -812,64 +727,6 @@ impl<'h> PyTrait<'h> for Value {
     }
 }
 
-/// Orders two heap values of the same kind: long ints, strings, bytes, sequences and
-/// temporal values; `Incomparable` for any other pair.
-///
-/// Separate from `py_cmp` so its read guards are released before the caller's
-/// `Decimal` fallback, which needs the heap mutably.
-fn cmp_heap_pair(id1: HeapId, id2: HeapId, vm: &mut VM<'_>) -> RunResult<CmpOrder> {
-    match (vm.heap.read(id1), vm.heap.read(id2)) {
-        (HeapReadOutput::LongInt(a), HeapReadOutput::LongInt(b)) => {
-            Ok(CmpOrder::Ordered(a.get(vm.heap).inner().cmp(b.get(vm.heap).inner())))
-        }
-        (HeapReadOutput::Str(lhs_heap_string), HeapReadOutput::Str(rhs_heap_string)) => {
-            PyStr::Heap(lhs_heap_string).py_cmp(&PyStr::Heap(rhs_heap_string), vm)
-        }
-        (HeapReadOutput::Bytes(a), HeapReadOutput::Bytes(b)) => Ok(CmpOrder::Ordered(
-            a.get(vm.heap).as_slice().cmp(b.get(vm.heap).as_slice()),
-        )),
-        (HeapReadOutput::Tuple(a), HeapReadOutput::Tuple(b)) => a.py_cmp(&b, vm),
-        // A namedtuple orders like the tuple it subclasses, including
-        // against a plain tuple in either direction. Both sides are
-        // cloned first because the comparison needs `&mut VM`, which
-        // cannot coexist with two live `HeapRead`s. Guard the first clone
-        // while the second clone's memory check can still fail.
-        (HeapReadOutput::NamedTuple(a), HeapReadOutput::NamedTuple(b)) => {
-            let mut a_items = DropGuard::new(a.cloned_items(vm)?, vm);
-            let b_items = b.cloned_items(a_items.ctx())?;
-            cmp_item_seqs(a_items.into_inner(), b_items, vm)
-        }
-        (HeapReadOutput::NamedTuple(a), HeapReadOutput::Tuple(b)) => {
-            let mut a_items = DropGuard::new(a.cloned_items(vm)?, vm);
-            let b_items = b.cloned_items(a_items.ctx())?;
-            cmp_item_seqs(a_items.into_inner(), b_items, vm)
-        }
-        (HeapReadOutput::Tuple(a), HeapReadOutput::NamedTuple(b)) => {
-            let mut a_items = DropGuard::new(a.cloned_items(vm)?, vm);
-            let b_items = b.cloned_items(a_items.ctx())?;
-            cmp_item_seqs(a_items.into_inner(), b_items, vm)
-        }
-        (HeapReadOutput::List(a), HeapReadOutput::List(b)) => a.py_cmp(&b, vm),
-        (HeapReadOutput::Deque(a), HeapReadOutput::Deque(b)) => a.py_cmp(&b, vm),
-        (HeapReadOutput::Date(a), HeapReadOutput::Date(b)) => {
-            Ok(CmpOrder::from_total(a.get(vm.heap).partial_cmp(b.get(vm.heap))))
-        }
-        (HeapReadOutput::DateTime(a), HeapReadOutput::DateTime(b)) => a.py_cmp(&b, vm),
-        (HeapReadOutput::Time(a), HeapReadOutput::Time(b)) => a.py_cmp(&b, vm),
-        (HeapReadOutput::TimeDelta(a), HeapReadOutput::TimeDelta(b)) => {
-            Ok(CmpOrder::from_total(a.get(vm.heap).partial_cmp(b.get(vm.heap))))
-        }
-        _ => Ok(CmpOrder::Incomparable),
-    }
-}
-
-/// The ordering of a pair with a `Decimal` operand, `Incomparable` for any other pair.
-///
-/// Tried only once the common types have missed, keeping them off this check.
-fn decimal_cmp_or_incomparable(lhs: &Value, rhs: &Value, vm: &mut VM<'_>) -> RunResult<CmpOrder> {
-    Ok(decimal::py::cmp_order(lhs, rhs, vm)?.unwrap_or(CmpOrder::Incomparable))
-}
-
 /// `Value` releases its (possible) heap reference through any [`ContainsHeap`]
 /// context — `Heap`, `HeapReader`, `VM`, or the json `Encoder`. Forwards to the
 /// inherent [`Value::drop_with`], which also serves direct callers.
@@ -1083,69 +940,6 @@ impl Value {
             Ok(true)
         } else {
             self.py_eq_operator(other, vm)
-        }
-    }
-
-    /// Python's `==` operator normalized to a boolean.
-    pub fn py_eq_operator(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
-        let result = self.py_rich_eq(other, vm)?;
-        defer_drop!(result, vm);
-        result.py_bool(vm)
-    }
-
-    /// Direct Python `==`, preserving any arbitrary value returned by `__eq__`.
-    ///
-    /// Tries the left operand, then reflected equality when it returns
-    /// `NotImplemented`, or the right operand first when its class is a strict
-    /// subclass of the left's; identity is the final fallback after both decline.
-    pub(crate) fn py_rich_eq(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Self> {
-        if let (Self::Int(a), Self::Int(b)) = (self, other) {
-            return Ok(Self::Bool(a == b));
-        }
-        if let (Self::Bool(a), Self::Bool(b)) = (self, other) {
-            return Ok(Self::Bool(a == b));
-        }
-        if subclass_overrides(self, other, None, vm) {
-            let rhs_result = other.py_rich_eq_impl(self, vm)?;
-            if !rhs_result.is_not_implemented() {
-                return Ok(rhs_result);
-            }
-            let lhs_result = self.py_rich_eq_impl(other, vm)?;
-            return Ok(if lhs_result.is_not_implemented() {
-                Self::Bool(self.is(other))
-            } else {
-                lhs_result
-            });
-        }
-        let lhs_result = self.py_rich_eq_impl(other, vm)?;
-        if !lhs_result.is_not_implemented() {
-            return Ok(lhs_result);
-        }
-
-        let rhs_result = other.py_rich_eq_impl(self, vm)?;
-        if !rhs_result.is_not_implemented() {
-            return Ok(rhs_result);
-        }
-
-        Ok(Self::Bool(self.is(other)))
-    }
-
-    /// Runs one side of rich equality, using `NotImplemented` to request reflected dispatch.
-    fn py_rich_eq_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Self> {
-        if let Self::Ref(id) = self
-            && matches!(vm.heap.get(*id), HeapData::Instance(_))
-        {
-            if let Some(result) = instance_user_eq(*id, other, vm)? {
-                Ok(result)
-            } else if self.is(other) {
-                Ok(Self::Bool(true))
-            } else {
-                Ok(Self::NotImplemented)
-            }
-        } else if let Some(result) = self.py_eq_impl(other, vm)? {
-            Ok(Self::Bool(result))
-        } else {
-            Ok(Self::NotImplemented)
         }
     }
 

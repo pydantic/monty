@@ -211,6 +211,37 @@ assert add5(2) == 7
 (result, c.value)
 ";
 
+/// NaNs retain bit-derived identities, hashes and signed payloads across a suspended dump.
+const NAN_STATE: &str = r"
+import math
+nan_a = float('-nan')
+nan_b = float('nan')
+nan_alias = nan_a
+nan_id = id(nan_a)
+nan_hash = hash(nan_a)
+nan_keys = {nan_a: 1, nan_b: 2}
+nan_set = {nan_a, nan_b}
+nan_items = [nan_a, nan_a, nan_b]
+module_nan = math.nan
+";
+
+/// Checks both stored identity and the lookup hashes persisted by dicts and sets.
+const NAN_CHECK: &str = r"
+assert nan_a is nan_alias
+assert nan_a is not nan_b
+assert nan_a is nan_items[0] is nan_items[1]
+assert nan_b is nan_items[2]
+assert id(nan_a) == nan_id
+assert hash(nan_a) == nan_hash
+assert nan_keys[nan_a] == 1
+assert nan_keys[nan_b] == 2
+assert nan_a in nan_set
+assert nan_b in nan_set
+assert float('nan') in nan_set
+assert math.copysign(1, nan_a) == -1.0
+assert math.nan is module_nan
+";
+
 /// Checks that the current-version fixture still loads and runs.
 /// If the format changed, check both compatibility directions against published releases
 /// before updating the fixture with `UPDATE_DUMP_FIXTURE=1 cargo test -p monty --test dump_compat`.
@@ -221,6 +252,7 @@ fn fixture_dump_loads_and_resumes() {
     if env::var_os(UPDATE_FIXTURE).is_some() {
         let mut repl = MontyRepl::new("fixture.py", ResourceTracker::default(), CompileOptions::default());
         repl.feed_run(FIXTURE_STATE, vec![], PrintWriter::Stdout).unwrap();
+        repl.feed_run(NAN_STATE, vec![], PrintWriter::Stdout).unwrap();
         let mut progress = repl.feed_start(FIXTURE_CALL, vec![], PrintWriter::Stdout).unwrap();
         // `host_call` is looked up from inside `exec_host`, where it is not yet defined
         while let ReplProgress::NameLookup(lookup) = progress {
@@ -291,6 +323,12 @@ fn check_fixture(bytes: &[u8]) {
         checked,
         MontyObject::tuple(vec![MontyObject::int(42), MontyObject::int(13)])
     );
+    repl.feed_run(NAN_CHECK, vec![], PrintWriter::Stdout).unwrap();
+    let bytes = dump("fixture.py", None, &[], SessionRef::Idle(&repl)).unwrap();
+    let Session::Idle(mut repl) = Dump::load(&bytes).unwrap().state else {
+        panic!("fixture was dumped idle");
+    };
+    repl.feed_run(NAN_CHECK, vec![], PrintWriter::Stdout).unwrap();
 }
 
 /// Suspended sessions from older supported versions resume their host call.

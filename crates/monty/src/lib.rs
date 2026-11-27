@@ -10,6 +10,7 @@ mod asyncio;
 mod builtins;
 mod bytecode;
 mod codecs;
+mod comparison;
 mod dump_format;
 mod dump_upgrade;
 mod exception_private;

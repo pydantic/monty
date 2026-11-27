@@ -28,6 +28,7 @@ use self::arithmetic::IntArithmetic;
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
+    comparison::{Number, RichCompareOp},
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_python_long_int},
     heap::{DropWithContext, Heap, HeapObjectRead},
@@ -293,6 +294,14 @@ impl<'h> PyTrait<'h> for PyInt<'h> {
             Self::Interned(id) => Value::InternLongInt(*id).py_eq_impl(other, vm),
             Self::Heap(value) => value.py_eq_impl(other, vm),
         }
+    }
+
+    fn py_richcompare_impl(&self, other: &Value, op: RichCompareOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        Ok(self.with_value(
+            vm,
+            |value| Number::Int(value).richcompare(other, op, vm),
+            |value| Number::BigInt(value).richcompare(other, op, vm),
+        ))
     }
 
     #[inline(always)]
@@ -848,6 +857,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
     /// (or reports the overflow its own way).
     fn py_index_impl(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Ok(Some(self.clone_value(vm.heap)))
+    }
+
+    fn py_richcompare_impl(&self, other: &Value, op: RichCompareOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        Ok(Number::BigInt(self.get(vm.heap).inner()).richcompare(other, op, vm))
     }
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {

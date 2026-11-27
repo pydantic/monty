@@ -16,9 +16,9 @@ use crate::{
     asyncio::TaskFutureState,
     builtins::Builtins,
     bytecode::{CallResult, VM},
+    comparison::{Number, RichCompareOp},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
-    expressions::CmpOperator,
     fstring::FormatFloat,
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, Heap, HeapId, HeapObjectRead, HeapReadOutput, HeapReader},
@@ -43,7 +43,7 @@ pub(crate) trait PyValuePayload<'h>: Sized {
     fn from_py_value<'a>(value: &'a mut PyValue<'h>) -> Option<&'a mut HeapObjectRead<'h, Self>>;
 }
 
-/// Normalizes the three multi-representation types and keeps every other heap type flat.
+/// Normalizes multi-representation scalars and keeps every other heap type flat.
 macro_rules! define_py_value {
     (@view $variant:ident, $view:ident, $payload:ty) => {
         impl<'h> PyValuePayload<'h> for $payload {
@@ -253,7 +253,7 @@ impl<'h> PyValue<'h> {
     /// Borrows an iterator whose advancement never calls Python or suspends.
     /// Select this path before consuming anything; other sources must use a continuation.
     pub(crate) fn native_iterator(value: &Value, vm: &VM<'h>) -> Option<Self> {
-        value.read_heap(vm).map(PyValue::from).filter(|source| {
+        value.read_heap(vm).map(Self::from).filter(|source| {
             matches!(
                 source,
                 PyValue::ListIterator(_)
@@ -506,8 +506,13 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
         forward_py_value!(self, |value| value.py_ior_impl(other, vm), else Ok(false))
     }
 
-    fn py_cmp_op(&self, other: &Value, op: CmpOperator, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        forward_py_value!(self, |value| value.py_cmp_op(other, op, vm), else Ok(None))
+    fn py_richcompare_impl(&self, other: &Value, op: RichCompareOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        forward_py_value!(self, |value| value.py_richcompare_impl(other, op, vm), {
+            Self::Bool(value) => Ok(Number::Int(i64::from(*value)).richcompare(other, op, vm)),
+            Self::Float(value) => Ok(Number::Float(*value).richcompare(other, op, vm)),
+            _ if op.is_equality() => Ok(op.equality_result(self.py_eq_impl(other, vm)?)),
+            _ => Ok(Value::NotImplemented),
+        })
     }
 
     fn py_setitem(&mut self, key: Value, value: Value, vm: &mut VM<'h>) -> RunResult<()> {

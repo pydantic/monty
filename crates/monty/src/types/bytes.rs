@@ -7,7 +7,7 @@ pub use monty_types::{bytes_repr, bytes_repr_fmt};
 use num_traits::ToPrimitive;
 use smallvec::smallvec;
 
-use super::{CmpOrder, LazyHeapSet, PyTrait, Type, TypeRef};
+use super::{LazyHeapSet, PyTrait, Type, TypeRef};
 /// Python bytes type, wrapping a `Vec<u8>`.
 ///
 /// This type provides Python bytes semantics with operations on ASCII bytes only.
@@ -75,11 +75,11 @@ use super::{CmpOrder, LazyHeapSet, PyTrait, Type, TypeRef};
 ///
 /// # Unimplemented Methods
 /// - `expandtabs(tabsize=8)` - Tab expansion
-use crate::types::Slice;
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
     codecs::Codec,
+    comparison::{RichCompareOp, compare_bytes},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     hash::{HashValue, hash_python_bytes},
@@ -93,7 +93,7 @@ use crate::{
         check_estimated_size, check_repeat_size, check_replace_size, push_checked, repeated_len, try_vec_with_capacity,
     },
     types::{
-        List,
+        List, Slice,
         iter::checked_preallocation_hint,
         py_trait::PyObjectIdentity,
         slice::{SearchRange, search_range, slice_collect_iterator},
@@ -396,6 +396,10 @@ impl<'h> PyTrait<'h> for PyBytes<'h> {
         }
     }
 
+    fn py_richcompare_impl(&self, other: &Value, op: RichCompareOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        Ok(compare_bytes(self.as_slice(vm), other, op, vm))
+    }
+
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
         Some(self.as_slice(vm).len())
     }
@@ -511,8 +515,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Bytes> {
         Ok(Some(hash))
     }
 
-    fn py_cmp(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<CmpOrder> {
-        Ok(CmpOrder::Ordered(self.get(vm.heap).0.cmp(&other.get(vm.heap).0)))
+    fn py_richcompare_impl(&self, other: &Value, op: RichCompareOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        Ok(compare_bytes(self.get(vm.heap).as_slice(), other, op, vm))
     }
 
     fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {

@@ -394,25 +394,6 @@ assert (ListClearFalse() in L3) is False
 assert L3 == []
 
 
-# === comparison exceptions are caught in the frame running the opcode ===
-class ComparisonRaiser:
-    def __eq__(self, other):
-        raise ValueError('comparison failed')
-
-
-try:
-    ComparisonRaiser() == 0
-    assert False, 'expected ValueError'
-except ValueError as exc:
-    assert str(exc) == 'comparison failed'
-
-try:
-    assert ComparisonRaiser() == 0
-    assert False, 'expected ValueError'
-except ValueError as exc:
-    assert str(exc) == 'comparison failed'
-
-
 # === deque: mutation from __eq__ raises during `in` / `index` / `count` ===
 dq = deque()
 

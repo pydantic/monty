@@ -1428,6 +1428,9 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         ("x = [None] * 40_000\nx += x", 1_964_483),
         ("t = (None,) * 40_000\nt + t", 1_324_611),
         ("x = [None] * 40_000\nx.copy()", 1_324_613),
+        // Tuple elements take the index-sort path, preflighting indices then merge scratch.
+        ("x = [()] * 45_000\nx.sort()", 1_124_613),
+        ("x = [()] * 35_000\nx.sort()", 1_164_613),
         // A container repr polls the limits between items: crossing the memory
         // limit raises rather than truncating the way a timeout does.
         ("x = [None] * 50_000\nlen(repr(x))", 1_106_811),

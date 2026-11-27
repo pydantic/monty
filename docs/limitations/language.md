@@ -229,45 +229,38 @@ assert outer() == 1
 
 CPython accepts this code, and `outer()` returns `1`.
 
-## Ordering comparisons
+## Float identity
 
-`<`, `<=`, `>`, `>=` on operands with no defined ordering raise
-`TypeError: '<' not supported between instances of '{a}' and '{b}'`, matching
-CPython (int vs str, `None` vs `None`, user-class instances without comparison
-dunders, etc.). Lists and tuples order lexicographically as in CPython. A `NaN`
-operand is *unordered* rather than incomparable, so `float('nan') < 1` (and
-every operator/direction, including two NaNs) returns `False` without raising,
-also matching CPython, and likewise inside `sorted`/`min`/`max`.
+Monty identifies floats by their IEEE-754 bits rather than by object identity.
+Separately created floats with identical bits therefore have the same `id()` and compare identical with `is`.
+For NaNs, this also changes container operations that check identity before equality.
 
-One message divergence: when a **list or tuple** compares unequal only because
-an *inner element* pair is unorderable (e.g. `(1, 2) < (1, 'a')`), Monty names
-the outer container types (`'tuple' and 'tuple'`) where CPython names the inner
-element pair (`'int' and 'str'`). Both raise `TypeError`; only the message text
-differs.
+With `a = float('nan')` and a separate `b = float('nan')`:
 
-One value divergence: whenever CPython compares elements *inside* a container it
-shortcuts equality by **object identity** (`x is x` ⇒ equal) before falling back
-to `==`. Monty has no object identity for immediate floats, so it asks `==`, and
-a `NaN` is never equal to itself. Every container operation built on element
-comparison therefore differs when the *same* `NaN` object appears on both sides:
+| Expression       | CPython      | Monty  |
+| ---------------- | ------------ | ------ |
+| `a is b`         | `False`      | `True` |
+| `id(a) == id(b)` | `False`      | `True` |
+| `[a] == [b]`     | `False`      | `True` |
+| `a in [b]`       | `False`      | `True` |
+| `[a].count(b)`   | `0`          | `1`    |
+| `[a].index(b)`   | `ValueError` | `0`    |
 
-| with `x = float('nan')`      | CPython | Monty        |
-| ---------------------------- | ------- | ------------ |
-| `(x,) == (x,)`, `[x] == [x]` | `True`  | `False`      |
-| `x in [x]`                   | `True`  | `False`      |
-| `[x].count(x)`               | `1`     | `0`          |
-| `[x].index(x)`               | `0`     | `ValueError` |
-| `[1, x] < [1, x, 3]`         | `True`  | `False`      |
+Distinct same-bit NaN keys likewise collapse to one entry in a dict, set or frozenset.
 
-`NaN` is the only practical way to reach this, being the one built-in value
-unequal to itself. *Distinct* `NaN` objects agree on both
-(`[1, float('nan')] < [1, float('nan'), 3]` is `False` either way), as does a
-direct `x == x` (`False` on both). Named tuples inherit all of this from `tuple`.
+### NaNs in sequence ordering
 
-`Counter.most_common(n)` differs the same way: CPython ranks equal counts by
-tuple comparison, so the same `NaN` held as several counts can come back in
-another order (`Counter(a=x, b=x, c=x).most_common(2)` is
-`[('a', x), ('b', x)]` in CPython, `[('b', x), ('a', x)]` in Monty).
+List, tuple, named tuple and deque ordering does not skip float NaNs by identity.
+A NaN pair makes the ordering false, even when both elements are the same NaN.
+CPython skips shared NaNs and continues comparing later elements or sequence lengths:
+
+| Expression        | CPython | Monty   |
+| ----------------- | ------- | ------- |
+| `[a, 0] < [a, 1]` | `True`  | `False` |
+| `[a] < [a, 1]`    | `True`  | `False` |
+| `[a] <= [a]`      | `True`  | `False` |
+
+This can also affect `sorted`, `min` and `max` when their operands contain NaNs.
 
 ## What *does* work
 

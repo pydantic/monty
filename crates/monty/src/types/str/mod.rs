@@ -21,7 +21,7 @@ use self::{
     translate::{str_maketrans, str_translate},
 };
 use super::{
-    Bytes, CmpOrder, PyTrait,
+    Bytes, PyTrait,
     unicode_type::{casefold, is_space, lowercase, map_case, type_record, uppercase},
     unicode_type_data::TypeRecord,
 };
@@ -29,6 +29,7 @@ use crate::{
     args::{ArgValues, FromArgs, FromValue, FromValueFail, StrArg},
     bytecode::{CallResult, VM},
     codecs::Codec,
+    comparison::{RichCompareOp, compare_str},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_python_str},
@@ -346,8 +347,8 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
         percent_format(&template, other, vm).map(Some)
     }
 
-    fn py_cmp(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<CmpOrder> {
-        Ok(CmpOrder::Ordered(self.as_str(vm).cmp(other.as_str(vm))))
+    fn py_richcompare_impl(&self, other: &Value, op: RichCompareOp, vm: &mut VM<'h>) -> RunResult<Value> {
+        Ok(compare_str(self.as_str(vm), other, op, vm))
     }
 }
 
@@ -2071,6 +2072,7 @@ mod tests {
     use crate::{
         defer_drop_mut,
         heap::HeapReader,
+        py_value::PyValue,
         run::{Program, SessionTables},
         types::List,
     };
@@ -2103,7 +2105,7 @@ mod tests {
                     assert!(string.py_is_iterable(vm));
                     if let PyStr::Heap(heap_string) = &string {
                         assert_eq!(heap_string.get(vm.heap).cached_hash.get(), expected_hash);
-                        let mut read = crate::py_value::PyValue::from(vm.heap.read(heap_string.id()));
+                        let mut read = PyValue::from_heap(heap_string.id(), vm.heap);
                         assert_eq!(read.py_len(vm), Some(text.chars().count()));
                         assert_eq!(read.py_hash(vm).unwrap(), expected_hash);
                         assert_eq!(read.py_eq_impl(value, vm).unwrap(), Some(true));
@@ -2115,9 +2117,7 @@ mod tests {
                     }
 
                     let iterator = match &string {
-                        PyStr::Heap(heap_string) => {
-                            crate::py_value::PyValue::from(vm.heap.read(heap_string.id())).py_iter(vm)
-                        }
+                        PyStr::Heap(heap_string) => PyValue::from_heap(heap_string.id(), vm.heap).py_iter(vm),
                         _ => string.py_iter(vm),
                     }
                     .unwrap()
@@ -2374,9 +2374,24 @@ mod tests {
                     let view = PyStr::from_value(lhs, vm).unwrap();
                     assert_eq!(view.py_eq_impl(rhs, vm).unwrap(), Some(expected));
                     let order = lhs.as_str(vm).unwrap().cmp(rhs.as_str(vm).unwrap());
-                    let other_view = PyStr::from_value(rhs, vm).unwrap();
-                    assert_eq!(view.py_cmp(&other_view, vm).unwrap(), CmpOrder::Ordered(order));
-                    assert_eq!(lhs.py_cmp(rhs, vm).unwrap(), CmpOrder::Ordered(order));
+                    for op in [
+                        RichCompareOp::Eq,
+                        RichCompareOp::Ne,
+                        RichCompareOp::Lt,
+                        RichCompareOp::Le,
+                        RichCompareOp::Gt,
+                        RichCompareOp::Ge,
+                    ] {
+                        let expected = op.apply(Some(order)).py_bool(vm).unwrap();
+                        assert_eq!(
+                            view.py_richcompare_impl(rhs, op, vm).unwrap().py_bool(vm).unwrap(),
+                            expected
+                        );
+                        assert_eq!(
+                            lhs.py_richcompare_impl(rhs, op, vm).unwrap().py_bool(vm).unwrap(),
+                            expected
+                        );
+                    }
                 }
                 assert_eq!(lhs.py_eq_impl(&Value::Int(7), vm).unwrap(), None);
                 let view = PyStr::from_value(lhs, vm).unwrap();

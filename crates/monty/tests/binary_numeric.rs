@@ -2,6 +2,49 @@ use monty::MontyRun;
 use monty_types::{CompileOptions, ExcType};
 
 #[test]
+fn nan_bit_identity_and_sequence_ordering() {
+    run_checked(
+        r"
+from collections import deque, namedtuple
+
+a = float('nan')
+b = float('nan')
+assert a is b
+assert id(a) == id(b)
+assert a != b
+assert a in [b]
+assert [a].count(b) == 1
+assert [a].index(b) == 0
+assert len({a, b}) == 1
+assert len(frozenset([a, b])) == 1
+keys = {a: 'first', b: 'second'}
+assert len(keys) == 1
+assert keys[a] == keys[b] == 'second'
+
+for container in (list, tuple, deque):
+    assert container([a]) == container([b])
+    for left, right in (([a], [a]), ([a], [b]), ([a], [a, 1]), ([a, 0], [a, 1]), ([a, 0], [b, 1])):
+        left = container(left)
+        right = container(right)
+        assert (left < right) is False
+        assert (left <= right) is False
+        assert (left > right) is False
+        assert (left >= right) is False
+
+Pair = namedtuple('Pair', ['first', 'second'])
+for other in (a, b):
+    left = Pair(a, 0)
+    right = Pair(other, 1)
+    assert (left < right) is False
+    assert (left <= right) is False
+    assert (left > right) is False
+    assert (left >= right) is False
+assert Pair(a, 0) == Pair(b, 0)
+",
+    );
+}
+
+#[test]
 fn numeric_fast_paths_and_fallbacks() {
     let code = r"
 def check(a, b, add, sub, mul):
