@@ -1078,34 +1078,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
                 };
                 Ok(CallResult::Value(result))
             }
-            Some(StaticStrings::Conjugate) => {
-                args.check_zero_args("int.conjugate", vm.heap)?;
-                Ok(CallResult::Value(self.clone_value(vm.heap)))
-            }
             _ => {
                 args.drop_with(vm.heap);
                 Err(ExcType::attribute_error("int", attr.as_str(vm.interns)))
             }
         }
-    }
-
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        Ok(match attr.static_string(vm.interns) {
-            Some(StaticStrings::Real | StaticStrings::Numerator) => Some(CallResult::Value(self.clone_value(vm.heap))),
-            Some(StaticStrings::Imag) => Some(CallResult::Value(Value::Int(0))),
-            Some(StaticStrings::Denominator) => Some(CallResult::Value(Value::Int(1))),
-            _ => None,
-        })
-    }
-
-    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
-        value.drop_with(vm);
-        Err(match name.static_string(vm.interns) {
-            Some(StaticStrings::Real | StaticStrings::Imag | StaticStrings::Numerator | StaticStrings::Denominator) => {
-                ExcType::attribute_error_not_writable(name.as_str(vm.interns), "int")
-            }
-            _ => ExcType::attribute_error_no_setattr("int", name.as_str(vm.interns)),
-        })
     }
 }
 

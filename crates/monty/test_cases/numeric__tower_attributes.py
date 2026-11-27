@@ -165,3 +165,52 @@ for attr_name in ['real', 'imag']:
         assert str(e) == f"attribute '{attr_name}' of 'float' objects is not writable"
     else:
         raise AssertionError(f'expected AttributeError for float.{attr_name} assignment')
+
+# --- interned (literal) large int attributes and validation ---
+INTERNED_LONG = 1234567890123456789012345678901234567890
+assert INTERNED_LONG.real == INTERNED_LONG
+assert type(INTERNED_LONG.real) is int
+assert INTERNED_LONG.imag == 0
+assert type(INTERNED_LONG.imag) is int
+assert INTERNED_LONG.numerator == INTERNED_LONG
+assert type(INTERNED_LONG.numerator) is int
+assert INTERNED_LONG.denominator == 1
+assert type(INTERNED_LONG.denominator) is int
+assert INTERNED_LONG.conjugate() == INTERNED_LONG
+assert type(INTERNED_LONG.conjugate()) is int
+
+try:
+    INTERNED_LONG.conjugate(1)
+except TypeError as e:
+    assert str(e) == 'int.conjugate() takes no arguments (1 given)'
+else:
+    raise AssertionError('expected TypeError')
+
+for attr_name in ['real', 'imag', 'numerator', 'denominator']:
+    try:
+        setattr(INTERNED_LONG, attr_name, 99)
+    except AttributeError as e:
+        assert str(e) == f"attribute '{attr_name}' of 'int' objects is not writable"
+    else:
+        raise AssertionError(f'expected AttributeError for interned int.{attr_name} assignment')
+
+# --- unknown attributes and setattr on non-existing attributes ---
+for val in [1, INTERNED_LONG, 10**30, True, 1.5]:
+    try:
+        val.nonexistent_attribute
+    except AttributeError:
+        pass
+    else:
+        raise AssertionError('expected AttributeError')
+
+    assert not hasattr(val, 'nonexistent_attribute')
+    assert getattr(val, 'nonexistent_attribute', 42) == 42
+
+    try:
+        setattr(val, 'nonexistent_attribute', 99)
+    except AttributeError as e:
+        expected_type = 'bool' if type(val) is bool else ('float' if type(val) is float else 'int')
+        assert str(e) == f"'{expected_type}' object has no attribute 'nonexistent_attribute' and no __dict__ for setting new attributes"
+    else:
+        raise AssertionError('expected AttributeError for setattr nonexistent')
+
