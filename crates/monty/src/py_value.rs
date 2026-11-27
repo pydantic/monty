@@ -1100,6 +1100,22 @@ mod tests {
     }
 
     #[test]
+    fn native_method_descriptor_preserves_its_value_semantics() {
+        with_vm(|vm, _| {
+            let name = EitherStr::Interned(vm.interns.intern_static(StaticStrings::Append));
+            let descriptor = Type::List.class_getattr(&name, vm).unwrap();
+            defer_drop!(descriptor, vm);
+            let view = descriptor.py_value(vm);
+            assert_eq!(view.py_type(vm), Type::MethodDescriptor);
+            assert_eq!(descriptor.py_type_heap(vm.heap), Type::MethodDescriptor);
+            assert!(view.py_identity() == descriptor.id());
+            assert_eq!(view.py_hash(vm).unwrap(), descriptor.py_hash(vm).unwrap());
+            assert_eq!(view.py_eq_impl(descriptor, vm).unwrap(), Some(true));
+            assert_eq!(view.py_eq_impl(&Value::None, vm).unwrap(), None);
+        });
+    }
+
+    #[test]
     fn normalized_iterators_retain_their_source_and_preserve_items() {
         with_vm(|vm, ids| {
             let values = vec![

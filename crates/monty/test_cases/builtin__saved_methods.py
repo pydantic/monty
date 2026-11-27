@@ -15,9 +15,22 @@ unbound(items, 3)
 assert items == [1, 2, 3]
 assert append.__self__ is items
 assert append.__name__ == 'append'
+assert unbound.__name__ == 'append'
+assert not hasattr(unbound, '__self__')
 assert unbound.__objclass__ is list
 assert unbound.__qualname__ == 'list.append'
 assert unbound is list.append
+assert id(unbound) == id(list.append)
+assert id(unbound) != id(list.extend)
+assert unbound != list.extend
+assert unbound != append
+try:
+    re.search('a', append)
+except TypeError as exc:
+    assert str(exc) == "expected string or bytes-like object, got 'builtin_function_or_method'"
+else:
+    assert False, 're.search accepted a method as its string argument'
+assert repr(append) == f'<built-in method append of list object at {hex(id(items))}>'
 assert type(append).__name__ == 'builtin_function_or_method'
 assert type(unbound).__name__ == 'method_descriptor'
 assert not hasattr(append, '__func__')
@@ -74,6 +87,25 @@ assert append == items.append
 assert hash(append) == hash(items.append)
 assert append != [].append
 assert factory.__qualname__ == 'dict.fromkeys'
+assert factory.__self__() == {}
+try:
+    append.missing(items)
+except AttributeError:
+    pass
+else:
+    assert False, 'bound method accepted a missing attribute'
+try:
+    len(append)
+except TypeError:
+    pass
+else:
+    assert False, 'bound method has a length'
+try:
+    unbound.__get__(None, None)
+except TypeError as exc:
+    assert str(exc) == '__get__(None, None) is invalid'
+else:
+    assert False, 'descriptor bound without an instance or owner'
 assert list.append.__get__(items, list) == append
 assert list.append.__get__(None, list) is list.append
 assert type(list.append).__get__(list.append, items) == append
@@ -82,6 +114,21 @@ assert type(list.append).__get__(list.append, items) == append
 class MethodHolder:
     member = list.append
 
+    def __call__(self):
+        return 42
+
+    def method(self):
+        pass
+
+
+holder = MethodHolder()
+assert holder.method.__self__() == 42
+try:
+    holder.method.missing(holder)
+except AttributeError:
+    pass
+else:
+    assert False, 'Python method accepted a missing attribute'
 
 assert MethodHolder.member is list.append
 try:

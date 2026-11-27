@@ -1243,14 +1243,17 @@ mod tests {
     }
 
     #[test]
-    fn user_repr_propagates_writer_errors() {
-        let mut executor = Executor::new(
-            "class Example:\n    def __repr__(self):\n        return 'result'\nExample()".to_owned(),
-            "test.py",
-            Vec::new(),
-            CompileOptions::default(),
-        )
-        .unwrap();
+    fn repr_propagates_writer_errors() {
+        for source in [
+            "class Example:\n    def __repr__(self):\n        return 'result'\nExample()",
+            "[].append",
+        ] {
+            assert_repr_write_fails(source);
+        }
+    }
+
+    fn assert_repr_write_fails(source: &str) {
+        let mut executor = Executor::new(source.to_owned(), "test.py", Vec::new(), CompileOptions::default()).unwrap();
         let mut heap = Heap::new(16, ResourceTracker::default());
         let globals = executor.empty_globals();
 
@@ -1263,7 +1266,7 @@ mod tests {
                 PrintWriter::Disabled,
             );
             let FrameExit::Return(value) = vm.run_external().unwrap() else {
-                unreachable!("the program returns its instance")
+                unreachable!("the program returns a value")
             };
             defer_drop!(value, vm);
             assert!(
