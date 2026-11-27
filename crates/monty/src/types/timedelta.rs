@@ -23,13 +23,23 @@ use crate::{
     hash::HashValue,
     heap::{Heap, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StaticStrings,
-    py_attrs::PyAttrs,
+    py_attrs::{AttrTable, PyAttrs},
     types::{
-        CmpOrder, LazyHeapSet, PyTrait, Type, TypeRef, date, datetime, long_int, str::allocate_string,
-        tuple::allocate_tuple,
+        CmpOrder, LazyHeapSet, PyTrait, Type, TypeRef, class_def::ClassDef, date, datetime, long_int,
+        str::allocate_string, tuple::allocate_tuple,
     },
     value::{EitherStr, Value},
 };
+
+impl ClassDef for TimeDelta {
+    const NAME: &'static str = "datetime.timedelta";
+    const ATTRS: Option<AttrTable> = Some(<PyTimeDeltaImpl as PyAttrs<'static>>::TABLE);
+    const BASETYPE: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        init(vm, args).map(CallResult::Value)
+    }
+}
 
 /// Minimum allowed day magnitude for `timedelta`.
 pub(crate) const MIN_TIMEDELTA_DAYS: i32 = -999_999_999;

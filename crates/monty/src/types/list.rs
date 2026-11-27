@@ -19,17 +19,36 @@ use crate::{
         HeapReadOutput, HeapReader,
     },
     modules::copy::{Memo, PyDeepCopy, deep_copy},
-    py_attrs::PyAttrs,
+    py_attrs::{AttrTable, PyAttrs},
     py_value::PyValue,
     resource_checks::{check_repeat_size, check_value_buffer_growth, repeated_len, try_vec_with_capacity},
     sorting::parse_and_sort,
     types::{
         LazyHeapSet, Slice, Type, TypeRef,
+        class_def::ClassDef,
         sequence::SequenceItems,
         slice::{normalize_sequence_index, slice_collect_iterator, value_to_i64_bound},
     },
     value::{VALUE_SIZE, Value},
 };
+
+impl ClassDef for List {
+    const NAME: &'static str = "list";
+    const ATTRS: Option<AttrTable> = Some(<PyListImpl as PyAttrs<'static>>::TABLE);
+    const BUILTIN_NAME: Option<&'static str> = Some(Self::NAME);
+    const BASETYPE: bool = true;
+    const CLASS_GETITEM: bool = true;
+    const SEQUENCE_REPEAT: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        Self::init(vm, args).map(CallResult::Value)
+    }
+}
+
+impl ClassDef for ListIterator {
+    const NAME: &'static str = "list_iterator";
+    const ITERATOR: bool = true;
+}
 
 /// Python list type, wrapping a Vec of Values.
 ///

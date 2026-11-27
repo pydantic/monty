@@ -12,8 +12,6 @@ use crate::bytecode::CallResult;
 /// protocol — accessing the property invokes its getter).
 ///
 /// Currently only supports zero-arg OS properties (e.g. `os.environ`).
-/// Future variants will likely add `Callable(FunctionId)` for `@property`
-/// and `External(StringId)` for external function getters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Property {
     Os(ZeroArgOsProperty),

@@ -21,13 +21,20 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropGuard, Heap, HeapId, HeapItem, HeapObjectRead, HeapRead},
     intern::StaticStrings,
-    py_attrs::PyAttrs,
+    py_attrs::{AttrTable, PyAttrs},
     types::{
         Dict, LazyHeapSet, PyTrait, Type, TypeRef, allocate_tuple,
+        class_def::ClassDef,
         str::{allocate_string, string_repr_fmt},
     },
     value::{EitherStr, Value},
 };
+
+impl ClassDef for ReMatch {
+    const NAME: &'static str = "re.Match";
+    const ATTRS: Option<AttrTable> = Some(<PyReMatchImpl as PyAttrs<'static>>::TABLE);
+    const CLASS_GETITEM: bool = true;
+}
 
 /// A regex match result, storing captured groups and positions.
 ///

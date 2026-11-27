@@ -1,3 +1,5 @@
+pub(crate) mod class_defs;
+
 use std::{
     borrow::Cow,
     fmt::{self, Display, Write},
@@ -3034,13 +3036,6 @@ pub(crate) trait ExcTypeExt: Sized {
     fn type_error_takes_no_arguments(name: &str) -> RunError {
         SimpleException::new_msg(ExcType::TypeError, format!("{name}() takes no arguments")).into()
     }
-}
-
-/// The constructor of every native exception class, for the native type table.
-pub(crate) fn exc_new(ty: Type, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    ty.exc_type()
-        .expect("exception types carry their ExcType")
-        .call(vm, args)
 }
 
 impl ExcTypeExt for ExcType {

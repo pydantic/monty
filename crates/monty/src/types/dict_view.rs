@@ -9,9 +9,10 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{RunError, RunResult},
     heap::{ContainsHeap, DropGuard, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
-    py_attrs::PyAttrs,
+    py_attrs::{AttrTable, PyAttrs},
     types::{
         Dict, LazyHeapSet, PyTrait, Set, Type, TypeRef, allocate_tuple,
+        class_def::ClassDef,
         dict::{DictItemIterator, DictKeyIterator, DictValueIterator},
         iter::checked_preallocation_hint,
         sequence::SequenceItems,
@@ -19,6 +20,20 @@ use crate::{
     },
     value::Value,
 };
+
+impl ClassDef for DictKeysView {
+    const NAME: &'static str = "dict_keys";
+    const ATTRS: Option<AttrTable> = Some(<PyDictKeysViewImpl as PyAttrs<'static>>::TABLE);
+}
+
+impl ClassDef for DictItemsView {
+    const NAME: &'static str = "dict_items";
+    const ATTRS: Option<AttrTable> = Some(<PyDictItemsViewImpl as PyAttrs<'static>>::TABLE);
+}
+
+impl ClassDef for DictValuesView {
+    const NAME: &'static str = "dict_values";
+}
 
 /// Shared accessors for heap-backed dictionary view objects.
 ///

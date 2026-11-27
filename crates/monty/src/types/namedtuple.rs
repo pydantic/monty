@@ -40,11 +40,12 @@ use crate::{
     heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
     modules::copy::{Memo, PyDeepCopy, deep_copy_slots},
-    py_attrs::{MethodCall, PyAttrs},
+    py_attrs::{AttrTable, MethodCall, PyAttrs},
     py_value::PyValue,
     resource_checks::{check_repeat_size, repeated_len},
     types::{
         Dict, Slice, Type, TypeRef, Union, allocate_tuple,
+        class_def::ClassDef,
         instance::BoundMethod,
         iter::collect_owned_iterable,
         key_hash::hash_or_culprit,
@@ -56,6 +57,13 @@ use crate::{
     },
     value::{EitherStr, VALUE_SIZE, Value},
 };
+
+impl ClassDef for NamedTuple {
+    const NAME: &'static str = "namedtuple";
+    const ATTRS: Option<AttrTable> = Some(<PyNamedTupleImpl as PyAttrs<'static>>::TABLE);
+    const BASES: &'static [Type] = &[Type::Tuple];
+    const SEQUENCE_REPEAT: bool = true;
+}
 
 /// Python named tuple value stored on the heap.
 ///
@@ -803,7 +811,7 @@ impl<'h> HeapRead<'h, NamedTuple> {
 /// constructs a [`NamedTuple`] instance (not a generic `Instance`), and it
 /// exposes the namedtuple class API (`_fields`, `_field_defaults`, `_make`).
 /// Like `Class`, its own [`HeapId`] is its type identity, so `type(p) is Point`
-/// resolves by reference (see [`type_of`](crate::builtins::type_::builtin_type)).
+/// resolves by reference (see [`type_of_ref`](crate::builtins::type_of_ref)).
 ///
 /// The name is heap-owned ([`EitherStr`]) because factory names are chosen at
 /// runtime, after the intern table is frozen.

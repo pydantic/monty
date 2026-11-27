@@ -27,15 +27,23 @@ use crate::{
     heap::{HEAP_ENTRY_SIZE, Heap, HeapId, HeapItem, HeapObjectRead, HeapRead},
     intern::StaticStrings,
     modules::re::{ASCII, DOTALL, IGNORECASE, MULTILINE, VERBOSE},
-    py_attrs::PyAttrs,
+    py_attrs::{AttrTable, PyAttrs},
     resource_checks::check_estimated_size,
     types::{
-        LazyHeapSet, List, PyTrait, ReMatch, Type, TypeRef, allocate_tuple, re_syntax,
+        LazyHeapSet, List, PyTrait, ReMatch, Type, TypeRef, allocate_tuple,
+        class_def::ClassDef,
+        re_syntax,
         str::{allocate_string, string_repr_fmt},
         tuple::TupleVec,
     },
     value::{EitherStr, VALUE_SIZE, Value},
 };
+
+impl ClassDef for RePattern {
+    const NAME: &'static str = "re.Pattern";
+    const ATTRS: Option<AttrTable> = Some(<PyRePatternImpl as PyAttrs<'static>>::TABLE);
+    const CLASS_GETITEM: bool = true;
+}
 
 /// A compiled regular expression pattern.
 ///

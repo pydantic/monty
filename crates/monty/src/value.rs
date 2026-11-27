@@ -30,6 +30,7 @@ use crate::{
     types::{
         Bytes, BytesIterator, CmpOrder, Complex, HeapStr, LazyHeapSet, LongInt, Property, PyTrait, Type, TypeRef,
         bytes::PyBytes,
+        class_def::ClassDef,
         decimal,
         instance::{class_defines, instance_getattr, instance_str, instance_user_eq, subclass_overrides},
         long_int::{
@@ -40,6 +41,27 @@ use crate::{
         tuple::allocate_tuple,
     },
 };
+
+/// Defines the class of the `Ellipsis` singleton.
+pub(crate) struct EllipsisClass;
+
+impl ClassDef for EllipsisClass {
+    const NAME: &'static str = "ellipsis";
+}
+
+/// Defines the class of the `NotImplemented` singleton.
+pub(crate) struct NotImplementedTypeClass;
+
+impl ClassDef for NotImplementedTypeClass {
+    const NAME: &'static str = "NotImplementedType";
+}
+
+/// Defines the class of the `None` singleton.
+pub(crate) struct NoneTypeClass;
+
+impl ClassDef for NoneTypeClass {
+    const NAME: &'static str = "NoneType";
+}
 
 /// Primary value type representing Python objects at runtime.
 ///

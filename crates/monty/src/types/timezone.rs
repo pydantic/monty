@@ -15,21 +15,31 @@ pub(crate) use monty_types::{MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SE
 
 use crate::{
     args::{ArgValues, FromArgs},
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead},
     intern::Interns,
-    py_attrs::PyAttrs,
+    py_attrs::{AttrTable, PyAttrs},
     types::{
         LazyHeapSet, PyTrait, Type, TypeRef,
+        class_def::ClassDef,
         str::{StringRepr, allocate_string},
         timedelta,
         timedelta::{MICROSECONDS_PER_SECOND, SECONDS_PER_HOUR, SECONDS_PER_MINUTE, TimeDelta},
     },
     value::Value,
 };
+
+impl ClassDef for TimeZone {
+    const NAME: &'static str = "datetime.timezone";
+    const ATTRS: Option<AttrTable> = Some(<PyTimeZoneImpl as PyAttrs<'static>>::TABLE);
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        Self::init(vm, args).map(CallResult::Value)
+    }
+}
 
 /// Magnitude of the `timezone.min` / `timezone.max` class constants: 23:59.
 ///

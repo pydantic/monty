@@ -9,7 +9,12 @@ use crate::{
     expressions::Identifier,
     intern::{FunctionId, Interns},
     namespace::NamespaceId,
+    types::class_def::ClassDef,
 };
+
+impl ClassDef for Function {
+    const NAME: &'static str = "function";
+}
 
 /// How an exact positional call can bypass argument binding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

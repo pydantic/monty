@@ -36,17 +36,46 @@ use crate::{
     identity::Identity,
     intern::{Interns, StaticStrings, StringId},
     percent_format::percent_format,
-    py_attrs::PyAttrs,
+    py_attrs::{AttrTable, PyAttrs},
     resource_checks::{check_repeat_size, check_replace_size, collect_checked, push_checked, repeated_len},
     str_format::str_format,
     string_builder::StringBuilder,
     types::{
         LazyHeapSet, Slice, Tuple, Type, TypeRef,
+        class_def::ClassDef,
         py_trait::PyObjectIdentity,
         slice::{SearchRange, search_range, slice_collect_iterator},
     },
     value::{VALUE_SIZE, Value, eq_str},
 };
+
+impl ClassDef for HeapStr {
+    const NAME: &'static str = "str";
+    const ATTRS: Option<AttrTable> = Some(<PyStr<'static> as PyAttrs<'static>>::TABLE);
+    const BUILTIN_NAME: Option<&'static str> = Some(Self::NAME);
+    const BASETYPE: bool = true;
+    const SEQUENCE_REPEAT: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        PyStr::init(vm, args).map(CallResult::Value)
+    }
+}
+
+/// Defines ASCII iteration over [`StringIterator`] storage.
+pub(crate) struct StrAsciiIteratorClass;
+
+impl ClassDef for StrAsciiIteratorClass {
+    const NAME: &'static str = "str_ascii_iterator";
+    const ITERATOR: bool = true;
+}
+
+/// Defines non-ASCII iteration over [`StringIterator`] storage.
+pub(crate) struct StrIteratorClass;
+
+impl ClassDef for StrIteratorClass {
+    const NAME: &'static str = "str_iterator";
+    const ITERATOR: bool = true;
+}
 
 /// A string view that preserves Python identity.
 ///

@@ -50,7 +50,7 @@ use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     exception_private::{ExcType, RunResult},
-    types::Type,
+    types::{Type, class_def::ClassDef},
     value::Value,
 };
 
@@ -148,6 +148,13 @@ impl FromStr for Builtins {
 pub use monty_types::BuiltinsFunctions;
 pub(crate) use type_::type_of_ref;
 
+/// Defines the shared class of builtin functions and methods.
+pub(crate) struct BuiltinFunctionClass;
+
+impl ClassDef for BuiltinFunctionClass {
+    const NAME: &'static str = "builtin_function_or_method";
+}
+
 pub(crate) trait BuiltinsFunctionsExt: Sized {
     fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult>;
 }
@@ -196,7 +203,7 @@ impl BuiltinsFunctionsExt for BuiltinsFunctions {
             Self::TypeMro => type_::builtin_type_mro(vm, args),
             Self::Sorted => sorted::builtin_sorted(vm, args),
             Self::Sum => sum::builtin_sum(vm, args),
-            Self::Type => return type_::builtin_type(vm, args),
+            Self::Type => return type_::TypeClass::construct(vm, args),
             Self::Zip => zip::builtin_zip(vm, args),
             // `eval()` / `exec()` push the compiled snippet's frame.
             Self::Eval => return eval_exec::builtin_eval(vm, args),

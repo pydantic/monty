@@ -25,12 +25,31 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead},
-    py_attrs::PyAttrs,
+    py_attrs::{AttrTable, PyAttrs},
     types::{
-        Dict, LazyHeapSet, List, PyTrait, Type, TypeRef, allocate_string, iter::collect_iterable, tuple::allocate_tuple,
+        Dict, LazyHeapSet, List, PyTrait, Type, TypeRef, allocate_string, class_def::ClassDef, iter::collect_iterable,
+        tuple::allocate_tuple,
     },
     value::{EitherStr, Value},
 };
+
+impl ClassDef for DecContext {
+    const NAME: &'static str = "decimal.Context";
+    const ATTRS: Option<AttrTable> = Some(<PyContextImpl as PyAttrs<'static>>::TABLE);
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        init(vm, args).map(CallResult::Value)
+    }
+}
+
+impl ClassDef for SignalDict {
+    const NAME: &'static str = "SignalDict";
+    const ATTRS: Option<AttrTable> = Some(<PySignalDictImpl as PyAttrs<'static>>::TABLE);
+}
+
+impl ClassDef for ContextManager {
+    const NAME: &'static str = "decimal.ContextManager";
+}
 
 /// The heap slots holding the session's decimal contexts (see `Heap::decimal_context`).
 ///

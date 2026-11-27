@@ -4,9 +4,21 @@ use crate::{
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    types::callable_iterator::CallableIterator,
+    types::{callable_iterator::CallableIterator, class_def::ClassDef},
     value::Value,
 };
+
+/// Defines the `iter` builtin, whose constructor can suspend in Python `__iter__`.
+pub(crate) struct IteratorClass;
+
+impl ClassDef for IteratorClass {
+    const NAME: &'static str = "iterator";
+    const BUILTIN_NAME: Option<&'static str> = Some("iter");
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        builtin_iter(vm, args)
+    }
+}
 
 /// Acquires an iterator or creates a callable iterator which stops at its sentinel.
 pub(crate) fn builtin_iter(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {

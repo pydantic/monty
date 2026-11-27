@@ -28,9 +28,10 @@ use crate::{
     hash::{HashValue, identity_hash},
     heap::{DropGuard, HeapData, HeapId, HeapItem, HeapObjectRead},
     intern::StaticStrings,
-    py_attrs::PyAttrs,
+    py_attrs::{AttrTable, PyAttrs},
     types::{
         LazyHeapSet, List, PyTrait, Type, TypeRef,
+        class_def::ClassDef,
         str::{PyStr, allocate_string},
     },
     value::{EitherStr, VALUE_SIZE, Value},
@@ -67,6 +68,17 @@ struct StringIoArgs {
     initial_value: Value,
     #[from_args(default)]
     newline: Option<Value>,
+}
+
+impl ClassDef for StringIo {
+    const NAME: &'static str = "_io.StringIO";
+    const BASETYPE: bool = true;
+    const ITERATOR: bool = true;
+    const ATTRS: Option<AttrTable> = Some(<PyStringIoImpl as PyAttrs<'static>>::TABLE);
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        Self::init(vm, args).map(CallResult::Value)
+    }
 }
 
 impl StringIo {

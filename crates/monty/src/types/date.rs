@@ -30,17 +30,30 @@ use crate::{
     heap::{DropWithContext, Heap, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
     modules::time,
-    py_attrs::{MethodCall, PyAttrs},
+    py_attrs::{AttrTable, MethodCall, PyAttrs, SubtypeCall},
     py_value::PyValue,
     string_builder::StringBuilder,
     types::{
-        CmpOrder, LazyHeapSet, PyTrait, TimeDelta, Type, TypeRef, datetime,
+        CmpOrder, LazyHeapSet, PyTrait, TimeDelta, Type, TypeRef,
+        class_def::ClassDef,
+        datetime,
         str::{allocate_string, allocate_string_no_interning},
         timedelta,
         timezone::{format_offset_compact, format_offset_hms, tzname_string},
     },
     value::{EitherStr, Value},
 };
+
+impl ClassDef for Date {
+    const NAME: &'static str = "datetime.date";
+    const ATTRS: Option<AttrTable> = Some(<PyDateImpl as PyAttrs<'static>>::TABLE);
+    const SUBTYPE_CALL: Option<SubtypeCall> = Some(call_subtype_descriptor);
+    const BASETYPE: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        init(vm, args).map(CallResult::Value)
+    }
+}
 
 const MICROSECONDS_PER_DAY: i128 = 86_400_000_000;
 

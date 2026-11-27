@@ -4,8 +4,20 @@ use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     exception_private::RunResult,
-    types::map_filter::MapFilter,
+    types::{class_def::ClassDef, map_filter::MapFilter},
 };
+
+pub(crate) struct FilterClass;
+
+impl ClassDef for FilterClass {
+    const NAME: &'static str = "filter";
+    const BUILTIN_NAME: Option<&'static str> = Some(Self::NAME);
+    const ITERATOR: bool = true;
+
+    fn construct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+        builtin_filter(vm, args)
+    }
+}
 
 /// Acquires the source iterator at construction, leaving predicate calls until advancement.
 pub fn builtin_filter(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {

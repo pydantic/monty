@@ -9,9 +9,13 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{Interns, StaticStrings, StringId},
-    types::{Dict, List},
+    types::{Dict, List, class_def::ClassDef},
     value::{EitherStr, Value},
 };
+
+impl ClassDef for Module {
+    const NAME: &'static str = "module";
+}
 
 /// A Python module with a name and attribute dictionary.
 ///
