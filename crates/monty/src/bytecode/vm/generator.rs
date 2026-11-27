@@ -9,6 +9,7 @@
 
 use std::{fmt::Write, mem};
 
+use monty_macros::pyattrs;
 use serde::{Deserialize, Serialize};
 
 use super::{CallFrame, VM, exceptions::CaughtException, namespace::function_namespace};
@@ -22,6 +23,7 @@ use crate::{
         HeapReader,
     },
     intern::{FunctionId, Interns},
+    py_attrs::PyAttrs,
     py_value::PyValue,
     types::{LazyHeapSet, PyTrait, Type, TypeRef, py_trait::PyObjectIdentity},
     value::{EitherStr, Value},
@@ -176,17 +178,26 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Generator> {
         let identity = self.py_identity().encoded();
         Ok(write!(f, "<generator object {name} at 0x{identity:x}>")?)
     }
+}
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let value = match attr.as_str(vm.interns) {
-            "send" => args.get_one_arg("generator.send", vm.heap)?,
-            "__next__" => {
-                args.check_zero_args("generator.__next__", vm.heap)?;
-                Value::None
-            }
-            _ => return Err(ExcType::attribute_error_method("generator", attr, args, vm)),
-        };
-        vm.resume_generator(self.id(), value)?
+/// The `generator` type's methods.
+pub(crate) struct PyGeneratorImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyGeneratorImpl {
+    type Receiver = HeapObjectRead<'heap, Generator>;
+
+    #[pymethod(Send)]
+    fn send<'h>(this: &HeapObjectRead<'h, Generator>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let value = args.get_one_arg("generator.send", vm.heap)?;
+        vm.resume_generator(this.id(), value)?
+            .ok_or_else(ExcType::stop_iteration)
+    }
+
+    #[pymethod(DunderNext)]
+    fn next<'h>(this: &HeapObjectRead<'h, Generator>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        args.check_zero_args("generator.__next__", vm.heap)?;
+        vm.resume_generator(this.id(), Value::None)?
             .ok_or_else(ExcType::stop_iteration)
     }
 }

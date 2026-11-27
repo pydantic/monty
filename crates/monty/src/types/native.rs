@@ -22,7 +22,7 @@ use crate::{
     builtins::{
         filter::builtin_filter, iter::builtin_iter, map::builtin_map, object::PyObjectImpl, type_::builtin_type,
     },
-    bytecode::{CallResult, VM},
+    bytecode::{CallResult, PyGeneratorImpl, VM},
     exception_private::{ExcType, RunResult, exc_new},
     modules::{collections, csv, hashlib, itertools},
     py_attrs::{AttrTable, PyAttrs, SubtypeCall},
@@ -772,6 +772,7 @@ native_types! {
     /// CPython's `generator`: a generator object, and the iterator `os.walk()` and
     /// `Path.walk()` return. The variant name predates generator functions; dumps store it.
     WalkGenerator("generator")
+        .attrs(<PyGeneratorImpl as PyAttrs<'static>>::TABLE)
         .iterator(),
     TupleIterator("tuple_iterator")
         .iterator(),

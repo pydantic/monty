@@ -347,6 +347,17 @@ try:
 except TypeError as exc:
     assert str(exc) == 'generator.send() takes exactly one argument (0 given)'
 
+# Unbound methods through the type check their receiver
+generator = type(echo())
+g = echo()
+assert generator.__next__(g) == 'start'
+assert generator.send(g, 3) == 6
+try:
+    generator.send(1, None)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "descriptor 'send' for 'generator' objects doesn't apply to a 'int' object"
+
 # === Yield expressions in operand positions ===
 token = []
 

@@ -1210,6 +1210,9 @@ pub enum StaticStrings {
     /// `object.__new__` instance construction hook.
     #[strum(serialize = "__new__")]
     DunderNew,
+    /// `generator.__next__`.
+    #[strum(serialize = "__next__")]
+    DunderNext,
     /// `__origin__` of a `types.GenericAlias`.
     #[strum(serialize = "__origin__")]
     DunderOrigin,
@@ -2796,6 +2799,8 @@ pub enum StaticStrings {
     /// `typing.Self` marker.
     #[strum(serialize = "Self")]
     SelfType,
+    /// `generator.send`.
+    Send,
     /// Kwarg name `sep` — `str.split(sep=...)`, `print(sep=...)`, etc.
     Sep,
     /// `json.dumps(separators=...)` keyword.
