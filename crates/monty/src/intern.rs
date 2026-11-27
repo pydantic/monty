@@ -735,12 +735,27 @@ pub enum StaticStrings {
     Blake2s,
     /// `block_size` attribute of a hash object.
     BlockSize,
+    /// `BlockingIOError`, a builtin also exported by `io`.
+    #[strum(serialize = "BlockingIOError")]
+    BlockingIoError,
+    /// `io.BufferedRandom` file class.
+    #[strum(serialize = "BufferedRandom")]
+    BufferedRandom,
+    /// `io.BufferedReader` file class.
+    #[strum(serialize = "BufferedReader")]
+    BufferedReader,
+    /// `io.BufferedWriter` file class.
+    #[strum(serialize = "BufferedWriter")]
+    BufferedWriter,
     /// Kwarg name `buffering` — `open(buffering=...)`.
     Buffering,
     /// `sys.builtin_module_names` attribute.
     BuiltinModuleNames,
     /// `sys.byteorder` attribute.
     Byteorder,
+    /// `io.BytesIO` in-memory binary stream.
+    #[strum(serialize = "BytesIO")]
+    BytesIo,
     /// `bytes_per_sep` parameter of `binascii.hexlify()`.
     #[strum(serialize = "bytes_per_sep")]
     BytesPerSep,
@@ -969,6 +984,9 @@ pub enum StaticStrings {
     Deepcopy,
     /// Kwarg name `default` — `os.getenv(default=...)`.
     Default,
+    /// `io.DEFAULT_BUFFER_SIZE` constant.
+    #[strum(serialize = "DEFAULT_BUFFER_SIZE")]
+    DefaultBufferSize,
     /// `decimal.DefaultContext` template context.
     #[strum(serialize = "DefaultContext")]
     DefaultContext,
@@ -996,6 +1014,8 @@ pub enum StaticStrings {
     Depth,
     /// The `collections.deque` type.
     Deque,
+    /// `detach()` method of the io classes.
+    Detach,
     /// `sys.flags.dev_mode` field.
     DevMode,
     /// Value of `os.devnull`.
@@ -1621,6 +1641,8 @@ pub enum StaticStrings {
     FalseRepr,
     /// `fanout` parameter of `hashlib.blake2b()`.
     Fanout,
+    Fdel,
+    Fget,
     /// `dataclasses.field()` function, and the `Field` type name.
     Field,
     /// `namedtuple(field_names=...)` keyword argument.
@@ -1634,6 +1656,8 @@ pub enum StaticStrings {
     File,
     /// Kwarg name `filename` — `os.path.getsize(filename=...)`, `os.path.realpath(filename=...)`.
     Filename,
+    /// `fileno()` method of the io classes.
+    Fileno,
     /// `zip_longest(fillvalue=...)` keyword.
     Fillvalue,
     /// `fnmatch.filter()` function.
@@ -1731,6 +1755,7 @@ pub enum StaticStrings {
     FrozenSet,
     /// `fs` parameter of `asyncio.wait()`.
     Fs,
+    Fset,
     /// `Path.__fspath__()` method, answered without host I/O.
     #[strum(serialize = "__fspath__")]
     Fspath,
@@ -1792,6 +1817,8 @@ pub enum StaticStrings {
     Getsize,
     /// `random.getstate()` function.
     Getstate,
+    /// `StringIO.getvalue()` / `BytesIO.getvalue()` method.
+    Getvalue,
     /// `Path.glob()` method — yields a host scan.
     Glob,
     /// `globalns` parameter of `typing.get_type_hints()`.
@@ -1887,6 +1914,10 @@ pub enum StaticStrings {
     /// `initial` keyword argument of `functools.reduce()` and
     /// `itertools.accumulate()`.
     Initial,
+    /// Kwarg name `initial_bytes` — `io.BytesIO(initial_bytes=...)`.
+    InitialBytes,
+    /// Kwarg name `initial_value` — `io.StringIO(initial_value=...)`.
+    InitialValue,
     /// `inner_size` parameter of `hashlib.blake2b()`.
     InnerSize,
     /// `list.insert()` method.
@@ -1963,6 +1994,8 @@ pub enum StaticStrings {
     Isalpha,
     /// `isascii()` method, shared by `str` and `bytes`.
     Isascii,
+    /// `isatty()` method of the io classes.
+    Isatty,
     /// `math.isclose()` function.
     Isclose,
     /// `str.isdecimal()` method.
@@ -2080,6 +2113,8 @@ pub enum StaticStrings {
     Lgamma,
     /// The value of `sys.platlibdir`.
     Lib,
+    /// `StringIO.line_buffering` attribute.
+    LineBuffering,
     /// `line_num` attribute of the `csv` readers.
     LineNum,
     /// `os.linesep` constant name.
@@ -2327,6 +2362,8 @@ pub enum StaticStrings {
     NewLimit,
     /// Kwarg name `newline` — `open(newline=...)`.
     Newline,
+    /// `StringIO.newlines` attribute.
+    Newlines,
     /// `Decimal.next_minus()` / `Context.next_minus()`.
     NextMinus,
     /// `Decimal.next_plus()` / `Context.next_plus()`.
@@ -2390,6 +2427,8 @@ pub enum StaticStrings {
     /// round-trip. `PyPathImpl::open` delegates to `builtin_open` for mode/kwarg
     /// validation rather than building a generic path OS call.
     Open,
+    /// `io.open_code()` function.
+    OpenCode,
     /// Kwarg name `opener` — `open(opener=...)`.
     Opener,
     /// `sys.flags.optimize` field.
@@ -2589,6 +2628,9 @@ pub enum StaticStrings {
     Re,
     /// `file.read()` method.
     Read,
+    /// `BytesIO.read1()` method.
+    #[strum(serialize = "read1")]
+    Read1,
     /// `Path.read_bytes()` method — yields a host call.
     ReadBytes,
     /// `Path.read_text()` method — yields a host call.
@@ -2738,6 +2780,15 @@ pub enum StaticStrings {
     Seed,
     /// `file.seek()` method.
     Seek,
+    /// `io.SEEK_CUR` constant.
+    #[strum(serialize = "SEEK_CUR")]
+    SeekCur,
+    /// `io.SEEK_END` constant.
+    #[strum(serialize = "SEEK_END")]
+    SeekEnd,
+    /// `io.SEEK_SET` constant.
+    #[strum(serialize = "SEEK_SET")]
+    SeekSet,
     /// `file.seekable()` method.
     Seekable,
     /// `selectors` keyword argument of `itertools.compress()`.
@@ -2915,6 +2966,9 @@ pub enum StaticStrings {
     /// `annotationlib.Format.STRING` member.
     #[strum(serialize = "STRING")]
     StringFormat,
+    /// `io.StringIO` in-memory text stream.
+    #[strum(serialize = "StringIO")]
+    StringIo,
     /// `strip()` method, shared by `str` and `bytes`.
     Strip,
     /// `datetime.strptime()` classmethod.
@@ -2977,6 +3031,11 @@ pub enum StaticStrings {
     TeeType,
     /// `file.tell()` method.
     Tell,
+    /// `io.text_encoding()` function.
+    TextEncoding,
+    /// `io.TextIOWrapper` file class.
+    #[strum(serialize = "TextIOWrapper")]
+    TextIoWrapper,
     /// Kwarg name `third` — `Decimal.fma()`.
     Third,
     /// `time.thread_time()` function.
@@ -2997,6 +3056,8 @@ pub enum StaticStrings {
     Timespec,
     /// `datetime.timestamp()` method.
     Timestamp,
+    /// `date.timetuple()` method.
+    Timetuple,
     /// `datetime.timetz` method name.
     Timetz,
     /// The `datetime.timezone` type.
@@ -3065,6 +3126,8 @@ pub enum StaticStrings {
     TrueRepr,
     /// `math.trunc()` function.
     Trunc,
+    /// `truncate()` method of the io classes.
+    Truncate,
     /// `typing.Tuple` marker.
     #[strum(serialize = "Tuple")]
     TupleType,
@@ -3108,6 +3171,9 @@ pub enum StaticStrings {
     /// `NamedTuple._fields` — tuple of field names.
     #[strum(serialize = "_fields")]
     UnderFields,
+    /// Module name for `import _io`, the native half of `io`.
+    #[strum(serialize = "_io")]
+    UnderIo,
     /// `NamedTuple._make(iterable)` classmethod.
     #[strum(serialize = "_make")]
     UnderMake,
@@ -3138,6 +3204,9 @@ pub enum StaticStrings {
     Unlink,
     /// `@dataclass(unsafe_hash=...)`.
     UnsafeHash,
+    /// `io.UnsupportedOperation` exception class.
+    #[strum(serialize = "UnsupportedOperation")]
+    UnsupportedOperation,
     /// `update()` method, shared by `set` and `dict`.
     Update,
     /// `upper()` method, shared by `str` and `bytes`.
@@ -3224,6 +3293,8 @@ pub enum StaticStrings {
     WriteText,
     /// `csv.DictWriter.writeheader()` method.
     Writeheader,
+    /// `writelines()` method of the io classes.
+    Writelines,
     /// `csv.writer()` function and `csv.DictWriter.writer` attribute.
     Writer,
     /// `writerow()` method of the `csv` writers.

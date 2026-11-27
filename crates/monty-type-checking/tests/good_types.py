@@ -1,3 +1,4 @@
+import _io
 import asyncio
 import bisect
 import datetime
@@ -5,6 +6,7 @@ import decimal
 import fnmatch
 import functools
 import hashlib
+import io
 import itertools
 import json
 import os
@@ -15,9 +17,9 @@ import sys
 import tomllib
 from collections.abc import Iterator
 from dataclasses import dataclass
-from io import BufferedReader, BufferedWriter, TextIOWrapper
+from io import BufferedReader, BufferedWriter, BytesIO, StringIO, TextIOWrapper
 from pathlib import Path
-from typing import Any, LiteralString, TextIO, assert_type, cast, get_type_hints
+from typing import Any, Literal, LiteralString, TextIO, assert_type, cast, get_type_hints
 
 import annotationlib
 
@@ -849,3 +851,15 @@ assert_type(statistics.stdev([1.0, 2.0], xbar=1.5), float)
 assert_type(statistics.pvariance([1, 2]), float)
 assert_type(statistics.quantiles([1, 2, 3, 4], n=4, method='inclusive'), list[float])
 assert_type(statistics.StatisticsError('x'), statistics.StatisticsError)
+
+# === io ===
+
+assert_type(StringIO('x').getvalue(), str)
+assert_type(StringIO().write('x'), int)
+assert_type(StringIO().readlines(), list[str])
+assert_type(BytesIO(b'x').read(1), bytes)
+assert_type(BytesIO().seek(0, io.SEEK_END), int)
+assert_type(io.text_encoding(None), Literal['locale', 'utf-8'])
+assert_type(BlockingIOError('x'), BlockingIOError)
+assert_type(_io.StringIO('x'), StringIO)
+assert_type(_io.DEFAULT_BUFFER_SIZE, Literal[131072])

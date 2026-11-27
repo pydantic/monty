@@ -734,9 +734,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
 
     fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
         let list_id = self.id();
-        let iterator = vm.heap.allocate(HeapData::ListIterator(ListIterator::new(list_id)));
+        let iterator = Value::allocate(ListIterator::new(list_id), vm.heap);
         vm.heap.inc_ref(list_id);
-        Ok(CallResult::Value(Value::Ref(iterator)))
+        Ok(CallResult::Value(iterator))
     }
 }
 

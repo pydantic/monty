@@ -2185,9 +2185,9 @@ impl<'heap> PyAttrs<'heap> for PyDictImpl {
     fn keys<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             args.check_zero_args("dict.keys", vm.heap)?;
-            let view_id = vm.heap.allocate(HeapData::DictKeysView(DictKeysView::new(this.id())));
+            let view = Value::allocate(DictKeysView::new(this.id()), vm.heap);
             vm.heap.inc_ref(this.id());
-            Ok(Value::Ref(view_id))
+            Ok(view)
         }
     }
 
@@ -2195,11 +2195,9 @@ impl<'heap> PyAttrs<'heap> for PyDictImpl {
     fn values<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             args.check_zero_args("dict.values", vm.heap)?;
-            let view_id = vm
-                .heap
-                .allocate(HeapData::DictValuesView(DictValuesView::new(this.id())));
+            let view = Value::allocate(DictValuesView::new(this.id()), vm.heap);
             vm.heap.inc_ref(this.id());
-            Ok(Value::Ref(view_id))
+            Ok(view)
         }
     }
 
@@ -2207,9 +2205,9 @@ impl<'heap> PyAttrs<'heap> for PyDictImpl {
     fn items<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             args.check_zero_args("dict.items", vm.heap)?;
-            let view_id = vm.heap.allocate(HeapData::DictItemsView(DictItemsView::new(this.id())));
+            let view = Value::allocate(DictItemsView::new(this.id()), vm.heap);
             vm.heap.inc_ref(this.id());
-            Ok(Value::Ref(view_id))
+            Ok(view)
         }
     }
 

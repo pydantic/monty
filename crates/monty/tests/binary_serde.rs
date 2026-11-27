@@ -274,6 +274,7 @@ fn module_imports_after_snapshot() {
         "statistics",
         "fnmatch",
         "annotationlib",
+        "io",
     ] {
         let runner = MontyRun::new(
             format!("import {module}\n42"),

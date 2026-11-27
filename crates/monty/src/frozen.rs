@@ -18,7 +18,7 @@ use crate::{
     name_map::NameMap,
     parse::parse_with_interner,
     prepare::prepare_with_existing_names,
-    types::{forward_ref, generic_alias, iter, lru_cache, map_filter},
+    types::{descriptor, forward_ref, generic_alias, iter, lru_cache, map_filter},
 };
 
 /// Identifies an internal implementation with one authoritative source definition.
@@ -61,6 +61,33 @@ pub(crate) enum FrozenFunction {
     /// Evaluate and cache a class's `__annotations__` from its `__annotate__`.
     #[serde(rename = "type.__annotations__")]
     ClassAnnotations,
+    /// Resolve an attribute before calling it, preserving arguments across suspension.
+    #[serde(rename = "descriptors.call")]
+    DescriptorCall,
+    /// Bind a selected descriptor and call its result.
+    #[serde(rename = "descriptors.bind_call")]
+    DescriptorBindCall,
+    /// Discard the return value of a suspendable hook.
+    #[serde(rename = "descriptors.discard")]
+    DescriptorDiscard,
+    /// Bind and run a descriptor setter or deleter.
+    #[serde(rename = "descriptors.mutation")]
+    DescriptorMutation,
+    /// Call namespace descriptors' name hooks in definition order.
+    #[serde(rename = "descriptors.set_names")]
+    DescriptorNames,
+    /// Apply a getattr default after a suspendable getter.
+    #[serde(rename = "descriptors.getattr")]
+    DescriptorGetattr,
+    /// Catch AttributeError from a suspendable getter.
+    #[serde(rename = "descriptors.hasattr")]
+    DescriptorHasattr,
+    /// Return an attribute value and its pattern-match flag.
+    #[serde(rename = "descriptors.match")]
+    DescriptorMatch,
+    /// Resolve and validate descriptor-backed class pattern names.
+    #[serde(rename = "descriptors.match_class")]
+    DescriptorMatchClass,
 }
 
 impl FrozenFunction {
@@ -93,6 +120,15 @@ impl FrozenFunction {
             Self::GetAnnotations => typing::GET_ANNOTATIONS_SOURCE,
             Self::ForwardRefEvaluate => forward_ref::EVALUATE_SOURCE,
             Self::ClassAnnotations => annotations::CLASS_ANNOTATIONS_SOURCE,
+            Self::DescriptorBindCall => descriptor::BIND_CALL_SOURCE,
+            Self::DescriptorCall => descriptor::CALL_SOURCE,
+            Self::DescriptorMutation => descriptor::MUTATION_SOURCE,
+            Self::DescriptorDiscard => descriptor::DISCARD_SOURCE,
+            Self::DescriptorNames => descriptor::NAMES_SOURCE,
+            Self::DescriptorGetattr => descriptor::GETATTR_SOURCE,
+            Self::DescriptorMatch => descriptor::MATCH_SOURCE,
+            Self::DescriptorMatchClass => descriptor::MATCH_CLASS_SOURCE,
+            Self::DescriptorHasattr => descriptor::HASATTR_SOURCE,
             Self::MapInit => map_filter::MAP_INIT_SOURCE,
             Self::MapNext => map_filter::MAP_NEXT_SOURCE,
             Self::FilterInit => map_filter::FILTER_INIT_SOURCE,
@@ -123,7 +159,7 @@ impl FrozenFunction {
 
 /// Native primitives passed directly to internal Python functions.
 /// These identities and their signatures are part of the captured bytecode's ABI.
-#[monty_macros::explicit_discriminants(checksum = 0x47d0_77e5_f6a8_58b8)]
+#[monty_macros::explicit_discriminants(checksum = 0x4e3d_0cad_4a9e_408f)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, strum::Display)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum FrozenFunctions {
@@ -151,6 +187,16 @@ pub(crate) enum FrozenFunctions {
     MapLengthError = 10,
     /// Exit the loop beneath a deferred advancement's catcher, without pushing an item.
     EndForIter = 11,
+    /// Resolve an attribute for a frozen continuation.
+    GetAttribute = 12,
+    /// Bind a descriptor to a checked instance and owner.
+    BindDescriptor = 13,
+    /// Resolve the next __set_name__ hook.
+    SetNameLookup = 14,
+    /// Validate descriptor-provided pattern metadata.
+    MatchClassNames = 15,
+    /// Run __init_subclass__ after descriptor name hooks.
+    InitSubclass = 16,
 }
 
 /// Dispatches private helpers using the same argument ownership rules as public natives.
@@ -162,6 +208,11 @@ pub(crate) fn call_helper(function: FrozenFunctions, args: ArgValues, vm: &mut V
         }
         FrozenFunctions::CallAnnotate => annotations::call_annotate_helper(args, vm),
         FrozenFunctions::EvalHint => typing::call_eval_hint(args, vm),
+        FrozenFunctions::InitSubclass => descriptor::init_subclass(args, vm),
+        FrozenFunctions::MatchClassNames => vm.match_class_names(args),
+        FrozenFunctions::SetNameLookup => descriptor::lookup_set_name(args, vm),
+        FrozenFunctions::BindDescriptor => descriptor::bind_descriptor(args, vm),
+        FrozenFunctions::GetAttribute => descriptor::get_attribute(args, vm),
         FrozenFunctions::GetIter => iter::call_get_iter(args, vm),
         FrozenFunctions::Store => lru_cache::call_store(args, vm).map(CallResult::Value),
         FrozenFunctions::TypeRepr => typing::call_type_repr(args, vm).map(CallResult::Value),

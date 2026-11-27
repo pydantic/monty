@@ -48,7 +48,8 @@ raises `hour must be in 0..23, not 25` there, and
 
 Constructor: `date(year, month, day)`.
 Attributes: `year`, `month`, `day`.
-Methods: `isoformat`, `strftime`, `replace`, `weekday`, `isoweekday`, `toordinal`.
+Methods: `isoformat`, `strftime`, `replace`, `weekday`, `isoweekday`, `toordinal`, `timetuple`.
+`timetuple()` returns a `struct_time`, which has 11 items rather than 9 (see [time.md](time.md)).
 
 Class methods supported: `today()`, `fromisoformat()`, `fromtimestamp()`, `fromordinal()`.
 `fromisocalendar()` is not implemented. `strptime()`, added in CPython 3.14, is not implemented
@@ -79,7 +80,8 @@ Attributes: `year`, `month`, `day`, `hour`, `minute`, `second`,
 `microsecond`, `tzinfo`.
 Methods: `isoformat(sep='T', timespec='auto')`, `strftime`, `replace`,
 `weekday`, `isoweekday`, `date`, `time`, `timetz`, `timestamp`, `toordinal`, `astimezone(tz=None)`,
-`utcoffset`, `tzname`, `dst`.
+`utcoffset`, `tzname`, `dst`, `timetuple`.
+`timetuple()` returns an 11-item `struct_time`, as `date.timetuple()` does.
 
 `astimezone()` and a naive `timestamp()` read the [session zone](#reading-the-clock) where CPython uses the host's;
 as in CPython the `tzinfo` `astimezone()` attaches is a `timezone` carrying the offset and abbreviation at that
@@ -181,7 +183,8 @@ The `time` module's wall clocks share the `datetime` source, and its conversion 
 Constructor: `time(hour=0, minute=0, second=0, microsecond=0, tzinfo=None, *, fold=0)`.
 Attributes: `hour`, `minute`, `second`, `microsecond`, `tzinfo`, `fold`.
 Methods: `isoformat(timespec='auto')`, `strftime`, `replace`,
-`utcoffset`, `tzname`, `dst`.
+`utcoffset`, `tzname`, `dst`, `timetuple`.
+`timetuple()` returns an 11-item `struct_time`, as `date.timetuple()` does.
 Class methods: `fromisoformat(time_string)`. `strptime(string, format)`
 — which CPython added in 3.14 — is not implemented and raises `AttributeError`.
 

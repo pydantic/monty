@@ -1,8 +1,9 @@
 # `print()`
 
-Output always goes to the host via a print callback (`vm.print_writer`). The
+Output to `sys.stdout` or `sys.stderr` goes to the host via a print callback (`vm.print_writer`). The
 host decides where it ends up; there is no real `sys.stdout` or `sys.stderr`
 underneath (see [sys.md](sys.md)).
+Output to an `io.StringIO` stays in the stream.
 
 ## Supported keyword arguments
 
@@ -13,11 +14,13 @@ underneath (see [sys.md](sys.md)).
 
 ## Rejected / ignored
 
-- `file=...` — only `sys.stdout` and `sys.stderr` are accepted; both are
-    opaque markers matched by identity (see [sys.md](sys.md)). Anything else
-    raises `TypeError: "print() 'file' argument must be sys.stdout or sys.stderr, not {type}"`,
-    including an object defining `write()`, which CPython would call. CPython
-    instead raises `AttributeError: '{type}' object has no attribute 'write'`
+- `file=...` — only `None` (stdout), `sys.stdout`, `sys.stderr` and an `io.StringIO` or `io.BytesIO` are accepted.
+    `sys.stdout` and `sys.stderr` are opaque markers matched by identity (see [sys.md](sys.md)).
+    A `BytesIO` raises CPython's `TypeError: a bytes-like object is required, not 'str'` from its `write()`.
+    Anything else raises
+    `TypeError: "print() 'file' argument must be sys.stdout, sys.stderr, io.StringIO or io.BytesIO, not {type}"`,
+    including an `open()` file and an object defining `write()`, both of which CPython would write to.
+    CPython instead raises `AttributeError: '{type}' object has no attribute 'write'`
     for an object without one.
 - `flush=...` — accepted and ignored. Output is delivered to the host through
     the subprocess protocol on its own schedule (see "Chunk boundaries" below);

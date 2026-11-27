@@ -4,7 +4,7 @@
 # Includes selected stub-only dependencies, not every upstream import.
 
 _collections_abc: 3.3-
-_io: 3.0-  # not importable at runtime, only for type checking
+_io: 3.0-
 _stat: 3.0-  # not importable at runtime, only for type checking (stat re-exports from it)
 _typeshed: 3.0-  # not present at runtime, only for type checking
 abc: 3.0-  # not importable at runtime, only for type checking
@@ -26,7 +26,7 @@ fnmatch: 3.0-
 functools: 3.0-
 genericpath: 3.0-  # not importable at runtime, only for type checking (posixpath re-exports from it)
 hashlib: 3.0-
-io: 3.0-  # not importable at runtime, only for type checking
+io: 3.0-
 itertools: 3.0-
 json: 3.0-
 keyword: 3.0-

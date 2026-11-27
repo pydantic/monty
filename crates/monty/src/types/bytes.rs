@@ -4,6 +4,7 @@ use memchr::memmem::{Finder, FinderRev};
 use monty_macros::pyattrs;
 use monty_types::{ResourceError, ResourceTracker};
 pub use monty_types::{bytes_repr, bytes_repr_fmt};
+use num_traits::ToPrimitive;
 use smallvec::smallvec;
 
 use super::{LazyHeapSet, PyTrait, Type, TypeRef};
@@ -248,11 +249,10 @@ fn try_bytes_from_size(source: &Value, vm: &mut VM<'_>) -> RunResult<Option<Vec<
             match index {
                 Value::Int(n) => *n,
                 Value::Bool(b) => i64::from(*b),
-                Value::Ref(id) => match vm.heap.get(*id) {
-                    HeapData::LongInt(li) => li.to_i64().ok_or_else(ExcType::overflow_index_sized_int)?,
-                    _ => return Err(ExcType::overflow_index_sized_int().into()),
-                },
-                _ => return Err(ExcType::overflow_index_sized_int().into()),
+                _ => index
+                    .as_long_int(vm)
+                    .and_then(ToPrimitive::to_i64)
+                    .ok_or_else(ExcType::overflow_index_sized_int)?,
             }
         }
     };
@@ -272,19 +272,12 @@ fn collect_bytes_from_iterator(iterator: Value, vm: &mut VM<'_>) -> RunResult<Ve
             let index_val = item.py_index(vm)?;
             defer_drop!(index_val, vm);
             match index_val {
-                Value::Int(n) => match u8::try_from(*n) {
-                    Ok(b) => b,
-                    Err(_) => return Err(ExcType::value_error_bytes_range()),
-                },
+                Value::Int(n) => u8::try_from(*n).map_err(|_| ExcType::value_error_bytes_range())?,
                 Value::Bool(b) => u8::from(*b),
-                Value::Ref(id) => match vm.heap.get(*id) {
-                    HeapData::LongInt(li) => match li.to_i64().and_then(|n| u8::try_from(n).ok()) {
-                        Some(b) => b,
-                        None => return Err(ExcType::value_error_bytes_range()),
-                    },
-                    _ => return Err(ExcType::value_error_bytes_range()),
-                },
-                _ => return Err(ExcType::value_error_bytes_range()),
+                _ => index_val
+                    .as_long_int(vm)
+                    .and_then(ToPrimitive::to_u8)
+                    .ok_or_else(ExcType::value_error_bytes_range)?,
             }
         };
         vm.heap.tracker.check_growth(bytes.len(), bytes.capacity(), 1)?;
@@ -2420,11 +2413,11 @@ impl BytesIterator {
             BytesIteratorSource::Heap(id) => Some(id),
             BytesIteratorSource::Intern(_) => None,
         };
-        let id = vm.heap.allocate(HeapData::BytesIterator(Self { source, index: 0 }));
+        let iterator = Value::allocate(Self { source, index: 0 }, vm.heap);
         if let Some(source_id) = source_id {
             vm.heap.inc_ref(source_id);
         }
-        Value::Ref(id)
+        iterator
     }
 }
 

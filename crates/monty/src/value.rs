@@ -1251,18 +1251,16 @@ impl Value {
     /// The value is already validated as an int by [`PyTrait::py_index_impl`],
     /// so the non-int arms are unreachable.
     fn narrow_index_to_i64(index: Self, vm: &mut VM<'_>, on_overflow: impl FnOnce() -> RunError) -> RunResult<i64> {
-        let converted = match &index {
+        defer_drop!(index, vm);
+        match index {
             Self::Int(i) => Ok(*i),
             Self::Bool(b) => Ok(i64::from(*b)),
-            Self::InternLongInt(id) => vm.interns.get_long_int(*id).to_i64().ok_or_else(on_overflow),
-            Self::Ref(id) => match vm.heap.get(*id) {
-                HeapData::LongInt(li) => li.to_i64().ok_or_else(on_overflow),
-                _ => unreachable!("py_index_impl validated the result is an int"),
-            },
-            _ => unreachable!("py_index_impl validated the result is an int"),
-        };
-        index.drop_with(vm);
-        converted
+            _ => index
+                .as_long_int(vm)
+                .expect("py_index_impl validated the result is an int")
+                .to_i64()
+                .ok_or_else(on_overflow),
+        }
     }
 
     /// Saturating `i64` view of a `LongInt`-valued int (interned or
@@ -1800,9 +1798,7 @@ pub(crate) fn eq_i64(a: i64, other: &Value, vm: &VM<'_>) -> Option<bool> {
         Value::Int(b) => Some(a == *b),
         Value::Bool(b) => Some(a == i64::from(*b)),
         Value::Float(f) => Some(i64_cmp_f64(a, *f) == Some(Ordering::Equal)),
-        Value::InternLongInt(id) => Some(bigint_eq_i64(vm.interns.get_long_int(*id), a)),
-        Value::Ref(id) if let HeapData::LongInt(li) = vm.heap.get(*id) => Some(bigint_eq_i64(li.inner(), a)),
-        _ => None,
+        _ => other.as_long_int(vm).map(|big| bigint_eq_i64(big, a)),
     }
 }
 
@@ -1812,9 +1808,7 @@ pub(crate) fn eq_f64(f: f64, other: &Value, vm: &VM<'_>) -> Option<bool> {
         Value::Float(o) => Some(f == *o),
         Value::Int(o) => Some(i64_cmp_f64(*o, f) == Some(Ordering::Equal)),
         Value::Bool(o) => Some(i64_cmp_f64(i64::from(*o), f) == Some(Ordering::Equal)),
-        Value::InternLongInt(id) => Some(bigint_eq_f64(vm.interns.get_long_int(*id), f)),
-        Value::Ref(id) if let HeapData::LongInt(li) = vm.heap.get(*id) => Some(bigint_eq_f64(li.inner(), f)),
-        _ => None,
+        _ => other.as_long_int(vm).map(|big| bigint_eq_f64(big, f)),
     }
 }
 
@@ -1826,9 +1820,7 @@ pub(crate) fn eq_bigint(b: &BigInt, other: &Value, vm: &VM<'_>) -> Option<bool> 
         Value::Int(o) => Some(bigint_eq_i64(b, *o)),
         Value::Bool(o) => Some(bigint_eq_i64(b, i64::from(*o))),
         Value::Float(f) => Some(bigint_eq_f64(b, *f)),
-        Value::InternLongInt(id) => Some(b == vm.interns.get_long_int(*id)),
-        Value::Ref(id) if let HeapData::LongInt(li) = vm.heap.get(*id) => Some(b == li.inner()),
-        _ => None,
+        _ => other.as_long_int(vm).map(|big| b == big),
     }
 }
 

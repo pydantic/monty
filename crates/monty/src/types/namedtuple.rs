@@ -1212,13 +1212,12 @@ pub(crate) fn build_namedtuple(
     class_id: Option<HeapId>,
     vm: &mut VM<'_>,
 ) -> Value {
-    let nt = NamedTuple::with_class(name, field_names, items, class_id);
-    let id = vm.heap.allocate(HeapData::NamedTuple(Box::new(nt)));
+    let value = Value::allocate(NamedTuple::with_class(name, field_names, items, class_id), vm.heap);
     // The instance owns a reference to its class object (see `py_dec_ref_ids`).
     if let Some(cid) = class_id {
         vm.heap.inc_ref(cid);
     }
-    Value::Ref(id)
+    value
 }
 
 /// Builds a tuple `Value` of the given field names (as string values).

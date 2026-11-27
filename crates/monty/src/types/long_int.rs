@@ -31,7 +31,7 @@ use crate::{
     comparison::{Number, RichCompareOp},
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_python_long_int},
-    heap::{DropWithContext, Heap, HeapData, HeapObjectRead},
+    heap::{DropWithContext, Heap, HeapObjectRead},
     identity::Identity,
     intern::{LongIntId, StaticStrings},
     resource_checks::{check_div_size, check_lshift_size, check_mult_size, check_pow_size},
@@ -538,14 +538,9 @@ fn multiply_bigint(lhs: &BigInt, other: &Value, vm: &VM<'_>) -> RunResult<Option
             Value::Int(0)
         }),
         Value::Float(rhs) => Some(Value::Float(bigint_to_f64_checked(lhs)? * rhs)),
-        Value::InternLongInt(id) => {
-            let rhs = vm.interns.get_long_int(*id);
+        _ if let Some(rhs) = other.as_long_int(vm) => {
             check_mult_size(lhs.bits(), rhs.bits(), &vm.heap.tracker)?;
             Some(LongInt::new(lhs * rhs).into_value(vm.heap))
-        }
-        Value::Ref(id) if let HeapData::LongInt(rhs) = vm.heap.get(*id) => {
-            check_mult_size(lhs.bits(), rhs.bits(), &vm.heap.tracker)?;
-            Some(LongInt::new(lhs * rhs.inner()).into_value(vm.heap))
         }
         _ => None,
     };
@@ -558,8 +553,7 @@ fn add_bigint(lhs: &BigInt, other: &Value, vm: &VM<'_>) -> RunResult<Option<Valu
         Value::Int(rhs) => lhs + rhs,
         Value::Bool(rhs) => lhs + i64::from(*rhs),
         Value::Float(rhs) => return Ok(Some(Value::Float(bigint_to_f64_checked(lhs)? + rhs))),
-        Value::InternLongInt(id) => lhs + vm.interns.get_long_int(*id),
-        Value::Ref(id) if let HeapData::LongInt(rhs) = vm.heap.get(*id) => lhs + rhs.inner(),
+        _ if let Some(rhs) = other.as_long_int(vm) => lhs + rhs,
         _ => return Ok(None),
     };
     Ok(Some(LongInt::new(result).into_value(vm.heap)))
@@ -643,13 +637,6 @@ impl LongInt {
     /// Checks if the value is zero.
     pub fn is_zero(&self) -> bool {
         self.0.is_zero()
-    }
-
-    /// Tries to convert to i64.
-    ///
-    /// Returns `Some(i64)` if the value fits, `None` otherwise.
-    pub fn to_i64(&self) -> Option<i64> {
-        self.0.to_i64()
     }
 
     /// Converts to `f64`, raising `OverflowError` when the magnitude exceeds the float range.
@@ -1183,9 +1170,7 @@ fn integer_value<'a>(value: &Value, vm: &'a VM<'_>) -> Option<Cow<'a, BigInt>> {
     match value {
         Value::Int(value) => Some(Cow::Owned(BigInt::from(*value))),
         Value::Bool(value) => Some(Cow::Owned(BigInt::from(*value))),
-        Value::InternLongInt(id) => Some(Cow::Borrowed(vm.interns.get_long_int(*id))),
-        Value::Ref(id) if let HeapData::LongInt(value) = vm.heap.get(*id) => Some(Cow::Borrowed(value.inner())),
-        _ => None,
+        _ => value.as_long_int(vm).map(Cow::Borrowed),
     }
 }
 
