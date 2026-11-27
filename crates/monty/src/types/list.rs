@@ -23,7 +23,6 @@ use crate::{
     py_value::PyValue,
     resource_checks::{check_repeat_size, check_value_buffer_growth, repeated_len, try_vec_with_capacity},
     sorting::parse_and_sort,
-    symbols::StaticStrings,
     types::{
         LazyHeapSet, Slice, Type, TypeRef,
         sequence::SequenceItems,

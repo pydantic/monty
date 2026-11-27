@@ -45,6 +45,14 @@ def test_distinct_named_callables_remain_distinct(monty_run: RunMonty):
     assert monty_run('(a is b, a == b)', inputs={'a': foo, 'b': bar}) == snapshot((False, False))
 
 
+def test_same_named_sync_and_async_callables_remain_distinct(monty_run: RunMonty):
+    async def async_foo():
+        pass
+
+    async_foo.__name__ = foo.__name__
+    assert monty_run('(a is b, a == b)', inputs={'a': foo, 'b': async_foo}) == snapshot((False, False))
+
+
 def test_callable_exports_as_name_when_name_in_source(monty_run: RunMonty):
     assert monty_run('foo = None\nx', inputs={'x': foo}) == snapshot('foo')
 

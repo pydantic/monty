@@ -37,7 +37,6 @@ use crate::{
     modules::copy::{Memo, PyDeepCopy, deep_copy_slots},
     py_attrs::PyAttrs,
     resource_checks::{check_repeat_size, repeated_len},
-    symbols::StaticStrings,
     types::{
         LazyHeapSet, Slice, Type, TypeRef,
         key_hash::hash_or_culprit,
