@@ -18,7 +18,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
     heap::{Heap, HeapId, HeapItem, HeapObjectRead},
-    types::{LazyHeapSet, PyTrait, Slice, Type, TypeRef},
+    types::{Complex, LazyHeapSet, PyTrait, Slice, Type, TypeRef},
     value::Value,
 };
 
@@ -191,29 +191,25 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Range> {
         true
     }
 
-    /// O(1) containment: bounds plus step alignment, no iteration. Non-integral
-    /// items can never be members, matching CPython's fast path.
+    /// O(1) containment: test the bounds and step alignment of an equal integer.
     fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let range = self.get(vm.heap);
-        let n = match item {
-            Value::Int(i) => *i,
-            Value::Bool(b) => i64::from(*b),
-            Value::Float(f) => {
-                if f.fract() != 0.0 {
-                    return Ok(Some(false));
-                }
-                let int_val = f.trunc();
-                // Exclusive upper bound: `i64::MAX as f64` rounds up to 2^63, which
-                // `int_val as i64` would saturate back down to `i64::MAX`.
-                if int_val < i64::MIN as f64 || int_val >= i64::MAX as f64 {
-                    return Ok(Some(false));
-                }
-                #[expect(clippy::cast_possible_truncation)]
-                let n = int_val as i64;
-                n
-            }
-            _ => return Ok(Some(false)),
+        let real = match item {
+            Value::Int(i) => return Ok(Some(range.contains(*i))),
+            Value::Bool(b) => return Ok(Some(range.contains(i64::from(*b)))),
+            Value::Float(f) => *f,
+            _ => match item.get_as::<Complex>(vm.heap) {
+                Some(z) if z.imag == 0.0 => z.real,
+                _ => return Ok(Some(false)),
+            },
         };
+        // Exclusive upper bound: `i64::MAX as f64` rounds up to 2^63, which
+        // a cast would saturate back down to `i64::MAX`.
+        if real.fract() != 0.0 || real < i64::MIN as f64 || real >= i64::MAX as f64 {
+            return Ok(Some(false));
+        }
+        #[expect(clippy::cast_possible_truncation)]
+        let n = real as i64;
         Ok(Some(range.contains(n)))
     }
 

@@ -158,6 +158,8 @@ works on classes; see [classes.md](classes.md#inheritance).
 - **`float(x)`** — string parsing accepts ASCII digits only; CPython also accepts Unicode decimal digits
     (`float('١.٥')` == 1.5), which Monty rejects with `could not convert string to float`.
 - **`slice`** — slice bounds and the `length` argument to `slice.indices(length)` are saturated to `i64::MIN`/`i64::MAX` when outside the `i64` range; sequence lengths are represented as `usize`.
+- **User-defined equality in range membership** — Monty does not iterate over the range to compare an arbitrary
+    probe with its elements. CPython can fall back to that comparison for objects outside its integer fast path.
 - **`isinstance(obj, T)`** — `T` must be a built-in type (`int`, `str`,
     `list`, ...), a built-in exception class, a sandbox-defined class (see
     [classes.md](classes.md)), a `|` union of those (see [typing.md](typing.md)),
