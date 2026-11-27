@@ -33,6 +33,12 @@ access raises `AttributeError`.
     floats in, so the values match CPython. `rounds` is `1` (round-to-nearest)
     and nothing in the sandbox can change it.
 - `sys.float_repr_style` — always `"short"`.
+- `sys.hash_info` — the 9 fields CPython 3.14 reports for 64-bit platforms:
+    `width=64`, `modulus=2**61 - 1`, `inf=314159`, `nan=0`, `imag=1000003`,
+    `algorithm='siphash13'`, `hash_bits=64`, `seed_bits=128`, `cutoff=0`.
+    These constants are exposed for stdlib compatibility (such as `fractions.Fraction`).
+    Note that Monty's string, float, and container hashing uses its own algorithm
+    and does not follow SipHash-1-3 (see [builtins.md](builtins.md)).
 - `sys.executable`, `sys.prefix`, `sys.exec_prefix`, `sys.base_prefix`,
     `sys.base_exec_prefix` — the empty string. The sandbox has no install tree,
     and CPython documents the empty string for a path it cannot determine.
@@ -69,12 +75,9 @@ access raises `AttributeError`.
 `getsizeof`, `getrefcount`, `intern`, `displayhook`, `excepthook`,
 `settrace`, `setprofile`, `stdin`, `__stdout__`, `_getframe`, `audit`.
 
-`hash_info`, `int_info` and `thread_info` describe CPython's own C
-implementation — its string and integer hashing, its bignum digit layout, its
-thread library — none of which Monty shares, so they raise `AttributeError`
-rather than reporting fabricated values. In particular `hash_info` cannot be
-used to predict Monty's hashes, which differ from CPython's (see
-[builtins.md](builtins.md)).
+`int_info` and `thread_info` describe CPython's own C implementation — its
+bignum digit layout and its thread library — neither of which Monty shares, so
+they raise `AttributeError` rather than reporting fabricated values.
 
 `ps1` and `ps2` are absent, so `hasattr(sys, 'ps1')` correctly reports that the
 sandbox is not an interactive prompt.

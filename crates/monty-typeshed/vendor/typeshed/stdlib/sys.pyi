@@ -101,6 +101,42 @@ float_info: _float_info
 
 @final
 @type_check_only
+class _hash_info(_UninstantiableStructseq, tuple[int, int, int, int, int, str, int, int, int]):
+    __match_args__: Final = (
+        'width',
+        'modulus',
+        'inf',
+        'nan',
+        'imag',
+        'algorithm',
+        'hash_bits',
+        'seed_bits',
+        'cutoff',
+    )
+
+    @property
+    def width(self) -> int: ...
+    @property
+    def modulus(self) -> int: ...
+    @property
+    def inf(self) -> int: ...
+    @property
+    def nan(self) -> int: ...
+    @property
+    def imag(self) -> int: ...
+    @property
+    def algorithm(self) -> str: ...
+    @property
+    def hash_bits(self) -> int: ...
+    @property
+    def seed_bits(self) -> int: ...
+    @property
+    def cutoff(self) -> int: ...
+
+hash_info: _hash_info
+
+@final
+@type_check_only
 class _flags(
     _UninstantiableStructseq,
     tuple[int, int, int, int, int, int, int, int, int, int, int, int, int, bool, int, int, bool, int],

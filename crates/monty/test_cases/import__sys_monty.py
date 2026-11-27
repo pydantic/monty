@@ -127,7 +127,7 @@ for missing_flag in ('gil', 'thread_inherit_context', 'context_aware_warnings'):
         assert str(exc) == f"'sys.flags' object has no attribute '{missing_flag}'"
 
 # === Attributes describing CPython internals stay absent ===
-for missing in ('hash_info', 'int_info', 'thread_info', 'ps1', 'ps2'):
+for missing in ('int_info', 'thread_info', 'ps1', 'ps2'):
     try:
         getattr(sys, missing)
         assert False, f'expected sys.{missing} to raise AttributeError'
