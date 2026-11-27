@@ -15,7 +15,7 @@
 //!   can simulate Monty's lower default depth on CPython too. Only allows
 //!   *lowering* the host-configured ceiling — see [`SysFunctions`].
 
-use smallvec::SmallVec;
+use std::sync::LazyLock;
 
 #[cfg(feature = "test-hooks")]
 use crate::{
@@ -49,6 +49,12 @@ const MAXSIZE: i64 = i64::MAX;
 
 /// `sys.maxunicode` — the largest code point, `U+10FFFF`.
 const MAXUNICODE: i64 = 0x0010_FFFF;
+
+static BUILTIN_MODULE_NAMES: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+    let mut names: Vec<_> = StandardLib::names().collect();
+    names.sort_unstable();
+    names
+});
 
 /// Functions exposed by the `sys` module under the `test-hooks` feature.
 ///
@@ -302,10 +308,10 @@ fn int_max_str_digits() -> Value {
 
 /// Lists built-in imports from the same registry used by the import opcode.
 fn builtin_module_names(vm: &VM<'_>) -> Value {
-    let mut names: SmallVec<[&str; 32]> = StandardLib::names().collect();
-    names.sort_unstable();
-
-    let values = names.into_iter().map(|name| allocate_string(name, vm.heap)).collect();
+    let values = BUILTIN_MODULE_NAMES
+        .iter()
+        .map(|&name| allocate_string(name, vm.heap))
+        .collect();
     allocate_tuple(values, vm.heap)
 }
 
