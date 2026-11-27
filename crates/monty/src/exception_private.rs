@@ -3422,6 +3422,8 @@ struct DumpedPyException {
     attrs: Option<Dict>,
     #[serde(default, alias = "arg")]
     arg: Option<String>,
+    #[serde(rename = "V", default)]
+    value: Option<Box<Value>>,
 }
 
 impl From<DumpedPyException> for PyException {
@@ -3429,10 +3431,15 @@ impl From<DumpedPyException> for PyException {
         let class = dumped
             .class
             .unwrap_or_else(|| OwnedTypeRef::Native(Type::from(dumped.exc_type)));
-        let args = dumped.args.unwrap_or(match dumped.arg {
-            Some(s) => ExceptionArgs::OneStr(s),
-            None => ExceptionArgs::Empty,
-        });
+        let args = if let Some(args) = dumped.args {
+            args
+        } else if let Some(value) = dumped.value {
+            ExceptionArgs::OneValue(*value)
+        } else if let Some(s) = dumped.arg {
+            ExceptionArgs::OneStr(s)
+        } else {
+            ExceptionArgs::Empty
+        };
         Self {
             class,
             exc_type: dumped.exc_type,
@@ -3876,10 +3883,19 @@ impl<'h> HeapObjectRead<'h, PyException> {
                     return Some(CallResult::Value(val));
                 }
                 if name_str == "value" && Type::from(exc_type).is_subclass_of(Type::StopIteration) {
-                    return Some(CallResult::Value(Value::None));
+                    return Some(CallResult::Value(exc.stop_iteration_value(vm)));
                 }
                 if name_str == "code" && Type::from(exc_type).is_subclass_of(Type::SystemExit) {
-                    return Some(CallResult::Value(Value::None));
+                    let code = match &exc.args {
+                        ExceptionArgs::OneValue(v) => v.clone_with_heap(vm.heap),
+                        ExceptionArgs::OneStr(s) => allocate_string(s.as_str(), vm.heap),
+                        ExceptionArgs::Tuple(id) => {
+                            vm.heap.inc_ref(*id);
+                            Value::Ref(*id)
+                        }
+                        ExceptionArgs::Empty => Value::None,
+                    };
+                    return Some(CallResult::Value(code));
                 }
                 if (name_str == "name" || name_str == "obj")
                     && Type::from(exc_type).is_subclass_of(Type::AttributeError)
