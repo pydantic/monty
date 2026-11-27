@@ -332,11 +332,9 @@ impl HeapData {
 
     /// Whether calling a `Ref` to this heap data would succeed at dispatch.
     ///
-    /// A conservative subset of the types overriding [`PyTrait::py_call`]: it
-    /// is what `partial()` and friends screen a callable argument with, and it
-    /// has never admitted `HostClassType` or `NamedTupleClass`, both of which
-    /// dispatch perfectly well. Widening it changes what those builtins accept,
-    /// so it is not simply the list of `py_call` overrides.
+    /// Matches heap types that override [`PyTrait::py_call`] to provide call
+    /// semantics: functions, closures, class objects (`Class`, `NamedTupleClass`,
+    /// `HostClassType`), bound methods, dataclass methods, partials, and generic aliases.
     #[must_use]
     pub(crate) fn is_callable(&self) -> bool {
         if let Self::BuiltinDescriptor(d) = self {
@@ -345,6 +343,8 @@ impl HeapData {
         matches!(
             self,
             Self::Class(_)
+                | Self::NamedTupleClass(_)
+                | Self::HostClassType(_)
                 | Self::BoundMethod(_)
                 | Self::DataclassMethod(_)
                 | Self::Closure(_)

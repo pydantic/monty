@@ -6,7 +6,7 @@ Python.
 
 ## Implemented builtin functions
 
-`abs`, `all`, `any`, `bin`, `chr`, `delattr`, `divmod`, `enumerate`, `eval`, `exec`, `filter`,
+`abs`, `all`, `any`, `bin`, `callable`, `chr`, `delattr`, `divmod`, `enumerate`, `eval`, `exec`, `filter`,
 `format`, `getattr`, `hasattr`, `hash`, `hex`, `id`, `isinstance`, `iter`, `len`,
 `locals`, `map`, `max`, `min`, `next`, `oct`, `open`, `ord`, `pow`, `print`, `repr`,
 `reversed`, `round`, `setattr`, `sorted`, `sum`, `type`, `zip`.
@@ -27,7 +27,7 @@ These raise `NameError`:
 - **Interactive**: `input`, `breakpoint`, `help`.
 - **Construction / coercion**: `bytearray`, `memoryview`, `object`, `ascii`.
 - **Inheritance**: `super`; call the base explicitly (`Base.__init__(self, ...)`).
-- **Other**: `callable`, `aiter`, `anext`.
+- **Other**: `aiter`, `anext`.
 
 `object` exists as the root class but cannot be instantiated, and `issubclass()`
 works on classes; see [classes.md](classes.md#inheritance).
