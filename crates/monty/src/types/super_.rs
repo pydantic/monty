@@ -13,7 +13,7 @@ use crate::{
     intern::StaticStrings,
     modules::copy::{Memo, PyDeepCopy, deep_copy},
     py_attrs::{self, AttrDef, ClassMethodCall, MethodCall},
-    types::{BoundMethod, LazyHeapSet, PyTrait, Type, TypeRef, instance::is_method_value},
+    types::{BoundMethod, LazyHeapSet, PyTrait, Type, TypeRef, descriptor, instance::is_method_value},
     value::{EitherStr, Value},
 };
 
@@ -128,6 +128,7 @@ impl Super {
 /// A Python value or a native descriptor available for direct calls.
 enum Member {
     Value(Value),
+    Descriptor(Value, Option<HeapId>, HeapId),
     Method(Type, MethodCall, TypeRef),
     ClassMethod(ClassMethodCall, TypeRef),
 }
@@ -156,7 +157,7 @@ impl<'h> HeapRead<'h, Super> {
             };
             if let Some(member) = member {
                 return Some(match member {
-                    Member::Value(value) => Member::Value(self.bind_value(value, name, receiver_type, vm)),
+                    Member::Value(value) => self.bind_value(value, name, receiver_type, vm),
                     method => method,
                 });
             }
@@ -171,9 +172,16 @@ impl<'h> HeapRead<'h, Super> {
         Some(Member::Value(member.clone_with_heap(vm.heap)))
     }
 
-    /// Binds Python methods and the builtin functions used for `object`'s methods.
-    fn bind_value(&self, member: Value, name: &str, receiver_type: TypeRef, vm: &VM<'h>) -> Value {
+    /// Binds Python methods or defers a descriptor to the read or call path.
+    fn bind_value(&self, member: Value, name: &str, receiver_type: TypeRef, vm: &VM<'h>) -> Member {
         let proxy = self.get(vm.heap);
+        let class_bound = TypeRef::from_value(&proxy.receiver, vm.heap) == Some(receiver_type);
+        if let TypeRef::Class(owner) = receiver_type
+            && descriptor::has_get(&member, vm)
+        {
+            let instance = if class_bound { None } else { proxy.receiver.ref_id() };
+            return Member::Descriptor(member, instance, owner);
+        }
         let object_method = matches!(
             member,
             Value::Builtin(Builtins::Function(
@@ -186,13 +194,25 @@ impl<'h> HeapRead<'h, Super> {
         let receiver = match name {
             "__new__" => None,
             "__init_subclass__" if bind => Some(&proxy.receiver_type),
-            _ if bind && TypeRef::from_value(&proxy.receiver, vm.heap) != Some(receiver_type) => Some(&proxy.receiver),
+            _ if bind && !class_bound => Some(&proxy.receiver),
             _ => None,
         };
-        if let Some(receiver) = receiver {
+        Member::Value(if let Some(receiver) = receiver {
             BoundMethod::allocate(receiver.clone_with_heap(vm.heap), member, vm.heap)
         } else {
             member
+        })
+    }
+
+    /// Reads a selected value, running descriptor getters when required.
+    fn getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        match self.lookup_member(attr, vm) {
+            Some(Member::Value(value)) => Ok(Some(CallResult::Value(value))),
+            Some(Member::Descriptor(member, instance, owner)) => {
+                defer_drop!(member, vm);
+                descriptor::get(member, instance, owner, vm).map(Some)
+            }
+            _ => Ok(None),
         }
     }
 }
@@ -201,7 +221,15 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, Super> {
     #[inline(never)]
     fn py_deep_copy(&self, _source: &Value, memo: &mut Memo, vm: &mut VM<'h>) -> RunResult<Value> {
         let attr = EitherStr::Interned(vm.interns.intern_static(StaticStrings::DunderDeepcopy));
-        if let Some(Member::Value(hook)) = self.lookup_member(&attr, vm)
+        let hook = match self
+            .getattr(&attr, vm)
+            .and_then(|result| result.map(|result| result.require_synchronous(vm)).transpose())
+        {
+            Ok(hook) => hook,
+            Err(error) if error.is_catchable(ExcType::AttributeError) => None,
+            Err(error) => return Err(error),
+        };
+        if let Some(hook) = hook
             && !matches!(hook, Value::None)
         {
             defer_drop!(hook, vm);
@@ -257,10 +285,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Super> {
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        Ok(match self.lookup_member(attr, vm) {
-            Some(Member::Value(value)) => Some(CallResult::Value(value)),
-            _ => None,
-        })
+        self.getattr(attr, vm)
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
@@ -268,6 +293,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Super> {
             Some(Member::Value(value)) => {
                 defer_drop!(value, vm);
                 vm.call_function(value, args)
+            }
+            Some(Member::Descriptor(member, instance, owner)) => {
+                defer_drop!(member, vm);
+                descriptor::bind_and_call(member, instance, owner, args, vm)
             }
             Some(Member::Method(owner, call, receiver_type)) => {
                 let receiver = &self.get(vm.heap).receiver;

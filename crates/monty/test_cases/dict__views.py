@@ -56,6 +56,7 @@ assert frozenset({'a', 'b'}) == keys
 assert keys == {'b': 0, 'a': 9}.keys()
 assert keys != {'a'}
 assert keys != {'a', 'x'}
+assert keys != 0
 
 assert items == {('a', 1), ('b', 2)}
 assert {('b', 2), ('a', 1)} == items
@@ -65,6 +66,7 @@ assert items == {'b': 2, 'a': 1}.items()
 assert items != {('a', 1)}
 assert items != {('a', 2), ('b', 2)}
 assert items != {('a', 1), ('x', 9)}
+assert items != 0
 assert ({'a': 1}.values() == {'a': 1}.values()) is False
 
 # === Live behavior after mutation ===

@@ -10,6 +10,11 @@ pub(super) const SOURCES: &[VendoredSource] = &[
         source: include_str!("../../../stdlib/Lib/colorsys.py"),
     },
     VendoredSource {
+        name: "io",
+        file: "io.py",
+        source: include_str!("../../../stdlib/Lib/io.py"),
+    },
+    VendoredSource {
         name: "keyword",
         file: "keyword.py",
         source: include_str!("../../../stdlib/Lib/keyword.py"),

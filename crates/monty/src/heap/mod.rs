@@ -2065,6 +2065,7 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 }
             }
         }
+        HeapData::BuiltinDescriptor(d) => d.visit_children(&mut on_child),
         HeapData::BoundMethod(bm) => {
             if let Value::Ref(id) = &bm.instance {
                 on_child(*id);
@@ -2286,6 +2287,7 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         HeapData::HostClassType(t) => t.py_dec_ref_ids(stack),
         HeapData::Class(class) => class.py_dec_ref_ids(stack),
         HeapData::Instance(instance) => instance.py_dec_ref_ids(stack),
+        HeapData::BuiltinDescriptor(d) => d.py_dec_ref_ids(stack),
         HeapData::BoundMethod(bm) => bm.py_dec_ref_ids(stack),
         HeapData::Super(proxy) => proxy.py_dec_ref_ids(stack),
         HeapData::DataclassField(field) => field.py_dec_ref_ids(stack),

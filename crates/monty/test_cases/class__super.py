@@ -131,6 +131,40 @@ class Both(First, Second, tag='second'):
 assert hooks == [('first', 'Both'), ('second', 'Both')]
 
 
+# === Descriptors see the most-derived owner and bypass instance attributes ===
+class Describe:
+    def __get__(self, obj, owner):
+        return lambda value, *, suffix: (obj, owner, value, suffix)
+
+
+class DescriptorBase:
+    describe = Describe()
+
+    @property
+    def label(self):
+        return self.name
+
+
+class DescriptorMiddle(DescriptorBase):
+    pass
+
+
+class DescriptorLeaf(DescriptorMiddle):
+    name = 'leaf'
+
+
+leaf = DescriptorLeaf()
+leaf.describe = 'shadowed'
+for receiver, descriptor_instance in ((leaf, leaf), (DescriptorLeaf, None)):
+    descriptor_proxy = super(DescriptorMiddle, receiver)
+    assert descriptor_proxy.describe(1, suffix='direct') == (descriptor_instance, DescriptorLeaf, 1, 'direct')
+    bound = descriptor_proxy.describe
+    assert bound(2, suffix='saved') == (descriptor_instance, DescriptorLeaf, 2, 'saved')
+
+assert super(DescriptorMiddle, leaf).label == 'leaf'
+assert type(super(DescriptorMiddle, DescriptorLeaf).label) is property
+
+
 # === A saved proxy retains its receiver, and can participate in a cycle ===
 def discard_cycle():
     obj = Diamond(2)

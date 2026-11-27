@@ -3,19 +3,7 @@ Suppress missing modules and type information in cases excluded from Monty execu
 
 --- a/test/test_super.py
 +++ b/test/test_super.py
-@@ -65,9 +65,9 @@
-         self.assertEqual(F.f(F()), 'ABCD')
- 
-     def test_class_methods_still_working(self):
--        self.assertEqual(A.cm(), (A, 'A'))
-+        self.assertEqual(A.cm(), (A, 'A'))  # ty: ignore[missing-argument]
-         self.assertEqual(A().cm(), (A, 'A'))
--        self.assertEqual(G.cm(), (G, 'A'))
-+        self.assertEqual(G.cm(), (G, 'A'))  # ty: ignore[missing-argument]
-         self.assertEqual(G().cm(), (G, 'A'))
- 
-     def test_super_in_class_methods_working(self):
-@@ -97,7 +97,7 @@
+@@ -96,7 +96,7 @@
          self.assertEqual(x.f(), 'A')
          self.assertEqual(x.__class__, 413)
          class X:
@@ -24,7 +12,7 @@ Suppress missing modules and type information in cases excluded from Monty execu
              def f():
                  __class__
          self.assertIs(X.x, type(self))
-@@ -111,13 +111,13 @@
+@@ -126,13 +126,13 @@
  
      def test_obscure_super_errors(self):
          def f():
@@ -40,7 +28,7 @@ Suppress missing modules and type information in cases excluded from Monty execu
          with self.assertRaisesRegex(RuntimeError, r"no arguments"):
              C.f()
  
-@@ -145,11 +145,11 @@
+@@ -160,11 +160,11 @@
  
      def test_super_argcount(self):
          with self.assertRaisesRegex(TypeError, "expected at most"):
@@ -54,7 +42,7 @@ Suppress missing modules and type information in cases excluded from Monty execu
  
      def test_shadowed_global(self):
          source = textwrap.dedent(
-@@ -182,7 +182,7 @@
+@@ -197,7 +197,7 @@
  
          class C:
              def method(self):
@@ -63,7 +51,7 @@ Suppress missing modules and type information in cases excluded from Monty execu
  
          original = super
          replace_super(MySuper)
-@@ -200,7 +200,7 @@
+@@ -215,7 +215,7 @@
  
          class C:
              def method(self):
@@ -72,7 +60,7 @@ Suppress missing modules and type information in cases excluded from Monty execu
  
          original = super
          replace_super(MySuper)
-@@ -213,7 +213,7 @@
+@@ -228,7 +228,7 @@
      def test_attribute_error(self):
          class C:
              def method(self):
@@ -81,7 +69,7 @@ Suppress missing modules and type information in cases excluded from Monty execu
  
          with self.assertRaisesRegex(AttributeError, "'super' object has no attribute 'msg'"):
              C().method()
-@@ -221,7 +221,7 @@
+@@ -236,7 +236,7 @@
      def test_bad_first_arg(self):
          class C:
              def method(self):
@@ -90,7 +78,7 @@ Suppress missing modules and type information in cases excluded from Monty execu
  
          with self.assertRaisesRegex(TypeError, "argument 1 must be a type"):
              C().method()
-@@ -271,7 +271,7 @@
+@@ -286,7 +286,7 @@
          self.assertEqual(C().method(), mysuper)
  
      def test_unusual_getattro(self):
@@ -99,7 +87,7 @@ Suppress missing modules and type information in cases excluded from Monty execu
  
          class MyType(type):
              pass
-@@ -279,14 +279,14 @@
+@@ -294,14 +294,14 @@
          def test(name):
              mytype = MyType(name, (MyType,), {})
              super(MyType, type(mytype)).__setattr__(mytype, "bar", 1)
@@ -116,7 +104,7 @@ Suppress missing modules and type information in cases excluded from Monty execu
  
          class A:
              def __new__(cls):
-@@ -294,7 +294,7 @@
+@@ -309,7 +309,7 @@
  
              def __init_subclass__(cls):
                  if "__new__" not in cls.__dict__:
@@ -125,7 +113,7 @@ Suppress missing modules and type information in cases excluded from Monty execu
  
          class B(A):
              pass
-@@ -313,7 +313,7 @@
+@@ -354,7 +354,7 @@
          This should be the case anyways as our test suite sets
          an audit hook.
          """
@@ -134,7 +122,7 @@ Suppress missing modules and type information in cases excluded from Monty execu
  
          class Foo:
              pass
-@@ -353,10 +353,10 @@
+@@ -394,10 +394,10 @@
              self.assertNotHasAttr(s, '__deepcopy__')
  
      def test_pickling(self):
@@ -147,16 +135,7 @@ Suppress missing modules and type information in cases excluded from Monty execu
          s = super(C, e)
          for proto in range(pickle.HIGHEST_PROTOCOL + 1):
              with self.subTest(proto=proto):
-@@ -372,7 +372,7 @@
-         for proto in range(pickle.HIGHEST_PROTOCOL + 1):
-             with self.subTest(proto=proto):
-                 u = pickle.loads(pickle.dumps(s, proto))
--                self.assertEqual(u.cm(), s.cm())
-+                self.assertEqual(u.cm(), s.cm())  # ty: ignore[missing-argument]
-                 self.assertEqual(u.f, s.f)
-                 self.assertIs(type(u), type(s))
-                 self.assertIs(u.__self__, E)
-@@ -387,28 +387,28 @@
+@@ -428,18 +428,18 @@
  
      def test_deep_copying(self):
          e = E()
@@ -182,8 +161,7 @@ Suppress missing modules and type information in cases excluded from Monty execu
  
          s = super(C, E)
          u = copy.deepcopy(s)
--        self.assertEqual(u.cm(), s.cm())
-+        self.assertEqual(u.cm(), s.cm())  # ty: ignore[missing-argument]
+@@ -447,9 +447,9 @@
          self.assertEqual(u.f, s.f)
          self.assertIsNot(u, s)
          self.assertIs(type(u), type(s))

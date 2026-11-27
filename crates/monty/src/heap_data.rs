@@ -91,6 +91,8 @@ macro_rules! heap_payloads {
             /// An instance of a user-defined class.
             #[serde(rename = "I")]
             Instance(boxed $crate::types::Instance),
+            /// A builtin property, classmethod or staticmethod.
+            BuiltinDescriptor(boxed $crate::types::BuiltinDescriptor),
             /// A method bound to an instance.
             #[serde(rename = "M")]
             BoundMethod(inline $crate::types::BoundMethod),
@@ -148,6 +150,10 @@ macro_rules! heap_payloads {
             Path(inline $crate::types::Path),
             /// A path-backed file object returned by `open()`.
             OpenFile(boxed $crate::types::OpenFile),
+            /// An `io.StringIO` in-memory text stream.
+            StringIo(boxed $crate::types::io::StringIo),
+            /// An `io.BytesIO` in-memory binary stream.
+            BytesIo(boxed $crate::types::io::BytesIo),
             /// A compiled regular-expression pattern.
             RePattern(boxed $crate::types::RePattern),
             /// A regular-expression match result.
@@ -266,6 +272,7 @@ impl HeapData {
             | Self::HostClassType(_)
             | Self::Class(_)
             | Self::Instance(_)
+            | Self::BuiltinDescriptor(_)
             | Self::BoundMethod(_)
             | Self::Super(_)
             | Self::DataclassField(_)
@@ -306,6 +313,8 @@ impl HeapData {
             | Self::Complex(_)
             | Self::Path(_)
             | Self::OpenFile(_)
+            | Self::StringIo(_)
+            | Self::BytesIo(_)
             | Self::RePattern(_)
             | Self::ReMatch(_)
             | Self::ExtFunction(_)
@@ -333,6 +342,9 @@ impl HeapData {
     /// so it is not simply the list of `py_call` overrides.
     #[must_use]
     pub(crate) fn is_callable(&self) -> bool {
+        if let Self::BuiltinDescriptor(d) = self {
+            return d.kind() == Type::StaticMethod;
+        }
         matches!(
             self,
             Self::Class(_)
@@ -384,6 +396,7 @@ impl HeapData {
             Self::Instance(instance) => return TypeRef::Class(instance.class()),
             // A class object's type is `type`.
             Self::HostClassType(_) | Self::Class(_) => Type::Type,
+            Self::BuiltinDescriptor(d) => d.kind(),
             Self::BoundMethod(_) => Type::Function,
             Self::Super(_) => Type::Super,
             Self::DataclassField(_) => Type::DataclassField,
@@ -397,6 +410,8 @@ impl HeapData {
             Self::WaitFuture(_) => Type::Coroutine,
             Self::Path(_) => Type::Path,
             Self::OpenFile(file) => file.file_type(),
+            Self::StringIo(_) => Type::StringIo,
+            Self::BytesIo(_) => Type::BytesIo,
             Self::RePattern(_) => Type::RePattern,
             Self::ReMatch(_) => Type::ReMatch,
             Self::Date(_) => Type::Date,

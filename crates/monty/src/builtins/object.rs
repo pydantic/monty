@@ -46,6 +46,18 @@ impl<'h> PyAttrs<'h> for PyObjectImpl {
     }
 }
 
+pub(crate) fn object_method(name: &str) -> Option<BuiltinsFunctions> {
+    Some(match name {
+        // Exists so a class that hooks attribute writes has a way to perform
+        // one (see `limitations/classes.md`).
+        "__setattr__" => BuiltinsFunctions::ObjectSetattr,
+        "__new__" => BuiltinsFunctions::ObjectNew,
+        "__init__" => BuiltinsFunctions::ObjectInit,
+        "__init_subclass__" => BuiltinsFunctions::ObjectInitSubclass,
+        _ => return None,
+    })
+}
+
 /// Arguments of `object.__new__(cls, /, *args, **kwargs)`.
 #[derive(FromArgs)]
 #[from_args(name = "object.__new__")]
@@ -179,6 +191,8 @@ fn native_overrides_init(ty: Type) -> bool {
                 | Type::Random
                 | Type::Module
                 | Type::DecimalContext
+                | Type::StringIo
+                | Type::BytesIo
                 | Type::Type
         )
 }

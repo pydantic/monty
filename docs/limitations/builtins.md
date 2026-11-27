@@ -6,7 +6,7 @@ Python.
 
 ## Implemented builtin functions
 
-`abs`, `all`, `any`, `bin`, `chr`, `divmod`, `enumerate`, `eval`, `exec`, `filter`,
+`abs`, `all`, `any`, `bin`, `chr`, `delattr`, `divmod`, `enumerate`, `eval`, `exec`, `filter`,
 `format`, `getattr`, `hasattr`, `hash`, `hex`, `id`, `isinstance`, `iter`, `len`,
 `locals`, `map`, `max`, `min`, `next`, `oct`, `open`, `ord`, `pow`, `print`, `repr`,
 `reversed`, `round`, `setattr`, `sorted`, `sum`, `type`, `zip`.
@@ -14,8 +14,8 @@ Python.
 
 ## Implemented type constructors (also builtins)
 
-`bool`, `bytes`, `complex`, `dict`, `float`, `frozenset`, `int`, `list`, `range`,
-`set`, `slice`, `str`, `super`, `tuple`. Exception classes (`ValueError`,
+`bool`, `bytes`, `classmethod`, `complex`, `dict`, `float`, `frozenset`, `int`, `list`, `property`, `range`,
+`set`, `slice`, `staticmethod`, `str`, `super`, `tuple`. Exception classes (`ValueError`,
 `TypeError`, etc.) are also names in the builtin namespace.
 
 ## Builtins that are NOT implemented
@@ -25,10 +25,8 @@ These raise `NameError`:
 - **Code objects and imports**: `compile`, `__import__`.
 - **Namespace introspection**: `globals`, `vars`, `dir`.
 - **Interactive**: `input`, `breakpoint`, `help`.
-- **Decorators / descriptors**: `classmethod`, `staticmethod`, `property`.
-    (`@property` on functions is not recognized; use a method.)
 - **Construction / coercion**: `bytearray`, `memoryview`, `object`, `ascii`.
-- **Other**: `callable`, `delattr`, `aiter`, `anext`.
+- **Other**: `callable`, `aiter`, `anext`.
 
 `object` exists as the root class but cannot be instantiated, and `issubclass()`
 works on classes; see [classes.md](classes.md#inheritance).
@@ -150,11 +148,6 @@ works on classes; see [classes.md](classes.md#inheritance).
     (`encode`, `decode`,
     `expandtabs`, `splitlines`, `replace`, …) already match; the remainder
     need a per-function `at_most_total` audit.
-- **`getattr(obj, name)`** — if the resolved attribute would be an async
-    coroutine, external function, or OS call, raises `TypeError: "getattr(): attribute is not a simple value"` rather
-    than returning a
-    bound method object. Use direct attribute access (`obj.name(...)`) for
-    these.
 - **`int(x, base=10)`** — string/bytes parsing accepts ASCII digits only;
     CPython also accepts non-ASCII Unicode decimal digits (`int('١٢')` == 12),
     which Monty rejects with `invalid literal for int() with base 10`.

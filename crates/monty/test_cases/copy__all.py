@@ -268,6 +268,9 @@ hook_proxy = super(HookChild, HookChild())
 assert copy.copy(hook_proxy) is hook_proxy
 assert copy.deepcopy(hook_proxy) == 'hook on the proxy'
 
+ProxyCopyHook.__deepcopy__ = property(lambda self: lambda memo: 'hook from a property')
+assert copy.deepcopy(hook_proxy) == 'hook from a property'
+
 
 # === partials are rebuilt, not shared ===
 def take(*args, **kwargs):

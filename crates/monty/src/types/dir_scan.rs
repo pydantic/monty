@@ -430,10 +430,7 @@ fn descend_into_dirnames<'h>(
     } = pending;
     let dirnames = Value::Ref(dirnames);
     defer_drop!(dirnames, vm);
-    let Value::Ref(list_id) = dirnames else {
-        unreachable!("constructed as a Ref above")
-    };
-    let HeapData::List(list) = vm.heap.get(*list_id) else {
+    let Some(list) = dirnames.get_as::<List>(vm.heap) else {
         unreachable!("a walk's dirnames is always a list")
     };
     // Each name is copied, then joined onto the directory and spelled for its

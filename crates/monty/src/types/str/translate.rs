@@ -12,7 +12,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{DropGuard, DropWithContext, HeapData, HeapReadOutput},
+    heap::{DropGuard, DropWithContext},
     py_value::PyValue,
     string_builder::StringBuilder,
     types::{Dict, PyTrait, Type},
@@ -111,7 +111,7 @@ pub(crate) fn str_maketrans(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value
         None => dict_pairs(x, vm)?,
     };
     let dict = Dict::from_pairs(pairs, vm)?;
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Dict(dict))))
+    Ok(Value::allocate(dict, vm.heap))
 }
 
 /// Pairs `from[i]` with `to[i]` as code points, then maps every character of `deleted` to `None`.
@@ -130,7 +130,7 @@ fn code_point_pairs(from: &str, to: &str, deleted: &str) -> RunResult<Vec<(Value
 
 /// Copies the pairs of a one-argument `maketrans` dict, turning single-character str keys into code points.
 fn dict_pairs(x: &Value, vm: &mut VM<'_>) -> RunResult<Vec<(Value, Value)>> {
-    let Some(HeapReadOutput::Dict(dict)) = x.read_heap(vm) else {
+    let Some(dict) = x.read_as::<Dict>(vm.heap) else {
         return Err(ExcType::type_error_maketrans_dict());
     };
     let pairs = dict.clone_all_pairs(vm)?;

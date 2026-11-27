@@ -1,11 +1,11 @@
 Adapt test_super to load under Monty while keeping native unittest discovery.
-Remove the cases that require syntax Monty cannot parse: metaclasses, decorated methods, del, and class-body global/nonlocal.
-Restore the shared classmethod fixtures and the threading guard on CPython.
-Use exec for an isolated global shadow and for temporary rebinding in the suite module, without unittest.mock or test.support on Monty.
+Remove unsupported metaclass syntax, name deletion, and class-body global/nonlocal.
+Keep CPython test helpers off the Monty path, running the mixed staticmethod hierarchy once on Monty.
+Use exec for an isolated global shadow and for temporary rebinding in the suite module, without unittest.mock on Monty.
 
 --- a/test/test_super.py
 +++ b/test/test_super.py
-@@ -1,34 +1,32 @@
+@@ -1,12 +1,9 @@
  """Unit tests for zero-argument super() & related machinery."""
  
  import copy
@@ -19,33 +19,7 @@ Use exec for an isolated global shadow and for temporary rebinding in the suite 
  
  
  class A:
-     def f(self):
-         return 'A'
--    @classmethod
-     def cm(cls):
-         return (cls, 'A')
- 
- class B(A):
-     def f(self):
-         return super().f() + 'B'
--    @classmethod
-     def cm(cls):
-         return (cls, super().cm(), 'B')
- 
- class C(A):
-     def f(self):
-         return super().f() + 'C'
--    @classmethod
-     def cm(cls):
-         return (cls, super().cm(), 'C')
-+
-+if sys.platform != 'monty':
-+    for cls in (A, B, C):
-+        setattr(cls, 'cm', classmethod(cls.cm))
- 
- class D(C, B):
-     def f(self):
-@@ -46,12 +44,11 @@
+@@ -46,12 +43,11 @@
      pass
  
  
@@ -62,7 +36,7 @@ Use exec for an isolated global shadow and for temporary rebinding in the suite 
  
      def test_basics_working(self):
          self.assertEqual(D().f(), 'ABCD')
-@@ -104,26 +101,6 @@
+@@ -104,26 +100,6 @@
              def f():
                  __class__
          self.assertIs(X.x, type(self))
@@ -89,26 +63,10 @@ Use exec for an isolated global shadow and for temporary rebinding in the suite 
  
      def test___class___instancemethod(self):
          # See issue #14857
-@@ -132,160 +109,6 @@
+@@ -148,144 +124,6 @@
                  return __class__
-         self.assertIs(X().f(), X)
+         self.assertIs(X.f(), X)
  
--    def test___class___classmethod(self):
--        # See issue #14857
--        class X:
--            @classmethod
--            def f(cls):
--                return __class__
--        self.assertIs(X.f(), X)
--
--    def test___class___staticmethod(self):
--        # See issue #14857
--        class X:
--            @staticmethod
--            def f():
--                return __class__
--        self.assertIs(X.f(), X)
--
 -    def test___class___new(self):
 -        # See issue #23722
 -        # Ensure zero-arg super() works as soon as type.__new__() is completed
@@ -250,7 +208,7 @@ Use exec for an isolated global shadow and for temporary rebinding in the suite 
      def test_obscure_super_errors(self):
          def f():
              super()
-@@ -297,20 +120,6 @@
+@@ -297,20 +135,6 @@
                  super()
          with self.assertRaisesRegex(RuntimeError, r"no arguments"):
              C.f()
@@ -271,7 +229,7 @@ Use exec for an isolated global shadow and for temporary rebinding in the suite 
  
      def test_cell_as_self(self):
          class X:
-@@ -353,10 +162,9 @@
+@@ -353,10 +177,9 @@
                      return super().msg
              """,
          )
@@ -285,7 +243,7 @@ Use exec for an isolated global shadow and for temporary rebinding in the suite 
  
      def test_shadowed_local(self):
          class super:
-@@ -376,8 +184,12 @@
+@@ -376,8 +199,12 @@
              def method(self):
                  return super().msg
  
@@ -299,7 +257,7 @@ Use exec for an isolated global shadow and for temporary rebinding in the suite 
  
      def test_shadowed_dynamic_two_arg(self):
          call_args = []
-@@ -390,9 +202,13 @@
+@@ -390,9 +217,13 @@
              def method(self):
                  return super(1, 2).msg
  
@@ -314,7 +272,7 @@ Use exec for an isolated global shadow and for temporary rebinding in the suite 
  
      def test_attribute_error(self):
          class C:
-@@ -455,6 +271,8 @@
+@@ -455,6 +286,8 @@
          self.assertEqual(C().method(), mysuper)
  
      def test_unusual_getattro(self):
@@ -323,7 +281,7 @@ Use exec for an isolated global shadow and for temporary rebinding in the suite 
          class MyType(type):
              pass
  
-@@ -468,6 +286,8 @@
+@@ -468,6 +301,8 @@
              test("foo1")
  
      def test_reassigned_new(self):
@@ -332,31 +290,21 @@ Use exec for an isolated global shadow and for temporary rebinding in the suite 
          class A:
              def __new__(cls):
                  pass
-@@ -487,34 +307,13 @@
-         for _ in range(_testinternalcapi.SPECIALIZATION_THRESHOLD):
-             C()
+@@ -504,17 +339,22 @@
+             def some(cls):
+                 return super().some(cls)
  
--    def test_mixed_staticmethod_hierarchy(self):
--        # This test is just a desugared version of `test_reassigned_new`
--        class A:
--            @staticmethod
--            def some(cls, *args, **kwargs):
--                self.assertFalse(args)
--                self.assertFalse(kwargs)
--
--        class B(A):
--            def some(cls, *args, **kwargs):
--                return super().some(cls, *args, **kwargs)
--
--        class C(B):
--            @staticmethod
--            def some(cls):
--                return super().some(cls)
--
 -        _testinternalcapi = import_helper.import_module("_testinternalcapi")
 -        for _ in range(_testinternalcapi.SPECIALIZATION_THRESHOLD):
--            C.some(C)
--
++        repetitions = 1
++        if sys.platform != 'monty':
++            from test.support import import_helper
++
++            _testinternalcapi = import_helper.import_module("_testinternalcapi")
++            repetitions = _testinternalcapi.SPECIALIZATION_THRESHOLD
++        for _ in range(repetitions):
+             C.some(C)
+ 
 -    @threading_helper.requires_working_threading()
      def test___class___modification_multithreaded(self):
          """ Note: this test isn't actually testing anything on its own.
@@ -368,7 +316,7 @@ Use exec for an isolated global shadow and for temporary rebinding in the suite 
  
          class Foo:
              pass
-@@ -554,6 +353,8 @@
+@@ -554,6 +394,8 @@
              self.assertNotHasAttr(s, '__deepcopy__')
  
      def test_pickling(self):
@@ -377,7 +325,7 @@ Use exec for an isolated global shadow and for temporary rebinding in the suite 
          e = E()
          e.x = 1
          s = super(C, e)
-@@ -610,5 +411,14 @@
+@@ -610,5 +452,14 @@
          self.assertIs(u.__self_class__, E)
  
  

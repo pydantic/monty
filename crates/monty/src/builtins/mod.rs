@@ -8,6 +8,7 @@ mod all;
 mod any;
 mod bin;
 mod chr;
+mod delattr;
 mod divmod;
 mod enumerate;
 pub(crate) mod eval_exec;
@@ -186,15 +187,16 @@ impl BuiltinsFunctionsExt for BuiltinsFunctions {
             Self::Repr => repr::builtin_repr(vm, args),
             Self::Reversed => reversed::builtin_reversed(vm, args),
             Self::Round => round::builtin_round(vm, args),
-            Self::Setattr => setattr::builtin_setattr(vm, args),
-            Self::ObjectSetattr => object_setattr::builtin_object_setattr(vm, args),
+            Self::Delattr => return delattr::builtin_delattr(vm, args),
+            Self::Setattr => return setattr::builtin_setattr(vm, args),
+            Self::ObjectSetattr => return object_setattr::builtin_object_setattr(vm, args),
             Self::ObjectNew => object::builtin_object_new(vm, args),
             Self::ObjectInit => object::builtin_object_init(vm, args),
             Self::ObjectInitSubclass => object::builtin_object_init_subclass(vm, args),
             Self::TypeMro => type_::builtin_type_mro(vm, args),
             Self::Sorted => sorted::builtin_sorted(vm, args),
             Self::Sum => sum::builtin_sum(vm, args),
-            Self::Type => type_::builtin_type(vm, args),
+            Self::Type => return type_::builtin_type(vm, args),
             Self::Zip => zip::builtin_zip(vm, args),
             // `eval()` / `exec()` push the compiled snippet's frame.
             Self::Eval => return eval_exec::builtin_eval(vm, args),

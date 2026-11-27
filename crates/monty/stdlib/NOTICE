@@ -2,5 +2,7 @@ Monty includes selected modules from CPython under the accompanying Python licen
 The upstream revision is recorded in vendor.toml. Monty embeds the source and
 compiles it on import. The colorsys source is unmodified. In keyword, Monty
 replaces the bound frozenset membership methods with Python functions. In stat,
-Monty removes the optional _stat accelerator import. See patches/ for the
-source changes.
+Monty removes the optional _stat accelerator import. In textwrap, Monty removes
+the del statements and calls pattern.search directly. In io, Monty removes the
+abstract base classes, the Reader and Writer protocols and the _io names it does
+not provide. See patches/ for the source changes.

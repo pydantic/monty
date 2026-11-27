@@ -197,7 +197,8 @@ fn newline_argument(value: &Value, vm: &VM<'_>) -> RunResult<Option<String>> {
 /// in user code that passes (for example) `buffering=0` expecting an
 /// unbuffered file or `opener=my_opener` expecting a custom open hook. To
 /// avoid that, the only accepted values are the CPython defaults plus, for
-/// `encoding`, the literal `"utf-8"` — which is what Monty already uses.
+/// `encoding`, `"utf-8"` — which is what Monty already uses — and `"locale"`,
+/// the sandbox's locale encoding being UTF-8 (what `io.text_encoding(None)` returns).
 ///
 /// Non-default values raise `TypeError` ("'<name>' argument is not yet
 /// supported"). A wrong *type* (e.g. `encoding=123`) is reported as a
@@ -208,7 +209,7 @@ fn validate_ignored_open_kwarg(name: &str, value: &Value, vm: &VM<'_>) -> Result
         // buffer size"). Monty has no buffering layer to tune.
         "buffering" => matches!(value, Value::Int(-1)),
         // None is the CPython default; "utf-8" is the encoding Monty
-        // already uses, so accept it as a documented no-op.
+        // already uses and "locale" names it, so accept both as documented no-ops.
         "encoding" => {
             if matches!(value, Value::None) {
                 true
@@ -216,7 +217,7 @@ fn validate_ignored_open_kwarg(name: &str, value: &Value, vm: &VM<'_>) -> Result
                 let Some(s) = value.as_str(vm) else {
                     return Err(kwarg_type_error(name, value, vm));
                 };
-                s.eq_ignore_ascii_case("utf-8") || s.eq_ignore_ascii_case("utf8")
+                s.eq_ignore_ascii_case("utf-8") || s.eq_ignore_ascii_case("utf8") || s == "locale"
             }
         }
         // `errors` accepts str or None in CPython; only the default (None)

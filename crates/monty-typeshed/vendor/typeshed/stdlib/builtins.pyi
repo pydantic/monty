@@ -31,7 +31,7 @@ from _typeshed import (
     SupportsWrite,
 )
 from collections.abc import Awaitable, Callable, Iterable, Iterator, MutableSet, Reversible, Set as AbstractSet, Sized
-from io import BufferedRandom, BufferedReader, BufferedWriter, FileIO, TextIOWrapper
+from io import BufferedRandom, BufferedReader, BufferedWriter, TextIOWrapper
 from types import CellType, CodeType, GenericAlias, TracebackType
 
 # mypy crashes if any of {ByteString, Sequence, MutableSequence, Mapping, MutableMapping}
@@ -61,6 +61,7 @@ from typing import (  # noqa: Y022,UP035,RUF100
 
 # we can't import `Literal` from typing or mypy crashes: see #11247
 from typing_extensions import (  # noqa: Y023
+    Concatenate,
     Literal,
     LiteralString,
     ParamSpec,
@@ -138,6 +139,47 @@ class object:
     def __init_subclass__(cls) -> None: ...
     @classmethod
     def __subclasshook__(cls, subclass: type, /) -> bool: ...
+
+@disjoint_base
+class staticmethod(Generic[_P, _R_co]):
+    @property
+    def __func__(self) -> Callable[_P, _R_co]: ...
+    @property
+    def __isabstractmethod__(self) -> bool: ...
+    def __init__(self, f: Callable[_P, _R_co], /) -> None: ...
+    @overload
+    def __get__(self, instance: None, owner: type, /) -> Callable[_P, _R_co]: ...
+    @overload
+    def __get__(self, instance: _T, owner: type[_T] | None = None, /) -> Callable[_P, _R_co]: ...
+    if sys.version_info >= (3, 10):
+        __name__: str
+        __qualname__: str
+        @property
+        def __wrapped__(self) -> Callable[_P, _R_co]: ...
+        def __call__(self, *args: _P.args, **kwargs: _P.kwargs) -> _R_co: ...
+    if sys.version_info >= (3, 14):
+        def __class_getitem__(cls, item: Any, /) -> GenericAlias: ...
+        __annotate__: AnnotateFunc | None
+
+@disjoint_base
+class classmethod(Generic[_T, _P, _R_co]):
+    @property
+    def __func__(self) -> Callable[Concatenate[type[_T], _P], _R_co]: ...
+    @property
+    def __isabstractmethod__(self) -> bool: ...
+    def __init__(self, f: Callable[Concatenate[type[_T], _P], _R_co], /) -> None: ...
+    @overload
+    def __get__(self, instance: _T, owner: type[_T] | None = None, /) -> Callable[_P, _R_co]: ...
+    @overload
+    def __get__(self, instance: None, owner: type[_T], /) -> Callable[_P, _R_co]: ...
+    if sys.version_info >= (3, 10):
+        __name__: str
+        __qualname__: str
+        @property
+        def __wrapped__(self) -> Callable[Concatenate[type[_T], _P], _R_co]: ...
+    if sys.version_info >= (3, 14):
+        def __class_getitem__(cls, item: Any, /) -> GenericAlias: ...
+        __annotate__: AnnotateFunc | None
 
 @disjoint_base
 class type:
@@ -1377,19 +1419,6 @@ def open(
     opener: _Opener | None = None,
 ) -> TextIOWrapper: ...
 
-# Unbuffered binary mode: returns a FileIO
-@overload
-def open(
-    file: FileDescriptorOrPath,
-    mode: OpenBinaryMode,
-    buffering: Literal[0],
-    encoding: None = None,
-    errors: None = None,
-    newline: None = None,
-    closefd: bool = True,
-    opener: _Opener | None = None,
-) -> FileIO: ...
-
 # Buffering is on: return BufferedRandom, BufferedReader, or BufferedWriter
 @overload
 def open(
@@ -1801,6 +1830,9 @@ class ModuleNotFoundError(ImportError): ...
 class IndexError(LookupError): ...
 class KeyError(LookupError): ...
 class UnboundLocalError(NameError): ...
+
+class BlockingIOError(OSError):
+    characters_written: int
 
 class FileExistsError(OSError): ...
 class FileNotFoundError(OSError): ...
