@@ -20,7 +20,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
     heap::{HeapId, HeapItem, HeapObjectRead},
-    intern::StaticStrings,
+    symbols::StaticStrings,
     types::{PyTrait, Type, TypeRef},
     value::{EitherStr, Value},
 };
@@ -277,7 +277,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Slice> {
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let this = self.get(vm.heap);
-        match attr.static_string(vm.interns) {
+        match attr.static_string(vm.symbols) {
             Some(StaticStrings::Start) => Ok(Some(CallResult::Value(option_i64_to_value(this.start)))),
             Some(StaticStrings::Stop) => Ok(Some(CallResult::Value(option_i64_to_value(this.stop)))),
             Some(StaticStrings::Step) => Ok(Some(CallResult::Value(option_i64_to_value(this.step)))),
@@ -286,7 +286,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Slice> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        match attr.static_string(vm.interns) {
+        match attr.static_string(vm.symbols) {
             Some(StaticStrings::Indices) => {
                 let args = args.reject_kwargs("slice.indices", vm.heap)?;
                 let len_val = args.get_one_arg("slice.indices", vm.heap)?;

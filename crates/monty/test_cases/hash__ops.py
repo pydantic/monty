@@ -56,7 +56,7 @@ assert hash((1, (2, 3))) != hash((1, (2, 4)))
 assert hash(((1, 2), (3, 4))) == hash(((1, 2), (3, 4)))
 
 # === String/bytes content equality across representations ===
-# Interned strings and heap strings with same content should hash the same
+# Symbols and heap strings with same content should hash the same
 s1 = 'test'
 s2 = 'te' + 'st'
 assert hash(s1) == hash(s2)

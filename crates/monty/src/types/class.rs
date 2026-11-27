@@ -21,7 +21,7 @@ use crate::{
         BorrowedHeapReadMut, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadMut,
         HeapReader, heap_read_ref_as_field_mut,
     },
-    intern::{Interns, StringId},
+    symbols::{SymbolId, SymbolTable},
     types::{Union, str::allocate_string, r#type::bind_init_subclass},
     value::{EitherStr, Value},
 };
@@ -39,10 +39,9 @@ use crate::{
 /// the rest of the design.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Class {
-    /// Class name (e.g. `Foo`), used for `repr` and `__name__`. Interned for
+    /// Class name (e.g. `Foo`), used for `repr` and `__name__`. Stored as a symbol for
     /// compiled `class` statements; heap-owned for classes created at runtime
-    /// via the 3-arg `type(name, bases, dict)` form, whose name cannot be
-    /// interned because the intern table is frozen after prepare.
+    /// via the 3-arg `type(name, bases, dict)` form.
     name: EitherStr,
     /// Members: method name / class-variable name -> value.
     namespace: Dict,
@@ -98,7 +97,7 @@ impl Class {
         self.uuid
     }
 
-    /// Returns the class name (interned or heap-owned).
+    /// Returns the class name (symbol-backed or heap-owned).
     #[must_use]
     pub fn name(&self) -> &EitherStr {
         &self.name
@@ -119,11 +118,11 @@ impl Class {
     /// Looks `name` up in this class's namespace, then in each ancestor class's
     /// in MRO order. Native ancestors carry no namespace, so they are skipped.
     #[must_use]
-    pub(crate) fn lookup<'h>(&'h self, name: &str, heap: &'h Heap, interns: &Interns) -> Option<&'h Value> {
-        self.namespace.get_by_str(name, heap, interns).or_else(|| {
+    pub(crate) fn lookup<'h>(&'h self, name: &str, heap: &'h Heap, symbols: &SymbolTable) -> Option<&'h Value> {
+        self.namespace.get_by_str(name, heap, symbols).or_else(|| {
             self.mro.iter().find_map(|ancestor| match ancestor {
                 TypeRef::Class(id) => match heap.get(*id) {
-                    HeapData::Class(class) => class.namespace.get_by_str(name, heap, interns),
+                    HeapData::Class(class) => class.namespace.get_by_str(name, heap, symbols),
                     _ => None,
                 },
                 TypeRef::Native(_) => None,
@@ -154,7 +153,7 @@ impl<'h> HeapReadMut<'h, Class> {
     pub fn set_attr(&self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let guarded = name
             .as_either_str(vm.heap)
-            .map(|name| name.as_str(vm.interns).to_owned());
+            .map(|name| name.as_str(vm.symbols).to_owned());
         match guarded.as_deref() {
             Some("__bases__" | "__class__") => {
                 [name, value].drop_with(vm);
@@ -169,15 +168,15 @@ impl<'h> HeapReadMut<'h, Class> {
     }
 
     /// [`set_attr`](Self::set_attr) for a dump upgrade, which has no VM and
-    /// cannot fail: see `HeapRead::<Dict>::set_interned_str`.
-    pub(crate) fn set_interned_attr(
+    /// cannot fail: see `HeapRead::<Dict>::set_symbol`.
+    pub(crate) fn set_symbol_attr(
         &self,
-        name: StringId,
+        name: SymbolId,
         value: Value,
         heap: &mut HeapReader<'h>,
-        interns: &Interns,
+        symbols: &SymbolTable,
     ) -> Option<Value> {
-        self.namespace_mut().set_interned_str(name, value, heap, interns)
+        self.namespace_mut().set_symbol(name, value, heap, symbols)
     }
 
     /// Removes a class attribute, returning it for the caller to drop.
@@ -219,12 +218,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
     /// wording is CPython's for a type without one.
     fn py_getitem(&self, _key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         Err(ExcType::type_error_type_not_subscriptable(
-            self.get(vm.heap).name.as_str(vm.interns),
+            self.get(vm.heap).name.as_str(vm.symbols),
         ))
     }
 
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
-        if name.as_str(vm.interns) == "__annotations__" {
+        if name.as_str(vm.symbols) == "__annotations__" {
             return annotations::set_class_annotations(self.id(), value, vm);
         }
         let mut value_guard = DropGuard::new(value, vm);
@@ -247,20 +246,20 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
-        Ok(write!(f, "<class '{}'>", self.get(vm.heap).name.as_str(vm.interns))?)
+        Ok(write!(f, "<class '{}'>", self.get(vm.heap).name.as_str(vm.symbols))?)
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         // PEP 649: computed from the class's own `__annotate__` on first access,
         // which may run Python code, so it cannot go through `class_getattr`.
-        if attr.as_str(vm.interns) == "__annotations__" {
+        if attr.as_str(vm.symbols) == "__annotations__" {
             return annotations::class_annotations(self.id(), vm).map(Some);
         }
         match class_getattr(self.id(), attr, vm)? {
             Some(value) => Ok(Some(CallResult::Value(value))),
             None => Err(ExcType::attribute_error_type(
-                self.get(vm.heap).name.as_str(vm.interns),
-                attr.as_str(vm.interns),
+                self.get(vm.heap).name.as_str(vm.symbols),
+                attr.as_str(vm.symbols),
             )),
         }
     }
@@ -270,7 +269,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
     /// is an implicit classmethod, which `class_getattr` binds to the class.
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let class_id = self.id();
-        if attr.as_str(vm.interns) == "__annotations__" {
+        if attr.as_str(vm.symbols) == "__annotations__" {
             let annotations =
                 annotations::class_annotations(class_id, vm).and_then(|call| call.require_synchronous(vm));
             let annotations = match annotations {
@@ -293,8 +292,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
         let Some(member) = member else {
             args.drop_with(vm);
             return Err(ExcType::attribute_error_type(
-                self.get(vm.heap).name.as_str(vm.interns),
-                attr.as_str(vm.interns),
+                self.get(vm.heap).name.as_str(vm.symbols),
+                attr.as_str(vm.symbols),
             ));
         };
         defer_drop!(member, vm);
@@ -312,18 +311,18 @@ pub(crate) fn class_getattr(class_id: HeapId, attr: &EitherStr, vm: &mut VM<'_>)
     let HeapData::Class(class) = vm.heap.get(class_id) else {
         unreachable!("class_getattr takes a class")
     };
-    let attr_str = attr.as_str(vm.interns);
+    let attr_str = attr.as_str(vm.symbols);
     Ok(Some(match attr_str {
-        "__name__" => allocate_string(class.name.as_str(vm.interns).to_owned(), vm.heap),
+        "__name__" => allocate_string(class.name.as_str(vm.symbols).to_owned(), vm.heap),
         "__bases__" => bases_tuple(class, vm.heap),
         "__mro__" => mro_tuple(class_id, vm.heap),
         // Annotations are per class: an inherited `__annotate__` would describe the base.
         "__annotate__" | "__annotate_func__" => class
             .namespace
-            .get_by_str(attr_str, vm.heap, vm.interns)
+            .get_by_str(attr_str, vm.heap, vm.symbols)
             .map_or(Value::None, |value| value.clone_with_heap(vm.heap)),
         _ => {
-            if let Some(member) = class.lookup(attr_str, vm.heap, vm.interns) {
+            if let Some(member) = class.lookup(attr_str, vm.heap, vm.symbols) {
                 let member = member.clone_with_heap(vm.heap);
                 if attr_str == "__init_subclass__" && is_method_value(&member, vm) {
                     vm.heap.inc_ref(class_id);

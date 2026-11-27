@@ -28,9 +28,9 @@ use crate::{
     frozen::{FrozenFunction, FrozenFunctions},
     hash::{HashValue, identity_hash},
     heap::{ContainsHeap, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead},
-    intern::StaticStrings,
     modules::{ModuleFunctions, StandardLib, typing},
     py_attrs::PyAttrs,
+    symbols::StaticStrings,
     types::{
         Dict, LazyHeapSet, PyTrait, Type, TypeRef, Union,
         generic_alias::repr_type_arg,
@@ -630,7 +630,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ForwardRef> {
     /// `Later.attr` on a stringifier and is an `AttributeError` otherwise.
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let this = self.get(vm.heap);
-        let value = match attr.static_string(vm.interns) {
+        let value = match attr.static_string(vm.symbols) {
             Some(StaticStrings::DunderForwardArg | StaticStrings::DunderResolvedStr) => {
                 this.arg.clone_with_heap(vm.heap)
             }
@@ -642,11 +642,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ForwardRef> {
                 let mut text = String::new();
                 self.write_operand(Precedence::Atom, vm, &mut text);
                 text.push('.');
-                text.push_str(attr.as_str(vm.interns));
+                text.push_str(attr.as_str(vm.symbols));
                 self.compose(text, Precedence::Atom, vm)
             }
             // Named as CPython does, not by the qualified type name.
-            _ => return Err(ExcType::attribute_error("ForwardRef", attr.as_str(vm.interns))),
+            _ => return Err(ExcType::attribute_error("ForwardRef", attr.as_str(vm.symbols))),
         };
         Ok(Some(CallResult::Value(value)))
     }
@@ -657,12 +657,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ForwardRef> {
             let mut text = String::new();
             self.write_operand(Precedence::Atom, vm, &mut text);
             text.push('.');
-            text.push_str(attr.as_str(vm.interns));
+            text.push_str(attr.as_str(vm.symbols));
             write_call(&mut text, args, vm)?;
             Ok(CallResult::Value(self.compose(text, Precedence::Atom, vm)))
         } else {
             args.drop_with(vm);
-            Err(ExcType::attribute_error("ForwardRef", attr.as_str(vm.interns)))
+            Err(ExcType::attribute_error("ForwardRef", attr.as_str(vm.symbols)))
         }
     }
 
@@ -822,7 +822,7 @@ fn render_operand(value: &Value, demanded: Precedence, vm: &mut VM<'_>, text: &m
     let container = match value {
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::ForwardRef(forward_ref) if forward_ref.is_stringifier() => {
-                let inner = forward_ref.arg.as_str_heap(vm.heap, vm.interns).unwrap_or_default();
+                let inner = forward_ref.arg.as_str_heap(vm.heap, vm.symbols).unwrap_or_default();
                 if demanded > forward_ref.precedence {
                     write!(text, "({inner})")?;
                 } else {

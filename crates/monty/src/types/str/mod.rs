@@ -34,12 +34,12 @@ use crate::{
     hash::{HashValue, hash_python_str},
     heap::{DropGuard, DropWithContext, Heap, HeapObjectRead},
     identity::Identity,
-    intern::{Interns, StaticStrings, StringId},
     percent_format::percent_format,
     py_attrs::PyAttrs,
     resource_checks::{check_repeat_size, check_replace_size, collect_checked, push_checked, repeated_len},
     str_format::str_format,
     string_builder::StringBuilder,
+    symbols::{StaticStrings, SymbolId, SymbolTable},
     types::{
         LazyHeapSet, Slice, Tuple, Type, TypeRef,
         py_trait::PyObjectIdentity,
@@ -53,7 +53,7 @@ use crate::{
 /// Heap reads keep the receiver available across calls such as `__index__` without
 /// holding a Rust borrow of its text during Python execution.
 pub(crate) enum PyStr<'h> {
-    Interned(StringId),
+    Symbol(SymbolId),
     Inline(InlineStr),
     Heap(HeapObjectRead<'h, HeapStr>),
 }
@@ -75,7 +75,7 @@ impl<'h> PyStr<'h> {
         defer_drop!(errors, vm);
         if encoding.is_none() && errors.is_none() {
             return match object {
-                None => Ok(Value::InternString(StringId::EMPTY)),
+                None => Ok(Value::Symbol(SymbolId::EMPTY)),
                 Some(v) => v.py_str(vm),
             };
         }
@@ -85,7 +85,7 @@ impl<'h> PyStr<'h> {
         str_ctor_arg_check(errors.as_ref(), "errors", vm)?;
         let Some(object) = object else {
             // A missing object wins over the decoding args: `str(encoding='utf-8')` is ''.
-            return Ok(Value::InternString(StringId::EMPTY));
+            return Ok(Value::Symbol(SymbolId::EMPTY));
         };
         if object.is_str(vm.heap) {
             return Err(ExcType::type_error_decoding_str_not_supported());
@@ -103,7 +103,7 @@ impl<'h> PyStr<'h> {
     /// Extracts a string without copying its contents.
     pub(crate) fn from_value(value: &Value, vm: &VM<'h>) -> Option<Self> {
         match value {
-            Value::InternString(id) => Some(Self::Interned(*id)),
+            Value::Symbol(id) => Some(Self::Symbol(*id)),
             Value::InlineString(text) => Some(Self::Inline(*text)),
             Value::Ref(id) => vm.heap.read_as(*id).map(Self::Heap),
             _ => None,
@@ -114,7 +114,7 @@ impl<'h> PyStr<'h> {
     fn is_ascii(&self, vm: &VM<'h>) -> bool {
         match self {
             PyStr::Heap(heap_string) => heap_string.get(vm.heap).is_ascii(),
-            PyStr::Interned(id) => vm.interns.str_is_ascii(*id),
+            PyStr::Symbol(id) => vm.symbols.str_is_ascii(*id),
             PyStr::Inline(text) => text.is_ascii(),
         }
     }
@@ -131,7 +131,7 @@ impl<'h> PyStr<'h> {
     fn char_len(&self, vm: &VM<'h>) -> usize {
         match self {
             PyStr::Heap(heap_string) => heap_string.get(vm.heap).char_len(),
-            PyStr::Interned(id) => vm.interns.str_char_len(*id),
+            PyStr::Symbol(id) => vm.symbols.str_char_len(*id),
             PyStr::Inline(text) => text.char_len(),
         }
     }
@@ -248,7 +248,7 @@ impl<'h> PyStr<'h> {
     /// Borrows the text only for the duration of the heap borrow.
     pub(crate) fn as_str<'a>(&'a self, vm: &'a VM<'h>) -> &'a str {
         match self {
-            Self::Interned(id) => vm.interns.get_str(*id),
+            Self::Symbol(id) => vm.symbols.get_str(*id),
             Self::Inline(text) => text.as_str(),
             Self::Heap(heap_string) => heap_string.get(vm.heap).as_str(),
         }
@@ -258,7 +258,7 @@ impl<'h> PyStr<'h> {
 impl PyObjectIdentity for PyStr<'_> {
     fn py_identity(&self) -> Identity {
         match self {
-            Self::Interned(id) => Identity::InternString(id.index()),
+            Self::Symbol(id) => Identity::Symbol(id.index()),
             Self::Inline(text) => Identity::InlineString(*text),
             Self::Heap(heap_string) => heap_string.py_identity(),
         }
@@ -272,7 +272,7 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
 
     fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
         match self {
-            Self::Interned(id) => Ok(CallResult::Value(StringIterator::from_intern(*id, vm))),
+            Self::Symbol(id) => Ok(CallResult::Value(StringIterator::from_symbol(*id, vm))),
             Self::Inline(text) => Ok(CallResult::Value(StringIterator::from_inline(*text, vm))),
             Self::Heap(heap_string) => Ok(CallResult::Value(StringIterator::from_heap(
                 heap_string.id(),
@@ -284,7 +284,7 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
 
     fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         match self {
-            Self::Interned(id) => Ok(Some(vm.interns.str_hash(*id))),
+            Self::Symbol(id) => Ok(Some(vm.symbols.str_hash(*id))),
             Self::Inline(text) => Ok(Some(hash_python_str(text.as_str()))),
             Self::Heap(heap_string) => Ok(Some(heap_string.get(vm.heap).hash())),
         }
@@ -300,7 +300,7 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
 
     fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
         Ok(match self {
-            Self::Interned(id) => Value::InternString(*id),
+            Self::Symbol(id) => Value::Symbol(*id),
             Self::Inline(text) => Value::InlineString(*text),
             Self::Heap(heap_string) => heap_string.clone_value(vm.heap),
         })
@@ -319,7 +319,7 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
     }
 
     fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        str_contains(self.as_str(vm), item, vm.heap, vm.interns).map(Some)
+        str_contains(self.as_str(vm), item, vm.heap, vm.symbols).map(Some)
     }
 
     fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -402,8 +402,8 @@ pub fn allocate_string(s: impl AsRef<str> + Into<Box<str>>, heap: &Heap) -> Valu
 fn allocate_string_with_ascii(s: impl AsRef<str> + Into<Box<str>>, ascii: Option<bool>, heap: &Heap) -> Value {
     let bytes = s.as_ref().as_bytes();
     match bytes.len() {
-        0 => Value::InternString(StringId::EMPTY),
-        1 => Value::InternString(StringId::from_ascii(bytes[0])),
+        0 => Value::Symbol(SymbolId::EMPTY),
+        1 => Value::Symbol(SymbolId::from_ascii(bytes[0])),
         2..=InlineStr::CAPACITY => {
             let text = s.as_ref();
             let inline = match ascii {
@@ -421,7 +421,7 @@ fn allocate_string_with_ascii(s: impl AsRef<str> + Into<Box<str>>, ascii: Option
 
 /// Creates a string value without checking for reserved string IDs.
 /// The caller must know the text is longer than one byte; otherwise use [`allocate_string`].
-pub fn allocate_string_no_interning(s: impl AsRef<str> + Into<Box<str>>, heap: &Heap) -> Value {
+pub fn allocate_non_symbol_string(s: impl AsRef<str> + Into<Box<str>>, heap: &Heap) -> Value {
     if (2..=InlineStr::CAPACITY).contains(&s.as_ref().len()) {
         return Value::InlineString(InlineStr::new(s.as_ref()).expect("length checked above"));
     }
@@ -441,7 +441,7 @@ fn repeat_str<'h>(value: &PyStr<'h>, count: usize, vm: &VM<'h>) -> RunResult<Opt
     let text = value.as_str(vm);
     let total = repeated_len(text.len(), count, 1).map_err(|_| ExcType::repeated_string_too_long())?;
     if total == 0 {
-        return Ok(Some(Value::InternString(StringId::EMPTY)));
+        return Ok(Some(Value::Symbol(SymbolId::EMPTY)));
     }
     if total <= InlineStr::CAPACITY {
         let ascii = value.is_ascii(vm);
@@ -468,7 +468,7 @@ fn repeat_str<'h>(value: &PyStr<'h>, count: usize, vm: &VM<'h>) -> RunResult<Opt
 /// Creates a single-character string without allocating.
 pub fn allocate_char(c: char) -> Value {
     if c.is_ascii() {
-        Value::InternString(StringId::from_ascii(c as u8))
+        Value::Symbol(SymbolId::from_ascii(c as u8))
     } else {
         let mut bytes = [0; 4];
         let text = c.encode_utf8(&mut bytes);
@@ -915,7 +915,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
             }
         };
 
-        // Convert to list of strings (using interned empty string when applicable)
+        // Convert to list of strings (using empty string symbol when applicable)
         vm.heap
             .tracker
             .check_allocation(parts.len().saturating_mul(VALUE_SIZE))?;
@@ -974,7 +974,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
             }
         };
 
-        // Convert to list of strings (using interned empty string when applicable)
+        // Convert to list of strings (using empty string symbol when applicable)
         vm.heap
             .tracker
             .check_allocation(parts.len().saturating_mul(VALUE_SIZE))?;
@@ -2050,13 +2050,13 @@ fn str_istitle(s: &str) -> bool {
 ///
 /// Shared by logical string views and concrete heap dispatch.
 /// A non-str probe reports its own type, as CPython does.
-pub(crate) fn str_contains(container_str: &str, item: &Value, heap: &Heap, interns: &Interns) -> RunResult<bool> {
-    if let Some(text) = item.as_str_heap(heap, interns) {
+pub(crate) fn str_contains(container_str: &str, item: &Value, heap: &Heap, symbols: &SymbolTable) -> RunResult<bool> {
+    if let Some(text) = item.as_str_heap(heap, symbols) {
         Ok(container_str.contains(text))
     } else {
         Err(ExcType::type_error(format!(
             "'in <string>' requires string as left operand, not {}",
-            item.py_type_name_heap(heap, interns)
+            item.py_type_name_heap(heap, symbols)
         )))
     }
 }
@@ -2082,15 +2082,15 @@ mod tests {
         let mut tables = SessionTables::default();
         let program = Program::for_tests();
         let ids: Vec<_> = {
-            let mut interns = crate::intern::CompileInterns::direct(&mut tables.interns);
-            texts.iter().map(|text| interns.intern(text)).collect()
+            let mut symbols = crate::symbols::CompileSymbols::direct(&mut tables.symbols);
+            texts.iter().map(|text| symbols.get_or_insert_symbol(text)).collect()
         };
 
         HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
             let vm = &mut VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
             for (text, id) in texts.into_iter().zip(ids) {
                 let values = vec![
-                    Value::InternString(id),
+                    Value::Symbol(id),
                     Value::InlineString(InlineStr::new(text).unwrap()),
                     allocate_string_on_heap(text, vm.heap),
                 ];
@@ -2312,7 +2312,7 @@ mod tests {
     fn characters_use_reserved_or_inline_storage() {
         for character in ['\0', 'a', '\x7f'] {
             assert!(
-                matches!(allocate_char(character), Value::InternString(id) if id == StringId::from_ascii(character as u8))
+                matches!(allocate_char(character), Value::Symbol(id) if id == SymbolId::from_ascii(character as u8))
             );
         }
         for character in ['é', '中', '🐍'] {
@@ -2347,8 +2347,8 @@ mod tests {
         let mut tables = SessionTables::default();
         let program = Program::for_tests();
         let ids: Vec<_> = {
-            let mut interns = crate::intern::CompileInterns::direct(&mut tables.interns);
-            texts.iter().map(|text| interns.intern(text)).collect()
+            let mut symbols = crate::symbols::CompileSymbols::direct(&mut tables.symbols);
+            texts.iter().map(|text| symbols.get_or_insert_symbol(text)).collect()
         };
 
         HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
@@ -2358,7 +2358,7 @@ mod tests {
                 .zip(ids)
                 .flat_map(|(text, id)| {
                     [
-                        Value::InternString(id),
+                        Value::Symbol(id),
                         Value::InlineString(InlineStr::new(text).unwrap()),
                         allocate_string_on_heap(*text, vm.heap),
                     ]
@@ -2394,7 +2394,7 @@ mod tests {
         HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
             let vm = &mut VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
             let values = vec![
-                Value::InternString(StringId::from_ascii(b'a')),
+                Value::Symbol(SymbolId::from_ascii(b'a')),
                 allocate_string("abcdefghijklmno", vm.heap),
                 allocate_string_on_heap("abcdefghijklmno", vm.heap),
             ];

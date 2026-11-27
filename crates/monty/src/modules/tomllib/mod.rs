@@ -27,8 +27,8 @@ use crate::{
     codecs::Codec,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    intern::StaticStrings,
     os_dispatch::PostConversionEffect,
+    symbols::StaticStrings,
     types::{Module, OpenFile, Type},
     value::Value,
 };
@@ -52,7 +52,7 @@ pub(crate) enum TomllibFunctions {
 /// The module exposes everything CPython's does: `loads`, `load` and
 /// `TOMLDecodeError`.
 pub fn create_module(vm: &mut VM<'_>) -> Module {
-    let mut module = Module::new(StaticStrings::Tomllib, vm.interns);
+    let mut module = Module::new(StaticStrings::Tomllib, vm.symbols);
     module.set_attr(
         StaticStrings::Loads,
         Value::ModuleFunction(ModuleFunctions::Tomllib(TomllibFunctions::Loads)),

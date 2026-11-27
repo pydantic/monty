@@ -175,7 +175,7 @@ d = {}
 d.update([('a', 1)], b=2)
 assert d == {'a': 1, 'b': 2}
 
-# `**` unpacking with a runtime-built (non-interned) string key must still
+# `**` unpacking with a runtime-built string key must still
 # reach **kwargs — only genuinely non-string keys are rejected.
 runtime_key = 'zzz' + 'qqq'
 d = dict(**{runtime_key: 1})

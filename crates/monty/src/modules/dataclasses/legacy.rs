@@ -13,7 +13,7 @@
 use super::{DataclassOptions, DataclassParams, Installer, install_generated_methods};
 use crate::{
     heap::{DropWithContext, Heap, HeapData, HeapId, HeapReadOutput, HeapReader},
-    intern::Interns,
+    symbols::SymbolTable,
     types::instance::namespace_member,
     value::Value,
 };
@@ -23,7 +23,7 @@ pub(crate) const LEGACY_DUMP_VERSION: u16 = 13;
 
 /// Generates the methods of every dataclass on a heap loaded from a version 13
 /// dump, as [`crate::dump_upgrade`] calls before the session is handed out.
-pub(crate) fn upgrade_legacy_classes(heap: &mut Heap, interns: &Interns) {
+pub(crate) fn upgrade_legacy_classes(heap: &mut Heap, symbols: &SymbolTable) {
     let class_ids = heap.ids_where(|data| matches!(data, HeapData::Class(_)));
     HeapReader::with(heap, &mut (), |heap, ()| {
         // Owned references keep every class alive until all are upgraded:
@@ -39,31 +39,31 @@ pub(crate) fn upgrade_legacy_classes(heap: &mut Heap, interns: &Interns) {
             let Value::Ref(class_id) = *class else {
                 unreachable!("collected as references")
             };
-            upgrade_class(class_id, heap, interns);
+            upgrade_class(class_id, heap, symbols);
         }
         classes.drop_with(heap);
     });
 }
 
 /// Generates the methods of `class_id` if it is a dataclass.
-fn upgrade_class(class_id: HeapId, heap: &mut HeapReader<'_>, interns: &Interns) {
-    let Some((fields_id, options)) = legacy_dataclass(class_id, heap, interns) else {
+fn upgrade_class(class_id: HeapId, heap: &mut HeapReader<'_>, symbols: &SymbolTable) {
+    let Some((fields_id, options)) = legacy_dataclass(class_id, heap, symbols) else {
         return;
     };
     let HeapReadOutput::Class(class) = heap.read(class_id) else {
         unreachable!("filtered to classes")
     };
-    let mut installer = Installer::Upgrade { heap, interns };
+    let mut installer = Installer::Upgrade { heap, symbols };
     install_generated_methods(class_id, &class, fields_id, options, &mut installer)
         .expect("an upgrade's writes skip the memory preflight, so cannot fail");
 }
 
 /// The fields mapping and options of a dataclass, or `None` for any other class.
-fn legacy_dataclass(class_id: HeapId, heap: &Heap, interns: &Interns) -> Option<(HeapId, DataclassOptions)> {
-    let options = namespace_member(class_id, "__dataclass_params__", heap, interns)?
+fn legacy_dataclass(class_id: HeapId, heap: &Heap, symbols: &SymbolTable) -> Option<(HeapId, DataclassOptions)> {
+    let options = namespace_member(class_id, "__dataclass_params__", heap, symbols)?
         .get_as::<DataclassParams>(heap)?
         .options();
-    match namespace_member(class_id, "__dataclass_fields__", heap, interns) {
+    match namespace_member(class_id, "__dataclass_fields__", heap, symbols) {
         Some(Value::Ref(id)) if matches!(heap.get(*id), HeapData::Dict(_)) => Some((*id, options)),
         _ => None,
     }

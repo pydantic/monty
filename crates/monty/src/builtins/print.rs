@@ -7,8 +7,8 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
-    intern::StaticStrings,
     py_value::PyValue,
+    symbols::StaticStrings,
     types::{PyTrait, io::is_memory_stream, str::allocate_string},
     value::{Marker, Value},
 };
@@ -52,11 +52,11 @@ pub fn builtin_print(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         let s = value.py_str(vm)?;
         defer_drop!(s, vm);
         match &target {
-            // Resolve the `str` `Value` against the heap/interns tables directly so
+            // Resolve the `str` `Value` against the heap and symbol table directly so
             // the `&str` borrow stays disjoint from the `&mut vm.print_writer` write.
             PrintTarget::Output(stream) => vm.print_writer.write(
                 *stream,
-                s.as_str_heap(vm.heap, vm.interns).expect("py_str returns str").into(),
+                s.as_str_heap(vm.heap, vm.symbols).expect("py_str returns str").into(),
             )?,
             PrintTarget::Stream(stream) => write_to_stream(stream, s.clone_with_heap(vm.heap), vm)?,
         }
@@ -92,7 +92,7 @@ impl PrintTarget<'_> {
 ///
 /// A `BytesIO` raises the `TypeError` CPython's `print()` meets on its first write.
 fn write_to_stream(stream: &Value, text: Value, vm: &mut VM<'_>) -> RunResult<()> {
-    let name = vm.interns.intern_static(StaticStrings::Write);
+    let name = vm.symbols.get_or_insert_static_symbol(StaticStrings::Write);
     let written = vm
         .call_attr(stream.clone_with_heap(vm.heap), name, ArgValues::One(text))?
         .require_synchronous(vm)?;

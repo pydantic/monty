@@ -12,18 +12,18 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    intern::StaticStrings,
     modules::{
         ModuleFunctions,
         typing::{HintFormat, HintsRequest, HintsTask, collect_hints, namespace_dict},
     },
+    symbols::StaticStrings,
     types::{Class, Dict, Module, PyTrait, Type, forward_ref::format_code},
     value::{EitherStr, Value},
 };
 
 /// Creates the `annotationlib` module.
 pub fn create_module(vm: &mut VM<'_>) -> Module {
-    let mut module = Module::new(StaticStrings::Annotationlib, vm.interns);
+    let mut module = Module::new(StaticStrings::Annotationlib, vm.symbols);
     let format = format_class(vm);
     module.set_attr(StaticStrings::FormatClass, format, vm);
     module.set_attr(
@@ -66,14 +66,14 @@ fn format_class(vm: &mut VM<'_>) -> Value {
     ];
     let mut namespace = Dict::new();
     for (name, value) in members {
-        let key = Value::InternString(vm.interns.intern_static(name));
-        // Module construction is infallible: interned keys always hash, and a
+        let key = Value::Symbol(vm.symbols.get_or_insert_static_symbol(name));
+        // Module construction is infallible: symbol keys always hash, and a
         // handful of entries needs no growth preflight.
         namespace
             .set_without_growth_check(key, value, vm)
-            .expect("class attribute keys are interned, so hashing cannot fail");
+            .expect("class attribute keys are symbols, so hashing cannot fail");
     }
-    let name = EitherStr::Interned(vm.interns.intern_static(StaticStrings::FormatClass));
+    let name = EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::FormatClass));
     Value::allocate(Class::new(name, namespace), vm.heap)
 }
 

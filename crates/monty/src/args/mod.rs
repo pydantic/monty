@@ -18,9 +18,9 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     expressions::{ExprLoc, Identifier},
     heap::{ContainsHeap, DropWithContext, Heap},
-    intern::{Interns, StringId},
     object_bridge::{CallArgsExt, GraphExporter},
     parse::ParseError,
+    symbols::{SymbolId, SymbolTable},
     types::{Dict, dict::DictIntoIter},
     value::{EitherStr, Value},
 };
@@ -279,10 +279,10 @@ impl ArgValues {
     }
 
     /// The keyword argument called `name`, if any, without consuming the arguments.
-    pub(crate) fn keyword(&self, name: &str, heap: &Heap, interns: &Interns) -> Option<&Value> {
+    pub(crate) fn keyword(&self, name: &str, heap: &Heap, symbols: &SymbolTable) -> Option<&Value> {
         match self {
             Self::Empty | Self::One(_) | Self::Two(_, _) => None,
-            Self::Kwargs(kwargs) | Self::ArgsKargs { kwargs, .. } => kwargs.get(name, heap, interns),
+            Self::Kwargs(kwargs) | Self::ArgsKargs { kwargs, .. } => kwargs.get(name, heap, symbols),
         }
     }
 
@@ -402,10 +402,10 @@ impl<C: ContainsHeap> DropWithContext<C> for ArgPosIter {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum KwargsValues {
     Empty,
-    Inline(Vec<(StringId, Value)>),
+    Inline(Vec<(SymbolId, Value)>),
     /// Kwargs whose keys are runtime string `Value`s — produced by the binder's
     /// `varkwargs` collection, where `**{...}` unpacking can supply str keys
-    /// that have no interned id (`Inline` can only carry `StringId` keys).
+    /// that have no symbol ID (`Inline` can only carry `SymbolId` keys).
     Pairs(Vec<(Value, Value)>),
     Dict(Dict),
 }
@@ -445,13 +445,13 @@ impl KwargsValues {
 
     /// The value passed under `name`, if any; a non-string key (only possible via `**`
     /// unpacking) never matches.
-    pub(crate) fn get(&self, name: &str, heap: &Heap, interns: &Interns) -> Option<&Value> {
-        let is_name = |key: &Value| key.as_either_str(heap).is_some_and(|key| key.as_str(interns) == name);
+    pub(crate) fn get(&self, name: &str, heap: &Heap, symbols: &SymbolTable) -> Option<&Value> {
+        let is_name = |key: &Value| key.as_either_str(heap).is_some_and(|key| key.as_str(symbols) == name);
         match self {
             Self::Empty => None,
             Self::Inline(kvs) => kvs
                 .iter()
-                .find(|(id, _)| interns.get_str(*id) == name)
+                .find(|(id, _)| symbols.get_str(*id) == name)
                 .map(|(_, value)| value),
             Self::Pairs(kvs) => kvs.iter().find(|(key, _)| is_name(key)).map(|(_, value)| value),
             Self::Dict(dict) => dict.iter().find(|(key, _)| is_name(key)).map(|(_, value)| value),
@@ -461,11 +461,11 @@ impl KwargsValues {
     /// The first keyword's name, for callables that accept none and report
     /// CPython's `got an unexpected keyword argument`. A non-string key (only
     /// possible via `**` unpacking) is CPython's `keywords must be strings`.
-    pub fn first_key(&self, heap: &Heap, interns: &Interns) -> RunResult<Option<String>> {
+    pub fn first_key(&self, heap: &Heap, symbols: &SymbolTable) -> RunResult<Option<String>> {
         let key = match self {
             Self::Empty => return Ok(None),
             Self::Inline(kvs) => {
-                return Ok(kvs.first().map(|(id, _)| EitherStr::Interned(*id).into_string(interns)));
+                return Ok(kvs.first().map(|(id, _)| EitherStr::Symbol(*id).into_string(symbols)));
             }
             Self::Pairs(kvs) => kvs.first().map(|(key, _)| key),
             Self::Dict(dict) => dict.iter().next().map(|(key, _)| key),
@@ -474,7 +474,7 @@ impl KwargsValues {
             None => Ok(None),
             Some(key) => key
                 .as_either_str(heap)
-                .map(|key| Some(key.into_string(interns)))
+                .map(|key| Some(key.into_string(symbols)))
                 .ok_or_else(ExcType::type_error_kwargs_nonstring_key),
         }
     }
@@ -485,7 +485,7 @@ impl KwargsValues {
             Self::Empty => {}
             Self::Inline(kvs) => {
                 for (k, v) in kvs {
-                    let key = exporter.push_node(MontyNode::String(vm.interns.get_str(k).to_owned()));
+                    let key = exporter.push_node(MontyNode::String(vm.symbols.get_str(k).to_owned()));
                     let value = exporter.push_owned(v, vm);
                     unstable::call_args_parts_mut(call).2.push((key, value));
                 }
@@ -546,12 +546,12 @@ impl IntoIterator for KwargsValues {
 
 /// Iterator over keyword argument (key, value) pairs.
 ///
-/// For `Inline` kwargs, converts `StringId` keys to `Value::InternString`.
+/// For `Inline` kwargs, converts `SymbolId` keys to `Value::Symbol`.
 /// For `Pairs` and `Dict` kwargs, iterates directly over the owned entries
 /// without intermediate allocation.
 pub(crate) enum KwargsValuesIter {
     Empty,
-    Inline(IntoIter<(StringId, Value)>),
+    Inline(IntoIter<(SymbolId, Value)>),
     Pairs(IntoIter<(Value, Value)>),
     Dict(DictIntoIter),
 }
@@ -562,7 +562,7 @@ impl Iterator for KwargsValuesIter {
     fn next(&mut self) -> Option<Self::Item> {
         match self {
             Self::Empty => None,
-            Self::Inline(iter) => iter.next().map(|(k, v)| (Value::InternString(k), v)),
+            Self::Inline(iter) => iter.next().map(|(k, v)| (Value::Symbol(k), v)),
             Self::Pairs(iter) => iter.next(),
             Self::Dict(iter) => iter.next(),
         }

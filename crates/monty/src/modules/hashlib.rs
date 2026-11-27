@@ -24,8 +24,8 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext},
-    intern::StaticStrings,
     modules::ModuleFunctions,
+    symbols::StaticStrings,
     types::{
         Module, Set, Type, allocate_string,
         bytes::allocate_bytes,
@@ -81,7 +81,7 @@ const HASHLIB_FUNCTIONS: &[(StaticStrings, HashlibFunctions)] = &[
 
 /// Creates the `hashlib` module.
 pub fn create_module(vm: &mut VM<'_>) -> Module {
-    let mut module = Module::new(StaticStrings::Hashlib, vm.interns);
+    let mut module = Module::new(StaticStrings::Hashlib, vm.symbols);
     for (name, func) in HASHLIB_FUNCTIONS {
         module.set_attr(*name, Value::ModuleFunction(ModuleFunctions::Hashlib(*func)), vm);
     }
@@ -111,7 +111,7 @@ fn algorithm_names(vm: &mut VM<'_>) -> Value {
         // code, so the only failure is a memory limit already past its hard ceiling.
         names
             .add(name, vm)
-            .expect("adding an interned name to a fresh set cannot raise");
+            .expect("adding a symbol to a fresh set cannot raise");
     }
     Value::allocate(names, vm.heap)
 }

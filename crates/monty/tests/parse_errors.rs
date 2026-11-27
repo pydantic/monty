@@ -997,8 +997,8 @@ fn module_with_too_many_names_returns_syntax_error() {
 }
 
 #[test]
-fn module_with_too_many_interned_strings_returns_syntax_error() {
-    // 66 000 distinct attribute references push the executor-local interner
+fn module_with_too_many_symbols_returns_syntax_error() {
+    // 66 000 distinct attribute references push the executor-local symbol table
     // beyond the bytecode format's `u16` ID range.
     let mut code = "x = None\n".to_owned();
     for i in 0..66_000 {
@@ -1009,13 +1009,13 @@ fn module_with_too_many_interned_strings_returns_syntax_error() {
     assert_eq!(err.exc_type(), ExcType::SyntaxError);
     assert_eq!(
         err.message(),
-        Some("module has too many distinct names; the bytecode format supports up to 65536 interned strings"),
+        Some("module has too many distinct names; the bytecode format supports up to 65536 symbols"),
     );
 }
 
 #[test]
 fn dotted_import_with_too_many_components_returns_syntax_error() {
-    // each component interns the path through it, so the chain is capped
+    // each component registers a symbol for the path through it, so the chain is capped
     let code = format!("import a{}", ".a".repeat(32));
     let result = MontyRun::new(code, "test.py", vec![], CompileOptions::default());
     let err = result.expect_err("expected compile error");

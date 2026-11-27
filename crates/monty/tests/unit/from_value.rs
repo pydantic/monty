@@ -6,8 +6,8 @@ use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
     heap::{Heap, HeapData, HeapReader},
-    intern::{CompileInterns, Interns},
     run::{Program, SessionTables},
+    symbols::{CompileSymbols, SymbolTable},
     types::{Bytes, List, LongInt, NamedTuple, str::allocate_string},
 };
 
@@ -35,7 +35,7 @@ fn access_allocated_payload_by_type() {
         assert!(Value::None.read_as::<Bytes>(vm.heap).is_none());
 
         assert_eq!(bytes.get_as::<Bytes>(vm.heap).unwrap().as_slice(), &[1, 2]);
-        assert_eq!(point.get_as::<NamedTuple>(vm.heap).unwrap().name(vm.interns), "Point");
+        assert_eq!(point.get_as::<NamedTuple>(vm.heap).unwrap().name(vm.symbols), "Point");
         assert!(point.get_as::<Bytes>(vm.heap).is_none());
         assert!(Value::None.get_as::<Bytes>(vm.heap).is_none());
 
@@ -46,14 +46,14 @@ fn access_allocated_payload_by_type() {
 
 #[test]
 fn borrow_bytes_from_intern_table_or_heap() {
-    let mut interns = Interns::default();
-    let id = CompileInterns::direct(&mut interns).intern_bytes(b"literal");
+    let mut symbols = SymbolTable::default();
+    let id = CompileSymbols::direct(&mut symbols).intern_bytes(b"literal");
     let mut heap = Heap::new(16, ResourceTracker::default());
     let literal = Value::InternBytes(id);
     let allocated = Value::allocate(Bytes::from(&b"allocated"[..]), &heap);
-    assert_eq!(literal.as_bytes_heap(&heap, &interns), Some(&b"literal"[..]));
-    assert_eq!(allocated.as_bytes_heap(&heap, &interns), Some(&b"allocated"[..]));
-    assert_eq!(Value::None.as_bytes_heap(&heap, &interns), None);
+    assert_eq!(literal.as_bytes_heap(&heap, &symbols), Some(&b"literal"[..]));
+    assert_eq!(allocated.as_bytes_heap(&heap, &symbols), Some(&b"allocated"[..]));
+    assert_eq!(Value::None.as_bytes_heap(&heap, &symbols), None);
     allocated.drop_with(&mut heap);
 }
 
@@ -68,7 +68,7 @@ fn extract_bad_arg_named() {
                 arg_name: "param",
             },
         );
-        let exc = res.unwrap_err().into_python_exception(vm.interns, |_| None);
+        let exc = res.unwrap_err().into_python_exception(vm.symbols, |_| None);
         assert_eq!(exc.message(), Some("test_fn() argument 'param' must be str, not int"));
     });
 }
@@ -84,7 +84,7 @@ fn extract_bad_arg_pos() {
                 pos: 2,
             },
         );
-        let exc = res.unwrap_err().into_python_exception(vm.interns, |_| None);
+        let exc = res.unwrap_err().into_python_exception(vm.symbols, |_| None);
         assert_eq!(exc.message(), Some("test_fn() argument 2 must be str, not int"));
     });
 }
@@ -93,7 +93,7 @@ fn extract_bad_arg_pos() {
 fn extract_plain() {
     with_test_vm(|vm| {
         let res = StrArg::extract(Value::Int(42), vm, ArgErrCtx::Plain);
-        let exc = res.unwrap_err().into_python_exception(vm.interns, |_| None);
+        let exc = res.unwrap_err().into_python_exception(vm.symbols, |_| None);
         assert_eq!(exc.message(), Some("expected str, not int"));
     });
 }
@@ -102,11 +102,11 @@ fn extract_plain() {
 fn extract_raise_overflow() {
     with_test_vm(|vm| {
         let res_max = i32::extract(Value::Int(i64::from(i32::MAX) + 1), vm, ArgErrCtx::Plain);
-        let exc_max = res_max.unwrap_err().into_python_exception(vm.interns, |_| None);
+        let exc_max = res_max.unwrap_err().into_python_exception(vm.symbols, |_| None);
         assert_eq!(exc_max.message(), Some("signed integer is greater than maximum"));
 
         let res_min = i32::extract(Value::Int(i64::from(i32::MIN) - 1), vm, ArgErrCtx::Plain);
-        let exc_min = res_min.unwrap_err().into_python_exception(vm.interns, |_| None);
+        let exc_min = res_min.unwrap_err().into_python_exception(vm.symbols, |_| None);
         assert_eq!(exc_min.message(), Some("signed integer is less than minimum"));
     });
 }
@@ -132,7 +132,7 @@ fn i32_conversions() {
         let val = Value::Ref(id);
         assert!(matches!(i32::from_value(val, vm), Err(FromValueFail::Raise(_))));
 
-        let type_err = i32::type_error("str").into_python_exception(vm.interns, |_| None);
+        let type_err = i32::type_error("str").into_python_exception(vm.symbols, |_| None);
         assert_eq!(
             type_err.message(),
             Some("'str' object cannot be interpreted as an integer")
@@ -160,7 +160,7 @@ fn i64_conversions() {
         let val = Value::Ref(id);
         assert!(matches!(i64::from_value(val, vm), Err(FromValueFail::Raise(_))));
 
-        let type_err = i64::type_error("str").into_python_exception(vm.interns, |_| None);
+        let type_err = i64::type_error("str").into_python_exception(vm.symbols, |_| None);
         assert_eq!(
             type_err.message(),
             Some("'str' object cannot be interpreted as an integer")
@@ -188,7 +188,7 @@ fn isize_conversions() {
         let val = Value::Ref(id);
         assert!(matches!(isize::from_value(val, vm), Err(FromValueFail::Raise(_))));
 
-        let type_err = isize::type_error("str").into_python_exception(vm.interns, |_| None);
+        let type_err = isize::type_error("str").into_python_exception(vm.symbols, |_| None);
         assert_eq!(
             type_err.message(),
             Some("'str' object cannot be interpreted as an integer")
@@ -235,7 +235,7 @@ fn u64_conversions() {
         let val = Value::Ref(id);
         assert!(matches!(u64::from_value(val, vm), Err(FromValueFail::Raise(_))));
 
-        let type_err = u64::type_error("str").into_python_exception(vm.interns, |_| None);
+        let type_err = u64::type_error("str").into_python_exception(vm.symbols, |_| None);
         assert_eq!(
             type_err.message(),
             Some("'str' object cannot be interpreted as an integer")
@@ -256,7 +256,7 @@ fn bool_conversions() {
             panic!("expected WrongType");
         }
 
-        let type_err = bool::type_error("int").into_python_exception(vm.interns, |_| None);
+        let type_err = bool::type_error("int").into_python_exception(vm.symbols, |_| None);
         assert_eq!(type_err.message(), Some("a bool is required"));
     });
 }
@@ -292,7 +292,7 @@ fn option_and_lax_bool_and_value() {
         let opt = Option::<StrArg>::from_value(s, vm).unwrap();
         opt.drop_extracted(vm.heap);
 
-        let opt_err = Option::<i64>::type_error("str").into_python_exception(vm.interns, |_| None);
+        let opt_err = Option::<i64>::type_error("str").into_python_exception(vm.symbols, |_| None);
         assert_eq!(
             opt_err.message(),
             Some("'str' object cannot be interpreted as an integer")
@@ -337,7 +337,7 @@ fn default_trait_impls_and_unconstrained() {
         DummyUnconstrained.drop_extracted(vm.heap);
 
         // Default type_error with None EXPECTED_TYPE_NAME
-        let err = DummyUnconstrained::type_error("int").into_python_exception(vm.interns, |_| None);
+        let err = DummyUnconstrained::type_error("int").into_python_exception(vm.symbols, |_| None);
         assert_eq!(err.message(), Some("expected a different type, not int"));
 
         // report_extract_fail fallback with BadArgPos and BadArgNamed when EXPECTED_TYPE_NAME is None
@@ -349,7 +349,7 @@ fn default_trait_impls_and_unconstrained() {
                 pos: 1,
             },
         );
-        let exc_pos = res_pos.unwrap_err().into_python_exception(vm.interns, |_| None);
+        let exc_pos = res_pos.unwrap_err().into_python_exception(vm.symbols, |_| None);
         assert_eq!(exc_pos.message(), Some("expected a different type, not int"));
 
         let res_named = DummyUnconstrained::extract(
@@ -360,7 +360,7 @@ fn default_trait_impls_and_unconstrained() {
                 arg_name: "x",
             },
         );
-        let exc_named = res_named.unwrap_err().into_python_exception(vm.interns, |_| None);
+        let exc_named = res_named.unwrap_err().into_python_exception(vm.symbols, |_| None);
         assert_eq!(exc_named.message(), Some("expected a different type, not int"));
     });
 }

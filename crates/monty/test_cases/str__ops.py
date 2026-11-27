@@ -5,7 +5,7 @@ assert 'test' + '' == 'test'
 assert '' + '' == ''
 assert 'a' + 'b' + 'c' + 'd' == 'abcd'
 
-# === Interned and computed operands ===
+# === Symbols and computed operands ===
 # Joining forces runtime allocation even when the text matches a literal.
 for left in ['café', ''.join(['ca', 'fé'])]:
     for right in ['日本', ''.join(['日', '本'])]:
@@ -167,7 +167,7 @@ assert sep.join(['a', 'b']) == 'a-b'
 s = str('.')
 assert s.join(['a', 'b']) == 'a.b'
 
-# Mixed string types in iterable (interned and heap)
+# Mixed string types in iterable (symbol-backed and heap)
 mixed = ['hello', str('world')]
 assert ' '.join(mixed) == 'hello world'
 

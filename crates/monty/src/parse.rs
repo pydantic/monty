@@ -23,10 +23,10 @@ use crate::{
         MatchCase, Node, Operator, Pattern, SequenceItem, Submodule, UnpackTarget,
     },
     fstring::{ConversionFlag, FStringPart, FormatSpec, ParsedFormatSpec, encode_format_spec},
-    intern::{CompileInterns, StringId},
     source_map::{SourceMap, StackFrameExt},
     source_nesting::{ast_depth_exceeded, ast_too_deep, nesting_bound_exceeded, parse_shallow},
     stringize::stringize_annotation,
+    symbols::{CompileSymbols, SymbolId},
     types::long_int::{INT_MAX_STR_DIGITS, bigint_cmp_f64, check_bigint_str_digits_limit},
     value::EitherStr,
 };
@@ -46,7 +46,7 @@ pub const MAX_NESTING_DEPTH: u16 = 200;
 #[cfg(debug_assertions)]
 pub const MAX_NESTING_DEPTH: u16 = 30;
 
-/// Caps dotted-import components to bound quadratic storage for interned path prefixes.
+/// Caps dotted-import components to bound quadratic storage for path prefix symbols.
 pub const MAX_IMPORT_COMPONENTS: usize = 32;
 
 /// `from __future__ import ...` features Monty accepts.
@@ -77,7 +77,7 @@ const UNSUPPORTED_FUTURES: [&str; 1] = ["barry_as_FLUFL"];
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ParsedParam {
     /// The parameter name.
-    pub name: StringId,
+    pub name: SymbolId,
     /// The default value expression (evaluated at definition time).
     pub default: Option<ExprLoc>,
 }
@@ -94,18 +94,18 @@ pub struct ParsedSignature {
     /// Positional-or-keyword parameters.
     pub args: Vec<ParsedParam>,
     /// Variable positional parameter (`*args`).
-    pub var_args: Option<StringId>,
+    pub var_args: Option<SymbolId>,
     /// Keyword-only parameters (after `*` or `*args`).
     pub kwargs: Vec<ParsedParam>,
     /// Variable keyword parameter (`**kwargs`).
-    pub var_kwargs: Option<StringId>,
+    pub var_kwargs: Option<SymbolId>,
 }
 
 impl ParsedSignature {
     /// Returns an iterator over all parameter names in the signature.
     ///
     /// Order: pos_args, args, var_args, kwargs, var_kwargs
-    pub fn param_names(&self) -> impl Iterator<Item = StringId> + '_ {
+    pub fn param_names(&self) -> impl Iterator<Item = SymbolId> + '_ {
         self.pos_args
             .iter()
             .map(|p| p.name)
@@ -191,11 +191,11 @@ pub(crate) fn syntax_error_in_snippet(msg: &str, position: CodeRange, source: &s
     SimpleException::new_msg(ExcType::SyntaxError, format!("{msg} (<string>, line {})", start.line)).into()
 }
 
-/// Builds a [`CodeRange`] from an interned filename and a ruff range.
+/// Builds a [`CodeRange`] from a filename symbol and a ruff range.
 ///
 /// Free rather than a `Parser` method so a syntax error raised before the parser
 /// exists can be located the same way [`Parser::convert_range`] does.
-fn code_range(filename: StringId, range: TextRange) -> CodeRange {
+fn code_range(filename: SymbolId, range: TextRange) -> CodeRange {
     CodeRange {
         filename,
         start_byte: range.start().into(),
@@ -211,29 +211,29 @@ pub(crate) struct ParsedModule {
     pub future_annotations: bool,
 }
 
-/// Parses code into a private interner overlay, discarded if any compilation stage fails.
+/// Parses code into a private symbol table overlay, discarded if any compilation stage fails.
 /// `future_annotations` is the flag inherited from an earlier REPL feed.
-pub(crate) fn parse_with_interner(
+pub(crate) fn parse_with_symbols(
     code: &str,
     filename: &str,
-    interner: &mut CompileInterns<'_>,
+    symbols: &mut CompileSymbols<'_>,
     future_annotations: bool,
 ) -> Result<ParsedModule, ParseError> {
-    // Interned up front so a syntax error can be located without a `Parser`,
+    // Registered as a symbol up front so a syntax error can be located without a `Parser`,
     // leaving the parser to be built once, fully populated, after parsing.
-    let filename_id = interner.intern(filename);
+    let filename_id = symbols.get_or_insert_symbol(filename);
     // Module sources are scanned for nesting by their entry points
     // (`MontyRun::new`, the REPL feeds), not here.
-    parse_module_with_filename_id(code, filename_id, interner, usize::MAX, future_annotations)
+    parse_module_with_filename_id(code, filename_id, symbols, usize::MAX, future_annotations)
 }
 
-/// [`parse_with_interner`] for a filename already interned — an `exec()`
+/// [`parse_with_symbols`] for a filename already in the symbol table — an `exec()`
 /// snippet, whose `<string>` id is fresh per call so tracebacks can tell the
 /// snippets apart, and which inherits its caller's `future_annotations`.
 pub(crate) fn parse_module_with_filename_id(
     code: &str,
-    filename_id: StringId,
-    interner: &mut CompileInterns<'_>,
+    filename_id: SymbolId,
+    symbols: &mut CompileSymbols<'_>,
     source_scan_threshold: usize,
     future_annotations: bool,
 ) -> Result<ParsedModule, ParseError> {
@@ -255,7 +255,7 @@ pub(crate) fn parse_module_with_filename_id(
         .filter(|token| token.kind() == TokenKind::Class)
         .map(Ranged::start)
         .collect();
-    let mut parser = Parser::new(code, filename_id, interner, class_keyword_offsets, future_annotations);
+    let mut parser = Parser::new(code, filename_id, symbols, class_keyword_offsets, future_annotations);
     let nodes = parser.parse_statements(parsed.into_syntax().body)?;
     Ok(ParsedModule {
         nodes,
@@ -270,10 +270,10 @@ pub(crate) fn parse_module_with_filename_id(
 /// result and in any error stays relative to what the caller passed.
 /// `filename_id` is the snippet's fresh `<string>` id (see
 /// [`parse_module_with_filename_id`]).
-pub(crate) fn parse_expression_with_interner(
+pub(crate) fn parse_expression_with_symbols(
     code: &str,
-    filename_id: StringId,
-    interner: &mut CompileInterns<'_>,
+    filename_id: SymbolId,
+    symbols: &mut CompileSymbols<'_>,
     source_scan_threshold: usize,
 ) -> Result<ExprLoc, ParseError> {
     check_source_nesting(code, Mode::Expression, filename_id, source_scan_threshold)?;
@@ -296,7 +296,7 @@ pub(crate) fn parse_expression_with_interner(
     }
     // No `class` keywords can occur in a bare expression.
     // An expression holds no annotations, so the `__future__` state is moot.
-    let mut parser = Parser::new(code, filename_id, interner, Vec::new(), false);
+    let mut parser = Parser::new(code, filename_id, symbols, Vec::new(), false);
     parser.parse_expression(*parsed.into_syntax().body)
 }
 
@@ -305,7 +305,7 @@ pub(crate) fn parse_expression_with_interner(
 ///
 /// ruff skips a BOM at offset 0, which suits a module read from a file, but
 /// CPython treats one in a `str` snippet as an invalid character.
-pub(crate) fn reject_leading_bom(code: &str, start: TextSize, filename_id: StringId) -> Result<(), ParseError> {
+pub(crate) fn reject_leading_bom(code: &str, start: TextSize, filename_id: SymbolId) -> Result<(), ParseError> {
     if code[start.to_usize()..].starts_with('\u{feff}') {
         Err(ParseError::syntax(
             "invalid non-printable character U+FEFF",
@@ -346,7 +346,7 @@ pub(crate) fn source_nesting_exception(
     source_scan_threshold: usize,
 ) -> Result<(), MontyException> {
     // The filename id is a compiler concern; the exception names the file itself.
-    check_source_nesting(code, Mode::Module, StringId::default(), source_scan_threshold)
+    check_source_nesting(code, Mode::Module, SymbolId::default(), source_scan_threshold)
         .map_err(|e| e.into_python_exc(script_name, code))
 }
 
@@ -367,7 +367,7 @@ pub fn type_check_nesting_exception(
     source_nesting_exception(code, script_name, source_scan_threshold)?;
     match ast_depth_exceeded(code, MAX_NESTING_DEPTH) {
         Some(range) => {
-            Err(ParseError::too_deeply_nested(code_range(StringId::default(), range))
+            Err(ParseError::too_deeply_nested(code_range(SymbolId::default(), range))
                 .into_python_exc(script_name, code))
         }
         None => Ok(()),
@@ -375,7 +375,7 @@ pub fn type_check_nesting_exception(
 }
 
 /// Rejects source lengths that Ruff's 32-bit offsets cannot represent.
-pub(crate) fn check_source_length(byte_len: usize, filename_id: StringId) -> Result<(), ParseError> {
+pub(crate) fn check_source_length(byte_len: usize, filename_id: SymbolId) -> Result<(), ParseError> {
     u32::try_from(byte_len).map(|_| ()).map_err(|_| {
         ParseError::syntax(
             "source exceeds maximum length of 4294967295 bytes",
@@ -392,7 +392,7 @@ pub(crate) fn check_source_length(byte_len: usize, filename_id: StringId) -> Res
 fn check_source_nesting(
     code: &str,
     mode: Mode,
-    filename_id: StringId,
+    filename_id: SymbolId,
     source_scan_threshold: usize,
 ) -> Result<(), ParseError> {
     check_source_length(code.len(), filename_id)?;
@@ -408,14 +408,14 @@ fn check_source_nesting(
 
 /// Parser for converting ruff AST to Monty's intermediate ParseNode representation.
 ///
-/// Holds references to the source code and the caller's string interner for names.
-/// The filename is interned once at construction and reused for all CodeRanges.
+/// Holds references to the source code and the caller's symbol table for names.
+/// The filename is stored as a symbol once at construction and reused for all CodeRanges.
 pub struct Parser<'a, 'i> {
     code: &'a str,
-    /// Interned filename ID, used for all CodeRanges created by this parser.
-    filename_id: StringId,
-    /// Intern table for names (variables, functions, etc).
-    interner: &'a mut CompileInterns<'i>,
+    /// Filename symbol ID, used for all CodeRanges created by this parser.
+    filename_id: SymbolId,
+    /// Symbol table for names (variables, functions, etc).
+    symbols: &'a mut CompileSymbols<'i>,
     /// Remaining nesting depth budget for recursive structures.
     /// Starts at MAX_NESTING_DEPTH and decrements on each nested level.
     /// When it reaches zero, we return a "Source is too deeply nested" syntax error.
@@ -439,15 +439,15 @@ pub struct Parser<'a, 'i> {
 impl<'a, 'i> Parser<'a, 'i> {
     fn new(
         code: &'a str,
-        filename_id: StringId,
-        interner: &'a mut CompileInterns<'i>,
+        filename_id: SymbolId,
+        symbols: &'a mut CompileSymbols<'i>,
         class_keyword_offsets: Vec<TextSize>,
         future_annotations: bool,
     ) -> Self {
         Self {
             code,
             filename_id,
-            interner,
+            symbols,
             depth_remaining: MAX_NESTING_DEPTH,
             class_keyword_offsets,
             future_annotations,
@@ -635,10 +635,10 @@ impl<'a, 'i> Parser<'a, 'i> {
                 )?;
                 let cls = self.parse_expression(*p.cls)?;
                 let patterns = self.parse_patterns(p.arguments.patterns)?;
-                let mut kwd_attrs: Vec<StringId> = Vec::with_capacity(p.arguments.keywords.len());
+                let mut kwd_attrs: Vec<SymbolId> = Vec::with_capacity(p.arguments.keywords.len());
                 let mut kwd_patterns = Vec::with_capacity(p.arguments.keywords.len());
                 for keyword in p.arguments.keywords {
-                    let attr = self.interner.intern(&keyword.attr.id);
+                    let attr = self.symbols.get_or_insert_symbol(&keyword.attr.id);
                     let pattern = self.parse_pattern(keyword.pattern)?;
                     // CPython anchors the diagnostic on the repeated keyword's sub-pattern.
                     if kwd_attrs.contains(&attr) {
@@ -694,17 +694,17 @@ impl<'a, 'i> Parser<'a, 'i> {
     fn check_duplicate_mapping_keys(&self, keys: &[ExprLoc], position: CodeRange) -> Result<(), ParseError> {
         let folded: Vec<FoldedKey<'_>> = keys
             .iter()
-            .filter_map(|key| ConstantKey::of(key, self.interner))
+            .filter_map(|key| ConstantKey::of(key, self.symbols))
             .map(|key| FoldedKey {
                 key,
-                number: key.number(self.interner),
+                number: key.number(self.symbols),
             })
             .collect();
         for (i, constant) in folded.iter().enumerate() {
             if folded[..i].iter().any(|seen| seen.py_eq(constant)) {
                 let constant = constant.key;
                 // CPython's compiler raises `ValueError` formatting a key past the digit limit.
-                let msg = match constant.repr(self.interner) {
+                let msg = match constant.repr(self.symbols) {
                     Some(repr) => format!("mapping pattern checks duplicate key ({repr})"),
                     None => format!(
                         "Exceeds the limit ({INT_MAX_STR_DIGITS} digits) for integer string conversion; use \
@@ -785,7 +785,7 @@ impl<'a, 'i> Parser<'a, 'i> {
                         ..
                     }) => Ok(Node::AttrOpAssign {
                         object: self.parse_expression(*object)?,
-                        attr: EitherStr::Interned(self.interner.intern(attr.id())),
+                        attr: EitherStr::Symbol(self.symbols.get_or_insert_symbol(attr.id())),
                         op,
                         value,
                         target_position: self.convert_range(range),
@@ -979,7 +979,7 @@ impl<'a, 'i> Parser<'a, 'i> {
                         let binding_name = alias_node
                             .asname
                             .as_ref()
-                            .map_or(module_name, |n| self.interner.intern(&n.id));
+                            .map_or(module_name, |n| self.symbols.get_or_insert_symbol(&n.id));
                         let binding = Identifier::new(binding_name, position);
                         Ok(ImportName {
                             module_name,
@@ -1063,9 +1063,12 @@ impl<'a, 'i> Parser<'a, 'i> {
                 let names = names
                     .iter()
                     .map(|alias| {
-                        let name = self.interner.intern(&alias.name);
+                        let name = self.symbols.get_or_insert_symbol(&alias.name);
                         // The binding name is the alias if provided, otherwise the import name
-                        let binding_name = alias.asname.as_ref().map_or(name, |n| self.interner.intern(&n.id));
+                        let binding_name = alias
+                            .asname
+                            .as_ref()
+                            .map_or(name, |n| self.symbols.get_or_insert_symbol(&n.id));
                         // Create an unresolved identifier (namespace slot will be set during prepare)
                         let binding = Identifier::new(binding_name, position);
                         Ok((name, binding))
@@ -1081,7 +1084,7 @@ impl<'a, 'i> Parser<'a, 'i> {
             Stmt::Global(ast::StmtGlobal { names, range, .. }) => {
                 let names = names
                     .iter()
-                    .map(|id| self.interner.intern(&self.code[id.range]))
+                    .map(|id| self.symbols.get_or_insert_symbol(&self.code[id.range]))
                     .collect();
                 Ok(Node::Global {
                     position: self.convert_range(range),
@@ -1091,7 +1094,7 @@ impl<'a, 'i> Parser<'a, 'i> {
             Stmt::Nonlocal(ast::StmtNonlocal { names, range, .. }) => {
                 let names = names
                     .iter()
-                    .map(|id| self.interner.intern(&self.code[id.range]))
+                    .map(|id| self.symbols.get_or_insert_symbol(&self.code[id.range]))
                     .collect();
                 Ok(Node::Nonlocal {
                     position: self.convert_range(range),
@@ -1136,13 +1139,19 @@ impl<'a, 'i> Parser<'a, 'i> {
         let args = self.parse_params_with_defaults(&params.args)?;
 
         // Parse *args
-        let var_args = params.vararg.as_ref().map(|p| self.interner.intern(&p.name.id));
+        let var_args = params
+            .vararg
+            .as_ref()
+            .map(|p| self.symbols.get_or_insert_symbol(&p.name.id));
 
         // Parse keyword-only parameters (after * or *args)
         let kwargs = self.parse_params_with_defaults(&params.kwonlyargs)?;
 
         // Parse **kwargs
-        let var_kwargs = params.kwarg.as_ref().map(|p| self.interner.intern(&p.name.id));
+        let var_kwargs = params
+            .kwarg
+            .as_ref()
+            .map(|p| self.symbols.get_or_insert_symbol(&p.name.id));
 
         let signature = ParsedSignature {
             pos_args,
@@ -1156,7 +1165,7 @@ impl<'a, 'i> Parser<'a, 'i> {
         let annotate = if annotations.is_empty() {
             None
         } else {
-            let annotate_id = self.interner.intern("__annotate__");
+            let annotate_id = self.symbols.get_or_insert_symbol("__annotate__");
             Some(Box::new(self.synthesize_annotate(
                 annotations,
                 annotate_id,
@@ -1187,7 +1196,7 @@ impl<'a, 'i> Parser<'a, 'i> {
         &mut self,
         params: &mut ast::Parameters,
         returns: Option<Box<AstExpr>>,
-    ) -> Vec<(StringId, Box<AstExpr>)> {
+    ) -> Vec<(SymbolId, Box<AstExpr>)> {
         let ast::Parameters {
             posonlyargs,
             args,
@@ -1196,17 +1205,17 @@ impl<'a, 'i> Parser<'a, 'i> {
             kwarg,
             ..
         } = params;
-        let mut annotations: Vec<(StringId, Box<AstExpr>)> = args
+        let mut annotations: Vec<(SymbolId, Box<AstExpr>)> = args
             .iter_mut()
             .chain(posonlyargs.iter_mut())
             .map(|p| &mut p.parameter)
             .chain(vararg.as_deref_mut())
             .chain(kwonlyargs.iter_mut().map(|p| &mut p.parameter))
             .chain(kwarg.as_deref_mut())
-            .filter_map(|p| Some((self.interner.intern(&p.name.id), p.annotation.take()?)))
+            .filter_map(|p| Some((self.symbols.get_or_insert_symbol(&p.name.id), p.annotation.take()?)))
             .collect();
         if let Some(returns) = returns {
-            annotations.push((self.interner.intern("return"), returns));
+            annotations.push((self.symbols.get_or_insert_symbol("return"), returns));
         }
         annotations
     }
@@ -1225,14 +1234,14 @@ impl<'a, 'i> Parser<'a, 'i> {
     /// text instead, so `__annotations__` reads as PEP 563 strings.
     fn synthesize_annotate(
         &mut self,
-        annotations: Vec<(StringId, Box<AstExpr>)>,
-        name_id: StringId,
+        annotations: Vec<(SymbolId, Box<AstExpr>)>,
+        name_id: SymbolId,
         position: CodeRange,
     ) -> Result<RawFunctionDef, ParseError> {
         let items = self.annotation_items(annotations, position)?;
-        let format_id = self.interner.intern("format");
+        let format_id = self.symbols.get_or_insert_symbol("format");
         let name = |parser: &mut Self, text: &str| {
-            let id = parser.interner.intern(text);
+            let id = parser.symbols.get_or_insert_symbol(text);
             ExprLoc::new(position, Expr::Name(Identifier::new(id, position)))
         };
         let test = ExprLoc::new(
@@ -1279,7 +1288,7 @@ impl<'a, 'i> Parser<'a, 'i> {
     /// the depth check guarding stringization's recursive passes is made here.
     fn annotation_items(
         &mut self,
-        annotations: Vec<(StringId, Box<AstExpr>)>,
+        annotations: Vec<(SymbolId, Box<AstExpr>)>,
         position: CodeRange,
     ) -> Result<Vec<DictItem>, ParseError> {
         let mut items = Vec::with_capacity(annotations.len());
@@ -1288,7 +1297,9 @@ impl<'a, 'i> Parser<'a, 'i> {
             let key = ExprLoc::new(position, Expr::Literal(Literal::Str(name)));
             let value = if self.future_annotations {
                 let range = self.convert_range(annotation.range());
-                let text_id = self.interner.intern(&stringize_annotation(&mut annotation));
+                let text_id = self
+                    .symbols
+                    .get_or_insert_symbol(&stringize_annotation(&mut annotation));
                 ExprLoc::new(range, Expr::Literal(Literal::Str(text_id)))
             } else {
                 self.parse_expression(*annotation)?
@@ -1370,18 +1381,21 @@ impl<'a, 'i> Parser<'a, 'i> {
         // `(name, annotation)` pairs, compiled into the class's `__annotate__`
         // below (or, under `from __future__ import annotations`, stringized
         // into `__annotations__`).
-        let mut annotations: Vec<(StringId, Box<AstExpr>)> = Vec::new();
+        let mut annotations: Vec<(SymbolId, Box<AstExpr>)> = Vec::new();
 
         // CPython stores the class docstring as a real `__doc__` entry in the
         // class dict (`None` when absent), so synthesize a `__doc__ = <docstring
         // or None>` binding as the first class-body statement — `Foo.__doc__` and
         // `obj.__doc__` then work through ordinary namespace lookup. An explicit
         // `__doc__ = ...` later in the body overwrites it, as in CPython.
-        let doc_target = Identifier::new(self.interner.intern("__doc__"), self.convert_range(class.name.range));
+        let doc_target = Identifier::new(
+            self.symbols.get_or_insert_symbol("__doc__"),
+            self.convert_range(class.name.range),
+        );
         let mut doc_value = ExprLoc::new(self.convert_range(class.name.range), Expr::Literal(Literal::None));
-        // Pre-intern "__class__" so Prepare (which holds &CompileInterns) can look up
+        // Register the "__class__" symbol so Prepare (which holds &CompileSymbols) can look up
         // StaticStrings::DunderClass even if no method body explicitly mentions the identifier.
-        self.interner.intern("__class__");
+        self.symbols.get_or_insert_symbol("__class__");
 
         for (i, stmt) in class.body.into_iter().enumerate() {
             match stmt {
@@ -1515,7 +1529,8 @@ impl<'a, 'i> Parser<'a, 'i> {
         // stores the stringized dict as `__annotations__` instead.
         if !annotations.is_empty() {
             if self.future_annotations {
-                let annotations_target = Identifier::new(self.interner.intern("__annotations__"), position);
+                let annotations_target =
+                    Identifier::new(self.symbols.get_or_insert_symbol("__annotations__"), position);
                 if members.iter().any(|m| m.name_id == annotations_target.name_id) {
                     // Being last, the synthetic assignment would clobber the body's own
                     // binding and lose these entries. CPython stores into whatever the name
@@ -1532,7 +1547,7 @@ impl<'a, 'i> Parser<'a, 'i> {
                     object: ExprLoc::new(position, Expr::Dict(items)),
                 });
             } else {
-                let annotate_target = Identifier::new(self.interner.intern("__annotate_func__"), position);
+                let annotate_target = Identifier::new(self.symbols.get_or_insert_symbol("__annotate_func__"), position);
                 let def = self.synthesize_annotate(annotations, annotate_target.name_id, position)?;
                 members.push(annotate_target);
                 body.push(Node::FunctionDef {
@@ -1733,7 +1748,7 @@ impl<'a, 'i> Parser<'a, 'i> {
             }),
             AstExpr::Attribute(ast::ExprAttribute { value, attr, range, .. }) => Ok(AssignTarget::Attr {
                 object: self.parse_expression(*value)?,
-                attr: EitherStr::Interned(self.interner.intern(attr.id())),
+                attr: EitherStr::Symbol(self.symbols.get_or_insert_symbol(attr.id())),
                 target_position: self.convert_range(range),
             }),
             AstExpr::Tuple(ast::ExprTuple { elts, range, .. }) | AstExpr::List(ast::ExprList { elts, range, .. }) => {
@@ -1855,8 +1870,8 @@ impl<'a, 'i> Parser<'a, 'i> {
             }) => {
                 let position = self.convert_range(range);
 
-                // Intern the lambda name
-                let name_id = self.interner.intern("<lambda>");
+                // Register the lambda name as a symbol
+                let name_id = self.symbols.get_or_insert_symbol("<lambda>");
 
                 // Parse lambda parameters (similar to function parameters)
                 let signature = if let Some(params) = parameters {
@@ -1867,13 +1882,19 @@ impl<'a, 'i> Parser<'a, 'i> {
                     let args = self.parse_params_with_defaults(&params.args)?;
 
                     // Parse *args
-                    let var_args = params.vararg.as_ref().map(|p| self.interner.intern(&p.name.id));
+                    let var_args = params
+                        .vararg
+                        .as_ref()
+                        .map(|p| self.symbols.get_or_insert_symbol(&p.name.id));
 
                     // Parse keyword-only parameters (after * or *args)
                     let kwargs = self.parse_params_with_defaults(&params.kwonlyargs)?;
 
                     // Parse **kwargs
-                    let var_kwargs = params.kwarg.as_ref().map(|p| self.interner.intern(&p.name.id));
+                    let var_kwargs = params
+                        .kwarg
+                        .as_ref()
+                        .map(|p| self.symbols.get_or_insert_symbol(&p.name.id));
 
                     ParsedSignature {
                         pos_args,
@@ -2089,7 +2110,7 @@ impl<'a, 'i> Parser<'a, 'i> {
                             position,
                             Expr::AttrCall {
                                 object,
-                                attr: EitherStr::Interned(self.interner.intern(attr.id())),
+                                attr: EitherStr::Symbol(self.symbols.get_or_insert_symbol(attr.id())),
                                 args: Box::new(args),
                             },
                         ))
@@ -2113,15 +2134,15 @@ impl<'a, 'i> Parser<'a, 'i> {
                 self.convert_range(t.range),
             )),
             AstExpr::StringLiteral(ast::ExprStringLiteral { value, range, .. }) => {
-                let string_id = self.interner.intern(&value.to_string());
+                let symbol_id = self.symbols.get_or_insert_symbol(&value.to_string());
                 Ok(ExprLoc::new(
                     self.convert_range(range),
-                    Expr::Literal(Literal::Str(string_id)),
+                    Expr::Literal(Literal::Str(symbol_id)),
                 ))
             }
             AstExpr::BytesLiteral(ast::ExprBytesLiteral { value, range, .. }) => {
                 let bytes: Cow<'_, [u8]> = Cow::from(&value);
-                let bytes_id = self.interner.intern_bytes(&bytes);
+                let bytes_id = self.symbols.intern_bytes(&bytes);
                 Ok(ExprLoc::new(
                     self.convert_range(range),
                     Expr::Literal(Literal::Bytes(bytes_id)),
@@ -2137,7 +2158,7 @@ impl<'a, 'i> Parser<'a, 'i> {
                             // Integer too large for i64, parse string representation as BigInt.
                             // Handles radix prefixes (0x, 0o, 0b) and underscores.
                             let bi = parse_int_literal(&i.to_string(), position)?;
-                            let long_int_id = self.interner.intern_long_int(bi);
+                            let long_int_id = self.symbols.intern_long_int(bi);
                             Literal::LongInt(long_int_id)
                         }
                     }
@@ -2165,7 +2186,7 @@ impl<'a, 'i> Parser<'a, 'i> {
                     position,
                     Expr::AttrGet {
                         object,
-                        attr: EitherStr::Interned(self.interner.intern(attr.id())),
+                        attr: EitherStr::Symbol(self.symbols.get_or_insert_symbol(attr.id())),
                     },
                 ))
             }
@@ -2484,7 +2505,7 @@ impl<'a, 'i> Parser<'a, 'i> {
             }
             AstExpr::Attribute(ast::ExprAttribute { value, attr, range, .. }) => Ok(UnpackTarget::Attr {
                 object: Box::new(self.parse_expression(*value)?),
-                attr: EitherStr::Interned(self.interner.intern(attr.id())),
+                attr: EitherStr::Symbol(self.symbols.get_or_insert_symbol(attr.id())),
                 position: self.convert_range(range),
             }),
             AstExpr::Subscript(ast::ExprSubscript {
@@ -2502,8 +2523,8 @@ impl<'a, 'i> Parser<'a, 'i> {
     }
 
     fn identifier(&mut self, id: &Name, range: TextRange) -> Identifier {
-        let string_id = self.interner.intern(id);
-        Identifier::new(string_id, self.convert_range(range))
+        let symbol_id = self.symbols.get_or_insert_symbol(id);
+        Identifier::new(symbol_id, self.convert_range(range))
     }
 
     /// Parses function parameters with optional default values.
@@ -2515,7 +2536,7 @@ impl<'a, 'i> Parser<'a, 'i> {
         params
             .iter()
             .map(|p| {
-                let name = self.interner.intern(&p.parameter.name.id);
+                let name = self.symbols.get_or_insert_symbol(&p.parameter.name.id);
                 let default = match &p.default {
                     Some(expr) => Some(self.parse_expression((**expr).clone())?),
                     None => None,
@@ -2566,11 +2587,11 @@ impl<'a, 'i> Parser<'a, 'i> {
         for fstring_part in value {
             match fstring_part {
                 ast::FStringPartRef::Literal(lit) => {
-                    // Literal string segment - intern for use at runtime
+                    // Literal string segment - store as a symbol for runtime
                     let processed = lit.value.to_string();
                     if !processed.is_empty() {
-                        let string_id = self.interner.intern(&processed);
-                        parts.push(FStringPart::Literal(string_id));
+                        let symbol_id = self.symbols.get_or_insert_symbol(&processed);
+                        parts.push(FStringPart::Literal(symbol_id));
                     }
                 }
                 ast::FStringPartRef::FString(fstring) => {
@@ -2585,11 +2606,11 @@ impl<'a, 'i> Parser<'a, 'i> {
 
         // Optimization: if only one literal part, return as simple string literal
         if parts.len() == 1
-            && let FStringPart::Literal(string_id) = parts[0]
+            && let FStringPart::Literal(symbol_id) = parts[0]
         {
             return Ok(ExprLoc::new(
                 self.convert_range(range),
-                Expr::Literal(Literal::Str(string_id)),
+                Expr::Literal(Literal::Str(symbol_id)),
             ));
         }
 
@@ -2600,10 +2621,10 @@ impl<'a, 'i> Parser<'a, 'i> {
     fn parse_fstring_element(&mut self, element: &InterpolatedStringElement) -> Result<FStringPart, ParseError> {
         match element {
             InterpolatedStringElement::Literal(lit) => {
-                // Intern the literal string for use at runtime
+                // Register the literal as a symbol for use at runtime
                 let processed = lit.value.to_string();
-                let string_id = self.interner.intern(&processed);
-                Ok(FStringPart::Literal(string_id))
+                let symbol_id = self.symbols.get_or_insert_symbol(&processed);
+                Ok(FStringPart::Literal(symbol_id))
             }
             InterpolatedStringElement::Interpolation(interp) => {
                 let expr = Box::new(self.parse_expression((*interp.expression).clone())?);
@@ -2629,8 +2650,8 @@ impl<'a, 'i> Parser<'a, 'i> {
                 // Extract debug prefix for `=` specifier (e.g., f'{a=}' -> "a=")
                 let debug_prefix = interp.debug_text.as_ref().map(|dt| {
                     let expr_text = &self.code[interp.expression.range()];
-                    self.interner
-                        .intern(&format!("{}{}{}", dt.leading(), expr_text, dt.trailing()))
+                    self.symbols
+                        .get_or_insert_symbol(&format!("{}{}{}", dt.leading(), expr_text, dt.trailing()))
                 });
                 Ok(FStringPart::Interpolation {
                     expr,
@@ -2647,7 +2668,7 @@ impl<'a, 'i> Parser<'a, 'i> {
     /// Specs with no interpolations take the fast path: their literal text is
     /// concatenated, parsed, and bit-packed into a single `u64` carried inside
     /// `FormatSpec::Static`. The compiler then drops this straight into the
-    /// constant pool with no further work, and no per-segment interning is
+    /// constant pool with no further work, and no per-segment symbol creation is
     /// performed (the parsed spec is the only thing the bytecode needs).
     ///
     /// Two cases force a `FormatSpec::Dynamic`:
@@ -2655,7 +2676,7 @@ impl<'a, 'i> Parser<'a, 'i> {
     ///    materialized at runtime.
     /// 2. Valid but extreme specs whose width or precision exceed the compact
     ///    encoding (e.g. `f"{x:>1048576}"`). The concatenated literal text is
-    ///    interned and emitted as a single-literal dynamic spec so the VM
+    ///    stored as a symbol and emitted as a single-literal dynamic spec so the VM
     ///    re-parses it at runtime.
     fn parse_format_spec(
         &mut self,
@@ -2671,8 +2692,8 @@ impl<'a, 'i> Parser<'a, 'i> {
             for element in &spec.elements {
                 match element {
                     InterpolatedStringElement::Literal(lit) => {
-                        let string_id = self.interner.intern(&lit.value);
-                        parts.push(FStringPart::Literal(string_id));
+                        let symbol_id = self.symbols.get_or_insert_symbol(&lit.value);
+                        parts.push(FStringPart::Literal(symbol_id));
                     }
                     InterpolatedStringElement::Interpolation(interp) => {
                         let expr = Box::new(self.parse_expression((*interp.expression).clone())?);
@@ -2718,8 +2739,8 @@ impl<'a, 'i> Parser<'a, 'i> {
                     } else {
                         // Valid but too large for the compact encoding, or not in
                         // canonical form — re-parse the literal at runtime.
-                        let string_id = self.interner.intern(&static_spec);
-                        Ok(Some(FormatSpec::Dynamic(vec![FStringPart::Literal(string_id)])))
+                        let symbol_id = self.symbols.get_or_insert_symbol(&static_spec);
+                        Ok(Some(FormatSpec::Dynamic(vec![FStringPart::Literal(symbol_id)])))
                     }
                 }
                 // Two kinds of failing spec are deferred to the dynamic
@@ -2734,15 +2755,15 @@ impl<'a, 'i> Parser<'a, 'i> {
                 // Genuinely-malformed specs and `usize` overflow still fail at
                 // compile time.
                 Err(err) if static_spec.contains('%') || err.defer_to_runtime() => {
-                    let string_id = self.interner.intern(&static_spec);
-                    Ok(Some(FormatSpec::Dynamic(vec![FStringPart::Literal(string_id)])))
+                    let symbol_id = self.symbols.get_or_insert_symbol(&static_spec);
+                    Ok(Some(FormatSpec::Dynamic(vec![FStringPart::Literal(symbol_id)])))
                 }
                 Err(err) => Err(ParseError::syntax(err.to_string(), self.convert_range(spec.range))),
             }
         }
     }
 
-    /// Interns dotted-import components and prefixes; rejects more than [`MAX_IMPORT_COMPONENTS`].
+    /// Registers symbols for dotted-import components and prefixes; rejects more than [`MAX_IMPORT_COMPONENTS`].
     /// A relative import (non-empty `dots`) loads the package its dots name, then each
     /// component of `dotted`, whose paths keep the dots (`..pkg`, `..pkg.mod`).
     fn import_path(
@@ -2750,7 +2771,7 @@ impl<'a, 'i> Parser<'a, 'i> {
         dots: &str,
         dotted: &str,
         position: CodeRange,
-    ) -> Result<(StringId, Vec<Submodule>), ParseError> {
+    ) -> Result<(SymbolId, Vec<Submodule>), ParseError> {
         if dotted.split('.').nth(MAX_IMPORT_COMPONENTS).is_some() {
             return Err(ParseError::syntax(
                 format!("dotted import has more than {MAX_IMPORT_COMPONENTS} components"),
@@ -2763,7 +2784,7 @@ impl<'a, 'i> Parser<'a, 'i> {
         } else {
             dots.len()
         };
-        let module_name = self.interner.intern(&path[..end]);
+        let module_name = self.symbols.get_or_insert_symbol(&path[..end]);
         // `.b.c` after an absolute head, `pkg.mod` after a relative one.
         let (rest, mut separator) = match path[end..].strip_prefix('.') {
             Some(rest) => (rest, 1),
@@ -2776,8 +2797,8 @@ impl<'a, 'i> Parser<'a, 'i> {
                 end += separator + part.len();
                 separator = 1;
                 Submodule {
-                    name: self.interner.intern(part),
-                    path: self.interner.intern(&path[..end]),
+                    name: self.symbols.get_or_insert_symbol(part),
+                    path: self.symbols.get_or_insert_symbol(&path[..end]),
                 }
             })
             .collect();
@@ -3070,9 +3091,9 @@ fn describe_expr_kind(expr: &AstExpr) -> &'static str {
 /// on the relevant line only) at diagnostic time.
 #[derive(Clone, Copy, Default, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct CodeRange {
-    /// Filename identity, resolved by `Interns::get_filename`.
+    /// Filename identity, resolved by `SymbolTable::get_filename`.
     #[serde(rename = "F")]
-    pub filename: StringId,
+    pub filename: SymbolId,
     /// Byte offset of the range start within the source text.
     #[serde(rename = "S")]
     pub start_byte: u32,
@@ -3135,7 +3156,7 @@ impl ParseError {
     /// snippet: the same type and message as [`into_python_exc`](Self::into_python_exc),
     /// with a `SyntaxError` carrying CPython's `(<string>, line N)` suffix.
     /// Non-syntax errors keep a resolved snippet location, independent of the
-    /// rejected compilation's intern IDs; propagation adds the caller's frames.
+    /// rejected compilation's symbol IDs; propagation adds the caller's frames.
     pub(crate) fn into_run_error(self, source: &str) -> RunError {
         match self {
             Self::Syntax { msg, position } => syntax_error_in_snippet(&msg, position, source),
@@ -3270,7 +3291,7 @@ enum ConstantKey<'a> {
 }
 
 impl<'a> ConstantKey<'a> {
-    fn of(key: &'a ExprLoc, interner: &CompileInterns<'_>) -> Option<Self> {
+    fn of(key: &'a ExprLoc, symbols: &CompileSymbols<'_>) -> Option<Self> {
         match &key.expr {
             Expr::Literal(literal) => Some(Self::Literal {
                 literal,
@@ -3288,7 +3309,7 @@ impl<'a> ConstantKey<'a> {
                 let Expr::Literal(Literal::Complex(imag)) = right.expr else {
                     return None;
                 };
-                let real = match Self::of(left, interner)?.number(interner)? {
+                let real = match Self::of(left, symbols)?.number(symbols)? {
                     ConstantNumber::Int(i) => i.to_f64().filter(|f| f.is_finite())?,
                     ConstantNumber::Float(f) => f,
                     ConstantNumber::Complex { .. } => return None,
@@ -3310,7 +3331,7 @@ impl<'a> ConstantKey<'a> {
     }
 
     /// The key as an exact number (`bool` included), with its sign applied.
-    fn number(self, interner: &CompileInterns<'_>) -> Option<ConstantNumber> {
+    fn number(self, symbols: &CompileSymbols<'_>) -> Option<ConstantNumber> {
         let (literal, negated) = match self {
             Self::Literal { literal, negated } => (literal, negated),
             Self::Complex { real, imag } => return Some(ConstantNumber::Complex { real, imag }),
@@ -3318,7 +3339,7 @@ impl<'a> ConstantKey<'a> {
         let number = match literal {
             Literal::Bool(b) => ConstantNumber::Int(BigInt::from(u8::from(*b))),
             Literal::Int(i) => ConstantNumber::Int(BigInt::from(*i)),
-            Literal::LongInt(id) => ConstantNumber::Int(interner.get_long_int(*id).clone()),
+            Literal::LongInt(id) => ConstantNumber::Int(symbols.get_long_int(*id).clone()),
             Literal::Float(f) => ConstantNumber::Float(*f),
             Literal::Complex(imag) => ConstantNumber::Complex { real: 0.0, imag: *imag },
             _ => return None,
@@ -3328,7 +3349,7 @@ impl<'a> ConstantKey<'a> {
 
     /// The key's `repr`, for the duplicate-key diagnostic, or `None` for an
     /// integer (e.g. a long hex literal) past the decimal digit limit.
-    fn repr(self, interner: &CompileInterns<'_>) -> Option<String> {
+    fn repr(self, symbols: &CompileSymbols<'_>) -> Option<String> {
         let (literal, negated) = match self {
             Self::Literal { literal, negated } => (literal, negated),
             Self::Complex { real, imag } => return Some(FormatComplex { real, imag }.to_string()),
@@ -3340,10 +3361,10 @@ impl<'a> ConstantKey<'a> {
             Literal::Bool(false) => "False".to_owned(),
             Literal::Int(i) => format!("{sign}{i}"),
             Literal::Float(f) => format!("{sign}{}", FormatFloat(*f)),
-            Literal::Str(id) => StringRepr(interner.get_str(*id)).to_string(),
-            Literal::Bytes(id) => bytes_repr(interner.get_bytes(*id)),
+            Literal::Str(id) => StringRepr(symbols.get_str(*id)).to_string(),
+            Literal::Bytes(id) => bytes_repr(symbols.get_bytes(*id)),
             Literal::LongInt(id) => {
-                let value = interner.get_long_int(*id);
+                let value = symbols.get_long_int(*id);
                 check_bigint_str_digits_limit(value).ok()?;
                 format!("{sign}{value}")
             }

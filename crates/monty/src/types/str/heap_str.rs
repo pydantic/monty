@@ -39,7 +39,7 @@ impl HeapStr {
         if let Some(hash) = self.cached_hash.get() {
             hash
         } else {
-            // Use the same hash as inline and interned strings for dictionary lookup.
+            // Use the same hash as inline and symbols for dictionary lookup.
             let hash = hash_python_str(self.as_str());
             self.cached_hash.set(Some(hash));
             hash
@@ -48,7 +48,7 @@ impl HeapStr {
 
     /// Creates a heap string from owned text.
     ///
-    /// Use [`super::allocate_string`] or [`super::allocate_string_no_interning`] for values.
+    /// Use [`super::allocate_string`] or [`super::allocate_non_symbol_string`] for values.
     #[must_use]
     pub(super) fn new(text: Box<str>) -> Self {
         Self {

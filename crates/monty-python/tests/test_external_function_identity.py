@@ -3,7 +3,7 @@
 Monty represents external function inputs in two ways depending on whether the
 function's `__name__` was interned during parsing:
 
-- inline `Value::ExtFunction(StringId)` when the name appears in source
+- inline `Value::ExtFunction(SymbolId)` when the name appears in source
 - heap `HeapData::ExtFunction(String)` otherwise
 
 Both representations refer to the same logical callable and must therefore be
@@ -29,8 +29,8 @@ def test_same_callable_identical_when_name_not_in_source(monty_run: RunMonty):
 
 
 def test_same_callable_identical_when_name_in_source(monty_run: RunMonty):
-    # `foo = None` interns the string "foo" during parsing, so the input
-    # conversion takes the inline `Value::ExtFunction(StringId)` path.
+    # `foo = None` registers the symbol "foo" during parsing, so the input
+    # conversion takes the inline `Value::ExtFunction(SymbolId)` path.
     assert monty_run('foo = None\n(a is b, a == b)', inputs={'a': foo, 'b': foo}) == snapshot((True, True))
 
 
@@ -56,7 +56,7 @@ def test_distinct_named_callables_remain_distinct(monty_run: RunMonty):
 
 def test_inline_callable_exports_as_function_object(monty_run: RunMonty):
     # Round-trip through the inline path (the bug from #345): when the
-    # function name is interned in source, the inline `Value::ExtFunction`
+    # function name is stored as a symbol in source, the inline `Value::ExtFunction`
     # used to fall through to `repr_or_error` and export as the repr string
     # `<function 'foo' external>` rather than the name `foo`.
     assert monty_run('foo = None\nx', inputs={'x': foo}) == snapshot('foo')
@@ -64,5 +64,5 @@ def test_inline_callable_exports_as_function_object(monty_run: RunMonty):
 
 def test_callable_export_stable_across_source_mention(monty_run: RunMonty):
     # Same callable, two source variants. The exported value must be the same
-    # representation regardless of whether the name was interned.
+    # representation regardless of whether the name was registered as a symbol.
     assert monty_run('x', inputs={'x': foo}) == monty_run('foo = None\nx', inputs={'x': foo})

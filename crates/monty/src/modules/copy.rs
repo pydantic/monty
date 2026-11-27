@@ -12,8 +12,8 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
-    intern::StaticStrings,
     modules::ModuleFunctions,
+    symbols::StaticStrings,
     types::{Dict, List, Module, hash_table::TableCursor, instance_call_copy_hook},
     value::{VALUE_SIZE, Value},
 };
@@ -36,7 +36,7 @@ const COPY_FUNCTIONS: &[(StaticStrings, CopyFunctions)] = &[
 
 /// Creates the `copy` module.
 pub fn create_module(vm: &mut VM<'_>) -> Module {
-    let mut module = Module::new(StaticStrings::Copy, vm.interns);
+    let mut module = Module::new(StaticStrings::Copy, vm.symbols);
 
     for (name, func) in COPY_FUNCTIONS {
         module.set_attr(*name, Value::ModuleFunction(ModuleFunctions::Copy(*func)), vm);

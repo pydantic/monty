@@ -66,5 +66,5 @@ pub fn builtin_object_setattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Val
 /// `object.__setattr__` applied to a value with no instance `__dict__`.
 fn no_dict_error(object: &Value, name: &EitherStr, vm: &VM<'_>) -> RunError {
     let type_name = object.py_type_name(vm);
-    ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm.interns))
+    ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm.symbols))
 }

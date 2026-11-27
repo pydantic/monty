@@ -19,6 +19,7 @@ use crate::{
     modules::copy::{Memo, PyDeepCopy, deep_copy},
     py_attrs::PyAttrs,
     py_value::PyValue,
+    symbols::StaticStrings,
     types::{
         LazyHeapSet, Type, TypeRef,
         hash_table::{CloneTableEntry, Live, PyHashTable, TableCursor, TableEntry, TableProbe, TableSource, TableWalk},

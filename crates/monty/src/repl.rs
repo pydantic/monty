@@ -4,7 +4,7 @@
 //! is compiled and executed against persistent heap/namespace state without
 //! replaying previously executed snippets.
 //!
-//! The session's compiler tables (`NameMap`, `Interns`) are append-only and are
+//! The session's compiler tables (`NameMap`, `SymbolTable`) are append-only and are
 //! *moved* into each snippet's `Executor` and back via `commit_executor`, never
 //! cloned, so the cost of a feed depends on the snippet, not on how much the
 //! session has already run.
@@ -26,7 +26,6 @@ use crate::{
     defer_drop,
     exception_private::{ExcTypeExt, RunError},
     heap::{DropWithContext, Heap, HeapData, HeapReader},
-    intern::{Interns, StringId},
     name_map::NameMap,
     object_bridge::{MontyGraphExt, MontyObjectExt},
     parse::{check_source_length, source_nesting_exception},
@@ -36,6 +35,7 @@ use crate::{
         resume_lookup, resume_with_result,
     },
     source_nesting::{parse_shallow, source_within_nesting_bound},
+    symbols::{SymbolId, SymbolTable},
     types::{SessionRandom, tuple::allocate_tuple},
     value::Value,
     virtual_path::canonical_cwd,
@@ -63,10 +63,11 @@ pub struct MontyRepl {
     /// [`commit_executor`](Self::commit_executor)); empty while a snippet is in
     /// flight or suspended, when the executor's copy is authoritative.
     global_names: NameMap,
-    /// Persistent intern table across snippets so intern/function IDs remain valid.
+    /// Persistent symbol table across snippets so symbol/function IDs remain valid.
     ///
     /// Same ownership hand-off as `global_names`.
-    interns: Interns,
+    #[serde(rename = "interns")]
+    symbols: SymbolTable,
     /// Source text of every snippet that has been fed, keyed by its
     /// generated script name (`<python-input-N>`).
     ///
@@ -111,9 +112,9 @@ pub struct MontyRepl {
 }
 
 impl MontyRepl {
-    /// The session heap and interns, for a dump upgrade of an idle session.
-    pub(crate) fn heap_and_interns(&mut self) -> (&mut Heap, &mut Interns) {
-        (&mut self.heap, &mut self.interns)
+    /// The session heap and symbols, for a dump upgrade of an idle session.
+    pub(crate) fn heap_and_symbols(&mut self) -> (&mut Heap, &mut SymbolTable) {
+        (&mut self.heap, &mut self.symbols)
     }
 
     /// Creates an empty REPL session with no code parsed or executed.
@@ -129,7 +130,7 @@ impl MontyRepl {
             script_name: Arc::from(script_name),
             next_input_id: 0,
             global_names: NameMap::new(),
-            interns: Interns::default(),
+            symbols: SymbolTable::default(),
             sources: AHashMap::new(),
             options,
             os_policy: Arc::new(OsPolicy::default()),
@@ -286,7 +287,7 @@ impl MontyRepl {
             code,
             &input_script_name,
             &mut this.global_names,
-            &mut this.interns,
+            &mut this.symbols,
             &input_names,
             this.options,
             session,
@@ -397,7 +398,7 @@ impl MontyRepl {
             code,
             &input_script_name,
             &mut self.global_names,
-            &mut self.interns,
+            &mut self.symbols,
             &input_names,
             self.options,
             session,
@@ -449,13 +450,13 @@ impl MontyRepl {
 
         // Commit compiler metadata even on runtime errors.
         // Snippets can mutate globals before raising, and those values may contain
-        // FunctionId/StringId values that must be interpreted with the updated tables.
+        // FunctionId/SymbolId values that must be interpreted with the updated tables.
         self.commit_executor(executor);
 
         // Resolve every traceback frame against the source of the snippet that
         // produced it — frames from earlier snippets live in `self.sources`.
         result?.map_err(|e| {
-            e.into_python_exception(&self.interns, |fname| self.sources.get(fname).map(|source| &**source))
+            e.into_python_exception(&self.symbols, |fname| self.sources.get(fname).map(|source| &**source))
         })
     }
 
@@ -478,24 +479,24 @@ impl MontyRepl {
         // no slot, so they are refused rather than silently dropped.
         if args.kwargs().len() != 0 {
             return Err(ExcType::type_error("call_function() takes positional arguments only")
-                .into_python_exception(&self.interns, |fname| self.sources.get(fname).map(|source| &**source)));
+                .into_python_exception(&self.symbols, |fname| self.sources.get(fname).map(|source| &**source)));
         }
-        let Some(name_id) = self.interns.get_string_id_by_name(name) else {
+        let Some(name_id) = self.symbols.get_symbol_id_by_name(name) else {
             return Err(RunError::from(ExcType::name_error(name))
-                .into_python_exception(&self.interns, |fname| self.sources.get(fname).map(|source| &**source)));
+                .into_python_exception(&self.symbols, |fname| self.sources.get(fname).map(|source| &**source)));
         };
         let Some(slot_idx) = self.global_names.get(name_id) else {
             return Err(RunError::from(ExcType::name_error(name))
-                .into_python_exception(&self.interns, |fname| self.sources.get(fname).map(|source| &**source)));
+                .into_python_exception(&self.symbols, |fname| self.sources.get(fname).map(|source| &**source)));
         };
         if matches!(self.globals.get(slot_idx.index()), None | Some(Value::Undefined)) {
             return Err(RunError::from(ExcType::name_error(name))
-                .into_python_exception(&self.interns, |fname| self.sources.get(fname).map(|source| &**source)));
+                .into_python_exception(&self.symbols, |fname| self.sources.get(fname).map(|source| &**source)));
         }
 
         let input_script_name = self.next_input_script_name();
         // The name map is cloned (it is small) so a failed setup leaves the
-        // session's intact; both it and the interns come back after the call.
+        // session's intact; both it and the symbols come back after the call.
         let mut executor = Executor::new_repl_function_call(
             name,
             name_id,
@@ -503,7 +504,7 @@ impl MontyRepl {
             args.args().len(),
             &input_script_name,
             self.global_names.clone(),
-            &mut self.interns,
+            &mut self.symbols,
             self.options,
             ReplSession {
                 script_name: &self.script_name,
@@ -549,7 +550,7 @@ impl MontyRepl {
                                     break vm
                                         .export_on_clock(|vm| MontyObject::export(value, vm))
                                         .map_err(|error| {
-                                            error.into_python_exception(vm.interns, |fname| {
+                                            error.into_python_exception(vm.symbols, |fname| {
                                                 self.sources.get(fname).map(|source| &**source)
                                             })
                                         });
@@ -569,7 +570,7 @@ impl MontyRepl {
                                     vm.resume_with_exception(error)
                                 }
                                 Err(error) => {
-                                    break Err(error.into_python_exception(vm.interns, |fname| {
+                                    break Err(error.into_python_exception(vm.symbols, |fname| {
                                         self.sources.get(fname).map(|source| &**source)
                                     }));
                                 }
@@ -594,7 +595,7 @@ impl MontyRepl {
             },
         );
         self.global_names = executor.tables.global_names;
-        self.interns = executor.tables.interns;
+        self.symbols = executor.tables.symbols;
         result
     }
 
@@ -609,7 +610,7 @@ impl MontyRepl {
             .filter_map(|(ns_id, name_id)| {
                 let idx = ns_id.index();
                 if idx < self.globals.len() && is_callable(&self.globals[idx], &self.heap) {
-                    Some(self.interns.get_str(name_id))
+                    Some(self.symbols.get_str(name_id))
                 } else {
                     None
                 }
@@ -620,7 +621,7 @@ impl MontyRepl {
     /// Returns whether a function with the given name exists in the session.
     #[must_use]
     pub fn has_function(&self, name: &str) -> bool {
-        let Some(name_id) = self.interns.get_string_id_by_name(name) else {
+        let Some(name_id) = self.symbols.get_symbol_id_by_name(name) else {
             return false;
         };
         self.global_names.get(name_id).is_some_and(|ns_id| {
@@ -631,16 +632,16 @@ impl MontyRepl {
 
     /// Takes the session's compiler tables back from a finished snippet's executor.
     ///
-    /// [`Executor::new_repl_snippet`] moves `global_names` and `interns` into the
+    /// [`Executor::new_repl_snippet`] moves `global_names` and `symbols` into the
     /// executor instead of cloning them, so this must run on *every* path that
     /// is done with an executor — success, runtime error, or abandoning a
     /// suspended snippet. Skipping it would leave the session with empty
-    /// tables while globals still hold `FunctionId`/`StringId` values from
+    /// tables while globals still hold `FunctionId`/`SymbolId` values from
     /// the snippet.
     fn commit_executor(&mut self, executor: Executor) {
-        let SessionTables { global_names, interns } = executor.tables;
+        let SessionTables { global_names, symbols } = executor.tables;
         self.global_names = global_names;
-        self.interns = interns;
+        self.symbols = symbols;
     }
 
     /// Grows the globals vector to at least `size` slots.
@@ -738,19 +739,19 @@ pub struct ReplStartError {
 }
 
 impl ReplProgress {
-    /// The session heap and the interns its values refer to, for a dump upgrade.
-    /// While a snippet is in flight the executor holds the session's interns.
-    pub(crate) fn heap_and_interns(&mut self) -> (&mut Heap, &mut Interns) {
+    /// The session heap and the symbols its values refer to, for a dump upgrade.
+    /// While a snippet is in flight the executor holds the session's symbols.
+    pub(crate) fn heap_and_symbols(&mut self) -> (&mut Heap, &mut SymbolTable) {
         match self {
             Self::FunctionCall(ReplFunctionCall { snapshot, .. })
             | Self::OsCall(ReplOsCall { snapshot, .. })
             | Self::NameLookup(ReplNameLookup { snapshot, .. }) => {
-                (&mut snapshot.repl.heap, &mut snapshot.executor.tables.interns)
+                (&mut snapshot.repl.heap, &mut snapshot.executor.tables.symbols)
             }
             Self::ResolveFutures(ReplResolveFutures { repl, executor, .. }) => {
-                (&mut repl.heap, &mut executor.tables.interns)
+                (&mut repl.heap, &mut executor.tables.symbols)
             }
-            Self::Complete { repl, .. } => repl.heap_and_interns(),
+            Self::Complete { repl, .. } => repl.heap_and_symbols(),
         }
     }
 
@@ -1147,7 +1148,7 @@ impl ReplNameLookup {
 pub struct ReplResolveFutures {
     /// Persistent REPL session state while this snippet is suspended.
     repl: MontyRepl,
-    /// Compiled snippet and intern/function tables for this execution.
+    /// Compiled snippet and symbol/function tables for this execution.
     executor: Executor,
     /// VM stack/frame state at suspension.
     vm_state: VMSnapshot,
@@ -1331,7 +1332,7 @@ pub enum ReplContinuationMode {
 #[must_use]
 pub fn detect_repl_continuation_mode(source: &str) -> ReplContinuationMode {
     // Feeding invalid source reports SyntaxError; do not pass it to Ruff here.
-    if check_source_length(source.len(), StringId::default()).is_err()
+    if check_source_length(source.len(), SymbolId::default()).is_err()
         || !source_within_nesting_bound(source, SOURCE_SCAN_THRESHOLD)
     {
         return ReplContinuationMode::Complete;
@@ -1450,7 +1451,7 @@ fn abort_restored(
 pub(crate) struct ReplSnapshot {
     /// Persistent REPL session state while this snippet is suspended.
     repl: MontyRepl,
-    /// Compiled snippet and intern/function tables for this execution.
+    /// Compiled snippet and symbol/function tables for this execution.
     executor: Executor,
     /// VM stack/frame state at suspension.
     vm_state: VMSnapshot,
@@ -1615,7 +1616,7 @@ fn inject_inputs_into_vm(
 ///
 /// This is the REPL equivalent of `build_run_progress`. On completion/error,
 /// compiler metadata is committed to the REPL so subsequent snippets see
-/// updated intern tables and name maps.
+/// updated symbol tables and name maps.
 fn build_repl_progress(
     converted: ConvertedExit,
     vm_state: Option<VMSnapshot>,
@@ -1685,16 +1686,16 @@ fn build_repl_progress(
         })),
         ConvertedExit::Error(err) => {
             // Resolve traceback frames against every snippet the REPL has
-            // seen, not just the currently-executing one. `executor.interns`
-            // is still required because it holds the StringIds referenced by
+            // seen, not just the currently-executing one. `executor.symbols`
+            // is still required because it holds the SymbolIds referenced by
             // the in-flight frames; `repl.sources` holds every snippet's
             // source text and is what owns any older snippets' sources.
-            let error = err.into_python_exception(&executor.tables.interns, |fname| {
+            let error = err.into_python_exception(&executor.tables.symbols, |fname| {
                 repl.sources.get(fname).map(|source| &**source)
             });
             // Commit compiler metadata even on runtime errors, matching feed() behavior.
             // Snippets can create new variables or functions before raising, and those
-            // values may reference FunctionId/StringId values from the new tables.
+            // values may reference FunctionId/SymbolId values from the new tables.
             repl.commit_executor(executor);
             Err(Box::new(ReplStartError { repl, error }))
         }

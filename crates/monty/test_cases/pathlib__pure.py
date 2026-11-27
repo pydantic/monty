@@ -140,7 +140,7 @@ assert str(Path('/usr') / 'local' / 'bin') == '/usr/local/bin'
 assert str(Path('/usr') / Path('bin')) == '/usr/bin'
 assert str(Path('/usr') / Path('/etc')) == '/etc'
 
-# Path / heap-allocated (non-interned) str
+# Path / heap-allocated str
 heap_str = 'lo' + 'cal'
 assert str(Path('/usr') / heap_str) == '/usr/local'
 

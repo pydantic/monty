@@ -27,10 +27,10 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    intern::{StaticStrings, StringId},
     modules::{ModuleFunctions, StandardLib},
     object_bridge::MontyObjectExt,
     os_dispatch::{PreConversionEffect, value_to_owned_string},
+    symbols::{StaticStrings, SymbolId},
     types::{
         Bytes, Module, Property, PyTrait, Type, TypeRef,
         dir_scan::{scandir_call, walk_call},
@@ -103,31 +103,31 @@ pub fn create_module(vm: &mut VM<'_>) -> Module {
         // `os.path` is its own module object, like CPython's `posixpath`.
         (StaticStrings::Path, Value::Ref(StandardLib::OsPath.create(vm))),
         // POSIX path constants — the sandbox path model is POSIX on every host.
-        (StaticStrings::Sep, Value::InternString(StringId::from_ascii(b'/'))),
-        (StaticStrings::Pathsep, Value::InternString(StringId::from_ascii(b':'))),
+        (StaticStrings::Sep, Value::Symbol(SymbolId::from_ascii(b'/'))),
+        (StaticStrings::Pathsep, Value::Symbol(SymbolId::from_ascii(b':'))),
         (
             StaticStrings::Defpath,
-            Value::InternString(vm.interns.intern_static(StaticStrings::DefpathString)),
+            Value::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::DefpathString)),
         ),
         (StaticStrings::Altsep, Value::None),
-        (StaticStrings::Extsep, Value::InternString(StringId::from_ascii(b'.'))),
-        (StaticStrings::Curdir, Value::InternString(StringId::from_ascii(b'.'))),
+        (StaticStrings::Extsep, Value::Symbol(SymbolId::from_ascii(b'.'))),
+        (StaticStrings::Curdir, Value::Symbol(SymbolId::from_ascii(b'.'))),
         (
             StaticStrings::Pardir,
-            Value::InternString(vm.interns.intern_static(StaticStrings::ParentDirString)),
+            Value::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::ParentDirString)),
         ),
-        (StaticStrings::Linesep, Value::InternString(StringId::from_ascii(b'\n'))),
+        (StaticStrings::Linesep, Value::Symbol(SymbolId::from_ascii(b'\n'))),
         (
             StaticStrings::Name,
-            Value::InternString(vm.interns.intern_static(StaticStrings::Posix)),
+            Value::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::Posix)),
         ),
         (
             StaticStrings::Devnull,
-            Value::InternString(vm.interns.intern_static(StaticStrings::DevNullString)),
+            Value::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::DevNullString)),
         ),
     ];
 
-    let mut module = Module::new(StaticStrings::Os, vm.interns);
+    let mut module = Module::new(StaticStrings::Os, vm.symbols);
     for (attr, value) in attrs {
         module.set_attr(attr, value, vm);
     }
@@ -326,11 +326,11 @@ fn getenv(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     if let Some(key) = key_value.as_either_str(vm.heap) {
         key_value.drop_with(vm.heap);
         Ok(CallResult::OsCall(OsFunctionCall::Getenv(GetenvArgs {
-            key: key.into_string(vm.interns),
+            key: key.into_string(vm.symbols),
             default: MontyObject::export(default_value.unwrap_or(Value::None), vm)?,
         })))
     } else {
-        let type_name = key_value.py_type_name_heap(vm.heap, vm.interns);
+        let type_name = key_value.py_type_name_heap(vm.heap, vm.symbols);
         key_value.drop_with(vm.heap);
 
         if let Some(d) = default_value {
@@ -613,12 +613,12 @@ fn fspath(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     match path.py_type_heap(vm.heap).native() {
         Some(Type::Str | Type::Bytes) => Ok(CallResult::Value(path)),
         Some(Type::Path | Type::DirEntry) => {
-            let text = value_to_owned_string(&path, vm.heap, vm.interns).expect("a path-like always yields a string");
+            let text = value_to_owned_string(&path, vm.heap, vm.symbols).expect("a path-like always yields a string");
             path.drop_with(vm.heap);
             Ok(CallResult::Value(allocate_string(text, vm.heap)))
         }
         _ => {
-            let type_name = path.py_type_name_heap(vm.heap, vm.interns).into_owned();
+            let type_name = path.py_type_name_heap(vm.heap, vm.symbols).into_owned();
             path.drop_with(vm.heap);
             Err(ExcType::type_error_fspath(&type_name))
         }
@@ -652,11 +652,11 @@ pub(super) fn extract_accepted_path(
             Err(PathArgError::BadFd { fd: None })
         }
         Some(err) if accepts.allows_fd() => Err(err),
-        _ => value_to_owned_string(value, vm.heap, vm.interns)
+        _ => value_to_owned_string(value, vm.heap, vm.symbols)
             .map(MontyPath::new)
             .ok_or_else(|| PathArgError::Type {
                 accepted: accepts.phrase_for(value, vm).to_owned(),
-                type_name: value.py_type_name_heap(vm.heap, vm.interns).into_owned(),
+                type_name: value.py_type_name_heap(vm.heap, vm.symbols).into_owned(),
             }),
     }
 }
@@ -759,8 +759,8 @@ impl PathAccepts {
 /// Core `str`/`Path` → [`MontyPath`] extraction; `type_error` supplies the
 /// per-callsite wording (the `path_t` converter's or `os.fspath`'s).
 fn extract_path(value: &Value, vm: &VM<'_>, type_error: impl FnOnce(&str) -> RunError) -> RunResult<MontyPath> {
-    value_to_owned_string(value, vm.heap, vm.interns).map_or_else(
-        || Err(type_error(&value.py_type_name_heap(vm.heap, vm.interns))),
+    value_to_owned_string(value, vm.heap, vm.symbols).map_or_else(
+        || Err(type_error(&value.py_type_name_heap(vm.heap, vm.symbols))),
         |path| Ok(MontyPath::new(path)),
     )
 }
@@ -786,7 +786,7 @@ fn dir_fd_specified(value: &Value, vm: &VM<'_>) -> RunResult<bool> {
         (_, Some(PathArgError::FdOverflow { above })) => Err(fd_overflow_error(above)),
         (_, Some(_)) => Ok(true),
         (_, None) => Err(ExcType::type_error_dir_fd(
-            &value.py_type_name_heap(vm.heap, vm.interns),
+            &value.py_type_name_heap(vm.heap, vm.symbols),
         )),
     }
 }
@@ -807,7 +807,7 @@ pub(crate) fn check_mode(value: &Value, vm: &mut VM<'_>) -> RunResult<()> {
                     defer_drop!(index, vm);
                     check_mode(index, vm)
                 } else {
-                    Err(ExcType::type_error_not_integer(&other.name(vm.heap, vm.interns)))
+                    Err(ExcType::type_error_not_integer(&other.name(vm.heap, vm.symbols)))
                 }
             }
         },

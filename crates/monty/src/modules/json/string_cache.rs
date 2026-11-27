@@ -1,7 +1,7 @@
 //! Per-run string cache for `json.loads()`.
 //!
 //! This cache deduplicates repeated strings of 16–64 UTF-8 bytes across
-//! `json.loads()` calls within one execution. Shorter strings are interned or
+//! `json.loads()` calls within one execution. Shorter strings are stored as symbols or
 //! stored inline. Cache hits return a `clone_with_heap` of the existing `Value`.
 //!
 //! The design is modelled on jiter's `PyStringCache`: a fixed-capacity
@@ -20,7 +20,7 @@ use ahash::RandomState;
 
 use crate::{
     heap::{ContainsHeap, HeapReader},
-    types::str::{allocate_string, allocate_string_no_interning},
+    types::str::{allocate_non_symbol_string, allocate_string},
     value::Value,
 };
 
@@ -144,16 +144,16 @@ impl CacheInner {
             }
         }
         // All 5 probe slots occupied — allocate without caching.
-        // Length is in [MIN_LEN..=MAX_LEN] here so interning would never apply.
-        allocate_string_no_interning(s, heap.heap())
+        // Length is in [MIN_LEN..=MAX_LEN] here so the result cannot be a reserved symbol.
+        allocate_non_symbol_string(s, heap.heap())
     }
 
     /// Allocates `s` on the heap, stores a clone in `entries[index]`, and
     /// returns the original `Value`.
     fn insert_at(&mut self, index: usize, hash: u64, s: String, heap: &HeapReader<'_>) -> Value {
         let key = s.clone().into_boxed_str();
-        // Length is in [MIN_LEN..=MAX_LEN] here so interning would never apply.
-        let value = allocate_string_no_interning(s, heap.heap());
+        // Length is in [MIN_LEN..=MAX_LEN] here so the result cannot be a reserved symbol.
+        let value = allocate_non_symbol_string(s, heap.heap());
         let cached = value.clone_with_heap(heap);
         self.entries[index] = Some((hash, key, cached));
         value

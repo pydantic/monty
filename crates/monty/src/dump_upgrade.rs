@@ -19,9 +19,9 @@ use ruff_python_parser::parse_module;
 
 use crate::{
     heap::Heap,
-    intern::{Interns, StringId},
     modules::dataclasses,
     parse::CodeRange,
+    symbols::{SymbolId, SymbolTable},
 };
 
 /// The last dump version whose `eval()` positions count from after the source's
@@ -29,12 +29,12 @@ use crate::{
 const LEGACY_EVAL_OFFSETS_VERSION: u16 = 14;
 
 /// Runs every upgrade a dump written at `version` needs over its decoded heap.
-pub(crate) fn upgrade(version: u16, heap: &mut Heap, interns: &mut Interns) {
+pub(crate) fn upgrade(version: u16, heap: &mut Heap, symbols: &mut SymbolTable) {
     if version <= dataclasses::LEGACY_DUMP_VERSION {
-        dataclasses::upgrade_legacy_classes(heap, interns);
+        dataclasses::upgrade_legacy_classes(heap, symbols);
     }
     if version <= LEGACY_EVAL_OFFSETS_VERSION {
-        rebase_legacy_eval_offsets(interns);
+        rebase_legacy_eval_offsets(symbols);
     }
 }
 
@@ -46,8 +46,8 @@ pub(crate) fn upgrade(version: u16, heap: &mut Heap, interns: &mut Interns) {
 /// the expression's line or a non-ASCII space before it causes. A source valid
 /// as both (only blank or comment-only lines before unindented code) cannot be
 /// told apart and is left as it was, so its positions can still point early.
-fn rebase_legacy_eval_offsets(interns: &mut Interns) {
-    let shifts: AHashMap<StringId, (u32, u32)> = interns
+fn rebase_legacy_eval_offsets(symbols: &mut SymbolTable) {
+    let shifts: AHashMap<SymbolId, (u32, u32)> = symbols
         .eval_sources()
         .filter_map(|(id, source)| {
             let shift = u32::try_from(source.len() - source.trim_start().len()).ok()?;
@@ -58,7 +58,7 @@ fn rebase_legacy_eval_offsets(interns: &mut Interns) {
     if shifts.is_empty() {
         return;
     }
-    interns.for_each_function_mut(|function| {
+    symbols.for_each_function_mut(|function| {
         let name = &mut function.name.position;
         // The snippet's own module function spans the whole source and was never relative.
         if let Some(&(shift, len)) = shifts.get(&name.filename)

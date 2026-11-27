@@ -9,7 +9,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
-    intern::StaticStrings,
+    symbols::StaticStrings,
     types::{Class, Dict, List, OwnedTypeRef, PyTrait, Tuple, Type, TypeRef, type_ref::c3_merge},
     value::Value,
 };
@@ -92,14 +92,14 @@ fn create_class(
     defer_drop_mut!(kwargs, vm);
 
     let Some(class_name) = name.as_either_str(vm.heap) else {
-        let got = name.py_type(vm).cpython_arg_name(vm.heap, vm.interns);
+        let got = name.py_type(vm).cpython_arg_name(vm.heap, vm.symbols);
         return Err(ExcType::type_error_bad_arg_pos("type.__new__", 1, "str", got));
     };
     let bases = class_bases(bases, vm)?;
     let mro = linearize(&bases, vm)?;
 
     let Some(source) = namespace.get_as::<Dict>(vm.heap) else {
-        let got = namespace.py_type(vm).cpython_arg_name(vm.heap, vm.interns);
+        let got = namespace.py_type(vm).cpython_arg_name(vm.heap, vm.symbols);
         return Err(ExcType::type_error_bad_arg_pos("type.__new__", 3, "dict", got));
     };
 
@@ -108,16 +108,16 @@ fn create_class(
     // them would hide the mistake — raise instead. Validated before cloning
     // any pairs so the error path has nothing to clean up.
     if let Some((bad_key, _)) = source.iter().find(|(k, _)| !k.is_str(vm.heap)) {
-        let name_str = class_name.as_str(vm.interns);
-        let key_type = bad_key.py_type_heap(vm.heap).name(vm.heap, vm.interns);
+        let name_str = class_name.as_str(vm.symbols);
+        let key_type = bad_key.py_type_heap(vm.heap).name(vm.heap, vm.symbols);
         return Err(ExcType::type_error(format!(
             "non-string key ({key_type}) in the namespace of class '{name_str}'"
         )));
     }
-    let class_cell = match source.get_by_str("__classcell__", vm.heap, vm.interns) {
+    let class_cell = match source.get_by_str("__classcell__", vm.heap, vm.symbols) {
         Some(Value::Ref(id)) if matches!(vm.heap.get(*id), HeapData::Cell(_)) => Some(*id),
         Some(bad) => {
-            let bad_type = bad.py_type_name_heap(vm.heap, vm.interns);
+            let bad_type = bad.py_type_name_heap(vm.heap, vm.symbols);
             return Err(ExcType::type_error(format!(
                 "__classcell__ must be a nonlocal cell, not <class '{bad_type}'>"
             )));
@@ -132,21 +132,21 @@ fn create_class(
         .iter()
         .filter(|(k, _)| {
             k.as_either_str(vm.heap)
-                .is_none_or(|k| k.as_str(vm.interns) != "__classcell__")
+                .is_none_or(|k| k.as_str(vm.symbols) != "__classcell__")
         })
         .map(|(k, v)| (k.clone_with_heap(vm.heap), v.clone_with_heap(vm.heap)))
         .collect();
-    if source.get_by_str("__doc__", vm.heap, vm.interns).is_none() {
+    if source.get_by_str("__doc__", vm.heap, vm.symbols).is_none() {
         pairs.push((
-            Value::InternString(vm.interns.intern_static(StaticStrings::DunderDoc)),
+            Value::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::DunderDoc)),
             Value::None,
         ));
     }
-    if source.get_by_str("__eq__", vm.heap, vm.interns).is_some()
-        && source.get_by_str("__hash__", vm.heap, vm.interns).is_none()
+    if source.get_by_str("__eq__", vm.heap, vm.symbols).is_some()
+        && source.get_by_str("__hash__", vm.heap, vm.symbols).is_none()
     {
         pairs.push((
-            Value::InternString(vm.interns.intern_static(StaticStrings::DunderHash)),
+            Value::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::DunderHash)),
             Value::None,
         ));
     }
@@ -188,7 +188,7 @@ fn create_class(
 /// types CPython lets a class subclass are rejected (see `limitations/classes.md`).
 fn class_bases(bases: &Value, vm: &VM<'_>) -> RunResult<Vec<TypeRef>> {
     let Some(tuple) = bases.get_as::<Tuple>(vm.heap) else {
-        let got = bases.py_type(vm).cpython_arg_name(vm.heap, vm.interns);
+        let got = bases.py_type(vm).cpython_arg_name(vm.heap, vm.symbols);
         return Err(ExcType::type_error_bad_arg_pos("type.__new__", 2, "tuple", got));
     };
     let mut out: Vec<TypeRef> = Vec::with_capacity(tuple.as_slice().len());
@@ -200,7 +200,7 @@ fn class_bases(bases: &Value, vm: &VM<'_>) -> RunResult<Vec<TypeRef>> {
                  metaclasses of all its bases",
             ));
         };
-        let name = base.dunder_name(vm.heap, vm.interns);
+        let name = base.dunder_name(vm.heap, vm.symbols);
         match base {
             TypeRef::Native(Type::Object) => {}
             TypeRef::Native(ty) if !ty.def().basetype => {
@@ -235,7 +235,7 @@ fn linearize(bases: &[TypeRef], vm: &VM<'_>) -> RunResult<Vec<TypeRef>> {
     c3_merge(sequences, &vm.heap.tracker)?.map_err(|pending| {
         let names: Vec<String> = pending
             .iter()
-            .map(|ty| ty.dunder_name(vm.heap, vm.interns).into_owned())
+            .map(|ty| ty.dunder_name(vm.heap, vm.symbols).into_owned())
             .collect();
         ExcType::type_error(format!(
             "Cannot create a consistent method resolution order (MRO) for bases {}",
@@ -253,7 +253,7 @@ fn run_init_subclass(class_id: HeapId, kwargs: KwargsValues, vm: &mut VM<'_>) ->
     };
     let hook = class.ancestors().iter().find_map(|ancestor| match ancestor {
         TypeRef::Class(id) => match vm.heap.get(*id) {
-            HeapData::Class(base) => base.namespace().get_by_str("__init_subclass__", vm.heap, vm.interns),
+            HeapData::Class(base) => base.namespace().get_by_str("__init_subclass__", vm.heap, vm.symbols),
             _ => None,
         },
         TypeRef::Native(_) => None,
@@ -305,7 +305,7 @@ pub(crate) fn builtin_type_mro(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Va
         )));
     };
     if given > 0 {
-        let name = ty.dunder_name(vm.heap, vm.interns);
+        let name = ty.dunder_name(vm.heap, vm.symbols);
         return Err(ExcType::type_error(format!(
             "{name}.mro() takes no arguments ({given} given)"
         )));

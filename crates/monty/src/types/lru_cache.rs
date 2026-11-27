@@ -20,9 +20,9 @@ use crate::{
     frozen::{FrozenFunction, FrozenFunctions},
     hash::{HashValue, identity_hash},
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
-    intern::StaticStrings,
     modules::ModuleFunctions,
     py_attrs::PyAttrs,
+    symbols::StaticStrings,
     types::{
         Dict, LazyHeapSet, NamedTuple, PyTrait, Type, TypeRef,
         hash_table::{PyHashTable, Slot, TableEntry, TableProbe, TableSource},
@@ -397,7 +397,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LruCache> {
 
     /// `__wrapped__` — the callable being cached.
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        if attr.static_string(vm.interns) == Some(StaticStrings::DunderWrapped)
+        if attr.static_string(vm.symbols) == Some(StaticStrings::DunderWrapped)
             && let Some(func) = self.get(vm.heap).func.as_ref()
         {
             let func = func.clone_with_heap(vm);
@@ -409,7 +409,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LruCache> {
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         // __wrapped__ is a stored callable, so it bypasses the native method table.
-        if attr.static_string(vm.interns) == Some(StaticStrings::DunderWrapped)
+        if attr.static_string(vm.symbols) == Some(StaticStrings::DunderWrapped)
             && let Some(func) = self.get(vm.heap).func.as_ref()
         {
             let func = func.clone_with_heap(vm);
@@ -431,12 +431,12 @@ impl<'h> HeapObjectRead<'h, LruCache> {
             count_value(this.cache.len() as u64),
         ];
         let info = NamedTuple::new(
-            EitherStr::Interned(vm.interns.intern_static(StaticStrings::CacheInfoName)),
+            EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::CacheInfoName)),
             vec![
-                EitherStr::Interned(vm.interns.intern_static(StaticStrings::Hits)),
-                EitherStr::Interned(vm.interns.intern_static(StaticStrings::Misses)),
-                EitherStr::Interned(vm.interns.intern_static(StaticStrings::Maxsize)),
-                EitherStr::Interned(vm.interns.intern_static(StaticStrings::Currsize)),
+                EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::Hits)),
+                EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::Misses)),
+                EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::Maxsize)),
+                EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::Currsize)),
             ],
             items,
         );
@@ -457,11 +457,11 @@ impl<'h> HeapObjectRead<'h, LruCache> {
         let this = self.get(vm.heap);
         let pairs = vec![
             (
-                Value::InternString(vm.interns.intern_static(StaticStrings::Maxsize)),
+                Value::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::Maxsize)),
                 maxsize_value(this.maxsize),
             ),
             (
-                Value::InternString(vm.interns.intern_static(StaticStrings::Typed)),
+                Value::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::Typed)),
                 Value::Bool(this.typed),
             ),
         ];

@@ -34,7 +34,6 @@ use crate::{
     defer_drop,
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId},
-    intern::{Interns, StaticStrings},
     modules::{
         os::{PathArgError, check_mode},
         os_path::{
@@ -44,6 +43,7 @@ use crate::{
         random::RandomRetry,
         time::ClockReading,
     },
+    symbols::{StaticStrings, SymbolTable},
     types::{Path, Type, dir_scan::ScanEffect, file::FileName, random::RandomTarget},
     value::Value,
     virtual_path::posix_join,
@@ -671,16 +671,16 @@ pub(crate) fn build_path_os_call(
         StaticStrings::Absolute => path_only!("absolute", Absolute),
         StaticStrings::Rmdir => path_only!("rmdir", Rmdir),
         StaticStrings::WriteText => {
-            OsFunctionCall::WriteText(extract_str_data("write_text", path, args, vm.heap, vm.interns)?)
+            OsFunctionCall::WriteText(extract_str_data("write_text", path, args, vm.heap, vm.symbols)?)
         }
         StaticStrings::AppendText => {
-            OsFunctionCall::AppendText(extract_str_data("append_text", path, args, vm.heap, vm.interns)?)
+            OsFunctionCall::AppendText(extract_str_data("append_text", path, args, vm.heap, vm.symbols)?)
         }
         StaticStrings::WriteBytes => {
-            OsFunctionCall::WriteBytes(extract_bytes_data("write_bytes", path, args, vm.heap, vm.interns)?)
+            OsFunctionCall::WriteBytes(extract_bytes_data("write_bytes", path, args, vm.heap, vm.symbols)?)
         }
         StaticStrings::AppendBytes => {
-            OsFunctionCall::AppendBytes(extract_bytes_data("append_bytes", path, args, vm.heap, vm.interns)?)
+            OsFunctionCall::AppendBytes(extract_bytes_data("append_bytes", path, args, vm.heap, vm.symbols)?)
         }
         StaticStrings::Mkdir => OsFunctionCall::Mkdir(extract_mkdir_args(path, args, vm)?),
         StaticStrings::Rename | StaticStrings::Replace => {
@@ -712,15 +712,15 @@ fn extract_str_data(
     path: MontyPath,
     args: ArgValues,
     heap: &mut Heap,
-    interns: &Interns,
+    symbols: &SymbolTable,
 ) -> RunResult<PathStringDataArgs> {
     let data = arg_or_missing_data(method, args, heap)?;
     // Only `str`: a path-like is not text, so CPython refuses `Path` and `DirEntry` here.
-    let data_str = data.try_as_str_heap(heap, interns).ok().map(str::to_owned);
+    let data_str = data.try_as_str_heap(heap, symbols).ok().map(str::to_owned);
 
     // CPython names the type by its `__name__`: no module (`DirEntry`, not
     // `posix.DirEntry`), but a class's own name (`Point` for a named tuple).
-    let type_name = data.py_type_name_heap(heap, interns);
+    let type_name = data.py_type_name_heap(heap, symbols);
     let py_type = type_name
         .rsplit_once('.')
         .map_or(&*type_name, |(_, name)| name)
@@ -740,12 +740,12 @@ fn extract_bytes_data(
     path: MontyPath,
     args: ArgValues,
     heap: &mut Heap,
-    interns: &Interns,
+    symbols: &SymbolTable,
 ) -> RunResult<PathBytesDataArgs> {
     let data = arg_or_missing_data(method, args, heap)?;
-    let bytes = data.as_bytes_heap(heap, interns).map(<[u8]>::to_vec);
+    let bytes = data.as_bytes_heap(heap, symbols).map(<[u8]>::to_vec);
 
-    let py_type = data.py_type_name_heap(heap, interns);
+    let py_type = data.py_type_name_heap(heap, symbols);
     data.drop_with(heap);
 
     match bytes {
@@ -825,7 +825,7 @@ fn extract_rename_args(src: MontyPath, args: ArgValues, replace: bool, vm: &mut 
     };
     receiver.drop_with(vm);
     defer_drop!(target, vm);
-    if let Some(dst) = value_to_owned_string(target, vm.heap, vm.interns) {
+    if let Some(dst) = value_to_owned_string(target, vm.heap, vm.symbols) {
         Ok(RenameCallArgs {
             src,
             dst: MontyPath::new(dst),
@@ -841,7 +841,7 @@ fn extract_rename_args(src: MontyPath, args: ArgValues, replace: bool, vm: &mut 
             if replace { "replace" } else { "rename" },
             "dst",
             accepted,
-            &target.py_type_name_heap(vm.heap, vm.interns),
+            &target.py_type_name_heap(vm.heap, vm.symbols),
         ))
     }
 }
@@ -881,14 +881,14 @@ fn arg_or_missing_data(method: &'static str, args: ArgValues, heap: &mut Heap) -
 /// Owned `String` if `value` is a `str`, `Path` or `DirEntry`, else `None`. Caller drops
 /// the source value afterwards. Also used by the `os` module's path-taking
 /// functions (`modules/os.rs`).
-pub(crate) fn value_to_owned_string(value: &Value, heap: &Heap, interns: &Interns) -> Option<String> {
-    value_as_path_str(value, heap, interns).map(str::to_owned)
+pub(crate) fn value_to_owned_string(value: &Value, heap: &Heap, symbols: &SymbolTable) -> Option<String> {
+    value_as_path_str(value, heap, symbols).map(str::to_owned)
 }
 
 /// The text of a `str`, `Path` or `DirEntry` `value`, borrowed, else `None`:
 /// what [`value_to_owned_string`] copies, for sizing the copy first.
-pub(crate) fn value_as_path_str<'a>(value: &'a Value, heap: &'a Heap, interns: &'a Interns) -> Option<&'a str> {
-    if let Some(text) = value.as_str_heap(heap, interns) {
+pub(crate) fn value_as_path_str<'a>(value: &'a Value, heap: &'a Heap, symbols: &'a SymbolTable) -> Option<&'a str> {
+    if let Some(text) = value.as_str_heap(heap, symbols) {
         return Some(text);
     }
 

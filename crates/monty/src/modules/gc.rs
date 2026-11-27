@@ -14,7 +14,7 @@
 //!   Explicit `gc.collect()` calls still run while disabled.
 
 use crate::{
-    args::ArgValues, bytecode::VM, exception_private::RunResult, intern::StaticStrings, modules::ModuleFunctions,
+    args::ArgValues, bytecode::VM, exception_private::RunResult, modules::ModuleFunctions, symbols::StaticStrings,
     types::Module, value::Value,
 };
 
@@ -38,7 +38,7 @@ pub(crate) enum GcFunctions {
 
 /// Creates the `gc` module.
 pub fn create_module(vm: &mut VM<'_>) -> Module {
-    let mut module = Module::new(StaticStrings::Gc, vm.interns);
+    let mut module = Module::new(StaticStrings::Gc, vm.symbols);
     for (name, function) in [
         (StaticStrings::Collect, GcFunctions::Collect),
         (StaticStrings::Disable, GcFunctions::Disable),

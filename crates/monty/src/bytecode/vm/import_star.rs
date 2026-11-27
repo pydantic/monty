@@ -37,7 +37,7 @@ impl VM<'_> {
     fn import_star_names(&mut self) -> RunResult<Value> {
         let module = self.import_star_module(0)?;
         let attrs = module_attrs(module, self)?;
-        let names = match attrs.get_by_str("__all__", self.heap, self.interns) {
+        let names = match attrs.get_by_str("__all__", self.heap, self.symbols) {
             Some(all) => {
                 let all = all.clone_with_heap(self.heap);
                 let this = self;
@@ -98,7 +98,7 @@ impl VM<'_> {
         };
         matches!(
             self.heap.get(instance.class()),
-            HeapData::Class(class) if class.namespace().get_by_str("__getitem__", self.heap, self.interns).is_some()
+            HeapData::Class(class) if class.namespace().get_by_str("__getitem__", self.heap, self.symbols).is_some()
         )
     }
 
@@ -109,7 +109,7 @@ impl VM<'_> {
         let Some(attr) = self.stack[len - 1].as_either_str(self.heap) else {
             let module = self.import_star_module(2)?;
             let attrs = module_attrs(module, self)?;
-            let from_all = attrs.get_by_str("__all__", self.heap, self.interns).is_some();
+            let from_all = attrs.get_by_str("__all__", self.heap, self.symbols).is_some();
             let module_name = module
                 .error_name(self)
                 .map_err(|name| ExcType::import_star_module_name_type(&name.py_type_name(self)))?;
@@ -137,17 +137,17 @@ impl VM<'_> {
             (FrameGlobals::Slots, None) => {
                 let name = name.as_str(this).expect("import_star_load checked the name is a str");
                 let existing = this
-                    .interns
-                    .get_string_id_by_name(name)
+                    .symbols
+                    .get_symbol_id_by_name(name)
                     .and_then(|name_id| this.global_names.get(name_id));
-                // Checked before interning, so a full namespace never grows the interner.
+                // Checked before adding a symbol, so a full namespace never grows the symbol table.
                 if existing.is_none() && NamespaceId::new(this.global_names.len()).is_none() {
                     value.drop_with(this);
                     return Err(SimpleException::new_msg(ExcType::SyntaxError, namespace_overflow_message()).into());
                 }
                 // Code compiled later finds the slot by this ID; a new name takes a
                 // fresh slot, as preparing a store to it would.
-                let name_id = this.interns.intern_runtime(name);
+                let name_id = this.symbols.get_or_insert_symbol(name);
                 let slot = this
                     .global_names
                     .ensure_slot(name_id, CodeRange::default())

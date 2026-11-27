@@ -1,4 +1,4 @@
-# Slicing creates runtime strings rather than interned literals.
+# Slicing creates runtime strings from literal symbols.
 import hashlib
 
 s = 'abc!'[:-1]

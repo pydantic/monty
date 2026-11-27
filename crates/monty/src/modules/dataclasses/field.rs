@@ -12,7 +12,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     hash::{HashValue, identity_hash},
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead},
-    intern::{StaticStrings, StringId},
+    symbols::{StaticStrings, SymbolId},
     types::{LazyHeapSet, PyTrait, Type, TypeRef, str::allocate_string},
     value::{EitherStr, Marker, Value},
 };
@@ -31,9 +31,9 @@ use crate::{
 /// (see `py_getattr` below).
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct DataclassField {
-    /// The interned field name (from an `__annotations__` key, always interned),
+    /// The field name symbol from `__annotations__`,
     /// or `None` before a decorator adopts the field.
-    name: Option<StringId>,
+    name: Option<SymbolId>,
     /// `Field.type`: the annotation as source text, never evaluated. `None`
     /// until adopted, alongside `name`.
     annotation: Option<Value>,
@@ -50,7 +50,7 @@ impl DataclassField {
     ///
     /// For a plain `x: int = 5`, where no `field()` object exists at all.
     #[must_use]
-    pub fn new(name: StringId, annotation: Value, default: Option<Value>) -> Self {
+    pub fn new(name: SymbolId, annotation: Value, default: Option<Value>) -> Self {
         Self {
             name: Some(name),
             annotation: Some(annotation),
@@ -71,10 +71,10 @@ impl DataclassField {
         }
     }
 
-    /// The interned field name, as the generated `__init__` binds it, or
+    /// The field name symbol, as the generated `__init__` binds it, or
     /// `None` for a `field()` result no decorator has adopted.
     #[must_use]
-    pub fn name(&self) -> Option<StringId> {
+    pub fn name(&self) -> Option<SymbolId> {
         self.name
     }
 
@@ -111,7 +111,7 @@ impl DataclassField {
     /// adopted more than once — bound under two names, or by two classes — so
     /// the annotation it already held is returned for the caller to release.
     #[must_use]
-    pub fn adopt(&mut self, name: StringId, annotation: Value) -> Option<Value> {
+    pub fn adopt(&mut self, name: SymbolId, annotation: Value) -> Option<Value> {
         self.name = Some(name);
         self.annotation.replace(annotation)
     }
@@ -290,7 +290,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DataclassField> {
         let (name, annotation, default, factory, adopted) = {
             let this = self.get(vm.heap);
             (
-                this.name.map(Value::InternString),
+                this.name.map(Value::Symbol),
                 this.annotation.as_ref().map(|v| v.clone_with_heap(vm.heap)),
                 this.default.as_ref().map(|v| v.clone_with_heap(vm.heap)),
                 this.default_factory.as_ref().map(|v| v.clone_with_heap(vm.heap)),
@@ -329,12 +329,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DataclassField> {
     /// because the arguments that would vary them are refused by `field()`, so
     /// every field Monty builds carries CPython's defaults.
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let attr_str = attr.as_str(vm.interns);
+        let attr_str = attr.as_str(vm.symbols);
         let value = match attr_str {
             // `None` until a decorator adopts the field, as in CPython.
             "name" => match self.get(vm.heap).name {
                 Some(name) => {
-                    let name = vm.interns.get_str(name).to_owned();
+                    let name = vm.symbols.get_str(name).to_owned();
                     allocate_string(name, vm.heap)
                 }
                 None => Value::None,

@@ -26,12 +26,12 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{Heap, HeapData},
     heap_traits::DropGuard,
-    intern::StaticStrings,
     modules::{
         ModuleFunctions,
         time::{HostSleep, host_sleep},
     },
     os_dispatch::{PostConversionEffect, SleepDestination},
+    symbols::StaticStrings,
     types::{Module, Type, str::allocate_string},
     value::Value,
 };
@@ -54,7 +54,7 @@ pub(crate) enum AsyncioFunctions {
 /// The module exposes `run`, `gather`, `sleep`, `create_task`, `wait`, `Task`,
 /// `InvalidStateError` and the `wait` completion constants.
 pub fn create_module(vm: &mut VM<'_>) -> Module {
-    let mut module = Module::new(StaticStrings::Asyncio, vm.interns);
+    let mut module = Module::new(StaticStrings::Asyncio, vm.symbols);
 
     module.set_attr(
         StaticStrings::Gather,

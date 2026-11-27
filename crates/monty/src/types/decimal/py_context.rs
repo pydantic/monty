@@ -527,7 +527,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DecContext> {
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let Some(field) = ContextField::from_name(attr.as_str(vm.interns)) else {
+        let Some(field) = ContextField::from_name(attr.as_str(vm.symbols)) else {
             return Ok(None);
         };
         let value = match field {
@@ -546,8 +546,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DecContext> {
 
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         defer_drop!(value, vm);
-        let Some(field) = ContextField::from_name(name.as_str(vm.interns)) else {
-            return Err(ExcType::attribute_error(Type::DecimalContext, name.as_str(vm.interns)));
+        let Some(field) = ContextField::from_name(name.as_str(vm.symbols)) else {
+            return Err(ExcType::attribute_error(Type::DecimalContext, name.as_str(vm.symbols)));
         };
         let mut settings = *self.get(vm.heap);
         match field {

@@ -3,7 +3,7 @@
 //! These paths cannot easily be triggered through `mount-fs` test_cases because
 //! the in-process `MountTable` does not raise mid-read; instead we drive the
 //! VM directly so we can resume an OS call with an exception (or with an
-//! interned-string return value that hits the `InternBytes`/empty-string
+//! symbol return value that hits the `InternBytes`/empty-string
 //! materialisation branch of [`apply_buffer_store`]).
 
 use std::time::Duration;
@@ -115,7 +115,7 @@ f.readline()
 // ---------------------------------------------------------------------------
 // Iteration loads the buffer through `FileNext` for both `for` and `next()`. A host failure must
 // surface at the loop / call and leave the file ready to retry, and the
-// empty-file reply (interned `""`) must exhaust the iterator cleanly.
+// empty-file reply (the empty string symbol) must exhaust the iterator cleanly.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -237,7 +237,7 @@ except OSError as exc:
         .unwrap();
     let retry_call = progress.into_os_call().expect("expected retry OsCall");
     assert_eq!(retry_call.function_call.name(), "Path.read_text");
-    // An empty file arrives interned; `next()` answers with the default.
+    // An empty file arrives as a symbol; `next()` answers with the default.
     let final_progress = retry_call
         .resume(MontyObject::string(String::new()), PrintWriter::Stdout)
         .unwrap();
@@ -275,7 +275,7 @@ fn file_iteration_load_rejects_future_reply() {
 }
 
 #[test]
-fn for_loop_over_empty_file_via_intern() {
+fn for_loop_over_empty_file_symbol() {
     let code = r"
 f = open('/empty.txt')
 count = 0
@@ -343,14 +343,14 @@ f.tell()
 
 // ---------------------------------------------------------------------------
 // apply_buffer_store covers two materialisation branches: `Value::Ref`
-// (heap-allocated content) and `Value::InternString` / `Value::InternBytes`
-// (small/empty strings that get interned at the host boundary). The empty
+// (heap-allocated content) and `Value::Symbol` / `Value::InternBytes`
+// (small/empty strings that become symbols at the host boundary). The empty
 // `""` text case and the small `b""` binary case both go through the
-// intern branch.
+// symbol branch.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn buffer_store_handles_empty_text_via_intern() {
+fn buffer_store_handles_empty_text_symbol() {
     let code = r"
 f = open('/empty.txt')
 f.read(5)

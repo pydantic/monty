@@ -138,7 +138,7 @@ fn extract_path_string(value: &Value, vm: &VM<'_>) -> RunResult<String> {
     let path = match value.py_value(vm) {
         PyValue::Str(text) => Some(text.as_str(vm).to_owned()),
         PyValue::Bytes(bytes) => decode_utf8_path(bytes.as_slice(vm))?.map(str::to_owned),
-        _ => value_as_path_str(value, vm.heap, vm.interns).map(str::to_owned),
+        _ => value_as_path_str(value, vm.heap, vm.symbols).map(str::to_owned),
     };
     path.ok_or_else(|| path_type_error(value, vm))
 }
@@ -255,6 +255,6 @@ fn path_type_error(value: &Value, vm: &VM<'_>) -> RunError {
 fn kwarg_type_error(name: &str, value: &Value, vm: &VM<'_>) -> RunError {
     ExcType::type_error(format!(
         "open() argument '{name}' must be str or None, not {}",
-        value.py_type(vm).cpython_arg_name(vm.heap, vm.interns)
+        value.py_type(vm).cpython_arg_name(vm.heap, vm.symbols)
     ))
 }

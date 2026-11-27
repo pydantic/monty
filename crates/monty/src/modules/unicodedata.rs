@@ -33,9 +33,9 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     heap::{DropGuard, Heap},
-    intern::StaticStrings,
     modules::ModuleFunctions,
     string_builder::StringBuilder,
+    symbols::StaticStrings,
     types::{Module, str::allocate_string},
     value::Value,
 };
@@ -73,7 +73,7 @@ const UNICODEDATA_FUNCTIONS: &[(StaticStrings, UnicodedataFunctions)] = &[
 
 /// Creates the `unicodedata` module.
 pub fn create_module(vm: &mut VM<'_>) -> Module {
-    let mut module = Module::new(StaticStrings::Unicodedata, vm.interns);
+    let mut module = Module::new(StaticStrings::Unicodedata, vm.symbols);
 
     for (name, func) in UNICODEDATA_FUNCTIONS {
         module.set_attr(*name, Value::ModuleFunction(ModuleFunctions::Unicodedata(*func)), vm);

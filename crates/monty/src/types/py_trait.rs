@@ -108,14 +108,14 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     /// Defaults to [`py_type`](Self::py_type)'s name; types whose [`TypeRef`]
     /// is a native placeholder (host class instances, named tuples) override it
     /// to name their real class.
-    /// Borrows only `vm.interns`, so it survives heap cleanup.
+    /// Borrows only `vm.symbols`, so it survives heap cleanup.
     fn py_type_name(&self, vm: &VM<'h>) -> Cow<'h, str> {
-        self.py_type(vm).name(vm.heap, vm.interns)
+        self.py_type(vm).name(vm.heap, vm.symbols)
     }
 
     /// Returns the number of elements in this container.
     ///
-    /// For interns, returns the number of Unicode codepoints (characters), matching Python.
+    /// For symbols, returns the number of Unicode codepoints (characters), matching Python.
     /// Returns `None` if the type doesn't support `len()`.
     fn py_len(&self, vm: &VM<'h>) -> Option<usize>;
 
@@ -154,7 +154,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     /// `dict_keys`/`set`) is handled here in-situ: each type inspects `other`
     /// directly. For containers this performs element-wise comparison using the
     /// heap to resolve nested references; `&mut VM` allows lazy hash computation
-    /// for dict key lookups and access to interned string content.
+    /// for dict key lookups and access to symbol content.
     ///
     /// Recursion depth is tracked via `vm.recursion_guard()`; returns
     /// `Err(ResourceError::Recursion)` if maximum depth is exceeded.
@@ -164,7 +164,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     ///
     /// For containers, this performs element-wise comparison using the heap
     /// to resolve nested references. Takes `&mut VM` to allow lazy hash
-    /// computation for dict key lookups and access to interned string content.
+    /// computation for dict key lookups and access to symbol content.
     ///
     /// Recursion depth is tracked via `vm.recursion_guard()`.
     ///
@@ -223,7 +223,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     ///
     /// # Arguments
     /// * `f` - The formatter to write to
-    /// * `vm` - The VM for resolving value references and looking up interned strings
+    /// * `vm` - The VM for resolving value references and looking up symbols
     /// * `heap_ids` - Set of heap IDs currently being repr'd (for cycle detection)
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         self.py_default_repr_fmt(f, vm)
@@ -561,7 +561,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
         // references on the error path (caught by `memory-model-checks`).
 
         args.drop_with(vm);
-        Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns)))
+        Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.symbols)))
     }
 
     /// Whether this type implements the context-manager protocol.
@@ -579,7 +579,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     ///
     /// Takes `&VM` (not just the heap) because user-defined instances resolve
     /// the check against their class namespace, which needs both heap and
-    /// interns access. Mirroring CPython, the check is for `__exit__` — the
+    /// access to the symbol table. Mirroring CPython, the check is for `__exit__` — the
     /// dunder CPython's own protocol error names first — while a missing
     /// `__enter__` is reported by [`py_enter`] itself.
     ///
@@ -638,7 +638,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     /// or the type doesn't support subscripting.
     ///
     /// Takes `&mut VM` for proper reference counting when cloning the returned value
-    /// and access to interned string content.
+    /// and access to symbol content.
     ///
     /// Default implementation returns TypeError.
     fn py_getitem(&self, _key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
@@ -668,7 +668,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         value.drop_with(vm);
         let type_name = self.py_type_name(vm);
-        Err(ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm.interns)))
+        Err(ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm.symbols)))
     }
 
     /// Python attribute get operation (`__getattr__`), e.g., `obj.attr`.

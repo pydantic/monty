@@ -36,9 +36,9 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    intern::StaticStrings,
     modules::ModuleFunctions,
     resource_checks::{check_mult_size, check_product_size},
+    symbols::StaticStrings,
     types::{LongInt, Module, PyTrait, allocate_tuple, decimal, long_int::bigint_to_f64_checked},
     value::Value,
 };
@@ -190,7 +190,7 @@ pub(crate) enum MathFunctions {
 /// matching CPython's `math` module. Functions are registered as
 /// `ModuleFunctions::Math` variants.
 pub fn create_module(vm: &mut VM<'_>) -> Module {
-    let mut module = Module::new(StaticStrings::Math, vm.interns);
+    let mut module = Module::new(StaticStrings::Math, vm.symbols);
 
     // Register all math functions
     for (name, func) in MATH_FUNCTIONS {

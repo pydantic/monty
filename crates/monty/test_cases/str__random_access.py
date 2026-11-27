@@ -1,4 +1,4 @@
-# Compare string access with list access across interned, inline and heap text.
+# Compare string access with list access across symbol-backed, inline and heap text.
 for literal in (
     '',
     'a',

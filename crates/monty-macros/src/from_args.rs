@@ -821,7 +821,7 @@ impl Field {
             quote! { ::std::option::Option::None }
         } else {
             let variant = self.static_string_variant();
-            quote! { ::std::option::Option::Some(crate::intern::StaticStrings::#variant) }
+            quote! { ::std::option::Option::Some(crate::symbols::StaticStrings::#variant) }
         }
     }
 

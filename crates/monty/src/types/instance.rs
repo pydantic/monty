@@ -16,12 +16,12 @@ use crate::{
         BorrowedHeapReadMut, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead,
         HeapReadMut, HeapReadOutput, heap_read_ref_as_field_mut,
     },
-    intern::Interns,
     modules::{
         ModuleFunctions,
         copy::{Memo, PyDeepCopy, deep_copy, deep_copy_attrs},
         dataclasses,
     },
+    symbols::SymbolTable,
     value::{EitherStr, Value},
 };
 
@@ -179,7 +179,7 @@ impl<'h> HeapReadMut<'h, Instance> {
     pub fn set_attr_unchecked(&self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         if name
             .as_either_str(vm.heap)
-            .is_some_and(|name| name.as_str(vm.interns) == "__class__")
+            .is_some_and(|name| name.as_str(vm.symbols) == "__class__")
         {
             name.drop_with(vm);
             self.assign_class(value, vm).map(|()| None)
@@ -206,8 +206,8 @@ impl<'h> HeapReadMut<'h, Instance> {
                         "__class__ assignment only supported for mutable types or ModuleType subclasses",
                     ),
                     Some(class) => {
-                        let new = class.name(vm.heap, vm.interns);
-                        let old = class_name(self.get(vm.heap).class, vm.heap, vm.interns);
+                        let new = class.name(vm.heap, vm.symbols);
+                        let old = class_name(self.get(vm.heap).class, vm.heap, vm.symbols);
                         ExcType::type_error(format!(
                             "__class__ assignment: '{new}' object layout differs from '{old}'"
                         ))
@@ -371,7 +371,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
         let class_id = self.get(vm.heap).class();
         if matches!(class_dunder(class_id, "__contains__", vm), Some(Value::None)) {
             Err(ExcType::type_error_object_not_container(&class_name(
-                class_id, vm.heap, vm.interns,
+                class_id, vm.heap, vm.symbols,
             )))
         } else {
             // The callee owns its argument, so the borrowed `item` is cloned;
@@ -462,13 +462,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let attr_str = attr.as_str(vm.interns);
+        let attr_str = attr.as_str(vm.symbols);
 
         // 1. An instance attribute shadows class methods; call it as-is (unbound).
         if let Some(callable) = self
             .get(vm.heap)
             .attrs
-            .get_by_str(attr_str, vm.heap, vm.interns)
+            .get_by_str(attr_str, vm.heap, vm.symbols)
             .map(|v| v.clone_with_heap(vm.heap))
         {
             defer_drop!(callable, vm);
@@ -507,7 +507,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
         // 5. No such attribute.
         args.drop_with(vm);
         Err(ExcType::attribute_error(
-            class_name(class_id, vm.heap, vm.interns),
+            class_name(class_id, vm.heap, vm.symbols),
             attr_str,
         ))
     }
@@ -553,7 +553,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
         let class_id = self.get(vm.heap).class;
         let Some(enter) = class_member(class_id, "__enter__", vm) else {
             return Err(ExcType::type_error_not_context_manager(
-                class_name(class_id, vm.heap, vm.interns),
+                class_name(class_id, vm.heap, vm.symbols),
                 "__enter__",
             ));
         };
@@ -575,7 +575,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
             // is not taken — that case fails later in `call_member_bound` as a
             // `TypeError: 'NoneType' object is not callable`.
             return Err(ExcType::attribute_error(
-                class_name(class_id, vm.heap, vm.interns),
+                class_name(class_id, vm.heap, vm.symbols),
                 "__exit__",
             ));
         };
@@ -666,7 +666,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BoundMethod> {
     /// `obj.method.__annotations__` and `__annotate__` are the function's, as
     /// CPython's method type forwards them.
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        if !matches!(attr.as_str(vm.interns), "__annotations__" | "__annotate__") {
+        if !matches!(attr.as_str(vm.symbols), "__annotations__" | "__annotate__") {
             return Ok(None);
         }
         let func = self.get(vm.heap).func.clone_with_heap(vm);
@@ -675,9 +675,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BoundMethod> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        if !matches!(attr.as_str(vm.interns), "__annotations__" | "__annotate__") {
+        if !matches!(attr.as_str(vm.symbols), "__annotations__" | "__annotate__") {
             args.drop_with(vm);
-            return Err(ExcType::attribute_error("function", attr.as_str(vm.interns)));
+            return Err(ExcType::attribute_error("function", attr.as_str(vm.symbols)));
         }
         let func = self.get(vm.heap).func.clone_with_heap(vm);
         defer_drop!(func, vm);
@@ -701,13 +701,13 @@ impl HeapItem for BoundMethod {
 /// (available at the `Value` level) because binding a method needs the instance's
 /// `HeapId`.
 pub(crate) fn instance_getattr(self_id: HeapId, attr: &EitherStr, vm: &mut VM<'_>) -> RunResult<CallResult> {
-    let attr_str = attr.as_str(vm.interns);
+    let attr_str = attr.as_str(vm.symbols);
     if let Some(value) = instance_attr(self_id, attr_str, vm).or_else(|| object_member(self_id, attr, vm)) {
         Ok(CallResult::Value(value))
     } else {
         let class_id = instance_class(self_id, vm);
         Err(ExcType::attribute_error(
-            class_name(class_id, vm.heap, vm.interns),
+            class_name(class_id, vm.heap, vm.symbols),
             attr_str,
         ))
     }
@@ -718,7 +718,7 @@ pub(crate) fn instance_getattr(self_id: HeapId, attr: &EitherStr, vm: &mut VM<'_
 /// binds the class and the rest bind the instance.
 fn object_member(self_id: HeapId, attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
     let member = Type::Object.class_constant(attr, vm)?;
-    Some(match attr.as_str(vm.interns) {
+    Some(match attr.as_str(vm.symbols) {
         "__new__" => member,
         "__init_subclass__" => {
             let class_id = instance_class(self_id, vm);
@@ -744,7 +744,7 @@ pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &VM<'_>) -> Option<
         && let Some(value) = inst
             .get(vm.heap)
             .attrs
-            .get_by_str(attr, vm.heap, vm.interns)
+            .get_by_str(attr, vm.heap, vm.symbols)
             .map(|v| v.clone_with_heap(vm.heap))
     {
         return Some(value);
@@ -974,7 +974,7 @@ pub(crate) fn class_defines_not_none(class_id: HeapId, dunder: &str, vm: &VM<'_>
 /// `None` member apart from an absent one — CPython's `has_explicit_hash` does
 /// — want this rather than either check.
 pub(crate) fn class_dunder<'v>(class_id: HeapId, dunder: &str, vm: &'v VM<'_>) -> Option<&'v Value> {
-    class_lookup(class_id, dunder, vm.heap, vm.interns)
+    class_lookup(class_id, dunder, vm.heap, vm.symbols)
 }
 
 /// Borrows `name` from `class_id`'s own namespace, ignoring inherited members.
@@ -985,19 +985,24 @@ pub(crate) fn namespace_member<'v>(
     class_id: HeapId,
     name: &str,
     heap: &'v Heap,
-    interns: &Interns,
+    symbols: &SymbolTable,
 ) -> Option<&'v Value> {
     match heap.get(class_id) {
-        HeapData::Class(class) => class.namespace().get_by_str(name, heap, interns),
+        HeapData::Class(class) => class.namespace().get_by_str(name, heap, symbols),
         _ => None,
     }
 }
 
 /// Borrows `name` from `class_id`'s namespace or, failing that, from the
 /// classes it inherits from in MRO order: CPython's `_PyType_Lookup`.
-pub(crate) fn class_lookup<'v>(class_id: HeapId, name: &str, heap: &'v Heap, interns: &Interns) -> Option<&'v Value> {
+pub(crate) fn class_lookup<'v>(
+    class_id: HeapId,
+    name: &str,
+    heap: &'v Heap,
+    symbols: &SymbolTable,
+) -> Option<&'v Value> {
     match heap.get(class_id) {
-        HeapData::Class(class) => class.lookup(name, heap, interns),
+        HeapData::Class(class) => class.lookup(name, heap, symbols),
         _ => None,
     }
 }
@@ -1029,9 +1034,9 @@ fn heap_subclass_overrides(lhs_id: HeapId, rhs_id: HeapId, dunder: Option<&str>,
     }
     match dunder {
         None => true,
-        Some(dunder) => match class_lookup(rhs_class, dunder, vm.heap, vm.interns) {
+        Some(dunder) => match class_lookup(rhs_class, dunder, vm.heap, vm.symbols) {
             Some(rhs_member) => {
-                class_lookup(lhs_class, dunder, vm.heap, vm.interns).is_none_or(|lhs_member| !lhs_member.is(rhs_member))
+                class_lookup(lhs_class, dunder, vm.heap, vm.symbols).is_none_or(|lhs_member| !lhs_member.is(rhs_member))
             }
             None => false,
         },
@@ -1091,14 +1096,14 @@ fn instance_user_hash(self_id: HeapId, vm: &mut VM<'_>) -> RunResult<Option<Hash
 
 /// Looks up a member through the class's MRO and clones it out, or `None` if absent.
 fn class_member(class_id: HeapId, name: &str, vm: &VM<'_>) -> Option<Value> {
-    class_lookup(class_id, name, vm.heap, vm.interns).map(|v| v.clone_with_heap(vm.heap))
+    class_lookup(class_id, name, vm.heap, vm.symbols).map(|v| v.clone_with_heap(vm.heap))
 }
 
 /// Returns a class object's name for error messages / repr.
 ///
-/// Takes `heap` + `interns` rather than a `&VM` so heap-only contexts (e.g.
-/// `Type::name`) can resolve names. The result borrows only the interner —
-/// interned names are `Cow::Borrowed`, while heap-owned names (classes created
+/// Takes `heap` + `symbols` rather than a `&VM` so heap-only contexts (e.g.
+/// `Type::name`) can resolve names. The result borrows only the symbol table —
+/// symbols are `Cow::Borrowed`, while heap-owned names (classes created
 /// by the 3-arg `type()` form) are cloned into `Cow::Owned` here, so either way
 /// the result survives subsequent heap mutation.
 ///
@@ -1106,9 +1111,9 @@ fn class_member(class_id: HeapId, name: &str, vm: &VM<'_>) -> Option<Value> {
 /// If `class_id` does not refer to a `Class` heap entry — every producer of a
 /// class id (`Instance.class`, class values) guarantees it does, so this is a
 /// programmer-error tripwire.
-pub(crate) fn class_name<'i>(class_id: HeapId, heap: &Heap, interns: &'i Interns) -> Cow<'i, str> {
+pub(crate) fn class_name<'i>(class_id: HeapId, heap: &Heap, symbols: &'i SymbolTable) -> Cow<'i, str> {
     match heap.get(class_id) {
-        HeapData::Class(class) => class.name().to_cow(interns),
+        HeapData::Class(class) => class.name().to_cow(symbols),
         _ => unreachable!("class_name called with a non-class heap id"),
     }
 }

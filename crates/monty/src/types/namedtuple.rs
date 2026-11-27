@@ -38,11 +38,11 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     hash::{HashValue, identity_hash},
     heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
-    intern::{Interns, StaticStrings},
     modules::copy::{Memo, PyDeepCopy, deep_copy_slots},
     py_attrs::{MethodCall, PyAttrs},
     py_value::PyValue,
     resource_checks::{check_repeat_size, repeated_len},
+    symbols::{StaticStrings, SymbolTable},
     types::{
         Dict, Slice, Type, TypeRef, Union, allocate_tuple,
         instance::BoundMethod,
@@ -105,7 +105,7 @@ impl NamedTuple {
     /// # Arguments
     ///
     /// * `type_name` - The type name for repr (e.g., "sys.version_info")
-    /// * `field_names` - Field names in order; interned for Monty's internal
+    /// * `field_names` - Field names in order; symbol-backed for Monty's internal
     ///   named tuples, owned `String`s for `collections.namedtuple` classes
     /// * `items` - Values corresponding to each field name
     ///
@@ -163,12 +163,12 @@ impl NamedTuple {
 
     /// Returns the type name (e.g., "sys.version_info").
     #[must_use]
-    pub fn name<'a>(&'a self, interns: &'a Interns) -> &'a str {
-        self.name.as_str(interns)
+    pub fn name<'a>(&'a self, symbols: &'a SymbolTable) -> &'a str {
+        self.name.as_str(symbols)
     }
 
     /// Returns the type name unresolved, for callers that must produce a
-    /// `Cow` borrowing only `Interns` (error messages formatted after heap
+    /// `Cow` borrowing only `SymbolTable` (error messages formatted after heap
     /// cleanup) rather than a `&str` borrowing this entry too.
     #[must_use]
     pub fn name_either(&self) -> &EitherStr {
@@ -206,14 +206,14 @@ impl NamedTuple {
     ///
     /// Compares field names by actual string content, not just variant type.
     /// This allows lookup to work regardless of whether the field name was
-    /// stored as an interned `StringId` or a heap-allocated `String`.
+    /// stored as a `SymbolId` or a heap-allocated `String`.
     ///
     /// Returns `Some(value)` if the field exists, `None` otherwise.
     #[must_use]
-    pub fn get_by_name(&self, name_str: &str, interns: &Interns) -> Option<&Value> {
+    pub fn get_by_name(&self, name_str: &str, symbols: &SymbolTable) -> Option<&Value> {
         self.field_names
             .iter()
-            .position(|field_name| field_name.as_str(interns) == name_str)
+            .position(|field_name| field_name.as_str(symbols) == name_str)
             .map(|idx| &self.items[idx])
     }
 }
@@ -411,7 +411,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTuple> {
 
     /// The class name (`'Point'`, `'sys.version_info'`), not `'namedtuple'`.
     fn py_type_name(&self, vm: &VM<'h>) -> Cow<'h, str> {
-        self.get(vm.heap).name_either().to_cow(vm.interns)
+        self.get(vm.heap).name_either().to_cow(vm.symbols)
     }
 
     fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
@@ -549,14 +549,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTuple> {
         };
         let vm = &mut *guard;
 
-        write!(f, "{}(", self.get(vm.heap).name.as_str(vm.interns))?;
+        write!(f, "{}(", self.get(vm.heap).name.as_str(vm.symbols))?;
 
         let len = self.get(vm.heap).items.len();
         for i in 0..len {
             if i > 0 {
                 f.write_str(", ")?;
             }
-            f.write_str(self.get(vm.heap).field_names[i].as_str(vm.interns))?;
+            f.write_str(self.get(vm.heap).field_names[i].as_str(vm.symbols))?;
             f.write_char('=')?;
             let value = self.clone_item(i, vm);
             defer_drop!(value, vm);
@@ -568,14 +568,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTuple> {
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let attr_name = attr.as_str(vm.interns);
+        let attr_name = attr.as_str(vm.symbols);
         // `_fields` (and its alias `__match_args__`) is a data attribute, a tuple
         // of the field names; no field can shadow it since fields cannot start with `_`.
         // Gated on `class_id`: Monty's internal named tuples (`sys.version_info`,
         // host imports) model CPython *structseqs*, which expose none of the
         // `collections.namedtuple` API.
         if matches!(
-            attr.static_string(vm.interns),
+            attr.static_string(vm.symbols),
             Some(StaticStrings::UnderFields | StaticStrings::MatchArgsDunder)
         ) && self.get(vm.heap).class_id().is_some()
         {
@@ -584,7 +584,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTuple> {
         // `_field_defaults` lives only on the class (an instance stores field
         // *names* but not defaults), so it is read through `class_id` rather than
         // rebuilt here — the two spellings then cannot drift apart.
-        if attr.static_string(vm.interns) == Some(StaticStrings::UnderFieldDefaults)
+        if attr.static_string(vm.symbols) == Some(StaticStrings::UnderFieldDefaults)
             && let Some(class_id) = self.get(vm.heap).class_id()
             && let HeapReadOutput::NamedTupleClass(class) = vm.heap.read(class_id)
         {
@@ -594,22 +594,22 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTuple> {
         // read them from the class object rather than duplicating them per instance.
         if let Some(class_id) = self.get(vm.heap).class_id()
             && let Some(static_attr @ (StaticStrings::DunderDoc | StaticStrings::DunderModule)) =
-                attr.static_string(vm.interns)
+                attr.static_string(vm.symbols)
             && let HeapData::NamedTupleClass(class) = vm.heap.get(class_id)
         {
             let value = if static_attr == StaticStrings::DunderDoc {
-                let doc = synthesise_doc(class, vm.interns);
+                let doc = synthesise_doc(class, vm.symbols);
                 allocate_string(doc, vm.heap)
             } else {
                 class.module().clone_with_heap(vm.heap)
             };
             return Ok(Some(CallResult::Value(value)));
         }
-        if let Some(value) = self.get(vm.heap).get_by_name(attr_name, vm.interns) {
+        if let Some(value) = self.get(vm.heap).get_by_name(attr_name, vm.symbols) {
             Ok(Some(CallResult::Value(value.clone_with_heap(vm.heap))))
         } else {
             // we use name here, not `self.py_type(heap)` hence returning a Ok(None)
-            Err(ExcType::attribute_error(self.get(vm.heap).name(vm.interns), attr_name))
+            Err(ExcType::attribute_error(self.get(vm.heap).name(vm.symbols), attr_name))
         }
     }
 }
@@ -764,8 +764,8 @@ impl<'h> HeapRead<'h, NamedTuple> {
 
         let mut unexpected: Vec<String> = Vec::new();
         for (key, val) in normalize_kwargs(kwargs, vm) {
-            let key_str = key.as_str(vm.interns);
-            if let Some(i) = field_names.iter().position(|f| f.as_str(vm.interns) == key_str) {
+            let key_str = key.as_str(vm.symbols);
+            if let Some(i) = field_names.iter().position(|f| f.as_str(vm.symbols) == key_str) {
                 let old = mem::replace(&mut items[i], val);
                 old.drop_with(vm);
             } else {
@@ -806,7 +806,7 @@ impl<'h> HeapRead<'h, NamedTuple> {
 /// resolves by reference (see [`type_of`](crate::builtins::type_::builtin_type)).
 ///
 /// The name is heap-owned ([`EitherStr`]) because factory names are chosen at
-/// runtime, after the intern table is frozen.
+/// runtime, after the symbol table is frozen.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct NamedTupleClass {
     /// The class name (e.g. `Point`), used for `__name__`, `repr`, and the
@@ -853,11 +853,11 @@ impl NamedTupleClass {
     }
 
     /// The class name, `Point` for `namedtuple('Point', ...)`.
-    pub(crate) fn name<'a>(&'a self, interns: &'a Interns) -> &'a str {
-        self.name.as_str(interns)
+    pub(crate) fn name<'a>(&'a self, symbols: &'a SymbolTable) -> &'a str {
+        self.name.as_str(symbols)
     }
 
-    /// The class name, interned or heap-owned.
+    /// The class name, symbol-backed or heap-owned.
     pub(crate) fn name_either(&self) -> &EitherStr {
         &self.name
     }
@@ -895,7 +895,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTupleClass> {
     /// via the inherited `tuple.__class_getitem__` (see `limitations/namedtuple.md`).
     fn py_getitem(&self, _key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         Err(ExcType::type_error_type_not_subscriptable(
-            self.get(vm.heap).name(vm.interns),
+            self.get(vm.heap).name(vm.symbols),
         ))
     }
 
@@ -904,15 +904,15 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTupleClass> {
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
-        Ok(write!(f, "<class '{}'>", self.get(vm.heap).name.as_str(vm.interns))?)
+        Ok(write!(f, "<class '{}'>", self.get(vm.heap).name.as_str(vm.symbols))?)
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let value = match attr.static_string(vm.interns) {
+        let value = match attr.static_string(vm.symbols) {
             // `namedtuple` assigns `__qualname__ = typename` outright, so it always
             // equals `__name__` and never picks up a dotted path from an enclosing scope.
             Some(StaticStrings::DunderName | StaticStrings::DunderQualname) => {
-                let name = self.get(vm.heap).name.as_str(vm.interns).to_owned();
+                let name = self.get(vm.heap).name.as_str(vm.symbols).to_owned();
                 allocate_string(name, vm.heap)
             }
             // `__match_args__` is `_fields` under the name class patterns read.
@@ -922,30 +922,30 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTupleClass> {
             }
             Some(StaticStrings::UnderFieldDefaults) => self.field_defaults_dict(vm)?,
             Some(StaticStrings::DunderDoc) => {
-                let doc = synthesise_doc(self.get(vm.heap), vm.interns);
+                let doc = synthesise_doc(self.get(vm.heap), vm.symbols);
                 allocate_string(doc, vm.heap)
             }
             Some(StaticStrings::DunderModule) => self.get(vm.heap).module.clone_with_heap(vm.heap),
-            _ if attr.as_str(vm.interns) == "__class__" => Value::Builtin(Builtins::Type(Type::Type)),
-            _ if attr.as_str(vm.interns) == "__bases__" => {
+            _ if attr.as_str(vm.symbols) == "__class__" => Value::Builtin(Builtins::Type(Type::Type)),
+            _ if attr.as_str(vm.symbols) == "__bases__" => {
                 allocate_tuple(smallvec![Value::Builtin(Builtins::Type(Type::Tuple))], vm.heap)
             }
-            _ if attr.as_str(vm.interns) == "__mro__" => {
+            _ if attr.as_str(vm.symbols) == "__mro__" => {
                 let items = TypeRef::Class(self.id())
                     .mro(vm.heap)
                     .map(|ty| ty.to_value(vm.heap))
                     .collect();
                 allocate_tuple(items, vm.heap)
             }
-            _ if attr.as_str(vm.interns) == "mro" => BoundMethod::allocate(
+            _ if attr.as_str(vm.symbols) == "mro" => BoundMethod::allocate(
                 self.clone_value(vm.heap),
                 Value::Builtin(Builtins::Function(BuiltinsFunctions::TypeMro)),
                 vm.heap,
             ),
             _ => {
                 return Err(ExcType::attribute_error_type(
-                    self.get(vm.heap).name.as_str(vm.interns),
-                    attr.as_str(vm.interns),
+                    self.get(vm.heap).name.as_str(vm.symbols),
+                    attr.as_str(vm.symbols),
                 ));
             }
         };
@@ -953,15 +953,15 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTupleClass> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        if attr.static_string(vm.interns) == Some(StaticStrings::UnderMake) {
+        if attr.static_string(vm.symbols) == Some(StaticStrings::UnderMake) {
             make_namedtuple(self.id(), vm, args).map(CallResult::Value)
-        } else if attr.as_str(vm.interns) == "mro" {
+        } else if attr.as_str(vm.symbols) == "mro" {
             builtin_type_mro(vm, args.prepend(self.clone_value(vm.heap))).map(CallResult::Value)
         } else {
             args.drop_with(vm);
             Err(ExcType::attribute_error_type(
-                self.get(vm.heap).name.as_str(vm.interns),
-                attr.as_str(vm.interns),
+                self.get(vm.heap).name.as_str(vm.symbols),
+                attr.as_str(vm.symbols),
             ))
         }
     }
@@ -1112,14 +1112,14 @@ fn cloned_tuple_like_items(value: &Value, vm: &VM<'_>) -> RunResult<Option<Vec<V
 /// trailing comma (`Q(a,)`) — a quirk worth preserving since it is observable.
 /// The result is bounded by the already-tracked field names, so a plain `String`
 /// is safe here (no `StringBuilder` amplification risk).
-fn synthesise_doc(class: &NamedTupleClass, interns: &Interns) -> String {
-    let names = class.field_names.iter().map(|n| n.as_str(interns));
+fn synthesise_doc(class: &NamedTupleClass, symbols: &SymbolTable) -> String {
+    let names = class.field_names.iter().map(|n| n.as_str(symbols));
     let arg_list = if class.field_names.len() == 1 {
         format!("{},", names.into_iter().next().expect("length checked"))
     } else {
         names.collect::<Vec<_>>().join(", ")
     };
-    format!("{}({})", class.name.as_str(interns), arg_list)
+    format!("{}({})", class.name.as_str(symbols), arg_list)
 }
 
 /// Constructs a [`NamedTuple`] instance by calling a [`NamedTupleClass`].
@@ -1143,7 +1143,7 @@ fn construct_namedtuple(class_id: HeapId, vm: &mut VM<'_>, args: ArgValues) -> R
     let n_required = n - defaults.len();
     // Construction errors are reported against the generated `__new__`, e.g.
     // `Point.__new__() missing 1 required positional argument: 'y'`.
-    let func_name = format!("{}.__new__", name.as_str(vm.interns));
+    let func_name = format!("{}.__new__", name.as_str(vm.symbols));
 
     let (pos, kwargs) = args.into_parts();
     let n_pos = pos.len();
@@ -1172,8 +1172,8 @@ fn construct_namedtuple(class_id: HeapId, vm: &mut VM<'_>, args: ArgValues) -> R
     let mut first_err: Option<RunError> = None;
     let mut leftover: Vec<Value> = Vec::new();
     for (key, val) in normalize_kwargs(kwargs, vm) {
-        let key_str = key.as_str(vm.interns);
-        match field_names.iter().position(|f| f.as_str(vm.interns) == key_str) {
+        let key_str = key.as_str(vm.symbols);
+        match field_names.iter().position(|f| f.as_str(vm.symbols) == key_str) {
             Some(i) if slots[i].is_none() => slots[i] = Some(val),
             Some(_) => {
                 if first_err.is_none() {
@@ -1204,7 +1204,7 @@ fn construct_namedtuple(class_id: HeapId, vm: &mut VM<'_>, args: ArgValues) -> R
     if first_err.is_none() {
         let missing: Vec<&str> = (0..n_required)
             .filter(|&i| slots[i].is_none())
-            .map(|i| field_names[i].as_str(vm.interns))
+            .map(|i| field_names[i].as_str(vm.symbols))
             .collect();
         if !missing.is_empty() {
             first_err = Some(ExcType::type_error_missing_positional_with_names(&func_name, &missing));
@@ -1274,13 +1274,13 @@ fn fields_tuple_from(names: &[EitherStr], vm: &mut VM<'_>) -> Value {
     allocate_tuple(SmallVec::from_vec(items), vm.heap)
 }
 
-/// Normalizes call kwargs into `(name, value)` pairs, dropping non-interned
-/// keys' heap references. Non-string keys (only reachable via `**` unpacking)
+/// Normalizes call kwargs into `(name, value)` pairs, releasing
+/// heap-backed keys. Non-string keys (only reachable via `**` unpacking)
 /// map to an empty name, which then surfaces as an unexpected-keyword error.
 fn normalize_kwargs(kwargs: KwargsValues, vm: &mut VM<'_>) -> Vec<(EitherStr, Value)> {
     match kwargs {
         KwargsValues::Empty => Vec::new(),
-        KwargsValues::Inline(kvs) => kvs.into_iter().map(|(id, v)| (EitherStr::Interned(id), v)).collect(),
+        KwargsValues::Inline(kvs) => kvs.into_iter().map(|(id, v)| (EitherStr::Symbol(id), v)).collect(),
         KwargsValues::Pairs(kvs) => kvs.into_iter().map(|(k, v)| (take_key(k, vm), v)).collect(),
         KwargsValues::Dict(dict) => dict.into_iter().map(|(k, v)| (take_key(k, vm), v)).collect(),
     }
@@ -1343,7 +1343,7 @@ impl<'heap> PyAttrs<'heap> for PyNamedTupleImpl {
     ) -> RunResult<Value> {
         if this.get(vm.heap).class_id().is_none() {
             args.drop_with(vm);
-            return Err(ExcType::attribute_error(this.get(vm.heap).name(vm.interns), "_asdict"));
+            return Err(ExcType::attribute_error(this.get(vm.heap).name(vm.symbols), "_asdict"));
         }
         this.method_asdict(vm, args)
     }
@@ -1356,7 +1356,7 @@ impl<'heap> PyAttrs<'heap> for PyNamedTupleImpl {
     ) -> RunResult<Value> {
         if this.get(vm.heap).class_id().is_none() {
             args.drop_with(vm);
-            return Err(ExcType::attribute_error(this.get(vm.heap).name(vm.interns), "_replace"));
+            return Err(ExcType::attribute_error(this.get(vm.heap).name(vm.symbols), "_replace"));
         }
         this.method_replace(vm, args)
     }
@@ -1365,7 +1365,7 @@ impl<'heap> PyAttrs<'heap> for PyNamedTupleImpl {
     fn under_make<'h>(this: &mut HeapObjectRead<'h, NamedTuple>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         if this.get(vm.heap).class_id().is_none() {
             args.drop_with(vm);
-            return Err(ExcType::attribute_error(this.get(vm.heap).name(vm.interns), "_make"));
+            return Err(ExcType::attribute_error(this.get(vm.heap).name(vm.symbols), "_make"));
         }
         this.method_make(vm, args)
     }
@@ -1380,12 +1380,12 @@ pub(crate) fn call_tuple_descriptor<'h>(
     vm: &mut VM<'h>,
 ) -> RunResult<CallResult> {
     if let PyValue::NamedTuple(tuple) = receiver {
-        match attr.static_string(vm.interns) {
+        match attr.static_string(vm.symbols) {
             Some(StaticStrings::Count) => tuple.method_count(vm, args).map(CallResult::Value),
             Some(StaticStrings::Index) => tuple.method_index(vm, args).map(CallResult::Value),
             _ => {
                 args.drop_with(vm);
-                Err(ExcType::attribute_error("tuple", attr.as_str(vm.interns)))
+                Err(ExcType::attribute_error("tuple", attr.as_str(vm.symbols)))
             }
         }
     } else {

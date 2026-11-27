@@ -119,7 +119,7 @@ assert parts[0] > parts[1]
 assert parts[0] >= parts[0]
 assert parts[0] <= parts[0]
 
-# === Cross-type string ordering (interned vs heap) ===
+# === Cross-type string ordering (symbol-backed vs heap) ===
 heap_str = 'banana,apple'.split(',')[0]
 assert heap_str > 'apple'
 assert 'cherry' > heap_str

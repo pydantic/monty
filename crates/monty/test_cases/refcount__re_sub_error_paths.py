@@ -8,7 +8,7 @@
 import re
 
 # Use lists as heap-allocated values that we can track through error paths.
-# String literals may be interned and won't show up in heap ref counts.
+# String literals may be stored as symbols and won't show up in heap ref counts.
 repl_list = ['replacement']
 input_list = ['the input']
 
@@ -40,15 +40,15 @@ try:
 except ValueError:
     pass
 
-# Negative count path with an INTERNED input: the negative-count short-circuit
-# returns the value untouched (refcount-bumped), so an interned input stays
-# interned — no heap allocation, no entry in the refcount map.
-interned_result = re.sub('pattern', 'repl', 'hello', -1)
-assert interned_result == 'hello'
+# Negative count path with a symbol input: the negative-count short-circuit
+# returns the value untouched (refcount-bumped), so a symbol stays
+# a symbol — no heap allocation, no entry in the refcount map.
+symbol_result = re.sub('pattern', 'repl', 'hello', -1)
+assert symbol_result == 'hello'
 
 # Negative count path with a HEAP-allocated input: the short-circuit shares the
 # same heap object back to the caller, so input_str and result alias each other.
-# Concatenation defeats literal interning; the result exceeds inline capacity.
+# Concatenation produces a runtime string; the result exceeds inline capacity.
 input_str = 'hello' + ' world of strings'
 result = re.sub('pattern', 'repl', input_str, -1)
 assert result == 'hello world of strings'
@@ -59,7 +59,7 @@ assert result == 'hello world of strings'
 # count_list / maxsplit_list: 1 each (leak regression: 2+ if an error path drops them late)
 # compiled: 1 (variable)
 # re: 1 (module)
-# interned_result: not heap-allocated, absent from the map
+# symbol_result: not heap-allocated, absent from the map
 # input_str and result reference the same heap string: 2 vars + final expr = 3
 result
 # ref-counts={'repl_list': 1, 'input_list': 1, 'count_list': 1, 'maxsplit_list': 1, 'compiled': 1, 're': 1, 'input_str': 3, 'result': 3}

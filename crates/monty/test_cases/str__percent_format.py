@@ -278,7 +278,7 @@ assert 'abc' % b'x' == 'abc'
 assert 'abc' % range(2) == 'abc'
 
 # === Heap templates and operands ===
-# a template or operand built at runtime lives on the heap rather than in the interns
+# a template or operand built at runtime lives on the heap rather than in the symbol table
 template = ''.join(['%', 's', ' = ', '%', 'd'])
 assert template % ('x', 1) == 'x = 1'
 assert ('%' + 's') % 'a' == 'a'

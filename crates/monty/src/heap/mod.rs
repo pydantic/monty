@@ -1809,7 +1809,7 @@ impl<'a> HeapReader<'a> {
 #[cfg(feature = "ref-count-return")]
 impl HeapReader<'_> {
     /// Returns live heap entries unreachable from `roots`, with each entry's type
-    /// so callers holding `Interns` can name it ([`Type::name`]).
+    /// so callers holding `SymbolTable` can name it ([`Type::name`]).
     ///
     /// `run_ref_counts` uses this to prove a test leaked nothing: an entry that
     /// is alive but reachable from no named variable is a missed `drop_with`.
@@ -2234,7 +2234,7 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
         }
         HeapData::ReMatch(m) => {
             // Mirror `py_dec_ref_ids_for_data`: a match holds one ref on its
-            // shared subject string (`None` for an interned subject).
+            // shared subject string (`None` for a symbol subject).
             if let Value::Ref(id) = m.subject_ref() {
                 on_child(*id);
             }

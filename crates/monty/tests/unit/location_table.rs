@@ -102,7 +102,7 @@ fn unknown_format_is_rejected() {
 
 fn range(filename: u32, start_byte: u32, end_byte: u32) -> CodeRange {
     CodeRange {
-        filename: StringId::from_raw(filename),
+        filename: SymbolId::from_raw(filename),
         start_byte,
         end_byte,
     }

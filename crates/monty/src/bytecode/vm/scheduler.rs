@@ -16,7 +16,7 @@ use crate::{
     asyncio::{Awaiter, CallId, TaskId},
     exception_private::RunResult,
     heap::{ContainsHeap, DropWithContext, Heap, HeapId, HeapReadOutput, HeapReader},
-    intern::{FunctionId, StringId},
+    symbols::{FunctionId, SymbolId},
     value::Value,
 };
 
@@ -111,7 +111,7 @@ pub(crate) struct SerializedTaskFrame {
     pub namespace: Option<Box<FrameNamespace>>,
     /// The `from ... import` in progress, if the frame parked inside one.
     #[serde(default)]
-    pub import_from_module: Option<StringId>,
+    pub import_from_module: Option<SymbolId>,
 }
 
 impl Task {

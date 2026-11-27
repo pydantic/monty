@@ -81,7 +81,7 @@ impl<'h, I: CollectIter<'h>> Iterator for HeapedIterator<'_, 'h, I> {
                 self.yielded += 1;
                 let estimated = self.yielded.saturating_mul(VALUE_SIZE);
                 // Size alone does not bound a source whose items are cheap or
-                // interned, and the drain reaches no VM dispatch checkpoint of
+                // symbol-backed, and the drain reaches no VM dispatch checkpoint of
                 // its own, so the time limits need their own poll here.
                 let checked = check_estimated_size(estimated, &self.vm.heap.tracker)
                     .and_then(|()| self.vm.heap.tracker.check_time_every(self.yielded));

@@ -717,7 +717,7 @@ fn repl_rejected_compilation_keeps_no_products() {
 
 /// Static tags, owned strings and reserved IDs stay canonical across feeds and snapshots.
 #[test]
-fn repl_interns_deduplicate_static_and_owned_strings() {
+fn repl_symbols_deduplicate_static_and_owned_strings() {
     let source = "def keepends(custom_parameter='owned-name'):\n    return (custom_parameter.splitlines(keepends=False)[0], 'keepends', 'κ', 'x', '')\nkeepends(custom_parameter='owned-name')";
     let runtime_source = format!("exec({source:?})\nkeepends()");
     let (mut repl, _) = init_repl("");
@@ -770,7 +770,7 @@ fn repl_rejected_snippet_admission_keeps_no_products() {
                     repl.call_function("attempt", vec![], PrintWriter::Stdout).unwrap(),
                     result
                 );
-                // Each host call interns its filename, but none of the rejected snippet's entries.
+                // Each host call registers its filename, but none of the rejected snippet's entries.
                 expected["interns"]["strings"]
                     .as_array_mut()
                     .unwrap()
@@ -845,7 +845,7 @@ fn repl_progress_dump_load_roundtrip() {
 
 /// Internal implementations are appended only on first use, in either order, and survive dumps.
 #[test]
-fn repl_frozen_functions_are_interned_on_demand() {
+fn repl_frozen_functions_are_registered_on_demand() {
     let calls = [
         ("functools.reduce", "functools.reduce(add, [1, 2, 3])"),
         ("functools._lru_cache_miss", "cached(2, 4)"),
@@ -3471,7 +3471,7 @@ fn repl_call_function_return_export_propagates_memory_error() {
     assert_eq!(feed_run_print(&mut repl, "1 + 1").unwrap(), MontyObject::int(2));
 }
 
-/// Rejected snippets retain diagnostic locations without committing their source or intern IDs.
+/// Rejected snippets retain diagnostic locations without committing their source or symbol IDs.
 #[test]
 fn repl_rejected_snippet_locations() {
     let (mut repl, _) = init_repl("pass");

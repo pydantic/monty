@@ -32,7 +32,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropGuard, DropWithContext},
-    intern::StaticStrings,
+    symbols::StaticStrings,
     types::{
         Dict, Module, NamedTupleClass, PyTrait, Type,
         iter::collect_owned_iterable,
@@ -44,7 +44,7 @@ use crate::{
 /// Creates the `collections` module.
 ///
 pub fn create_module(vm: &mut VM<'_>) -> Module {
-    let mut module = Module::new(StaticStrings::Collections, vm.interns);
+    let mut module = Module::new(StaticStrings::Collections, vm.symbols);
 
     module.set_attr(StaticStrings::Deque, Value::Builtin(Builtins::Type(Type::Deque)), vm);
     module.set_attr(
@@ -220,7 +220,7 @@ fn namedtuple(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     if rename {
         apply_rename(&mut names);
     }
-    validate_names(type_name.as_str(vm.interns), &names, rename)?;
+    validate_names(type_name.as_str(vm.symbols), &names, rename)?;
 
     // Collect defaults (rightmost fields), then validate the count.
     let default_values = collect_defaults(defaults, vm)?;
@@ -232,7 +232,7 @@ fn namedtuple(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // CPython substitutes the calling module's `__name__` for a `None` module, and
     // otherwise stores the argument unvalidated (it need not be a string).
     let module = match module {
-        Value::None => Value::InternString(vm.interns.intern_static(StaticStrings::DunderMain)),
+        Value::None => Value::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::DunderMain)),
         other => other.clone_with_heap(vm.heap),
     };
 
@@ -249,7 +249,7 @@ fn namedtuple(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 fn parse_field_names(field_names: &Value, vm: &mut VM<'_>) -> RunResult<Vec<String>> {
     if let Some(text) = field_names.as_either_str(vm.heap) {
         Ok(text
-            .as_str(vm.interns)
+            .as_str(vm.symbols)
             .replace(',', " ")
             .split_whitespace()
             .map(str::to_owned)

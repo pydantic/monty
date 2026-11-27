@@ -114,7 +114,7 @@ fn call_normalize(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 - Prefer `StrArg` over `String` for str params the function only reads — it
     validates without copying and lends `&str` via `.as_str(vm)`.
 - Field names that aren't single ASCII chars need a `StaticStrings` variant
-    (in `crate::intern`) for kwarg matching — add one, or point
+    (in `crate::symbols`) for kwarg matching — add one, or point
     `static_string = "ExistingVariant"` at an existing one.
 - `Value` / `StrArg` / `Option<Value>` fields hold heap references: bind
     them with `defer_drop!` in the body, or otherwise guarantee

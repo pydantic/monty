@@ -53,7 +53,7 @@ use crate::heap::HeapId;
 /// * Snapshots store the raw hash, so the wire format is decoupled from the
 ///   niche-packing representation.
 ///
-/// Stored in interner hash tables, returned by `Value::py_hash`, and used
+/// Stored in symbol table hash tables, returned by `Value::py_hash`, and used
 /// wherever a known-good hash needs to be passed around.
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
@@ -169,8 +169,8 @@ pub(crate) fn hash_named(kind: &'static str, name: &str) -> HashValue {
 
 /// Hashes a string using the canonical Python-string hash function.
 ///
-/// Both heap-allocated `HeapStr` values and interned strings must use this so
-/// that an interned `"foo"` and a heap `"foo"` hash identically — required
+/// Both heap-allocated `HeapStr` values and symbols must use this so
+/// that the symbol `"foo"` and a heap string with the same text hash identically — required
 /// for dict-key consistency.
 #[inline]
 pub(crate) fn hash_python_str(s: &str) -> HashValue {
@@ -196,7 +196,7 @@ pub(crate) fn hash_python_bytes(b: &[u8]) -> HashValue {
 /// `hash(LongInt(5)) == hash(Value::Int(5))`. For larger values, falls back
 /// to hashing `(sign, little-endian bytes)` via [`DefaultHasher`].
 ///
-/// Used by heap `LongInt::py_hash` and by `Interns::long_int_hash` so that
+/// Used by heap `LongInt::py_hash` and by `SymbolTable::long_int_hash` so that
 /// interned and heap-allocated long ints with equal value hash identically.
 #[inline]
 pub(crate) fn hash_python_long_int(bi: &BigInt) -> HashValue {
@@ -213,13 +213,13 @@ pub(crate) fn hash_python_long_int(bi: &BigInt) -> HashValue {
 
 /// A value paired with its precomputed Python [`HashValue`].
 ///
-/// Used in the interner storage so each entry carries its own hash next to
+/// Used in the symbol table storage so each entry carries its own hash next to
 /// the value — push-the-pair instead of parallel arrays. This makes it
 /// impossible to forget to keep the value and hash in sync, and makes
 /// serde recompute-on-deserialise local to this type.
 ///
 /// Constructors, `SerializeHashed` and `Deserialize` impls are provided for
-/// each concrete value type used by the interners. Adding another requires a
+/// each concrete value type used by the symbol tables. Adding another requires a
 /// constructor and both serde halves.
 ///
 /// # Wire format
@@ -384,5 +384,5 @@ impl<const N: usize> LazyHashTable<N> {
 }
 
 /// Per-slot lazy hashes for ASCII IDs 0–127 and the empty-string ID 128.
-/// Each slot hashes the matching entry of [`crate::intern::RESERVED_STRS`].
+/// Each slot hashes the matching entry of [`crate::symbols::RESERVED_STRS`].
 pub(crate) static RESERVED_STRING_HASHES: LazyHashTable<129> = LazyHashTable::new();

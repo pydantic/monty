@@ -58,7 +58,7 @@ impl<T> Default for Entries<T> {
 impl<T> Index<usize> for Entries<T> {
     type Output = T;
     fn index(&self, index: usize) -> &T {
-        self.get(index).expect("invalid intern slot")
+        self.get(index).expect("invalid symbol table slot")
     }
 }
 

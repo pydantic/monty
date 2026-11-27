@@ -11,7 +11,7 @@ use smallvec::SmallVec;
 use crate::{
     exception_private::RunError,
     heap::{ContainsHeap, DropWithContext, HeapId},
-    intern::FunctionId,
+    symbols::FunctionId,
     value::Value,
 };
 

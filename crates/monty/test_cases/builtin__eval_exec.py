@@ -346,7 +346,7 @@ def unbound_passthrough():
 
 assert unbound_passthrough() == ['inner']
 
-# === Compilation while a builtin borrows an interned receiver ===
+# === Compilation while a builtin borrows a symbol ===
 compile_source = '\n'.join(
     [
         f'def generated_{i}():\n    return ("literal_{i}", b"literal_{i}", 123456789012345678901234567890 + {i})'

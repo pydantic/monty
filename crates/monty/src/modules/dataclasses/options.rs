@@ -99,7 +99,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DataclassParams> {
     /// Every flag CPython exposes; the unimplemented ones read as the defaults
     /// the decorator insists on.
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let attr_str = attr.as_str(vm.interns);
+        let attr_str = attr.as_str(vm.symbols);
         let options = self.get(vm.heap).options;
         let value = match attr_str {
             "eq" => Value::Bool(options.eq),

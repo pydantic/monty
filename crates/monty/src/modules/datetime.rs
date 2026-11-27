@@ -13,7 +13,7 @@
 use crate::{
     builtins::Builtins,
     bytecode::VM,
-    intern::StaticStrings,
+    symbols::StaticStrings,
     types::{Module, Type},
     value::Value,
 };
@@ -21,7 +21,7 @@ use crate::{
 /// Creates the `datetime` module.
 ///
 pub fn create_module(vm: &mut VM<'_>) -> Module {
-    let mut module = Module::new(StaticStrings::Datetime, vm.interns);
+    let mut module = Module::new(StaticStrings::Datetime, vm.symbols);
 
     module.set_attr(StaticStrings::Date, Value::Builtin(Builtins::Type(Type::Date)), vm);
     module.set_attr(

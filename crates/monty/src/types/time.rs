@@ -29,13 +29,13 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     hash::HashValue,
     heap::{Heap, HeapId, HeapItem, HeapObjectRead, HeapReadOutput, HeapReader},
-    intern::StaticStrings,
     py_attrs::PyAttrs,
+    symbols::StaticStrings,
     types::{
         CmpOrder, LazyHeapSet, PyTrait, TimeZone, Type, TypeRef,
         date::{self, StrftimeArgs},
         datetime::{allocate_tzinfo_ref, tzinfo_from_value},
-        str::{StringRepr, allocate_string, allocate_string_no_interning},
+        str::{StringRepr, allocate_non_symbol_string, allocate_string},
         timedelta, timezone,
     },
     value::{EitherStr, Value},
@@ -188,7 +188,7 @@ pub(crate) fn allocate(
     let time = from_components(hour, minute, second, microsecond, fold)?;
     // Only the reference is kept: the `timezone` object itself carries the offset
     // and name, so `tzinfo_from_value`'s decoded copy is used for validation only.
-    let (_, tz_ref) = tzinfo_from_value(tzinfo, vm.heap, vm.interns)?;
+    let (_, tz_ref) = tzinfo_from_value(tzinfo, vm.heap, vm.symbols)?;
     Ok(allocate_with_tz(vm, time, tz_ref))
 }
 
@@ -216,7 +216,7 @@ pub(crate) fn class_fromisoformat(vm: &mut VM<'_>, args: ArgValues) -> RunResult
     let value = args
         .reject_kwargs("time.fromisoformat", vm.heap)?
         .get_one_arg("time.fromisoformat", vm.heap)?;
-    let s = date::extract_str_arg(&value, "fromisoformat", vm.heap, vm.interns);
+    let s = date::extract_str_arg(&value, "fromisoformat", vm.heap, vm.symbols);
     value.drop_with(vm.heap);
     let s = s?;
 
@@ -551,14 +551,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Time> {
     fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
         let time = self.get(vm.heap);
         let s = format_isoformat(time, attached_offset(time, vm.heap), TimeSpec::Auto);
-        Ok(allocate_string_no_interning(s, vm.heap))
+        Ok(allocate_non_symbol_string(s, vm.heap))
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         // Read only the field being asked for: cloning the whole `Time` would
         // copy the timezone name's `String` on every `t.hour`.
         let int_attr = |value: u32| Ok(Some(CallResult::Value(Value::Int(i64::from(value)))));
-        match attr.static_string(vm.interns) {
+        match attr.static_string(vm.symbols) {
             Some(StaticStrings::Hour) => int_attr(u32::from(self.get(vm.heap).hour)),
             Some(StaticStrings::Minute) => int_attr(u32::from(self.get(vm.heap).minute)),
             Some(StaticStrings::Second) => int_attr(u32::from(self.get(vm.heap).second)),
@@ -664,7 +664,7 @@ impl<'heap> PyAttrs<'heap> for PyTimeImpl {
         };
         let time = value.get(vm.heap);
         let s = format_isoformat(time, attached_offset(time, vm.heap), spec);
-        Ok(allocate_string_no_interning(s, vm.heap))
+        Ok(allocate_non_symbol_string(s, vm.heap))
     }
 
     #[pymethod(Strftime)]

@@ -477,14 +477,14 @@ fn parse_1k_assigns(bench: &mut Bencher) {
 }
 
 /// Clones a large module without function definitions, isolating module-code sharing
-/// from the independently cloned intern and name tables.
+/// from the independently cloned symbol and name tables.
 fn clone_module(bench: &mut Bencher) {
     let runner = MontyRun::new("x = 1\n".repeat(10_000), "test.py", vec![], CompileOptions::default()).unwrap();
     bench.iter(|| black_box(runner.clone()));
 }
 
 /// Feeds a trivial snippet into a REPL session that has already run 2,000
-/// snippets (a mix of function definitions and assignments, so the intern,
+/// snippets (a mix of function definitions and assignments, so the symbol,
 /// function and name tables are all large). Guards against per-feed cost
 /// scaling with session size: the session's tables must be moved into each
 /// snippet, never cloned, so this should cost the same as a fresh feed.
@@ -505,7 +505,7 @@ fn repl_feed_after_2k_snippets(bench: &mut Bencher) {
 }
 
 /// Builds a REPL session carrying the state the dump benchmarks serialize:
-/// 500 snippets of function definitions and string literals, so the interner,
+/// 500 snippets of function definitions and string literals, so the symbol table,
 /// function and name tables are all large enough for per-entry costs to
 /// dominate the fixed framing cost.
 fn session_with_state() -> MontyRepl {
@@ -521,7 +521,7 @@ fn session_with_state() -> MontyRepl {
     repl
 }
 
-/// Serializes an idle session snapshot. Every interner entry is written out
+/// Serializes an idle session snapshot. Every symbol table entry is written out
 /// individually, so this prices the write side of the dump wire format —
 /// the cost hosts pay each time they park a session.
 fn session_dump(bench: &mut Bencher) {
@@ -533,7 +533,7 @@ fn session_dump(bench: &mut Bencher) {
 }
 
 /// Restores a session snapshot. Loading deserializes the string table and
-/// rebuilds the interner's reverse lookups from it, so this prices the read
+/// rebuilds the symbol table's reverse lookups from it, so this prices the read
 /// side of the dump wire format — the cost hosts pay to resume a session.
 fn session_load(bench: &mut Bencher) {
     let repl = session_with_state();

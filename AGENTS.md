@@ -296,7 +296,7 @@ Its `usize` instruction pointer, source locations and exception handlers all use
 Committed functions have stable addresses and their code is immutable, so runtime compilation can publish new
 functions without invalidating active frames.
 Module code is held in an `Arc<Code>` so runner clones share it; frames borrow it from the running `Program`.
-`eval()` / `exec()` bodies are stored as functions in `Interns`.
+`eval()` / `exec()` bodies are stored as functions in `SymbolTable`.
 Snapshots store function IDs and offsets, rebuilding code borrows on restore.
 
 ### Session dump compatibility
@@ -354,22 +354,22 @@ Incompatible numeric identity changes need compatibility handling or a dump-vers
 When an incompatible change needs a new dump version but the old data still holds everything the new meaning needs,
 keep `MIN_SUPPORTED_DUMP_VERSION` and convert in one of two places so the live heap never carries a legacy form:
 a `#[serde(from = "Dumped…")]` shim when one value's stored shape changed (see `TableCursor`), or an upgrade in
-`dump_upgrade.rs`, which `Dump::load` runs over an older dump's heap and interns; its module docs list the rules.
+`dump_upgrade.rs`, which `Dump::load` runs over an older dump's heap and symbols; its module docs list the rules.
 The first upgrade is `modules/dataclasses/legacy.rs` (version 13), tested against the `dataclasses_v13*.bin` fixtures
 the 1.1.0 release wrote, which must never be regenerated.
 
-### Compilation overlays and stable intern entries
+### Compilation overlays and stable symbol entries
 
-The VM holds `&Interns`, never `&mut Interns`.
+The VM holds `&SymbolTable`, never `&mut SymbolTable`.
 Committed strings, literals and functions have stable addresses in append-only storage.
-For REPL feeds and runtime compilation, `CompileInterns` owns pending entries and deduplicates strings against both tables.
-Fresh programs use `CompileInterns::direct(&mut Interns)` and discard the entire interner if compilation fails.
+For REPL feeds and runtime compilation, `CompileSymbols` owns pending entries and deduplicates strings against both tables.
+Fresh programs use `CompileSymbols::direct(&mut SymbolTable)` and discard the entire symbol table if compilation fails.
 Do not use direct mode for an existing session: only the overlay supports rejection without retaining products.
 New IDs start at the committed table lengths, so bytecode uses final IDs without relocation.
-An active overlay blocks runtime interning and other compilations from consuming those IDs.
+An active overlay blocks runtime symbol insertion and other compilations from consuming those IDs.
 
 Compiled function bodies remain owned by the overlay until publication.
-Only an admitted snippet publishes its intern entries and code; dropping a rejected overlay frees its products.
+Only an admitted snippet publishes its symbol entries and code; dropping a rejected overlay frees its products.
 For `eval()` / `exec()`, reserve the frame's recursion level before publication, then construct its frame from the
 committed code.
 No fallible operation or Python execution may intervene between admission and installing the frame.
@@ -378,7 +378,7 @@ Never roll back a snippet after execution starts: its definitions may already be
 
 Snippet source IDs occupy a separate range from canonical string IDs.
 They display as `<string>` without allowing duplicate entries in the string-deduplication maps.
-Resolve filenames with `Interns::get_filename`; ordinary `get_str` only accepts canonical string IDs.
+Resolve filenames with `SymbolTable::get_filename`; ordinary `get_str` only accepts symbol IDs.
 
 ### HeapReader API — Safe Heap Access
 

@@ -22,13 +22,13 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::{HashValue, hash_python_bytes, hash_python_str, identity_hash},
     heap::{HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
-    intern::StaticStrings,
     modules::{
         copy::{Memo, PyDeepCopy},
         random::{RandomFunctions, random_dispatch},
     },
     py_attrs::PyAttrs,
     py_value::PyValue,
+    symbols::StaticStrings,
     types::{LazyHeapSet, PyTrait, Type, TypeRef, py_trait::PyObjectIdentity},
     value::{EitherStr, Value},
 };
@@ -631,7 +631,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Random> {
 
     /// `VERSION`, the state-format number `getstate()` reports.
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        Ok((attr.static_string(vm.interns) == Some(StaticStrings::RandomVersion))
+        Ok((attr.static_string(vm.symbols) == Some(StaticStrings::RandomVersion))
             .then_some(CallResult::Value(Value::Int(3))))
     }
 }

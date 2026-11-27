@@ -11,7 +11,7 @@ use crate::{
     bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{ContainsHeap, DropGuard, DropWithContext},
-    intern::StaticStrings,
+    symbols::StaticStrings,
     types::{CsvObject, PyTrait, Type, str::allocate_string},
     value::{EitherStr, Value},
 };
@@ -278,7 +278,7 @@ impl Base<'_> {
             Self::Defaults => Ok(None),
             Self::Dialect(dialect) => Ok(dialect.attr(attr, vm)),
             Self::Object(object) => {
-                let name = EitherStr::Interned(vm.interns.intern_static(attr));
+                let name = EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(attr));
                 match object.py_getattr(&name, vm) {
                     Ok(CallResult::Value(value)) => Ok(Some(value)),
                     // A missing attribute means "use the default", as CPython's `PyErr_Clear` does.

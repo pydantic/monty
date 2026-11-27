@@ -7,8 +7,8 @@ use crate::{
     args::Signature,
     bytecode::Code,
     expressions::Identifier,
-    intern::{FunctionId, Interns},
     namespace::NamespaceId,
+    symbols::{FunctionId, SymbolTable},
 };
 
 /// How an exact positional call can bypass argument binding.
@@ -23,7 +23,7 @@ pub(crate) enum ExactPositionalCall {
 /// A defined function once compiled and ready for execution.
 ///
 /// Contains compiled code, parameter metadata and closure layout.
-/// Committed functions have stable addresses in `Interns` and are referenced by `FunctionId`.
+/// Committed functions have stable addresses in `SymbolTable` and are referenced by `FunctionId`.
 ///
 /// # Namespace Layout
 ///
@@ -181,7 +181,7 @@ impl Function {
 
     /// Writes the Python repr() string for this function to a formatter, as
     /// CPython does: `<function name at 0x...>`, with the name unquoted.
-    pub fn py_repr_fmt<W: Write>(&self, f: &mut W, interns: &Interns, py_id: impl fmt::LowerHex) -> fmt::Result {
-        write!(f, "<function {} at 0x{:x}>", interns.get_str(self.name.name_id), py_id)
+    pub fn py_repr_fmt<W: Write>(&self, f: &mut W, symbols: &SymbolTable, py_id: impl fmt::LowerHex) -> fmt::Result {
+        write!(f, "<function {} at 0x{:x}>", symbols.get_str(self.name.name_id), py_id)
     }
 }

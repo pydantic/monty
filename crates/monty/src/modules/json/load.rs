@@ -15,8 +15,8 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{ContainsHeap, DropGuard, HeapData, HeapId, HeapReadOutput, HeapReader},
-    intern::StaticStrings,
     os_dispatch::PostConversionEffect,
+    symbols::StaticStrings,
     types::{
         Dict, List, LongInt,
         file::apply_buffer_store,
@@ -169,9 +169,9 @@ struct JsonLoadArgs {
 /// movement so borrowed tape-backed data never escapes.
 fn parse_json_input(value: &Value, hooks: &NumberHooks<'_>, vm: &mut VM<'_>) -> RunResult<Value> {
     let (bytes, is_str): (Cow<'_, [u8]>, bool) = match value {
-        Value::InternString(string_id) => (Cow::Borrowed(vm.interns.get_str(*string_id).as_bytes()), true),
+        Value::Symbol(symbol_id) => (Cow::Borrowed(vm.symbols.get_str(*symbol_id).as_bytes()), true),
         Value::InlineString(text) => (Cow::Borrowed(text.as_str().as_bytes()), true),
-        Value::InternBytes(bytes_id) => (Cow::Borrowed(vm.interns.get_bytes(*bytes_id)), false),
+        Value::InternBytes(bytes_id) => (Cow::Borrowed(vm.symbols.get_bytes(*bytes_id)), false),
         Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
             HeapData::Str(s) => (Cow::Owned(s.as_str().as_bytes().to_vec()), true),
             HeapData::Bytes(b) => (Cow::Owned(b.as_slice().to_vec()), false),
@@ -273,7 +273,7 @@ fn parse_json_value_from_peek(
 /// Caches strings of 16–64 UTF-8 bytes and allocates other strings directly.
 fn allocate_cached_string(s: String, cache: &mut JsonStringCache, heap: &HeapReader<'_>) -> Value {
     if s.len() <= 15 {
-        // Empty and single-char strings are interned; 2–15 byte strings are inline.
+        // Empty and single-char strings are stored as symbols; 2–15 byte strings are inline.
         allocate_string(s, heap.heap())
     } else {
         cache.get_or_allocate(s, heap)

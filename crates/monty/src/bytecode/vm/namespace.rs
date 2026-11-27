@@ -17,8 +17,8 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     heap_data::CellValue,
-    intern::{CompileInterns, FunctionId, StringId},
     prepare::SnippetNames,
+    symbols::{CompileSymbols, FunctionId, SymbolId},
     types::{Dict, ForwardRef},
     value::Value,
 };
@@ -261,7 +261,7 @@ impl<'h> VM<'h> {
     pub(crate) fn push_snippet_frame(
         &mut self,
         func_id: FunctionId,
-        overlay: Option<CompileInterns<'_>>,
+        overlay: Option<CompileSymbols<'_>>,
         namespace: Box<FrameNamespace>,
     ) -> RunResult<()> {
         let mut namespace_guard = DropGuard::new(namespace, self);
@@ -274,7 +274,7 @@ impl<'h> VM<'h> {
             overlay.commit();
         }
         let (namespace, vm) = namespace_guard.into_parts();
-        let code = &vm.interns.get_function(func_id).code;
+        let code = &vm.symbols.get_function(func_id).code;
         let frame = CallFrame::new_function(
             code,
             vm.stack.len(),
@@ -343,7 +343,7 @@ impl<'h> VM<'h> {
     /// dunders and the host `NameLookup` suspension behave exactly as for
     /// compiled code. Dict globals see the dict and builtins only: CPython
     /// resolves nothing else for `exec(src, {})`.
-    pub(super) fn load_name(&mut self, slot: u16, name_id: StringId, flags: u8) -> RunResult<Option<FrameExit>> {
+    pub(super) fn load_name(&mut self, slot: u16, name_id: SymbolId, flags: u8) -> RunResult<Option<FrameExit>> {
         let (globals, locals) = self.frame_namespace();
         let stringify = self.frame_stringifies_names();
         let without_host = self.frame_names_without_host();
@@ -381,7 +381,7 @@ impl<'h> VM<'h> {
                     Ok(None)
                 }
                 Some(FrameExit::NameLookup { .. }) if without_host => {
-                    Err(ExcType::name_error(self.interns.get_str(name_id)).into())
+                    Err(ExcType::name_error(self.symbols.get_str(name_id)).into())
                 }
                 exit => Ok(exit),
             },
@@ -394,7 +394,7 @@ impl<'h> VM<'h> {
                     let stringifier = self.stringifier(name_id);
                     self.push(stringifier);
                 } else {
-                    return Err(ExcType::name_error(self.interns.get_str(name_id)).into());
+                    return Err(ExcType::name_error(self.symbols.get_str(name_id)).into());
                 }
                 Ok(None)
             }
@@ -443,7 +443,7 @@ impl<'h> VM<'h> {
     }
 
     /// A new `ForwardRef` stringifier for `name_id`, owned by the current frame's annotation owner.
-    fn stringifier(&mut self, name_id: StringId) -> Value {
+    fn stringifier(&mut self, name_id: SymbolId) -> Value {
         let Some(
             FrameNamespace::Snippet {
                 globals,
@@ -463,7 +463,7 @@ impl<'h> VM<'h> {
             self.heap.inc_ref(*dict);
         }
         let forward_ref = ForwardRef::stringifier(
-            Value::InternString(name_id),
+            Value::Symbol(name_id),
             owner.clone_with_heap(self.heap),
             *is_class,
             *globals,
@@ -495,7 +495,7 @@ impl<'h> VM<'h> {
 
     /// `StoreName`: pops the value and binds `name_id` in the locals dict when
     /// there is one (and `NAME_GLOBAL_ONLY` is clear), else in the globals.
-    pub(super) fn store_name(&mut self, slot: u16, name_id: StringId, flags: u8) -> RunResult<()> {
+    pub(super) fn store_name(&mut self, slot: u16, name_id: SymbolId, flags: u8) -> RunResult<()> {
         let value = self.pop();
         match self.frame_namespace() {
             (_, Some(locals)) if flags & NAME_GLOBAL_ONLY == 0 => self.namespace_set(locals, name_id, value),
@@ -509,7 +509,7 @@ impl<'h> VM<'h> {
 
     /// `DeleteName`: unbinds `name_id` where [`store_name`](Self::store_name)
     /// would bind it; `NameError` if it is not bound there.
-    pub(super) fn delete_name(&mut self, slot: u16, name_id: StringId, flags: u8) -> RunResult<()> {
+    pub(super) fn delete_name(&mut self, slot: u16, name_id: SymbolId, flags: u8) -> RunResult<()> {
         let removed = match self.frame_namespace() {
             (_, Some(locals)) if flags & NAME_GLOBAL_ONLY == 0 => self.namespace_pop(locals, name_id)?,
             (FrameGlobals::Slots, _) => return self.delete_global(slot),
@@ -518,7 +518,7 @@ impl<'h> VM<'h> {
         if removed {
             Ok(())
         } else {
-            Err(ExcType::name_error(self.interns.get_str(name_id)).into())
+            Err(ExcType::name_error(self.symbols.get_str(name_id)).into())
         }
     }
 
@@ -537,14 +537,14 @@ impl<'h> VM<'h> {
         let code = frame.code;
         let names = (0..frame.locals_count).filter_map(|slot| {
             code.local_name(slot)
-                .filter(|name_id| *name_id != StringId::default())
+                .filter(|name_id| *name_id != SymbolId::default())
                 .map(|name_id| (usize::from(slot), name_id))
         });
         // Cell slots go last so a captured parameter's live cell value replaces
         // the stale copy left in its parameter slot under the same name.
         let cell_slots: AHashSet<usize> = frame
             .function_id
-            .map(|id| this.interns.get_function(id))
+            .map(|id| this.symbols.get_function(id))
             .into_iter()
             .flat_map(|func| {
                 func.cell_var_slots
@@ -577,13 +577,13 @@ impl<'h> VM<'h> {
             .find(|frame| {
                 frame
                     .function_id
-                    .is_none_or(|id| !self.interns.is_internal_function(id))
+                    .is_none_or(|id| !self.symbols.is_internal_function(id))
             })
             .expect("frozen code has a Python caller")
     }
 
     /// Stores one `locals()` entry, skipping unbound slots.
-    fn snapshot_entry(&mut self, dict_id: HeapId, name_id: StringId, value: Value) -> RunResult<()> {
+    fn snapshot_entry(&mut self, dict_id: HeapId, name_id: SymbolId, value: Value) -> RunResult<()> {
         if matches!(value, Value::Undefined) {
             Ok(())
         } else {
@@ -615,30 +615,30 @@ impl<'h> VM<'h> {
     }
 
     /// Looks `name_id` up in a namespace dict, returning an owned value.
-    fn namespace_get(&mut self, dict_id: HeapId, name_id: StringId) -> RunResult<Option<Value>> {
+    fn namespace_get(&mut self, dict_id: HeapId, name_id: SymbolId) -> RunResult<Option<Value>> {
         let HeapReadOutput::Dict(dict) = self.heap.read(dict_id) else {
             return Err(RunError::internal("namespace is not a dict"));
         };
-        dict.dict_get(&Value::InternString(name_id), self)
+        dict.dict_get(&Value::Symbol(name_id), self)
     }
 
     /// Binds `name_id` to `value` in a namespace dict, releasing any old value.
-    fn namespace_set(&mut self, dict_id: HeapId, name_id: StringId, value: Value) -> RunResult<()> {
+    fn namespace_set(&mut self, dict_id: HeapId, name_id: SymbolId, value: Value) -> RunResult<()> {
         let HeapReadOutput::Dict(dict) = self.heap.read(dict_id) else {
             value.drop_with(self);
             return Err(RunError::internal("namespace is not a dict"));
         };
-        let old = dict.set(Value::InternString(name_id), value, self)?;
+        let old = dict.set(Value::Symbol(name_id), value, self)?;
         old.drop_with(self);
         Ok(())
     }
 
     /// Removes `name_id` from a namespace dict; `false` if it was not bound.
-    fn namespace_pop(&mut self, dict_id: HeapId, name_id: StringId) -> RunResult<bool> {
+    fn namespace_pop(&mut self, dict_id: HeapId, name_id: SymbolId) -> RunResult<bool> {
         let HeapReadOutput::Dict(dict) = self.heap.read(dict_id) else {
             return Err(RunError::internal("namespace is not a dict"));
         };
-        match dict.pop(&Value::InternString(name_id), self)? {
+        match dict.pop(&Value::Symbol(name_id), self)? {
             Some((key, value)) => {
                 key.drop_with(self);
                 value.drop_with(self);

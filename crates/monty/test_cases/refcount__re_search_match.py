@@ -32,7 +32,7 @@ r2 = results[2]
 # The FromArgs slots guard drops extracted values when binding fails, and the
 # body coercions (resolve_pattern / extract_count / subject_str) must drop
 # their peers on each failure path.
-# (Concatenation defeats literal interning, so subject is a real heap string.)
+# (Concatenation produces a runtime string, so subject is a real heap string.)
 subject = 'hello' + ' world of strings'
 
 # Non-string pattern: binding succeeds, pattern coercion fails in the body —

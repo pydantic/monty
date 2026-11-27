@@ -23,11 +23,11 @@ use crate::{
     function::{ExactPositionalCall, Function},
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId},
     heap_data::CellValue,
-    intern::{FunctionId, StaticStrings, StringId},
     modules::dataclasses,
     os_dispatch::{PendingEffect, release_pending_effect},
     py_value::PyValue,
     resource_checks::check_estimated_size,
+    symbols::{FunctionId, StaticStrings, SymbolId},
     types::{
         Dict, Instance, PyTrait, Tuple, Type, TypeRef,
         instance::{class_defines, class_lookup},
@@ -53,7 +53,7 @@ pub(crate) enum CallResult {
     CallerRestored,
     /// External function call requested - VM should pause and return to caller.
     External {
-        /// The external function's name (interned or heap-owned).
+        /// The external function's name (symbol-backed or heap-owned).
         name: EitherStr,
         args: ArgValues,
         /// The callee is an async host function, so a supporting host may
@@ -274,10 +274,10 @@ impl<'h> VM<'h> {
         let this = self;
         defer_drop!(callable, this);
 
-        // Build kwargs directly as Vec<(StringId, Value)>
+        // Build kwargs directly as Vec<(SymbolId, Value)>
         let mut kwargs_inline = Vec::with_capacity(kw_count);
         for value in kw_values {
-            let name_id = StringId::from_index(this.current_frame.fetch_u16());
+            let name_id = SymbolId::from_index(this.current_frame.fetch_u16());
             kwargs_inline.push((name_id, value));
         }
 
@@ -300,7 +300,7 @@ impl<'h> VM<'h> {
     ///
     /// Pops the object and arguments from the stack, calls the attribute,
     /// and returns a `CallResult` which may indicate an OS or external call.
-    pub(super) fn exec_call_attr(&mut self, name_id: StringId, arg_count: usize) -> Result<CallResult, RunError> {
+    pub(super) fn exec_call_attr(&mut self, name_id: SymbolId, arg_count: usize) -> Result<CallResult, RunError> {
         let args = self.pop_n_args(arg_count);
         let obj = self.pop();
         self.call_attr(obj, name_id, args)
@@ -314,7 +314,7 @@ impl<'h> VM<'h> {
     /// Returns a `CallResult` which may indicate an OS or external call.
     pub(super) fn exec_call_attr_kw(
         &mut self,
-        name_id: StringId,
+        name_id: SymbolId,
         pos_count: usize,
         kw_count: usize,
     ) -> Result<CallResult, RunError> {
@@ -327,10 +327,10 @@ impl<'h> VM<'h> {
         // Pop the object
         let obj = self.pop();
 
-        // Build kwargs directly as Vec<(StringId, Value)>
+        // Build kwargs directly as Vec<(SymbolId, Value)>
         let mut kwargs_inline = Vec::with_capacity(kw_count);
         for value in kw_values {
-            let kw_name_id = StringId::from_index(self.current_frame.fetch_u16());
+            let kw_name_id = SymbolId::from_index(self.current_frame.fetch_u16());
             kwargs_inline.push((kw_name_id, value));
         }
 
@@ -371,7 +371,7 @@ impl<'h> VM<'h> {
     /// Handles method calls with `*args` and/or `**kwargs` unpacking.
     pub(super) fn exec_call_attr_extended(
         &mut self,
-        name_id: StringId,
+        name_id: SymbolId,
         has_kwargs: bool,
     ) -> Result<CallResult, RunError> {
         // Pop kwargs dict if present
@@ -410,7 +410,7 @@ impl<'h> VM<'h> {
 
     /// Calls an attribute on an object.
     ///
-    /// Logical dispatch hides interned versus heap storage and preserves suspendable
+    /// Logical dispatch hides symbol-backed versus heap storage and preserves suspendable
     /// results for methods requiring host involvement.
     ///
     /// **Dunder dispatch**: before reaching the type-specific dispatcher, this
@@ -422,9 +422,9 @@ impl<'h> VM<'h> {
     /// override only need a single trait impl, not parallel `StaticStrings::Foo`
     /// arms in their `py_call_attr` body. New dunder methods plug into the
     /// dispatch table here without touching individual types.
-    pub(crate) fn call_attr(&mut self, obj: Value, name_id: StringId, args: ArgValues) -> Result<CallResult, RunError> {
+    pub(crate) fn call_attr(&mut self, obj: Value, name_id: SymbolId, args: ArgValues) -> Result<CallResult, RunError> {
         let this = self;
-        let attr = EitherStr::Interned(name_id);
+        let attr = EitherStr::Symbol(name_id);
 
         // Centralised dunder dispatch — see `dispatch_dunder`. Wrap `args`
         // in an `Option` so the helper can `take()` it only when it
@@ -474,12 +474,12 @@ impl<'h> VM<'h> {
         let error = match &result {
             CallResult::External {
                 name: function_name, ..
-            } => ExcType::not_implemented_synchronous_call("external function", function_name.as_str(self.interns)),
+            } => ExcType::not_implemented_synchronous_call("external function", function_name.as_str(self.symbols)),
             CallResult::OsCall(call) | CallResult::OsCallWithEffect { call, .. } => {
                 ExcType::not_implemented_synchronous_call("OS function", call.name())
             }
             CallResult::MethodCall { name, .. } => {
-                ExcType::not_implemented_synchronous_call("method call", name.as_str(self.interns))
+                ExcType::not_implemented_synchronous_call("method call", name.as_str(self.symbols))
             }
             // A lazy attribute lookup cannot suspend in a synchronous nested
             // context; report the attribute as missing rather than a
@@ -492,9 +492,9 @@ impl<'h> VM<'h> {
                 ..
             } => {
                 let error = if *type_object {
-                    ExcType::attribute_error_type(class_name, name.as_str(self.interns))
+                    ExcType::attribute_error_type(class_name, name.as_str(self.symbols))
                 } else {
-                    ExcType::attribute_error(class_name, name.as_str(self.interns))
+                    ExcType::attribute_error(class_name, name.as_str(self.symbols))
                 };
                 result.drop_with(self);
                 return error;
@@ -514,13 +514,13 @@ impl<'h> VM<'h> {
         let error = match &exit {
             FrameExit::Return(_) => unreachable!("return exits are handled above"),
             FrameExit::ExternalCall { function_name, .. } => {
-                ExcType::not_implemented_synchronous_call("external function", function_name.as_str(self.interns))
+                ExcType::not_implemented_synchronous_call("external function", function_name.as_str(self.symbols))
             }
             FrameExit::OsCall { function_call, .. } => {
                 ExcType::not_implemented_synchronous_call("OS function", function_call.name())
             }
             FrameExit::MethodCall { method_name, .. } => {
-                ExcType::not_implemented_synchronous_call("method call", method_name.as_str(self.interns))
+                ExcType::not_implemented_synchronous_call("method call", method_name.as_str(self.symbols))
             }
             // Same as the `CallResult::AttrLookup` arm above.
             FrameExit::AttrLookup {
@@ -530,9 +530,9 @@ impl<'h> VM<'h> {
                 ..
             } => {
                 let error = if *type_object {
-                    ExcType::attribute_error_type(class_name, name.as_str(self.interns))
+                    ExcType::attribute_error_type(class_name, name.as_str(self.symbols))
                 } else {
-                    ExcType::attribute_error(class_name, name.as_str(self.interns))
+                    ExcType::attribute_error(class_name, name.as_str(self.symbols))
                 };
                 exit.drop_with(self);
                 return error;
@@ -540,7 +540,7 @@ impl<'h> VM<'h> {
             FrameExit::ResolveFutures(_) => {
                 ExcType::not_implemented("cannot resolve async futures in this synchronous context")
             }
-            FrameExit::NameLookup { name_id, .. } => ExcType::name_error(self.interns.get_str(*name_id)),
+            FrameExit::NameLookup { name_id, .. } => ExcType::name_error(self.symbols.get_str(*name_id)),
         };
         exit.drop_with(self);
         error.into()
@@ -628,7 +628,7 @@ impl<'h> VM<'h> {
     fn call_attr_extended(
         &mut self,
         obj: Value,
-        name_id: StringId,
+        name_id: SymbolId,
         args_tuple: Value,
         kwargs: Option<Value>,
     ) -> Result<CallResult, RunError> {
@@ -776,7 +776,7 @@ impl<'h> VM<'h> {
         callable_index: usize,
         arg_count: usize,
     ) -> Option<Result<CallResult, RunError>> {
-        let func = self.interns.get_function(func_id);
+        let func = self.symbols.get_function(func_id);
         match func.exact_positional_call() {
             Some(ExactPositionalCall::Sync(count)) if count == arg_count => {
                 Some(self.call_exact_sync_function(func_id, func, callable_index))
@@ -844,10 +844,10 @@ impl<'h> VM<'h> {
     ) -> Result<CallResult, RunError> {
         let mut args_guard = DropGuard::new(args, self);
         let (_, vm) = args_guard.as_parts_mut();
-        let interns = vm.interns;
-        let function_id = function.resolve(interns)?;
+        let symbols = vm.symbols;
+        let function_id = function.resolve(symbols)?;
         let (args, vm) = args_guard.into_parts();
-        let func = interns.get_function(function_id);
+        let func = symbols.get_function(function_id);
         assert_eq!(func.signature.exact_positional_count(), Some(N));
         assert!(func.cell_var_slots.is_empty() && func.free_var_slots.is_empty());
         let namespace_size = func.namespace_size;
@@ -886,7 +886,7 @@ impl<'h> VM<'h> {
         globals: Option<HeapId>,
         args: ArgValues,
     ) -> Result<CallResult, RunError> {
-        let func = self.interns.get_function(func_id);
+        let func = self.symbols.get_function(func_id);
 
         if func.is_async {
             self.create_coroutine(func_id, func, cells, defaults, globals, args)
@@ -924,7 +924,7 @@ impl<'h> VM<'h> {
         else {
             return this.call_function(annotate, args);
         };
-        let func = this.interns.get_function(func_id);
+        let func = this.symbols.get_function(func_id);
         if func.is_async {
             defer_drop!(defaults, this);
             return this.create_coroutine(func_id, func, &cells, defaults, globals, args);
@@ -1137,7 +1137,7 @@ impl<'h> VM<'h> {
     /// on external/OS calls; the `is_initializer` flag is threaded through frame
     /// serialization so a suspended initializer resumes correctly.
     pub(crate) fn instantiate_class(&mut self, class_id: HeapId, args: ArgValues) -> Result<CallResult, RunError> {
-        if let Some(new_func) = class_lookup(class_id, "__new__", self.heap, self.interns) {
+        if let Some(new_func) = class_lookup(class_id, "__new__", self.heap, self.symbols) {
             let new_func = new_func.clone_with_heap(self.heap);
             return self.instantiate_with_new(class_id, new_func, args);
         }
@@ -1186,7 +1186,7 @@ impl<'h> VM<'h> {
     /// reference: the instance is the result, or is released on error.
     fn initialize_instance(&mut self, class_id: HeapId, instance_id: HeapId, args: ArgValues) -> RunResult<CallResult> {
         // Look up `__init__` through the MRO (cloned out to release the borrow).
-        let init = class_lookup(class_id, "__init__", self.heap, self.interns).map(|v| v.clone_with_heap(self));
+        let init = class_lookup(class_id, "__init__", self.heap, self.symbols).map(|v| v.clone_with_heap(self));
 
         match init {
             None if matches!(args, ArgValues::Empty) => Ok(CallResult::Value(Value::Ref(instance_id))),
@@ -1286,10 +1286,10 @@ impl<'h> VM<'h> {
     /// to decide whether `__init__` can run as a suspendable initializer frame.
     fn is_plain_sync_function(&self, value: &Value) -> bool {
         match value {
-            Value::DefFunction(func_id) => !self.interns.get_function(*func_id).is_async,
+            Value::DefFunction(func_id) => !self.symbols.get_function(*func_id).is_async,
             Value::Ref(id) => match self.heap.get(*id) {
-                HeapData::Closure(closure) => !self.interns.get_function(closure.func_id).is_async,
-                HeapData::FunctionDefaults(fd) => !self.interns.get_function(fd.func_id).is_async,
+                HeapData::Closure(closure) => !self.symbols.get_function(closure.func_id).is_async,
+                HeapData::FunctionDefaults(fd) => !self.symbols.get_function(fd.func_id).is_async,
                 // Bound methods never wrap another bound method, so this
                 // recursion is at most one level deep.
                 HeapData::BoundMethod(bm) => self.is_plain_sync_function(&bm.func),
@@ -1342,12 +1342,12 @@ fn debug_assert_exact_callable(callable: &Value, func_id: FunctionId) {
 /// implementations only need to override the corresponding `PyTrait`
 /// method, never a `StaticStrings::Foo` arm in their `py_call_attr`.
 fn dispatch_dunder(
-    name_id: StringId,
+    name_id: SymbolId,
     heap_id: HeapId,
     vm: &mut VM<'_>,
     args: &mut Option<ArgValues>,
 ) -> Option<Result<CallResult, RunError>> {
-    let static_str = vm.interns.static_string(name_id)?;
+    let static_str = vm.symbols.static_string(name_id)?;
     // User-defined instances are never intercepted: an explicit
     // `obj.__enter__()` / `obj.__exit__(a, b, c)` on an instance is an
     // ordinary method call in CPython — the instance `__dict__` can shadow

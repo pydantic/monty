@@ -31,12 +31,12 @@ use crate::{
     expressions::CmpOperator,
     hash::{HashValue, hash_f64, hash_python_long_int, identity_hash},
     heap::{DropWithContext, HeapData, HeapId, HeapObjectRead},
-    intern::StaticStrings,
     py_attrs::PyAttrs,
     py_value::PyValue,
+    symbols::StaticStrings,
     types::{
         CmpOrder, Complex, LazyHeapSet, LongInt, NamedTuple, PyTrait, Type, TypeRef, allocate_string,
-        sequence::SequenceItems, str::allocate_string_no_interning, tuple::allocate_tuple,
+        sequence::SequenceItems, str::allocate_non_symbol_string, tuple::allocate_tuple,
     },
     value::{EitherStr, Value},
 };
@@ -82,7 +82,7 @@ fn context_arg(value: &Value, vm: &mut VM<'_>) -> RunResult<HeapId> {
 pub(crate) fn rounding_arg(value: &Value, vm: &VM<'_>) -> RunResult<Rounding> {
     value
         .as_either_str(vm.heap)
-        .and_then(|name| Rounding::from_name(name.as_str(vm.interns)))
+        .and_then(|name| Rounding::from_name(name.as_str(vm.symbols)))
         .ok_or_else(ExcType::decimal_invalid_rounding)
 }
 
@@ -196,7 +196,7 @@ fn construct(value: &Value, ctx_id: HeapId, vm: &mut VM<'_>) -> RunResult<Decima
         return Ok(decimal.clone());
     }
     if let Some(text) = value.as_either_str(vm.heap) {
-        let parsed = parse::parse_str(text.as_str(vm.interns))?;
+        let parsed = parse::parse_str(text.as_str(vm.symbols))?;
         return match parsed {
             Ok(decimal) => Ok(decimal),
             Err(condition) => with_ctx(vm, ctx_id, |ctx, _| Ok(ctx.invalid(condition))),
@@ -244,7 +244,7 @@ fn from_tuple(value: &Value, ctx_id: HeapId, vm: &mut VM<'_>) -> RunResult<Decim
     }
     parse::check_digit_count(coeff.len())?;
     if let Some(text) = exponent.as_either_str(vm.heap) {
-        return match text.as_str(vm.interns) {
+        return match text.as_str(vm.symbols) {
             "F" => Ok(Decimal::infinity(sign)),
             "n" => Ok(Decimal::special_nan(
                 sign,
@@ -661,7 +661,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Decimal> {
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let value = match attr.as_str(vm.interns) {
+        let value = match attr.as_str(vm.symbols) {
             "real" => self.clone_value(vm.heap),
             "imag" => decimal_value(Decimal::zero(false, 0), vm),
             _ => return Ok(None),
@@ -671,7 +671,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Decimal> {
 
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         value.drop_with(vm);
-        let name = name.as_str(vm.interns);
+        let name = name.as_str(vm.symbols);
         Err(match name {
             "real" | "imag" => ExcType::attribute_error_not_writable(name, &self.py_type_name(vm)),
             _ => ExcType::attribute_error_no_setattr(&self.py_type_name(vm), name),
@@ -906,7 +906,7 @@ impl<'h> HeapObjectRead<'h, Decimal> {
                 let Some(spec) = spec.as_either_str(vm.heap) else {
                     return Err(ExcType::type_error("format arg must be str"));
                 };
-                let spec = spec.as_str(vm.interns).to_owned();
+                let spec = spec.as_str(vm.symbols).to_owned();
                 self.format(&spec, vm)
             }
             DecimalMethod::DunderRound => {
@@ -930,7 +930,7 @@ impl<'h> HeapObjectRead<'h, Decimal> {
         let id = self.id();
         let ctx_id = current_context(vm);
         let text = with_ctx(vm, ctx_id, |ctx, vm| decimal_at(vm, id).format_spec(spec, ctx))?;
-        Ok(allocate_string_no_interning(text, vm.heap))
+        Ok(allocate_non_symbol_string(text, vm.heap))
     }
 }
 
@@ -967,11 +967,11 @@ fn as_tuple(d: &Decimal, vm: &VM<'_>) -> Value {
         Special::SignalingNan => allocate_string("N", vm.heap),
     };
     let fields = vec![
-        EitherStr::Interned(vm.interns.intern_static(StaticStrings::Sign)),
-        EitherStr::Interned(vm.interns.intern_static(StaticStrings::Digits)),
-        EitherStr::Interned(vm.interns.intern_static(StaticStrings::Exponent)),
+        EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::Sign)),
+        EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::Digits)),
+        EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::Exponent)),
     ];
-    let name = EitherStr::Interned(vm.interns.intern_static(StaticStrings::DecimalTuple));
+    let name = EitherStr::Symbol(vm.symbols.get_or_insert_static_symbol(StaticStrings::DecimalTuple));
     let tuple = NamedTuple::new(name, fields, vec![Value::Int(i64::from(d.sign())), digits, exponent]);
     Value::allocate(tuple, vm.heap)
 }

@@ -6,8 +6,8 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropGuard, DropWithContext},
-    intern::StaticStrings,
     py_value::PyValue,
+    symbols::StaticStrings,
     types::{PyTrait, Type, TypeRef},
     value::{EitherStr, Value},
 };
@@ -53,7 +53,7 @@ pub(crate) fn call_unbound(
             return Err(ExcType::type_error(format!(
                 "unbound method {}.{}() needs an argument",
                 owner.dunder_name(),
-                attr.as_str(vm.interns),
+                attr.as_str(vm.symbols),
             )));
         }
     };
@@ -63,7 +63,7 @@ pub(crate) fn call_unbound(
     if !receiver_type.is_subclass_of(owner.into(), vm.heap) {
         return Err(ExcType::type_error(format!(
             "descriptor '{}' for '{}' objects doesn't apply to a '{}' object",
-            attr.as_str(vm.interns),
+            attr.as_str(vm.symbols),
             owner.name(),
             receiver.py_type_name(vm),
         )));

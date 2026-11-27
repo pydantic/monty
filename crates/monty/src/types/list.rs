@@ -23,6 +23,7 @@ use crate::{
     py_value::PyValue,
     resource_checks::{check_repeat_size, check_value_buffer_growth, repeated_len, try_vec_with_capacity},
     sorting::parse_and_sort,
+    symbols::StaticStrings,
     types::{
         LazyHeapSet, Slice, Type, TypeRef,
         sequence::SequenceItems,
@@ -776,7 +777,7 @@ impl HeapItem for List {
 /// Writes a formatted sequence of values to a formatter.
 ///
 /// This helper function is used to implement `__repr__` for sequence types like
-/// lists and tuples. It writes items as comma-separated repr interns.
+/// lists and tuples. It writes items as comma-separated repr symbols.
 ///
 /// There is no length parameter: `get_item` is asked for indices from 0 until
 /// it returns `None`. For an immutable sequence (tuple) that is simply its
@@ -791,7 +792,7 @@ impl HeapItem for List {
 ///   or `None` once `i` is out of range. The clone keeps the item alive across
 ///   user `__repr__` calls that may remove it from the container.
 /// * `f` - The formatter to write to
-/// * `vm` - The VM for resolving value references and looking up interned strings
+/// * `vm` - The VM for resolving value references and looking up symbols
 /// * `heap_ids` - Set of heap IDs being repr'd (for cycle detection)
 pub(crate) fn repr_sequence_fmt<'h>(
     start: char,

@@ -19,9 +19,9 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropGuard, DropWithContext},
-    intern::StaticStrings,
     modules::ModuleFunctions,
     os_dispatch::PostConversionEffect,
+    symbols::StaticStrings,
     types::{
         CsvObject, List, Module, OpenFile, PyTrait, Type,
         csv::{
@@ -53,7 +53,7 @@ pub(crate) enum CsvFunctions {
 
 /// Creates the `csv` module.
 pub fn create_module(vm: &mut VM<'_>) -> Module {
-    let mut module = Module::new(StaticStrings::Csv, vm.interns);
+    let mut module = Module::new(StaticStrings::Csv, vm.symbols);
 
     for (name, function) in [
         (StaticStrings::Reader, CsvFunctions::Reader),
@@ -139,7 +139,7 @@ fn load_then_call(
 ) -> Result<CallResult, ArgValues> {
     let Some(file) = args
         .first_positional()
-        .or_else(|| file_keyword.and_then(|name| args.keyword(name, vm.heap, vm.interns)))
+        .or_else(|| file_keyword.and_then(|name| args.keyword(name, vm.heap, vm.symbols)))
         .and_then(|value| value.read_as::<OpenFile>(vm.heap))
         .filter(|file| file.needs_buffer_load(vm))
     else {
@@ -489,7 +489,7 @@ fn excel_name(vm: &VM<'_>) -> Value {
     static_str(StaticStrings::Excel, vm)
 }
 
-/// An interned static string as a value.
+/// A static symbol as a value.
 fn static_str(name: StaticStrings, vm: &VM<'_>) -> Value {
-    Value::InternString(vm.interns.intern_static(name))
+    Value::Symbol(vm.symbols.get_or_insert_static_symbol(name))
 }

@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use monty_types::{CodeLoc, StackFrame};
 
-use crate::{exception_private::RawStackFrame, intern::Interns, parse::CodeRange};
+use crate::{exception_private::RawStackFrame, parse::CodeRange, symbols::SymbolTable};
 
 /// Lazy resolver from raw byte offsets (stored on every [`CodeRange`]) back to
 /// human-readable line/column/preview-line information.
@@ -190,22 +190,22 @@ fn common_prefix<'a>(a: &'a str, b: &str) -> &'a str {
 }
 
 /// Crate-internal builders for [`StackFrame`] (which lives in `monty-types`):
-/// they resolve interned names and raw byte offsets via [`Interns`] /
+/// they resolve symbols and raw byte offsets via [`SymbolTable`] /
 /// [`SourceMap`], which only exist interpreter-side.
 pub(crate) trait StackFrameExt {
     /// Builds a runtime `StackFrame` from an internal `RawStackFrame`.
     ///
-    /// Resolves the raw filename/frame-name `StringId`s via `interns` and
+    /// Resolves the raw filename/frame-name `SymbolId`s via `symbols` and
     /// expands the position's byte offsets to line/column and a preview
     /// line via `source_map`.
-    fn from_raw(f: &RawStackFrame, interns: &Interns, source_map: &mut SourceMap<'_>) -> StackFrame {
-        let filename = interns.get_filename(f.position.filename).to_string();
+    fn from_raw(f: &RawStackFrame, symbols: &SymbolTable, source_map: &mut SourceMap<'_>) -> StackFrame {
+        let filename = symbols.get_filename(f.position.filename).to_string();
         let (start, end, preview_line) = source_map.resolve_range(f.position);
         StackFrame {
             filename,
             start,
             end,
-            frame_name: f.frame_name.map(|id| interns.get_str(id).to_string()),
+            frame_name: f.frame_name.map(|id| symbols.get_str(id).to_string()),
             preview_line,
             hide_caret: f.hide_caret,
             hide_frame_name: false,

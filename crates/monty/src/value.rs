@@ -24,9 +24,9 @@ use crate::{
         HeapReader,
     },
     identity::Identity,
-    intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
     modules::ModuleFunctions,
     py_value::PyValue,
+    symbols::{BytesId, FunctionId, LongIntId, StaticStrings, SymbolId, SymbolTable},
     types::{
         Bytes, BytesIterator, CmpOrder, Complex, HeapStr, LazyHeapSet, LongInt, Property, PyTrait, Type, TypeRef,
         bytes::PyBytes,
@@ -66,18 +66,17 @@ pub(crate) enum Value {
     Int(i64),
     #[serde(rename = "F")]
     Float(f64),
-    /// An interned string literal. The StringId references the string in the Interns table.
-    /// To get the actual string content, use `interns.get(string_id)`.
+    /// A Python string backed by the permanent symbol table.
     #[serde(rename = "T")]
-    InternString(StringId),
+    Symbol(SymbolId),
     /// A short UTF-8 string stored directly in the value slot.
     #[serde(rename = "S")]
     InlineString(InlineStr),
-    /// An interned bytes literal. The BytesId references the bytes in the Interns table.
-    /// To get the actual bytes content, use `interns.get_bytes(bytes_id)`.
+    /// An interned bytes literal. The BytesId references the bytes in the symbol table.
+    /// To get the actual bytes content, use `symbols.get_bytes(bytes_id)`.
     #[serde(rename = "R")]
     InternBytes(BytesId),
-    /// An interned long integer literal. The `LongIntId` references the `BigInt` in the Interns table.
+    /// An interned long integer literal. The `LongIntId` references the `BigInt` in the symbol table.
     /// Used for integer literals exceeding i64 range; loading them shares the interned payload.
     #[serde(rename = "L")]
     InternLongInt(LongIntId),
@@ -259,7 +258,7 @@ impl<'h> PyTrait<'h> for Value {
             Self::Bool(_) => Type::Bool.into(),
             Self::Int(_) | Self::InternLongInt(_) => Type::Int.into(),
             Self::Float(_) => Type::Float.into(),
-            Self::InternString(_) => Type::Str.into(),
+            Self::Symbol(_) => Type::Str.into(),
             Self::InlineString(_) => Type::Str.into(),
             Self::InternBytes(_) => Type::Bytes.into(),
             Self::Builtin(c) => c.py_type().into(),
@@ -288,18 +287,18 @@ impl<'h> PyTrait<'h> for Value {
             Self::Bool(b) => Ok(eq_i64(i64::from(*b), other, vm)),
             Self::Int(a) => Ok(eq_i64(*a, other, vm)),
             Self::Float(f) => Ok(eq_f64(*f, other, vm)),
-            Self::InternLongInt(id) => Ok(eq_bigint(vm.interns.get_long_int(*id), other, vm)),
-            Self::InternString(id) => Ok(match other {
-                // Interned strings are deduplicated, so equal ids ⇔ equal content.
-                Self::InternString(o) => Some(id == o),
-                _ => eq_str(vm.interns.get_str(*id), other, vm),
+            Self::InternLongInt(id) => Ok(eq_bigint(vm.symbols.get_long_int(*id), other, vm)),
+            Self::Symbol(id) => Ok(match other {
+                // Symbols are deduplicated, so equal ids ⇔ equal content.
+                Self::Symbol(o) => Some(id == o),
+                _ => eq_str(vm.symbols.get_str(*id), other, vm),
             }),
             Self::InlineString(text) => Ok(text.eq_value(other, vm)),
             Self::InternBytes(id) => Ok(match other {
                 // Fast path for the same interned bytes; otherwise compare content
                 // (interned bytes are not deduplicated, unlike strings).
                 Self::InternBytes(o) if id == o => Some(true),
-                _ => eq_bytes(vm.interns.get_bytes(*id), other, vm),
+                _ => eq_bytes(vm.symbols.get_bytes(*id), other, vm),
             }),
             Self::Builtin(b) => Ok(match other {
                 Self::Builtin(o) => Some(b == o),
@@ -328,7 +327,7 @@ impl<'h> PyTrait<'h> for Value {
     }
 
     fn py_cmp(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<CmpOrder> {
-        let interns = vm.interns;
+        let symbols = vm.symbols;
         // py_cmp handles numbers, strings, bytes, tuples, and lists.
         // Recursion depth tracking for tuples/lists is handled by their iterators.
         //
@@ -355,10 +354,10 @@ impl<'h> PyTrait<'h> for Value {
                 Ok(CmpOrder::from_numeric(bigint_cmp_f64(a, *b)))
             }
             (Self::InternLongInt(a), rhs) if let Some(b) = rhs.as_long_int(vm) => {
-                Ok(CmpOrder::Ordered(interns.get_long_int(*a).cmp(b)))
+                Ok(CmpOrder::Ordered(symbols.get_long_int(*a).cmp(b)))
             }
             (lhs, Self::InternLongInt(b)) if let Some(a) = lhs.as_long_int(vm) => {
-                Ok(CmpOrder::Ordered(a.cmp(interns.get_long_int(*b))))
+                Ok(CmpOrder::Ordered(a.cmp(symbols.get_long_int(*b))))
             }
             // Bool promotion: convert to Int and re-dispatch. Recursion is bounded
             // to at most 2 levels (Bool→Int, then Int matches directly above).
@@ -373,9 +372,9 @@ impl<'h> PyTrait<'h> for Value {
                     Ok(order)
                 }
             }
-            // Interned string comparisons
-            (Self::InternString(s1), Self::InternString(s2)) => {
-                Ok(CmpOrder::Ordered(interns.get_str(*s1).cmp(interns.get_str(*s2))))
+            // Symbol comparisons
+            (Self::Symbol(s1), Self::Symbol(s2)) => {
+                Ok(CmpOrder::Ordered(symbols.get_str(*s1).cmp(symbols.get_str(*s2))))
             }
             (Self::InlineString(text), Self::Ref(id)) if let HeapData::Str(value) = vm.heap.get(*id) => {
                 Ok(CmpOrder::Ordered(text.as_bytes().cmp(value.as_str().as_bytes())))
@@ -387,28 +386,28 @@ impl<'h> PyTrait<'h> for Value {
                 // UTF-8 byte order matches Unicode scalar order, including prefixes.
                 Ok(CmpOrder::Ordered(left.as_bytes().cmp(right.as_bytes())))
             }
-            (Self::InlineString(text), Self::InternString(id)) => {
-                Ok(CmpOrder::Ordered(text.as_bytes().cmp(interns.get_str(*id).as_bytes())))
+            (Self::InlineString(text), Self::Symbol(id)) => {
+                Ok(CmpOrder::Ordered(text.as_bytes().cmp(symbols.get_str(*id).as_bytes())))
             }
-            (Self::InternString(id), Self::InlineString(text)) => {
-                Ok(CmpOrder::Ordered(interns.get_str(*id).as_bytes().cmp(text.as_bytes())))
+            (Self::Symbol(id), Self::InlineString(text)) => {
+                Ok(CmpOrder::Ordered(symbols.get_str(*id).as_bytes().cmp(text.as_bytes())))
             }
-            // Cross-type string comparisons: interned vs heap-allocated
-            (Self::InternString(s1), Self::Ref(id2)) if let HeapData::Str(s2) = vm.heap.get(*id2) => {
-                Ok(CmpOrder::Ordered(interns.get_str(*s1).cmp(s2.as_str())))
+            // Cross-type string comparisons: symbol-backed vs heap-allocated
+            (Self::Symbol(s1), Self::Ref(id2)) if let HeapData::Str(s2) = vm.heap.get(*id2) => {
+                Ok(CmpOrder::Ordered(symbols.get_str(*s1).cmp(s2.as_str())))
             }
-            (Self::Ref(id1), Self::InternString(s2)) if let HeapData::Str(s1) = vm.heap.get(*id1) => {
-                Ok(CmpOrder::Ordered(s1.as_str().cmp(interns.get_str(*s2))))
+            (Self::Ref(id1), Self::Symbol(s2)) if let HeapData::Str(s1) = vm.heap.get(*id1) => {
+                Ok(CmpOrder::Ordered(s1.as_str().cmp(symbols.get_str(*s2))))
             }
             (Self::InternBytes(b1), Self::InternBytes(b2)) => {
-                Ok(CmpOrder::Ordered(interns.get_bytes(*b1).cmp(interns.get_bytes(*b2))))
+                Ok(CmpOrder::Ordered(symbols.get_bytes(*b1).cmp(symbols.get_bytes(*b2))))
             }
             // Cross-type bytes comparisons: interned vs heap-allocated
             (Self::InternBytes(b1), Self::Ref(id2)) if let HeapData::Bytes(b2) = vm.heap.get(*id2) => {
-                Ok(CmpOrder::Ordered(interns.get_bytes(*b1).cmp(b2.as_slice())))
+                Ok(CmpOrder::Ordered(symbols.get_bytes(*b1).cmp(b2.as_slice())))
             }
             (Self::Ref(id1), Self::InternBytes(b2)) if let HeapData::Bytes(b1) = vm.heap.get(*id1) => {
-                Ok(CmpOrder::Ordered(b1.as_slice().cmp(interns.get_bytes(*b2))))
+                Ok(CmpOrder::Ordered(b1.as_slice().cmp(symbols.get_bytes(*b2))))
             }
             _ => decimal_cmp_or_incomparable(self, other, vm),
         }
@@ -428,8 +427,8 @@ impl<'h> PyTrait<'h> for Value {
 
     /// Overrides the default `py_repr` with allocation-light fast paths for the
     /// values whose repr is cheap to produce:
-    /// - singletons (`None`/`True`/`False`/`Ellipsis`) resolve to a pre-interned
-    ///   `StringId`, so `repr`/`str`/`print`/f-strings allocate nothing at all;
+    /// - singletons (`None`/`True`/`False`/`Ellipsis`) resolve to a predefined
+    ///   `SymbolId`, so `repr`/`str`/`print`/f-strings allocate nothing at all;
     /// - `int` formats via `itoa` straight into a right-sized `allocate_string`,
     ///   skipping the grow-then-shrink intermediate `String`.
     ///
@@ -438,14 +437,21 @@ impl<'h> PyTrait<'h> for Value {
     /// of a `str` still needs a buffer for quoting/escaping.
     fn py_repr(&self, vm: &mut VM<'h>) -> RunResult<Value> {
         match self {
-            Self::None => Ok(Self::InternString(vm.interns.intern_static(StaticStrings::NoneRepr))),
-            Self::Bool(true) => Ok(Self::InternString(vm.interns.intern_static(StaticStrings::TrueRepr))),
-            Self::Bool(false) => Ok(Self::InternString(vm.interns.intern_static(StaticStrings::FalseRepr))),
-            Self::Ellipsis => Ok(Self::InternString(
-                vm.interns.intern_static(StaticStrings::EllipsisRepr),
+            Self::None => Ok(Self::Symbol(
+                vm.symbols.get_or_insert_static_symbol(StaticStrings::NoneRepr),
             )),
-            Self::NotImplemented => Ok(Self::InternString(
-                vm.interns.intern_static(StaticStrings::NotImplementedRepr),
+            Self::Bool(true) => Ok(Self::Symbol(
+                vm.symbols.get_or_insert_static_symbol(StaticStrings::TrueRepr),
+            )),
+            Self::Bool(false) => Ok(Self::Symbol(
+                vm.symbols.get_or_insert_static_symbol(StaticStrings::FalseRepr),
+            )),
+            Self::Ellipsis => Ok(Self::Symbol(
+                vm.symbols.get_or_insert_static_symbol(StaticStrings::EllipsisRepr),
+            )),
+            Self::NotImplemented => Ok(Self::Symbol(
+                vm.symbols
+                    .get_or_insert_static_symbol(StaticStrings::NotImplementedRepr),
             )),
             Self::Int(i) => Ok(allocate_string(itoa::Buffer::new().format(*i), vm.heap)),
             _ => {
@@ -459,10 +465,10 @@ impl<'h> PyTrait<'h> for Value {
 
     fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
         match self {
-            // Interned/heap strings are already what `str()` returns — hand the
+            // Symbols and heap strings are already what `str()` returns — hand the
             // same value back (inc-ref'd for the heap case) instead of cloning
             // the bytes into a fresh allocation.
-            Self::InternString(string_id) => Ok(Self::InternString(*string_id)),
+            Self::Symbol(symbol_id) => Ok(Self::Symbol(*symbol_id)),
             Self::InlineString(text) => Ok(Self::InlineString(*text)),
             Self::Ref(id) if matches!(vm.heap.get(*id), HeapData::Str(_)) => Ok(self.clone_with_heap(vm.heap)),
             // Instances dispatch to a user `__str__`/`__repr__` (needs the heap id).
@@ -782,9 +788,9 @@ impl<'h> PyTrait<'h> for Value {
 
     fn py_is_iterable(&self, vm: &VM<'_>) -> bool {
         match self {
-            // Interned string and bytes literals iterate without ever reaching
+            // String symbols and bytes literals iterate without ever reaching
             // the heap, so they answer here rather than through a heap-backed `PyValue`.
-            Self::InternString(_) | Self::InlineString(_) | Self::InternBytes(_) => true,
+            Self::Symbol(_) | Self::InlineString(_) | Self::InternBytes(_) => true,
             Self::Ref(id) => PyValue::from_heap(*id, vm.heap).py_is_iterable(vm),
             _ => false,
         }
@@ -795,7 +801,7 @@ impl<'h> PyTrait<'h> for Value {
             PyValue::from_heap(*id, vm.heap).py_iter(vm)
         } else {
             match self {
-                Self::InternString(id) => PyStr::Interned(*id).py_iter(vm),
+                Self::Symbol(id) => PyStr::Symbol(*id).py_iter(vm),
                 Self::InlineString(text) => PyStr::Inline(*text).py_iter(vm),
                 Self::InternBytes(id) => Ok(CallResult::Value(BytesIterator::from_intern(*id, vm))),
                 _ => Err(ExcType::type_error_not_iterable(&self.py_type_name(vm))),
@@ -892,7 +898,7 @@ impl Value {
     /// Drop the view before releasing the owning `Value`, so its heap readers are gone at cleanup.
     pub(crate) fn py_value<'h>(&self, vm: &VM<'h>) -> PyValue<'h> {
         match self {
-            Self::InternString(id) => PyValue::Str(PyStr::Interned(*id)),
+            Self::Symbol(id) => PyValue::Str(PyStr::Symbol(*id)),
             Self::InlineString(text) => PyValue::Str(PyStr::Inline(*text)),
             Self::InternBytes(id) => PyValue::Bytes(PyBytes::Interned(*id)),
             Self::Int(value) => PyValue::Int(PyInt::Small(*value)),
@@ -950,7 +956,7 @@ impl Value {
     /// delegates to [`HeapData::py_type`] for `Value::Ref`. Useful in code paths
     /// that need a type label (e.g. CPython-style "argument N must be X, not Y"
     /// errors) but don't have a `&VM` handy — notably the macro-generated
-    /// `from_args` bodies, which are passed `heap` + `interns` rather than a VM.
+    /// `from_args` bodies, which are passed `heap` + `symbols` rather than a VM.
     #[must_use]
     pub(crate) fn py_type_heap(&self, heap: &Heap) -> TypeRef {
         match self {
@@ -963,21 +969,21 @@ impl Value {
     /// reprs — user-class instances, named tuples, and host class instances
     /// render as their real class name rather than a generic placeholder.
     ///
-    /// The result borrows only `vm.interns` (never the heap), so it can be
+    /// The result borrows only `vm.symbols` (never the heap), so it can be
     /// captured before `drop_with` cleanup and formatted after.
     #[must_use]
     pub(crate) fn py_type_name<'h>(&self, vm: &VM<'h>) -> Cow<'h, str> {
-        self.dynamic_class_name(vm.heap, vm.interns)
-            .unwrap_or_else(|| self.py_type(vm).name(vm.heap, vm.interns))
+        self.dynamic_class_name(vm.heap, vm.symbols)
+            .unwrap_or_else(|| self.py_type(vm).name(vm.heap, vm.symbols))
     }
 
     /// [`py_type_name`](Self::py_type_name) for contexts without a `&VM` —
     /// notably the macro-generated `from_args` bodies, which are passed
-    /// `heap` + `interns` instead (mirrors [`py_type_heap`](Self::py_type_heap)).
+    /// `heap` + `symbols` instead (mirrors [`py_type_heap`](Self::py_type_heap)).
     #[must_use]
-    pub(crate) fn py_type_name_heap<'i>(&self, heap: &Heap, interns: &'i Interns) -> Cow<'i, str> {
-        self.dynamic_class_name(heap, interns)
-            .unwrap_or_else(|| self.py_type_heap(heap).name(heap, interns))
+    pub(crate) fn py_type_name_heap<'i>(&self, heap: &Heap, symbols: &'i SymbolTable) -> Cow<'i, str> {
+        self.dynamic_class_name(heap, symbols)
+            .unwrap_or_else(|| self.py_type_heap(heap).name(heap, symbols))
     }
 
     /// Class name to use in error messages when the [`TypeRef`] does not carry
@@ -990,7 +996,7 @@ impl Value {
     /// is the reverse case: its `Type` name is the qualified `random.Random`,
     /// but messages use the bare class name.
     #[must_use]
-    fn dynamic_class_name<'i>(&self, heap: &Heap, interns: &'i Interns) -> Option<Cow<'i, str>> {
+    fn dynamic_class_name<'i>(&self, heap: &Heap, symbols: &'i SymbolTable) -> Option<Cow<'i, str>> {
         let Self::Ref(heap_id) = self else {
             return None;
         };
@@ -1001,7 +1007,7 @@ impl Value {
             HeapData::Random(_) => return Some(Cow::Borrowed("Random")),
             _ => return None,
         };
-        Some(name.to_cow(interns))
+        Some(name.to_cow(symbols))
     }
 
     /// Returns the Python `Type` for immediate (non-heap) values without VM access.
@@ -1018,7 +1024,7 @@ impl Value {
             Self::Bool(_) => Type::Bool,
             Self::Int(_) | Self::InternLongInt(_) => Type::Int,
             Self::Float(_) => Type::Float,
-            Self::InternString(_) => Type::Str,
+            Self::Symbol(_) => Type::Str,
             Self::InlineString(_) => Type::Str,
             Self::InternBytes(_) => Type::Bytes,
             Self::Builtin(_) => Type::BuiltinFunction,
@@ -1208,10 +1214,10 @@ impl Value {
         // The hot arms (int/str/ref) return precomputed or cached hashes; only the
         // cold arms construct a hasher, via `hash_one`.
         match self {
-            Self::InternString(string_id) => PyStr::Interned(*string_id).py_hash(vm),
+            Self::Symbol(symbol_id) => PyStr::Symbol(*symbol_id).py_hash(vm),
             Self::InlineString(text) => PyStr::Inline(*text).py_hash(vm),
-            Self::InternBytes(bytes_id) => Ok(Some(vm.interns.bytes_hash(*bytes_id))),
-            Self::InternLongInt(long_int_id) => Ok(Some(vm.interns.long_int_hash(*long_int_id))),
+            Self::InternBytes(bytes_id) => Ok(Some(vm.symbols.bytes_hash(*bytes_id))),
+            Self::InternLongInt(long_int_id) => Ok(Some(vm.symbols.long_int_hash(*long_int_id))),
             // Bool and int hash directly as their value, and are equivalent
             Self::Bool(b) => Ok(Some(HashValue::new((*b).into()))),
             Self::Int(i) => Ok(Some(HashValue::new(i.cast_unsigned()))),
@@ -1283,7 +1289,7 @@ impl Value {
     /// Gets an attribute from this value.
     ///
     /// Dispatches to `py_getattr` on the underlying types where appropriate.
-    /// Accepts `EitherStr` to support both interned and heap-allocated attribute names.
+    /// Accepts `EitherStr` to support both symbol-backed and heap-allocated attribute names.
     ///
     /// Returns `AttributeError` for other types or unknown attributes.
     pub fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'_>) -> RunResult<CallResult> {
@@ -1302,7 +1308,7 @@ impl Value {
                 if let HeapData::Module(module) = vm.heap.get(*heap_id) {
                     return Err(ExcType::attribute_error_module(
                         module.error_name(vm).ok(),
-                        attr.as_str(vm.interns),
+                        attr.as_str(vm.symbols),
                     ));
                 }
             }
@@ -1317,14 +1323,14 @@ impl Value {
             }
             // A plain `def` has its PEP 649 attributes and nothing else.
             Self::DefFunction(func_id) => {
-                if let Some(result) = annotations::function_getattr(*func_id, None, attr.as_str(vm.interns), vm) {
+                if let Some(result) = annotations::function_getattr(*func_id, None, attr.as_str(vm.symbols), vm) {
                     return result;
                 }
             }
             _ => {}
         }
         let type_name = self.py_type_name(vm);
-        Err(ExcType::attribute_error(type_name, attr.as_str(vm.interns)))
+        Err(ExcType::attribute_error(type_name, attr.as_str(vm.symbols)))
     }
 
     /// Sets an attribute, consuming `value` on both success and error.
@@ -1334,7 +1340,7 @@ impl Value {
         } else {
             value.drop_with(vm);
             let type_name = self.py_type_name(vm);
-            Err(ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm.interns)))
+            Err(ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm.symbols)))
         }
     }
 
@@ -1487,7 +1493,7 @@ impl Value {
     /// so callers keep their own fast paths for those.
     pub(crate) fn as_long_int<'a>(&self, vm: &'a VM<'_>) -> Option<&'a BigInt> {
         match self {
-            Self::InternLongInt(id) => Some(vm.interns.get_long_int(*id)),
+            Self::InternLongInt(id) => Some(vm.symbols.get_long_int(*id)),
             _ => self.get_as::<LongInt>(vm.heap).map(LongInt::inner),
         }
     }
@@ -1808,7 +1814,7 @@ impl Value {
 
     /// Copies a value that holds no heap reference, for contexts with no heap
     /// to count against — the compiler's constant arena, which only ever holds
-    /// literals and interned ids.
+    /// literals and symbol IDs.
     ///
     /// # Panics
     ///
@@ -1828,7 +1834,7 @@ impl Value {
             Self::Builtin(b) => Self::Builtin(*b),
             Self::ModuleFunction(mf) => Self::ModuleFunction(*mf),
             Self::DefFunction(f) => Self::DefFunction(*f),
-            Self::InternString(s) => Self::InternString(*s),
+            Self::Symbol(s) => Self::Symbol(*s),
             Self::InlineString(text) => Self::InlineString(*text),
             Self::InternBytes(b) => Self::InternBytes(*b),
             Self::InternLongInt(bi) => Self::InternLongInt(*bi),
@@ -1901,7 +1907,7 @@ impl Value {
     /// Copies heap-backed text; returns `None` for non-string values.
     pub fn as_either_str(&self, heap: &Heap) -> Option<EitherStr> {
         match self {
-            Self::InternString(id) => Some(EitherStr::Interned(*id)),
+            Self::Symbol(id) => Some(EitherStr::Symbol(*id)),
             Self::InlineString(text) => Some(EitherStr::Inline(*text)),
             _ => self
                 .get_as::<HeapStr>(heap)
@@ -1911,13 +1917,13 @@ impl Value {
 
     /// Borrows the contents of interned or heap-allocated bytes.
     pub(crate) fn as_bytes<'a>(&self, vm: &'a VM<'_>) -> Option<&'a [u8]> {
-        self.as_bytes_heap(vm.heap, vm.interns)
+        self.as_bytes_heap(vm.heap, vm.symbols)
     }
 
-    /// [`as_bytes`](Self::as_bytes) for callers with a separate heap and intern table.
-    pub(crate) fn as_bytes_heap<'a>(&self, heap: &'a Heap, interns: &'a Interns) -> Option<&'a [u8]> {
+    /// [`as_bytes`](Self::as_bytes) for callers with a separate heap and symbol table.
+    pub(crate) fn as_bytes_heap<'a>(&self, heap: &'a Heap, symbols: &'a SymbolTable) -> Option<&'a [u8]> {
         match self {
-            Self::InternBytes(id) => Some(interns.get_bytes(*id)),
+            Self::InternBytes(id) => Some(symbols.get_bytes(*id)),
             _ => self.get_as::<Bytes>(heap).map(Bytes::as_slice),
         }
     }
@@ -1930,13 +1936,13 @@ impl Value {
 
     /// Borrows string contents without allocating, or returns `None` for non-strings.
     pub(crate) fn as_str<'a>(&'a self, vm: &'a VM<'_>) -> Option<&'a str> {
-        self.as_str_heap(vm.heap, vm.interns)
+        self.as_str_heap(vm.heap, vm.symbols)
     }
 
     /// [`as_str`](Self::as_str) for contexts without a `&VM`.
-    pub(crate) fn as_str_heap<'a>(&'a self, heap: &'a Heap, interns: &'a Interns) -> Option<&'a str> {
+    pub(crate) fn as_str_heap<'a>(&'a self, heap: &'a Heap, symbols: &'a SymbolTable) -> Option<&'a str> {
         match self {
-            Self::InternString(string_id) => Some(interns.get_str(*string_id)),
+            Self::Symbol(symbol_id) => Some(symbols.get_str(*symbol_id)),
             Self::InlineString(text) => Some(text.as_str()),
             _ => self.get_as::<HeapStr>(heap).map(HeapStr::as_str),
         }
@@ -1944,18 +1950,18 @@ impl Value {
 
     /// Borrows string contents, or raises `TypeError` with `expected string, not <type>`.
     pub(crate) fn try_as_str<'a>(&'a self, vm: &'a VM<'_>) -> RunResult<&'a str> {
-        self.try_as_str_heap(vm.heap, vm.interns)
+        self.try_as_str_heap(vm.heap, vm.symbols)
     }
 
     /// [`try_as_str`](Self::try_as_str) for contexts without a `&VM` — takes `heap` and
-    /// `interns` separately so callers can keep a disjoint `&mut` borrow of
+    /// `symbols` separately so callers can keep a disjoint `&mut` borrow of
     /// another `VM` field alive (e.g. resolving a `str` `Value` produced by
     /// `py_str` while writing it to `vm.print_writer`).
-    pub(crate) fn try_as_str_heap<'a>(&'a self, heap: &'a Heap, interns: &'a Interns) -> RunResult<&'a str> {
-        self.as_str_heap(heap, interns).ok_or_else(|| {
+    pub(crate) fn try_as_str_heap<'a>(&'a self, heap: &'a Heap, symbols: &'a SymbolTable) -> RunResult<&'a str> {
+        self.as_str_heap(heap, symbols).ok_or_else(|| {
             ExcType::type_error(format!(
                 "expected string, not {}",
-                self.py_type_name_heap(heap, interns)
+                self.py_type_name_heap(heap, symbols)
             ))
         })
     }
@@ -1963,7 +1969,7 @@ impl Value {
     /// check if the value is a string.
     pub fn is_str(&self, heap: &Heap) -> bool {
         match self {
-            Self::InternString(_) | Self::InlineString(_) => true,
+            Self::Symbol(_) | Self::InlineString(_) => true,
             Self::Ref(heap_id) => matches!(heap.get(*heap_id), HeapData::Str(_)),
             _ => false,
         }
@@ -2033,7 +2039,7 @@ pub(crate) fn eq_bigint(b: &BigInt, other: &Value, vm: &VM<'_>) -> Option<bool> 
 /// `s == other`, returning `None` for non-string operands.
 pub(crate) fn eq_str(s: &str, other: &Value, vm: &VM<'_>) -> Option<bool> {
     match other {
-        Value::InternString(id) => Some(s == vm.interns.get_str(*id)),
+        Value::Symbol(id) => Some(s == vm.symbols.get_str(*id)),
         Value::InlineString(text) => Some(s.as_bytes() == text.as_bytes()),
         Value::Ref(id) if let HeapData::Str(o) = vm.heap.get(*id) => Some(s == o.as_str()),
         _ => None,
@@ -2048,21 +2054,22 @@ pub(crate) fn eq_bytes(b: &[u8], other: &Value, vm: &VM<'_>) -> Option<bool> {
 /// A string name that can outlive a heap borrow.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) enum EitherStr {
-    /// Interned string identifier (cheap comparisons and no allocation).
-    Interned(StringId),
+    /// Symbol identifier (cheap comparisons and no allocation).
+    #[serde(rename = "Interned")]
+    Symbol(SymbolId),
     /// Short UTF-8 string stored without a heap allocation.
     Inline(InlineStr),
     /// Heap-owned string extracted from a `str` object.
     Heap(String),
 }
 
-impl From<StringId> for EitherStr {
-    fn from(id: StringId) -> Self {
-        Self::Interned(id)
+impl From<SymbolId> for EitherStr {
+    fn from(id: SymbolId) -> Self {
+        Self::Symbol(id)
     }
 }
 
-/// Converts owned text without assuming an executor-local intern ID.
+/// Converts owned text without assuming an executor-local symbol ID.
 impl From<String> for EitherStr {
     fn from(s: String) -> Self {
         Self::Heap(s)
@@ -2070,19 +2077,19 @@ impl From<String> for EitherStr {
 }
 
 impl EitherStr {
-    /// Returns an owned string value, preserving interned names.
+    /// Returns an owned string value, preserving symbols.
     pub(crate) fn as_value(&self, heap: &Heap) -> Value {
         match self {
-            Self::Interned(id) => Value::InternString(*id),
+            Self::Symbol(id) => Value::Symbol(*id),
             Self::Inline(text) => Value::InlineString(*text),
             Self::Heap(text) => allocate_string(text.as_str(), heap),
         }
     }
 
     /// Returns the keyword text for error messages or comparisons.
-    pub fn as_str<'a>(&'a self, interns: &'a Interns) -> &'a str {
+    pub fn as_str<'a>(&'a self, symbols: &'a SymbolTable) -> &'a str {
         match self {
-            Self::Interned(id) => interns.get_str(*id),
+            Self::Symbol(id) => symbols.get_str(*id),
             Self::Inline(text) => text.as_str(),
             Self::Heap(s) => s.as_str(),
         }
@@ -2090,64 +2097,64 @@ impl EitherStr {
 
     /// The text as a `Cow` that outlives heap borrows, for error messages
     /// formatted after `drop_with` cleanup.
-    pub fn to_cow<'i>(&self, interns: &'i Interns) -> Cow<'i, str> {
+    pub fn to_cow<'i>(&self, symbols: &'i SymbolTable) -> Cow<'i, str> {
         match self {
-            Self::Interned(id) => Cow::Borrowed(interns.get_str(*id)),
+            Self::Symbol(id) => Cow::Borrowed(symbols.get_str(*id)),
             Self::Inline(text) => Cow::Owned(text.as_str().to_owned()),
             Self::Heap(s) => Cow::Owned(s.clone()),
         }
     }
 
-    /// Re-resolves a runtime string to its interned id when the interner knows it.
+    /// Re-resolves a runtime string to its symbol ID when the symbol table knows it.
     ///
-    /// Looks up existing IDs for builtin attribute dispatch without growing the interner.
+    /// Looks up existing IDs for builtin attribute dispatch without growing the symbol table.
     #[must_use]
-    pub fn resolve_interned(self, interns: &Interns) -> Self {
+    pub fn resolve_symbol(self, symbols: &SymbolTable) -> Self {
         match self {
-            Self::Heap(s) => match interns.get_string_id_by_name(&s) {
-                Some(id) => Self::Interned(id),
+            Self::Heap(s) => match symbols.get_symbol_id_by_name(&s) {
+                Some(id) => Self::Symbol(id),
                 None => Self::Heap(s),
             },
-            Self::Inline(text) => match interns.get_string_id_by_name(text.as_str()) {
-                Some(id) => Self::Interned(id),
+            Self::Inline(text) => match symbols.get_symbol_id_by_name(text.as_str()) {
+                Some(id) => Self::Symbol(id),
                 None => self,
             },
-            already @ Self::Interned(_) => already,
+            already @ Self::Symbol(_) => already,
         }
     }
 
-    /// Checks whether this keyword matches the given interned identifier.
-    pub fn matches(&self, target: StringId, interns: &Interns) -> bool {
+    /// Checks whether this keyword matches the given symbol IDentifier.
+    pub fn matches(&self, target: SymbolId, symbols: &SymbolTable) -> bool {
         match self {
-            Self::Interned(id) => *id == target,
-            Self::Inline(text) => text.as_bytes() == interns.get_str(target).as_bytes(),
-            Self::Heap(s) => s == interns.get_str(target),
+            Self::Symbol(id) => *id == target,
+            Self::Inline(text) => text.as_bytes() == symbols.get_str(target).as_bytes(),
+            Self::Heap(s) => s == symbols.get_str(target),
         }
     }
 
-    /// Returns the `StringId` if this is an interned attribute.
+    /// Returns the `SymbolId` if this is an attribute symbol.
     #[inline]
-    pub fn string_id(&self) -> Option<StringId> {
+    pub fn symbol_id(&self) -> Option<SymbolId> {
         match self {
-            Self::Interned(id) => Some(*id),
+            Self::Symbol(id) => Some(*id),
             Self::Inline(_) | Self::Heap(_) => None,
         }
     }
 
     /// Returns the static classification of this name, if recognized.
     #[inline]
-    pub fn static_string(&self, interns: &Interns) -> Option<StaticStrings> {
+    pub fn static_string(&self, symbols: &SymbolTable) -> Option<StaticStrings> {
         match self {
-            Self::Interned(id) => interns.static_string(*id),
+            Self::Symbol(id) => symbols.static_string(*id),
             Self::Inline(text) => StaticStrings::from_str(text.as_str()).ok(),
             Self::Heap(value) => StaticStrings::from_str(value).ok(),
         }
     }
 
     /// Returns owned text, reusing an existing `String` when possible.
-    pub fn into_string(self, interns: &Interns) -> String {
+    pub fn into_string(self, symbols: &SymbolTable) -> String {
         match self {
-            Self::Interned(id) => interns.get_str(id).to_owned(),
+            Self::Symbol(id) => symbols.get_str(id).to_owned(),
             Self::Inline(text) => text.as_str().to_owned(),
             Self::Heap(s) => s,
         }
@@ -2386,7 +2393,7 @@ mod tests {
         run::{Program, SessionTables},
         types::{
             LongInt,
-            str::{allocate_string_no_interning, allocate_string_on_heap},
+            str::{allocate_non_symbol_string, allocate_string_on_heap},
         },
     };
 
@@ -2401,7 +2408,7 @@ mod tests {
         for text in ["123456789012345", "ééééééabc"] {
             for value in [
                 allocate_string(text.to_owned(), &heap),
-                allocate_string_no_interning(text.to_owned(), &heap),
+                allocate_non_symbol_string(text.to_owned(), &heap),
             ] {
                 assert!(matches!(value, Value::InlineString(_)));
                 assert_eq!(value.inline_str(), Some(text));
@@ -2411,7 +2418,7 @@ mod tests {
         for text in ["1234567890123456", "ééééééabcd"] {
             for value in [
                 allocate_string(text.to_owned(), &heap),
-                allocate_string_no_interning(text.to_owned(), &heap),
+                allocate_non_symbol_string(text.to_owned(), &heap),
             ] {
                 assert!(matches!(value, Value::Ref(_)));
                 value.drop_with(&mut heap);
@@ -2449,37 +2456,37 @@ mod tests {
 
         let name = value.as_either_str(&heap).unwrap();
         assert!(matches!(name, EitherStr::Inline(_)));
-        assert_eq!(name.as_str(&Interns::default()), "abcdefghijklmno");
+        assert_eq!(name.as_str(&SymbolTable::default()), "abcdefghijklmno");
     }
 
     #[test]
     fn inline_attribute_names_resolve_without_inserting() {
         let mut heap = Heap::new(16, ResourceTracker::default());
-        let interns = Interns::default();
-        let start = interns.intern_static(StaticStrings::Start);
+        let symbols = SymbolTable::default();
+        let start = symbols.get_or_insert_static_symbol(StaticStrings::Start);
         let value = allocate_string("start".to_owned(), &heap);
         let name = value.as_either_str(&heap).unwrap();
-        assert!(name.matches(start, &interns));
-        assert_eq!(name.string_id(), None);
-        assert_eq!(name.static_string(&interns), interns.static_string(start));
-        assert!(matches!(name.to_cow(&interns), Cow::Owned(text) if text == "start"));
-        assert!(matches!(name.resolve_interned(&interns), EitherStr::Interned(id) if id == start));
+        assert!(name.matches(start, &symbols));
+        assert_eq!(name.symbol_id(), None);
+        assert_eq!(name.static_string(&symbols), symbols.static_string(start));
+        assert!(matches!(name.to_cow(&symbols), Cow::Owned(text) if text == "start"));
+        assert!(matches!(name.resolve_symbol(&symbols), EitherStr::Symbol(id) if id == start));
         value.drop_with(&mut heap);
 
         let value = allocate_string("zzq".to_owned(), &heap);
-        let name = value.as_either_str(&heap).unwrap().resolve_interned(&interns);
+        let name = value.as_either_str(&heap).unwrap().resolve_symbol(&symbols);
         assert!(matches!(name, EitherStr::Inline(_)));
-        assert!(!name.matches(start, &interns));
-        assert_eq!(name.static_string(&interns), None);
-        assert_eq!(name.into_string(&interns), "zzq");
-        assert!(interns.get_string_id_by_name("zzq").is_none());
+        assert!(!name.matches(start, &symbols));
+        assert_eq!(name.static_string(&symbols), None);
+        assert_eq!(name.into_string(&symbols), "zzq");
+        assert!(symbols.get_symbol_id_by_name("zzq").is_none());
         value.drop_with(&mut heap);
 
         for text in ["start", "a_name_longer_than_inline"] {
             let value = allocate_string_on_heap(text, &heap);
-            let name = value.as_either_str(&heap).unwrap().resolve_interned(&interns);
-            assert_eq!(name.as_str(&interns), text);
-            assert_eq!(name.string_id(), (text == "start").then_some(start));
+            let name = value.as_either_str(&heap).unwrap().resolve_symbol(&symbols);
+            assert_eq!(name.as_str(&symbols), text);
+            assert_eq!(name.symbol_id(), (text == "start").then_some(start));
             value.drop_with(&mut heap);
         }
     }

@@ -12,8 +12,8 @@ use crate::{
     defer_drop,
     exception_private::RunResult,
     frozen::FrozenFunction,
-    intern::StaticStrings,
     modules::ModuleFunctions,
+    symbols::StaticStrings,
     types::{Module, PyTrait, Type, lru_cache},
     value::Value,
 };
@@ -53,7 +53,7 @@ pub(crate) enum FunctoolsFunctions {
 
 /// Creates the `functools` module.
 pub fn create_module(vm: &mut VM<'_>) -> Module {
-    let mut module = Module::new(StaticStrings::Functools, vm.interns);
+    let mut module = Module::new(StaticStrings::Functools, vm.symbols);
 
     module.set_attr(
         StaticStrings::Reduce,

@@ -85,13 +85,13 @@ use crate::{
     hash::{HashValue, hash_python_bytes},
     heap::{DropGuard, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReader, HeapView, heap_read_ref_as_field},
     identity::Identity,
-    intern::{BytesId, StaticStrings},
     percent_format::{copy_bytes_template, percent_format_bytes},
     py_attrs::PyAttrs,
     py_value::PyValue,
     resource_checks::{
         check_estimated_size, check_repeat_size, check_replace_size, push_checked, repeated_len, try_vec_with_capacity,
     },
+    symbols::{BytesId, StaticStrings},
     types::{
         List,
         iter::checked_preallocation_hint,
@@ -351,7 +351,7 @@ impl<'h> PyBytes<'h> {
     /// Borrows the buffer only for the duration of the heap borrow.
     pub(crate) fn as_slice<'a>(&'a self, vm: &'a VM<'h>) -> &'a [u8] {
         match self {
-            Self::Interned(id) => vm.interns.get_bytes(*id),
+            Self::Interned(id) => vm.symbols.get_bytes(*id),
             Self::Heap(value) => value.get(vm.heap).as_slice(),
         }
     }
@@ -380,7 +380,7 @@ impl<'h> PyTrait<'h> for PyBytes<'h> {
 
     fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         match self {
-            Self::Interned(id) => Ok(Some(vm.interns.bytes_hash(*id))),
+            Self::Interned(id) => Ok(Some(vm.symbols.bytes_hash(*id))),
             Self::Heap(value) => value.py_hash(vm),
         }
     }
@@ -429,7 +429,7 @@ impl<'h> PyTrait<'h> for PyBytes<'h> {
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         match self {
-            Self::Interned(id) => bytes_getitem(&*vm.heap.protect(vm.interns.get_bytes(*id)), key, vm),
+            Self::Interned(id) => bytes_getitem(&*vm.heap.protect(vm.symbols.get_bytes(*id)), key, vm),
             Self::Heap(value) => value.py_getitem(key, vm),
         }
     }
@@ -917,8 +917,8 @@ fn extract_single_bytes_for_prefix_suffix(value: &Value, vm: &VM<'_>) -> RunResu
 /// a str is passed to bytes methods like find, count, index, startswith, endswith.
 fn extract_bytes_only<'a>(value: &Value, vm: &'a VM<'_>) -> RunResult<&'a [u8]> {
     match value {
-        Value::InternBytes(id) => Ok(vm.interns.get_bytes(*id)),
-        Value::InternString(_) | Value::InlineString(_) => {
+        Value::InternBytes(id) => Ok(vm.symbols.get_bytes(*id)),
+        Value::Symbol(_) | Value::InlineString(_) => {
             Err(ExcType::type_error("a bytes-like object is required, not 'str'"))
         }
         Value::Ref(id) => match vm.heap.get(*id) {
@@ -2088,7 +2088,7 @@ fn bytes_join<'h>(separator: &impl HeapView<'h, [u8]>, iterable: Value, vm: &mut
         // Check item is bytes and extract its content
         match item {
             Value::InternBytes(id) => {
-                result.extend_from_slice(vm.interns.get_bytes(*id));
+                result.extend_from_slice(vm.symbols.get_bytes(*id));
             }
             Value::Ref(heap_id) => {
                 if let HeapData::Bytes(b) = vm.heap.get(*heap_id) {
@@ -2395,7 +2395,7 @@ impl BytesIterator {
     /// Borrows the source bytes.
     fn as_slice<'a>(&self, vm: &'a VM<'_>) -> &'a [u8] {
         match self.source {
-            BytesIteratorSource::Intern(id) => vm.interns.get_bytes(id),
+            BytesIteratorSource::Intern(id) => vm.symbols.get_bytes(id),
             BytesIteratorSource::Heap(id) => match vm.heap.get(id) {
                 HeapData::Bytes(bytes) => bytes.as_slice(),
                 _ => unreachable!("bytes iterator must retain bytes"),
@@ -2508,7 +2508,7 @@ impl<'h> HeapView<'h, [u8]> for BytesView<'_, 'h> {
 impl<'h> PyBytes<'h> {
     fn view<'a>(&'a self, vm: &VM<'h>) -> BytesView<'a, 'h> {
         match self {
-            Self::Interned(id) => BytesView::Interned(vm.interns.get_bytes(*id)),
+            Self::Interned(id) => BytesView::Interned(vm.symbols.get_bytes(*id)),
             Self::Heap(value) => BytesView::Heap(value),
         }
     }

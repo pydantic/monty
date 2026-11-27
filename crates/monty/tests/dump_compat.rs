@@ -405,7 +405,7 @@ fn legacy_dataclasses_upgrade_on_load() {
 /// The snippet suspended in `dataclasses_v13_suspended.bin`, kept for reference:
 /// the 1.1.0 release ran it up to the `host_value` lookup and dumped it. The
 /// classes are the in-flight snippet's, so their names live in the executor's
-/// interns, not the session's. Never regenerate it, as with the idle fixture.
+/// symbols, not the session's. Never regenerate it, as with the idle fixture.
 #[expect(dead_code, reason = "documents what the checked-in fixture holds")]
 const LEGACY_SUSPENDED_SNIPPET: &str = r#"import dataclasses
 from dataclasses import dataclass

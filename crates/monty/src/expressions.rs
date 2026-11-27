@@ -2,9 +2,9 @@ use crate::{
     args::{ArgExprs, Kwarg, Signature},
     builtins::Builtins,
     fstring::FStringPart,
-    intern::{BytesId, LongIntId, StringId},
     namespace::NamespaceId,
     parse::{CodeRange, ParsedSignature, Try},
+    symbols::{BytesId, LongIntId, SymbolId},
     value::{EitherStr, Marker},
 };
 
@@ -63,15 +63,15 @@ pub enum CaptureSource {
 
 /// An identifier (variable or function name) with source location and scope information.
 ///
-/// The name is stored as a `StringId` which indexes into the string interner.
-/// To get the actual string, look it up in the `Interns` storage.
+/// The name is stored as a `SymbolId` which indexes into the string symbols.
+/// To get the actual string, look it up in the `SymbolTable` storage.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct Identifier {
     #[serde(rename = "P")]
     pub position: CodeRange,
-    /// Interned name ID - look up in Interns to get the actual string.
+    /// Name in the symbol table.
     #[serde(rename = "N")]
-    pub name_id: StringId,
+    pub name_id: SymbolId,
     #[serde(rename = "I")]
     opt_namespace_id: Option<NamespaceId>,
     /// Which namespace this identifier refers to (determined at prepare time)
@@ -81,7 +81,7 @@ pub struct Identifier {
 
 impl Identifier {
     /// Creates a new identifier with unknown scope (to be resolved during prepare phase).
-    pub fn new(name_id: StringId, position: CodeRange) -> Self {
+    pub fn new(name_id: SymbolId, position: CodeRange) -> Self {
         Self {
             name_id,
             position,
@@ -91,7 +91,7 @@ impl Identifier {
     }
 
     /// Creates a new identifier with resolved namespace index and explicit scope.
-    pub fn new_with_scope(name_id: StringId, position: CodeRange, namespace_id: NamespaceId, scope: NameScope) -> Self {
+    pub fn new_with_scope(name_id: SymbolId, position: CodeRange, namespace_id: NamespaceId, scope: NameScope) -> Self {
         Self {
             name_id,
             position,
@@ -110,16 +110,16 @@ impl Identifier {
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct Submodule {
     /// The attribute name (`b`).
-    pub name: StringId,
+    pub name: SymbolId,
     /// The path through this component (`a.b`); in a relative import it keeps the dots (`..a`).
-    pub path: StringId,
+    pub path: SymbolId,
 }
 
 /// One entry of an `import` statement, with its dotted components and binding target.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ImportName {
     /// The top-level module to load (`a` for `import a.b`).
-    pub module_name: StringId,
+    pub module_name: SymbolId,
     /// The further components of a dotted name, in order.
     pub submodules: Vec<Submodule>,
     /// Whether the statement binds the top-level module (`import a.b` binds
@@ -356,8 +356,8 @@ pub enum Expr {
     /// During the prepare phase, it gets converted to `Expr::Lambda` with a
     /// fully prepared `PreparedFunctionDef`.
     LambdaRaw {
-        /// The interned `<lambda>` name ID.
-        name_id: StringId,
+        /// The `<lambda>` symbol ID.
+        name_id: SymbolId,
         /// The parsed lambda signature (parameters and defaults).
         signature: ParsedSignature,
         /// The lambda body expression (not yet prepared).
@@ -488,7 +488,7 @@ pub enum Pattern {
         /// Positional sub-patterns, resolved through the class's `__match_args__`.
         patterns: Vec<Self>,
         /// Keyword attribute names, paired with `kwd_patterns`.
-        kwd_attrs: Vec<StringId>,
+        kwd_attrs: Vec<SymbolId>,
         kwd_patterns: Vec<Self>,
         position: CodeRange,
     },
@@ -624,11 +624,11 @@ pub enum Literal {
     /// part is always zero). It has no constant-pool form: the compiler emits a
     /// `complex()` constructor call, since a complex value lives on the heap.
     Complex(f64),
-    /// An interned string literal. The StringId references the string in the Interns table.
-    Str(StringId),
-    /// An interned bytes literal. The BytesId references the bytes in the Interns table.
+    /// A string symbol. The SymbolId references the string in the symbol table.
+    Str(SymbolId),
+    /// An interned bytes literal. The BytesId references the bytes in the symbol table.
     Bytes(BytesId),
-    /// An interned long integer literal. The `LongIntId` references the value in the Interns table.
+    /// An interned long integer literal. The `LongIntId` references the value in the symbol table.
     /// Used for integer literals that exceed the i64 range.
     LongInt(LongIntId),
     /// A marker value (e.g., typing constructs like Any, Optional, etc.).
@@ -851,7 +851,7 @@ pub enum Node<F> {
     /// allowing functions to read and write them instead of creating local variables.
     Global {
         position: CodeRange,
-        names: Vec<StringId>,
+        names: Vec<SymbolId>,
     },
     /// Nonlocal variable declaration. Only present in parsed form, consumed during prepare.
     ///
@@ -859,7 +859,7 @@ pub enum Node<F> {
     /// allowing nested functions to read and write them instead of creating local variables.
     Nonlocal {
         position: CodeRange,
-        names: Vec<StringId>,
+        names: Vec<SymbolId>,
     },
     /// Try/except/else/finally block.
     ///
@@ -914,13 +914,13 @@ pub enum Node<F> {
     /// Imports specific names from a module into the current namespace.
     ImportFrom {
         /// The top-level module to load (`a` for `from a.b import c`).
-        module_name: StringId,
+        module_name: SymbolId,
         /// The further components of a dotted module name, in order.
         submodules: Vec<Submodule>,
         /// Names to import: (import_name, binding) pairs.
         /// The import_name is the name in the module, the binding is the local name
         /// (alias if provided, otherwise the import name) with resolved namespace slot.
-        names: Vec<(StringId, Identifier)>,
+        names: Vec<(SymbolId, Identifier)>,
         /// Source position for error reporting.
         position: CodeRange,
     },
@@ -932,7 +932,7 @@ pub enum Node<F> {
     /// level: preparation rejects it in a function or class body.
     ImportStar {
         /// The top-level module to load (`a` for `from a.b import *`).
-        module_name: StringId,
+        module_name: SymbolId,
         /// The further components of a dotted module name, in order.
         submodules: Vec<Submodule>,
         /// Source position of the whole statement, for runtime errors.
@@ -974,7 +974,7 @@ pub struct PreparedFunctionDef {
     pub free_var_slots: Vec<NamespaceId>,
     /// Names parallel to `free_var_slots`, including captures never read by this body.
     /// The compiler records them so `locals()` can report pass-through cells.
-    pub free_var_names: Vec<StringId>,
+    pub free_var_names: Vec<SymbolId>,
     /// This function's own namespace slots for cell variables (locals captured
     /// by nested functions). A fresh cell is created for each at call time and
     /// stored at `cell_var_slots[i]`. Parallel to [`Self::cell_param_indices`].

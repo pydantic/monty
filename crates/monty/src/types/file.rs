@@ -93,10 +93,10 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropGuard, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadMut, HeapReadOutput},
-    intern::StaticStrings,
     os_dispatch::{PostConversionEffect, stat_result_field},
     py_attrs::PyAttrs,
     py_value::PyValue,
+    symbols::StaticStrings,
     types::str::StringRepr,
     value::{EitherStr, Value},
     virtual_path::posix_join,
@@ -456,10 +456,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, OpenFile> {
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let Some(method) = attr.static_string(vm.interns) else {
+        let Some(method) = attr.static_string(vm.symbols) else {
             return Err(ExcType::attribute_error(
-                self.py_type(vm).name(vm.heap, vm.interns),
-                attr.as_str(vm.interns),
+                self.py_type(vm).name(vm.heap, vm.symbols),
+                attr.as_str(vm.symbols),
             ));
         };
 
@@ -474,8 +474,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, OpenFile> {
             StaticStrings::Encoding if !file.mode.is_binary() => allocate_string("utf-8", vm.heap),
             _ => {
                 return Err(ExcType::attribute_error(
-                    self.py_type(vm).name(vm.heap, vm.interns),
-                    attr.as_str(vm.interns),
+                    self.py_type(vm).name(vm.heap, vm.symbols),
+                    attr.as_str(vm.symbols),
                 ));
             }
         };
@@ -1064,7 +1064,7 @@ fn install_buffer<'h>(file: &HeapReadMut<'h, OpenFile>, result: Value, vm: &mut 
     };
 
     let replacement = match &*result {
-        Value::InternString(_) | Value::InlineString(_) => {
+        Value::Symbol(_) | Value::InlineString(_) => {
             let text = result.as_str(vm).expect("string result checked above");
             let text = if translate {
                 translate_newlines(text)
@@ -1074,7 +1074,7 @@ fn install_buffer<'h>(file: &HeapReadMut<'h, OpenFile>, result: Value, vm: &mut 
             Some(allocate_string_on_heap(text, vm.heap))
         }
         Value::InternBytes(bytes_id) => {
-            let bytes = vm.interns.get_bytes(*bytes_id).to_vec();
+            let bytes = vm.symbols.get_bytes(*bytes_id).to_vec();
             Some(Value::allocate(Bytes::new(bytes), vm.heap))
         }
         Value::Ref(id) => match vm.heap.get(*id) {
@@ -1689,7 +1689,7 @@ fn validate_write_data(data: &Value, binary: bool, vm: &VM<'_>) -> RunResult<()>
     }
 }
 
-/// Owned `String` from a Python `str` value, interned or heap-resident;
+/// Owned `String` from a Python `str` value, symbol-backed or heap-resident;
 /// `None` for any other type. `write()` unwraps it after `validate_write_data`,
 /// `open()`'s `newline` argument uses `None` to raise its `TypeError`.
 pub(crate) fn extract_str_payload(data: &Value, vm: &VM<'_>) -> Option<String> {

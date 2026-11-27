@@ -11,7 +11,7 @@ use crate::{
     exception_private::RunResult,
     frozen::{self, FrozenFunctions},
     heap::{HeapData, HeapId},
-    intern::StaticStrings,
+    symbols::StaticStrings,
 };
 
 pub(crate) mod _io;

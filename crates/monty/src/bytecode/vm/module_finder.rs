@@ -30,13 +30,13 @@ use crate::{
     defer_drop,
     exception_private::{ExcTypeExt, ExceptionRaise, RunError, RunResult, SimpleException},
     heap::{DropWithContext, HeapData, HeapId, HeapReadOutput},
-    intern::{StaticStrings, StringId},
     modules::{
         StandardLib,
         vendored::{VENDORED_PREFIX, VendoredSource},
     },
     os_dispatch::PendingEffect,
     prepare::SnippetNames,
+    symbols::{StaticStrings, SymbolId},
     types::{Dict, List, Module, sequence::SequenceItems, str::allocate_string},
     value::Value,
     virtual_path::posix_join,
@@ -189,16 +189,16 @@ impl VM<'_> {
         let Some(HeapData::Dict(globals)) = globals else {
             return Err(ExcType::relative_import_no_parent());
         };
-        let get = |key| globals.get_by_str(key, self.heap, self.interns);
+        let get = |key| globals.get_by_str(key, self.heap, self.symbols);
         let package = match get("__package__") {
             Some(package) if !matches!(package, Value::None) => package
-                .as_str_heap(self.heap, self.interns)
+                .as_str_heap(self.heap, self.symbols)
                 .ok_or_else(|| SimpleException::new_msg(ExcType::TypeError, "package must be a string"))?
                 .to_owned(),
             _ => {
                 let name = get("__name__")
                     .ok_or_else(|| SimpleException::new_msg(ExcType::KeyError, "'__name__' not in globals"))?
-                    .as_str_heap(self.heap, self.interns)
+                    .as_str_heap(self.heap, self.symbols)
                     .ok_or_else(|| SimpleException::new_msg(ExcType::TypeError, "__name__ must be a string"))?;
                 match get("__path__") {
                     Some(_) => name,
@@ -229,9 +229,9 @@ impl VM<'_> {
 
     /// `from pkg import name` where `pkg` has no attribute `name`: for a file
     /// package, its submodule `name`. `None` when `parent` is not a file module.
-    pub(super) fn import_file_attr(&mut self, parent: &Value, name_id: StringId) -> Option<RunResult<CallResult>> {
+    pub(super) fn import_file_attr(&mut self, parent: &Value, name_id: SymbolId) -> Option<RunResult<CallResult>> {
         let parent = self.file_parent(parent)?;
-        let attr = self.interns.get_str(name_id);
+        let attr = self.symbols.get_str(name_id);
         Some(match parent.search_path {
             None => Err(cannot_import(attr, &parent.name, &parent.origin, parent.initializing)),
             Some(dirs) => {
@@ -433,9 +433,9 @@ impl VM<'_> {
             return None;
         };
         let search_path = dict
-            .get_by_str("__path__", self.heap, self.interns)
+            .get_by_str("__path__", self.heap, self.symbols)
             .map(|path| self.search_path(path));
-        let name = module.name_str(self.interns);
+        let name = module.name_str(self.symbols);
         let origin = module.origin().unwrap_or_default();
         Some(FileParent {
             initializing: self.modules.is_initializing(name, id),
@@ -454,7 +454,7 @@ impl VM<'_> {
             return Vec::new();
         };
         dirs.filter_map(|dir| {
-            let dir = dir.as_str_heap(self.heap, self.interns)?;
+            let dir = dir.as_str_heap(self.heap, self.symbols)?;
             (!dir.contains('\0')).then(|| posix_join(&self.env.cwd, dir))
         })
         .take(MAX_SEARCH_DIRS)
@@ -471,7 +471,7 @@ impl VM<'_> {
         let id = self.stack.last()?.ref_id()?;
         match self.heap.get(id) {
             HeapData::Module(module) if module.namespace().is_some() => {
-                Some((id, module.name_str(self.interns).to_owned()))
+                Some((id, module.name_str(self.symbols).to_owned()))
             }
             _ => None,
         }

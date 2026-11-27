@@ -38,8 +38,8 @@ pub(crate) enum Identity {
     Int(i64),
     /// Bitwise identity for an immediate float.
     Float(u64),
-    /// Identity of an interned string.
-    InternString(usize),
+    /// Identity of a permanent string symbol.
+    Symbol(usize),
     /// Content identity of a short string stored inline.
     InlineString(InlineStr),
     /// Identity of an interned bytes value.
@@ -71,7 +71,7 @@ impl Identity {
             Value::Bool(value) => Self::Bool(*value),
             Value::Int(value) => Self::Int(*value),
             Value::Float(value) => Self::Float(value.to_bits()),
-            Value::InternString(id) => Self::InternString(id.index()),
+            Value::Symbol(id) => Self::Symbol(id.index()),
             Value::InlineString(text) => Self::InlineString(*text),
             Value::InternBytes(id) => Self::InternBytes(id.index()),
             Value::InternLongInt(id) => Self::InternLongInt(id.index()),
@@ -98,7 +98,7 @@ impl Identity {
             Self::Bool(value) => u128::from(*value),
             Self::Int(value) => u128::from(zigzag_i64(*value)),
             Self::Float(bits) => u128::from(compact_float_bits(*bits)),
-            Self::InternString(index)
+            Self::Symbol(index)
             | Self::InternBytes(index)
             | Self::InternLongInt(index)
             | Self::DefFunction(index)
@@ -129,7 +129,7 @@ impl Identity {
             Self::Bool(_) => 4,
             Self::Int(_) => 5,
             Self::Float(_) => 6,
-            Self::InternString(_) => 7,
+            Self::Symbol(_) => 7,
             Self::InlineString(_) => 17,
             Self::InternBytes(_) => 8,
             Self::InternLongInt(_) => 9,

@@ -8,7 +8,7 @@ use super::{
     compiler::CompileError,
     op::{Opcode, Operand},
 };
-use crate::{intern::StringId, parse::CodeRange, value::Value};
+use crate::{parse::CodeRange, symbols::SymbolId, value::Value};
 
 /// Builder for emitting bytecode during compilation.
 ///
@@ -45,7 +45,7 @@ pub struct CodeBuilder {
     ///
     /// Populated during compilation to enable proper NameError messages
     /// when accessing undefined local variables.
-    local_names: Vec<Option<StringId>>,
+    local_names: Vec<Option<SymbolId>>,
 }
 
 impl CodeBuilder {
@@ -143,7 +143,7 @@ impl CodeBuilder {
     ///
     /// Operands: pos_count (u8) + kw_count (u8) + kw_count * name_id (u16 each)
     ///
-    /// The kwname_ids slice contains StringId indices for each keyword argument
+    /// The kwname_ids slice contains SymbolId indices for each keyword argument
     /// name, in order matching how the values were pushed to the stack.
     pub fn emit_call_function_kw(&mut self, pos_count: u8, kwname_ids: &[u16]) -> Result<(), CompileError> {
         self.emit_with_operand(Opcode::CallFunctionKw, Operand::CallKw { pos_count, kwname_ids })
@@ -153,7 +153,7 @@ impl CodeBuilder {
     ///
     /// Operands: attr_name_id (u16) + pos_count (u8) + kw_count (u8) + kw_count * name_id (u16 each)
     ///
-    /// The kwname_ids slice contains StringId indices for each keyword argument
+    /// The kwname_ids slice contains SymbolId indices for each keyword argument
     /// name, in order matching how the values were pushed to the stack.
     pub fn emit_call_attr_kw(
         &mut self,
@@ -316,7 +316,7 @@ impl CodeBuilder {
     /// compilation starts; a long REPL session's globals run to thousands of
     /// slots, so this must stay a plain copy rather than a per-slot insert.
     /// Must be called before any [`register_local_name`](Self::register_local_name).
-    pub fn register_local_names(&mut self, names: &[StringId]) {
+    pub fn register_local_names(&mut self, names: &[SymbolId]) {
         debug_assert!(self.local_names.is_empty(), "register_local_names must run first");
         self.local_names.extend(names.iter().map(|&name| Some(name)));
     }
@@ -325,7 +325,7 @@ impl CodeBuilder {
     ///
     /// This is called during compilation when we encounter a variable access.
     /// The name is used to generate proper NameError messages.
-    pub fn register_local_name(&mut self, slot: u16, name: StringId) {
+    pub fn register_local_name(&mut self, slot: u16, name: SymbolId) {
         let slot_idx = slot as usize;
         // Extend the vector if needed
         if slot_idx >= self.local_names.len() {
@@ -342,7 +342,7 @@ impl CodeBuilder {
     ///
     /// Used by the comprehension compiler at sites where static analysis
     /// proves the target is read before its `for` clause assigns it.
-    pub fn emit_raise_unbound_local(&mut self, name_id: StringId) -> Result<(), CompileError> {
+    pub fn emit_raise_unbound_local(&mut self, name_id: SymbolId) -> Result<(), CompileError> {
         let name_idx = u16::try_from(name_id.index()).map_err(|_| self.name_id_too_large())?;
         self.emit_with_operand(Opcode::RaiseUnboundLocal, Operand::U16(name_idx))
     }
@@ -369,15 +369,15 @@ impl CodeBuilder {
     /// The `name_id` is encoded directly in the operand to avoid the ambiguity
     /// of looking up global names from a function's local_names array (global slots
     /// and local slots use different namespaces).
-    pub fn emit_load_global_callable(&mut self, slot: u16, name_id: StringId) -> Result<(), CompileError> {
+    pub fn emit_load_global_callable(&mut self, slot: u16, name_id: SymbolId) -> Result<(), CompileError> {
         let name_id_u16 = u16::try_from(name_id.index()).map_err(|_| self.name_id_too_large())?;
         self.emit_with_operand(Opcode::LoadGlobalCallable, Operand::U16U16(slot, name_id_u16))
     }
 
-    /// Emits a `LoadName` / `StoreName` / `DeleteName` with its slot, interned
+    /// Emits a `LoadName` / `StoreName` / `DeleteName` with its slot, symbol-backed
     /// name and `NAME_*` flags; the name is encoded for the same reason as in
     /// [`emit_load_global_callable`](Self::emit_load_global_callable).
-    pub fn emit_name_op(&mut self, op: Opcode, slot: u16, name_id: StringId, flags: u8) -> Result<(), CompileError> {
+    pub fn emit_name_op(&mut self, op: Opcode, slot: u16, name_id: SymbolId, flags: u8) -> Result<(), CompileError> {
         let name_id_u16 = u16::try_from(name_id.index()).map_err(|_| self.name_id_too_large())?;
         self.emit_with_operand(op, Operand::U16U16U8(slot, name_id_u16, flags))
     }
@@ -599,19 +599,19 @@ impl CodeBuilder {
         jump_too_large_at(self.current_location.unwrap_or_default())
     }
 
-    /// Builds the `CompileError` for a `StringId` that doesn't fit in the
+    /// Builds the `CompileError` for a `SymbolId` that doesn't fit in the
     /// `u16` operand of a name-bearing opcode. Used by emit helpers that
     /// inline the name id directly (e.g. `LoadGlobalCallable`).
     ///
     /// The count is `u16::MAX + 1` (`65 536`) because a `u16` operand can
     /// address indices `0..=u16::MAX`, so the format can name that many
-    /// distinct interned strings before overflowing.
+    /// distinct symbols before overflowing.
     #[cold]
     #[inline(never)]
     fn name_id_too_large(&self) -> CompileError {
         CompileError::new(
             format!(
-                "module has too many distinct names; the bytecode format supports up to {} interned strings",
+                "module has too many distinct names; the bytecode format supports up to {} symbols",
                 usize::from(u16::MAX) + 1,
             ),
             self.current_location.unwrap_or_default(),

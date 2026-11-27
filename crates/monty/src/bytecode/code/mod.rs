@@ -8,7 +8,7 @@ mod location_table;
 
 use std::ops::Not;
 
-use crate::{intern::StringId, parse::CodeRange, value::Value};
+use crate::{parse::CodeRange, symbols::SymbolId, value::Value};
 
 /// Compiled bytecode for a function or module.
 ///
@@ -21,7 +21,7 @@ pub struct Code {
     #[serde(rename = "B")]
     bytecode: Vec<u8>,
 
-    /// Immediate constants indexed by `LoadConst`; heap literals live in `Interns`.
+    /// Immediate constants indexed by `LoadConst`; heap literals live in `SymbolTable`.
     #[serde(rename = "C")]
     constants: Vec<Value>,
 
@@ -46,7 +46,7 @@ pub struct Code {
     /// Maps slot indices to variable names. Used to generate proper NameError
     /// messages when accessing undefined local variables (e.g., "name 'x' is not defined").
     #[serde(rename = "N")]
-    local_names: Vec<StringId>,
+    local_names: Vec<SymbolId>,
 
     /// Whether the source ran under `from __future__ import annotations`: its
     /// definitions store PEP 563 strings, and `exec()` here inherits the flag.
@@ -70,7 +70,7 @@ impl Code {
         constants: Vec<Value>,
         location_table: Vec<LocationEntry>,
         exception_table: Vec<ExceptionEntry>,
-        local_names: Vec<StringId>,
+        local_names: Vec<SymbolId>,
     ) -> Self {
         Self {
             bytecode,
@@ -112,7 +112,7 @@ impl Code {
     ///
     /// Used to generate proper NameError messages when accessing undefined locals.
     #[must_use]
-    pub fn local_name(&self, slot: u16) -> Option<StringId> {
+    pub fn local_name(&self, slot: u16) -> Option<SymbolId> {
         self.local_names.get(slot as usize).copied()
     }
 

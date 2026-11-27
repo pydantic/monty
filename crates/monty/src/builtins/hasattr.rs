@@ -38,7 +38,7 @@ pub fn builtin_hasattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult
         other => return Err(ExcType::type_error_arg_count("hasattr", 2, other.len())),
     };
 
-    let Some(name) = name.as_either_str(vm.heap).map(|s| s.resolve_interned(vm.interns)) else {
+    let Some(name) = name.as_either_str(vm.heap).map(|s| s.resolve_symbol(vm.symbols)) else {
         return Err(SimpleException::new_msg(
             ExcType::TypeError,
             format!("attribute name must be string, not '{}'", name.py_type_name(vm)),

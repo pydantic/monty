@@ -1,10 +1,10 @@
-//! Ordered registry that maps namespace slots to interned names and vice versa.
+//! Ordered registry that maps namespace slots to symbols and vice versa.
 //!
 //! A `NameMap` is the single source of truth for a scope's name → slot
 //! assignment. Slots are allocated sequentially as new names are seen
 //! (`ensure_slot`), so the position in the registry IS the `NamespaceId`
 //! that the compiler will encode into bytecode. The reverse direction
-//! (`name_at`) gives the VM the `StringId` for a slot, which the runtime
+//! (`name_at`) gives the VM the `SymbolId` for a slot, which the runtime
 //! uses to produce `NameError` / `UnboundLocalError` messages naming the
 //! actual variable.
 //!
@@ -14,20 +14,20 @@
 //! map at all — the VM used the wrong frame's `local_names` to label a
 //! global-slot `NameError`.
 //!
-//! `NameMap` is keyed by [`StringId`] (the interner index), not `String`,
+//! `NameMap` is keyed by [`SymbolId`] (the symbol table index), not `String`,
 //! because every prepare-time site that allocates a slot already has the
-//! `StringId` on hand from the AST. Avoiding `String::clone` per insert is
+//! `SymbolId` on hand from the AST. Avoiding `String::clone` per insert is
 //! a measurable win for large modules.
 
 use ahash::AHashMap;
 
 use crate::{
-    intern::StringId,
     namespace::NamespaceId,
     parse::{CodeRange, ParseError},
+    symbols::SymbolId,
 };
 
-/// Ordered map from interned names to namespace slots.
+/// Ordered map from symbols to namespace slots.
 ///
 /// Slots are dense and assigned in insertion order: the first inserted name
 /// gets slot `0`, the second slot `1`, and so on. This means
@@ -45,16 +45,16 @@ use crate::{
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(into = "NameMapWire", from = "NameMapWire")]
 pub(crate) struct NameMap {
-    /// Name interned at each slot, indexed by `NamespaceId::index()`.
-    slots: Vec<StringId>,
+    /// Symbol at each slot, indexed by `NamespaceId::index()`.
+    slots: Vec<SymbolId>,
     /// Reverse lookup so `ensure_slot` is O(1).
-    by_name: AHashMap<StringId, NamespaceId>,
+    by_name: AHashMap<SymbolId, NamespaceId>,
 }
 
 /// Serialized slots from which both directions of a [`NameMap`] are reconstructed.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct NameMapWire {
-    slots: Vec<StringId>,
+    slots: Vec<SymbolId>,
 }
 
 impl From<NameMap> for NameMapWire {
@@ -71,7 +71,7 @@ impl From<NameMapWire> for NameMap {
             // First occurrence wins, matching the live `ensure_slot` /
             // `push_aliased_slot` invariant where a function parameter
             // shadows any later cell/free-var slot that reuses its
-            // `StringId`.
+            // `SymbolId`.
             by_name.entry(name_id).or_insert(slot);
         }
         Self {
@@ -104,12 +104,12 @@ impl NameMap {
     }
 
     /// Returns the slot already allocated for `name_id`, if any.
-    pub fn get(&self, name_id: StringId) -> Option<NamespaceId> {
+    pub fn get(&self, name_id: SymbolId) -> Option<NamespaceId> {
         self.by_name.get(&name_id).copied()
     }
 
     /// Returns `true` if a slot has been allocated for `name_id`.
-    pub fn contains(&self, name_id: StringId) -> bool {
+    pub fn contains(&self, name_id: SymbolId) -> bool {
         self.by_name.contains_key(&name_id)
     }
 
@@ -119,7 +119,7 @@ impl NameMap {
     /// would grow past the `u16` slot-index limit (`u16::MAX + 1` slots).
     /// Allocation is idempotent: calling `ensure_slot` twice with the same
     /// `name_id` returns the same slot.
-    pub fn ensure_slot(&mut self, name_id: StringId, position: CodeRange) -> Result<NamespaceId, ParseError> {
+    pub fn ensure_slot(&mut self, name_id: SymbolId, position: CodeRange) -> Result<NamespaceId, ParseError> {
         if let Some(&id) = self.by_name.get(&name_id) {
             return Ok(id);
         }
@@ -144,7 +144,7 @@ impl NameMap {
     /// `name_id`) so the VM can label a `NameError` raised against the cell.
     /// The forward direction keeps the parameter as the canonical owner so
     /// `get(name_id)` still resolves to the param slot.
-    pub fn push_aliased_slot(&mut self, name_id: StringId, position: CodeRange) -> Result<NamespaceId, ParseError> {
+    pub fn push_aliased_slot(&mut self, name_id: SymbolId, position: CodeRange) -> Result<NamespaceId, ParseError> {
         let id = NamespaceId::new(self.slots.len()).ok_or_else(|| namespace_overflow(position))?;
         self.slots.push(name_id);
         Ok(id)
@@ -165,12 +165,12 @@ impl NameMap {
     }
 
     /// The name at every slot, indexed by `NamespaceId::index()`.
-    pub fn names(&self) -> &[StringId] {
+    pub fn names(&self) -> &[SymbolId] {
         &self.slots
     }
 
     /// Iterates over `(slot, name)` pairs in slot order.
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = (NamespaceId, StringId)> + '_ {
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = (NamespaceId, SymbolId)> + '_ {
         self.slots.iter().enumerate().map(|(i, &name)| {
             // `i < slots.len() ≤ u16::MAX + 1` because every push went
             // through `ensure_slot`, which checks the `u16` overflow.

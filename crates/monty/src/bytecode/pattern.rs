@@ -16,8 +16,8 @@ use super::{
 };
 use crate::{
     expressions::{ExprLoc, Identifier, MatchCase, Pattern, PreparedNode},
-    intern::StringId,
     parse::CodeRange,
+    symbols::SymbolId,
     value::Value,
 };
 
@@ -152,7 +152,7 @@ impl<'a> Compiler<'a, '_> {
                     let message = match name {
                         Some(name) => format!(
                             "name capture '{}' makes remaining patterns unreachable",
-                            self.interns.get_str(name.name_id)
+                            self.symbols.get_str(name.name_id)
                         ),
                         None => "wildcard makes remaining patterns unreachable".to_owned(),
                     };
@@ -344,7 +344,7 @@ impl<'a> Compiler<'a, '_> {
         &mut self,
         cls: &ExprLoc,
         patterns: &[Pattern],
-        kwd_attrs: &[StringId],
+        kwd_attrs: &[SymbolId],
         kwd_patterns: &[Pattern],
         position: CodeRange,
         pc: &mut PatternContext,
@@ -354,7 +354,7 @@ impl<'a> Compiler<'a, '_> {
         let nattrs = pattern_count_u16(kwd_attrs.len(), "class", position)?;
         self.compile_expr(cls)?;
         for attr in kwd_attrs {
-            let idx = self.code.add_const(Value::InternString(*attr))?;
+            let idx = self.code.add_const(Value::Symbol(*attr))?;
             self.code.emit_u16(Opcode::LoadConst, idx)?;
         }
         self.code.set_location(position, None);
@@ -440,7 +440,7 @@ impl<'a> Compiler<'a, '_> {
         for name in control {
             self.emit_sink_top(depth, position)?;
             if pc.captures(&name) {
-                return Err(duplicate_capture(self.interns.get_str(name.name_id), position));
+                return Err(duplicate_capture(self.symbols.get_str(name.name_id), position));
             }
             pc.stores.push(name);
         }
@@ -491,7 +491,7 @@ impl<'a> Compiler<'a, '_> {
             return self.code.emit(Opcode::Pop);
         };
         if pc.captures(name) {
-            return Err(duplicate_capture(self.interns.get_str(name.name_id), position));
+            return Err(duplicate_capture(self.symbols.get_str(name.name_id), position));
         }
         self.emit_sink_top(pc.on_top + pc.stores.len(), position)?;
         pc.stores.push(*name);

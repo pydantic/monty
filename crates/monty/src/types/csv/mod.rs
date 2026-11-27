@@ -25,8 +25,8 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
-    intern::StaticStrings,
     py_attrs::PyAttrs,
+    symbols::StaticStrings,
     types::{LazyHeapSet, PyTrait, Type, TypeRef},
     value::{EitherStr, Value},
 };
@@ -155,8 +155,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, CsvObject> {
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let Some(name) = attr.static_string(vm.interns) else {
-            return Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns)));
+        let Some(name) = attr.static_string(vm.symbols) else {
+            return Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.symbols)));
         };
         let value = match (self.get(vm.heap), name) {
             (CsvObject::Reader(reader), StaticStrings::Dialect) => {
@@ -186,9 +186,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, CsvObject> {
             (CsvObject::DictWriter(writer), StaticStrings::Writer) => writer.writer.clone_with_heap(vm.heap),
             (CsvObject::Dialect(dialect), name) => match dialect.attr(name, vm) {
                 Some(value) => value,
-                None => return Err(ExcType::attribute_error(Type::CsvDialect, attr.as_str(vm.interns))),
+                None => return Err(ExcType::attribute_error(Type::CsvDialect, attr.as_str(vm.symbols))),
             },
-            _ => return Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns))),
+            _ => return Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.symbols))),
         };
         Ok(Some(CallResult::Value(value)))
     }
@@ -198,7 +198,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, CsvObject> {
     /// everything on the `_csv` objects is read-only, with CPython's two wordings for a
     /// member and a getset descriptor.
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
-        let slot = match (self.get_mut(vm.heap), name.static_string(vm.interns)) {
+        let slot = match (self.get_mut(vm.heap), name.static_string(vm.symbols)) {
             (CsvObject::Reader(_), Some(StaticStrings::Dialect | StaticStrings::LineNum))
             | (CsvObject::Writer(_), Some(StaticStrings::Dialect)) => {
                 value.drop_with(vm);
@@ -222,14 +222,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, CsvObject> {
             (CsvObject::Dialect(_), Some(attr)) if Dialect::is_attr(attr) => {
                 value.drop_with(vm);
                 return Err(ExcType::attribute_error_not_writable(
-                    name.as_str(vm.interns),
+                    name.as_str(vm.symbols),
                     &Type::CsvDialect.to_string(),
                 ));
             }
             _ => {
                 value.drop_with(vm);
                 let type_name = self.py_type_name(vm);
-                return Err(ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm.interns)));
+                return Err(ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm.symbols)));
             }
         };
         mem::replace(slot, value).drop_with(vm);

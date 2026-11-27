@@ -5,8 +5,8 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, HeapData, HeapReadOutput},
-    intern::StringId,
     resource_checks::check_estimated_size,
+    symbols::SymbolId,
     types::{
         Dict, List, PyTrait, Set, Slice, allocate_tuple, collect_iterable, collect_iterable_bounded,
         instance::instance_defines_iter, sequence::SequenceItems, slice::value_to_option_i64,
@@ -202,8 +202,8 @@ impl VM<'_> {
             },
             _ => return None,
         };
-        let name_id = self.interns.get_function(func_id).name.name_id;
-        Some(self.interns.get_str(name_id).to_string())
+        let name_id = self.symbols.get_function(func_id).name.name_id;
+        Some(self.symbols.get_str(name_id).to_string())
     }
 
     /// Method-call variant of [`Self::dict_merge`]. Qualifies the error wording
@@ -216,7 +216,7 @@ impl VM<'_> {
         let func_name = if func_name_id == 0xFFFF {
             "<unknown>".to_string()
         } else {
-            let method = self.interns.get_str(StringId::from_index(func_name_id)).to_string();
+            let method = self.symbols.get_str(SymbolId::from_index(func_name_id)).to_string();
             let recv_type = self.stack[self.stack.len() - 4].py_type_name(self);
             format!("{recv_type}.{method}")
         };
@@ -546,7 +546,7 @@ fn func_name_for_dict_merge(func_name_id: u16, vm: &VM<'_>) -> String {
     if func_name_id == 0xFFFF {
         "<unknown>".to_string()
     } else {
-        vm.interns.get_str(StringId::from_index(func_name_id)).to_string()
+        vm.symbols.get_str(SymbolId::from_index(func_name_id)).to_string()
     }
 }
 

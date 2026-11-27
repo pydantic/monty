@@ -4,7 +4,7 @@ use std::{fmt, str};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
-use crate::{bytecode::VM, intern::StringId, value::Value};
+use crate::{bytecode::VM, symbols::SymbolId, value::Value};
 
 /// UTF-8 text of at most 15 bytes.
 /// The tag enum supplies niches so a containing `Value` remains 16 bytes.
@@ -49,8 +49,8 @@ impl InlineStr {
         }
         debug_assert_eq!(ascii, bytes[..len].is_ascii());
         match len {
-            0 => Value::InternString(StringId::EMPTY),
-            1 => Value::InternString(StringId::from_ascii(bytes[0])),
+            0 => Value::Symbol(SymbolId::EMPTY),
+            1 => Value::Symbol(SymbolId::from_ascii(bytes[0])),
             _ => Value::InlineString(Self {
                 tag: InlineTag::from_len(len, ascii).expect("fragments fit inline"),
                 bytes,

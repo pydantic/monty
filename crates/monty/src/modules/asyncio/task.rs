@@ -12,7 +12,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{HEAP_ENTRY_SIZE, HeapData, HeapId, HeapObjectRead, HeapReadOutput},
     heap_traits::{DropGuard, DropWithContext},
-    intern::StaticStrings,
+    symbols::StaticStrings,
     types::{PyTrait, Type, str::allocate_string},
     value::{EitherStr, Value},
 };
@@ -96,10 +96,10 @@ pub(crate) fn task_call_method<'h>(
     args: ArgValues,
     vm: &mut VM<'h>,
 ) -> RunResult<CallResult> {
-    let Some(name) = attr.static_string(vm.interns) else {
+    let Some(name) = attr.static_string(vm.symbols) else {
         args.drop_with(vm);
 
-        return Err(ExcType::attribute_error(Type::Task.name(), attr.as_str(vm.interns)));
+        return Err(ExcType::attribute_error(Type::Task.name(), attr.as_str(vm.symbols)));
     };
 
     let value = match name {
@@ -182,7 +182,7 @@ pub(crate) fn task_call_method<'h>(
         }
         _ => {
             args.drop_with(vm);
-            return Err(ExcType::attribute_error(Type::Task.name(), attr.as_str(vm.interns)));
+            return Err(ExcType::attribute_error(Type::Task.name(), attr.as_str(vm.symbols)));
         }
     };
     Ok(CallResult::Value(value))

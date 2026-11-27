@@ -5,7 +5,7 @@ use crate::{
     bytecode::{CallResult, VM},
     exception_private::RunResult,
     heap::{HeapData, HeapId, HeapItem, HeapObjectRead},
-    intern::StringId,
+    symbols::SymbolId,
     types::{PyTrait, Type, TypeRef},
     value::Value,
 };
@@ -13,7 +13,8 @@ use crate::{
 /// Source representation retained by a string iterator.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 enum StringIteratorSource {
-    Intern(StringId),
+    #[serde(rename = "Intern")]
+    Symbol(SymbolId),
     Inline(InlineStr),
     Heap(HeapId),
 }
@@ -27,10 +28,10 @@ pub(crate) struct StringIterator {
 }
 
 impl StringIterator {
-    /// Allocates an iterator over an interned string.
-    pub(crate) fn from_intern(id: StringId, vm: &mut VM<'_>) -> Value {
-        let ascii = vm.interns.str_is_ascii(id);
-        Self::allocate(StringIteratorSource::Intern(id), ascii, vm)
+    /// Allocates an iterator over a symbol.
+    pub(crate) fn from_symbol(id: SymbolId, vm: &mut VM<'_>) -> Value {
+        let ascii = vm.symbols.str_is_ascii(id);
+        Self::allocate(StringIteratorSource::Symbol(id), ascii, vm)
     }
 
     /// Allocates an iterator over a string stored inside its `Value`.
@@ -55,7 +56,7 @@ impl StringIterator {
     /// Returns the heap source when the iterator retains one.
     pub(crate) fn source_id(&self) -> Option<HeapId> {
         match self.source {
-            StringIteratorSource::Intern(_) => None,
+            StringIteratorSource::Symbol(_) => None,
             StringIteratorSource::Inline(_) => None,
             StringIteratorSource::Heap(id) => Some(id),
         }
@@ -69,7 +70,7 @@ impl StringIterator {
     /// Borrows the unconsumed string suffix.
     fn as_str<'a>(&'a self, vm: &'a VM<'_>) -> &'a str {
         let string = match &self.source {
-            StringIteratorSource::Intern(id) => vm.interns.get_str(*id),
+            StringIteratorSource::Symbol(id) => vm.symbols.get_str(*id),
             StringIteratorSource::Inline(text) => text.as_str(),
             StringIteratorSource::Heap(id) => match vm.heap.get(*id) {
                 HeapData::Str(string) => string.as_str(),
@@ -83,7 +84,7 @@ impl StringIterator {
     fn allocate(source: StringIteratorSource, ascii: bool, vm: &mut VM<'_>) -> Value {
         let source_id = match source {
             StringIteratorSource::Heap(id) => Some(id),
-            StringIteratorSource::Intern(_) => None,
+            StringIteratorSource::Symbol(_) => None,
             StringIteratorSource::Inline(_) => None,
         };
         let iterator = Value::allocate(
@@ -151,8 +152,8 @@ mod tests {
         defer_drop,
         heap::{Heap, HeapReader},
         identity::Identity,
-        intern::CompileInterns,
         run::{Program, SessionTables},
+        symbols::CompileSymbols,
         types::str::allocate_string_on_heap,
     };
 
@@ -163,8 +164,8 @@ mod tests {
         let mut tables = SessionTables::default();
         let program = Program::for_tests();
         let ids: Vec<_> = {
-            let mut interns = CompileInterns::direct(&mut tables.interns);
-            texts.iter().map(|text| interns.intern(text)).collect()
+            let mut symbols = CompileSymbols::direct(&mut tables.symbols);
+            texts.iter().map(|text| symbols.get_or_insert_symbol(text)).collect()
         };
 
         HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
@@ -174,7 +175,7 @@ mod tests {
                 defer_drop!(source, vm);
                 let source_id = source.ref_id().unwrap();
                 let iterators = vec![
-                    StringIterator::from_intern(id, vm),
+                    StringIterator::from_symbol(id, vm),
                     StringIterator::from_inline(InlineStr::new(text).unwrap(), vm),
                     StringIterator::from_heap(source_id, text.is_ascii(), vm),
                 ];
