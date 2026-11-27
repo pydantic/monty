@@ -1373,6 +1373,21 @@ fn copy_of_a_near_limit_dict_raises_rather_than_dying() {
     child.shutdown();
 }
 
+#[test]
+fn interning_large_heap_strings_reuses_the_allocation() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+    assert_eq!(
+        child.feed_complete("from sys import intern\ns = 'x' * (16 * 1024 * 1024)\nintern(s) is s"),
+        MontyObject::bool(true)
+    );
+    assert_eq!(
+        child.feed_complete("s = None\ns = 'y' * (16 * 1024 * 1024)\nintern(s) is s"),
+        MontyObject::bool(true)
+    );
+    child.shutdown();
+}
+
 /// Known large results are rejected against allocator usage before they can
 /// jump from below the soft limit past the hard ceiling. The reported figure is
 /// what each result really costs, so it pins down that the refusal accounted for

@@ -1931,6 +1931,8 @@ pub enum StaticStrings {
     IntMaxStrDigits,
     /// `sys.flags.interactive` field.
     Interactive,
+    /// `sys.intern()` function.
+    Intern,
     /// `set.intersection()` method.
     Intersection,
     /// `decimal.InvalidContext` condition.

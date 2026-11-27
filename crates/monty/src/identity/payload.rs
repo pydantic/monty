@@ -66,7 +66,6 @@ pub(super) fn module_function(value: ModuleFunctions) -> u128 {
         ModuleFunctions::Io(function) => function as u32,
         #[cfg(feature = "test-hooks")]
         ModuleFunctions::Gc(function) => function as u32,
-        #[cfg(feature = "test-hooks")]
         ModuleFunctions::Sys(function) => function as u32,
     };
     indices_payload(&[module, function])

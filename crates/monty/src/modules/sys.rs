@@ -1,14 +1,7 @@
 //! Implementation of the `sys` module.
 //!
-//! `sys` is attribute-only in production builds: every name below is a
-//! constant fixed at module creation, since the sandbox has no interpreter
-//! state a program is allowed to reach. What Monty exposes is limited to
-//! values that are true *of Monty* — the Python version it targets, the
-//! properties of the `f64` it stores floats in, the Unicode range, and the
-//! fact that it has no install tree, no `__pycache__` and no command line.
-//! Structseqs describing CPython's C implementation (`hash_info`, `int_info`,
-//! `thread_info`) are deliberately absent rather than fabricated; see
-//! `limitations/sys.md`.
+//! `sys.intern` returns a canonical string for as long as it is referenced.
+//! See `limitations/sys.md` for the attributes Monty exposes.
 //!
 //! Under the `test-hooks` feature one callable is also exposed:
 //! - `setrecursionlimit(n)`: tighten the active recursion ceiling so fixtures
@@ -17,17 +10,18 @@
 
 use smallvec::SmallVec;
 
-#[cfg(feature = "test-hooks")]
 use crate::{
     args::ArgValues,
-    exception_private::{ExcType, ExcTypeExt, RunResult},
-    modules::ModuleFunctions,
-};
-use crate::{
     bytecode::VM,
+    defer_drop,
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     intern::StaticStrings,
-    modules::StandardLib,
-    types::{List, Module, NamedTuple, allocate_string, allocate_tuple, long_int::INT_MAX_STR_DIGITS},
+    modules::{ModuleFunctions, StandardLib},
+    types::{
+        List, Module, NamedTuple, allocate_string, allocate_tuple,
+        long_int::INT_MAX_STR_DIGITS,
+        str::{InlineStr, PyStr},
+    },
     value::{EitherStr, Marker, Value},
 };
 
@@ -50,19 +44,16 @@ const MAXSIZE: i64 = i64::MAX;
 /// `sys.maxunicode` — the largest code point, `U+10FFFF`.
 const MAXUNICODE: i64 = 0x0010_FFFF;
 
-/// Functions exposed by the `sys` module under the `test-hooks` feature.
-///
-/// Production builds keep `sys` attribute-only; this enum exists so fixtures
-/// (and only fixtures) can call back into Monty internals that production
-/// sandbox code must never reach.
-#[cfg(feature = "test-hooks")]
-#[monty_macros::explicit_discriminants(checksum = 0x93cf_5b81_e7e9_9376)]
+/// Functions exposed by the `sys` module.
+#[monty_macros::explicit_discriminants(checksum = 0x3739_f8f6_eb20_5b87)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "lowercase")]
 pub(crate) enum SysFunctions {
     /// `sys.setrecursionlimit(n)` — tightens the live recursion ceiling to
     /// `n`. Only allows lowering; attempting to raise raises `ValueError`.
+    #[cfg(feature = "test-hooks")]
     Setrecursionlimit = 0,
+    Intern = 1,
 }
 
 /// Creates the `sys` module.
@@ -154,8 +145,11 @@ pub fn create_module(vm: &mut VM<'_>) -> Module {
     module.set_attr(StaticStrings::Stdout, Value::Marker(Marker(StaticStrings::Stdout)), vm);
     module.set_attr(StaticStrings::Stderr, Value::Marker(Marker(StaticStrings::Stderr)), vm);
 
-    // Test-only callables — see the module-level docs and the
-    // [`test-hooks`] feature gate.
+    module.set_attr(
+        StaticStrings::Intern,
+        Value::ModuleFunction(ModuleFunctions::Sys(SysFunctions::Intern)),
+        vm,
+    );
     #[cfg(feature = "test-hooks")]
     module.set_attr(
         StaticStrings::Setrecursionlimit,
@@ -245,9 +239,9 @@ fn float_info(vm: &VM<'_>) -> Value {
 /// Monty is started with none, so every switch reads `0`/`False`. Two fields
 /// are not merely "unset" but describe the sandbox: `dont_write_bytecode` is
 /// `1` to agree with `sys.dont_write_bytecode`, and `hash_randomization` is
-/// `0` because Monty seeds no hashes. `int_max_str_digits` reports the limit
-/// Monty actually enforces, though it has no `sys.set_int_max_str_digits` to
-/// change it.
+/// `0` because Python string and bytes hashes use fixed seeds.
+/// `int_max_str_digits` reports the limit Monty enforces. There is no
+/// `sys.set_int_max_str_digits` to change it.
 fn flags(vm: &VM<'_>) -> Value {
     let named_tuple = NamedTuple::new(
         EitherStr::Interned(vm.interns.intern_static(StaticStrings::SysFlags)),
@@ -310,14 +304,84 @@ fn builtin_module_names(vm: &VM<'_>) -> Value {
 }
 
 /// Dispatches a `sys` module function call.
-///
-/// Only present under the `test-hooks` feature — production builds register
-/// no callables on the `sys` module, so this dispatcher would have nothing
-/// to do.
-#[cfg(feature = "test-hooks")]
 pub(super) fn call(vm: &mut VM<'_>, function: SysFunctions, args: ArgValues) -> RunResult<Value> {
     match function {
+        SysFunctions::Intern => intern(vm, args),
+        #[cfg(feature = "test-hooks")]
         SysFunctions::Setrecursionlimit => setrecursionlimit(vm, args),
+    }
+}
+
+/// Returns one canonical result for equal strings passed to `sys.intern()`
+/// while a caller holds a reference to that result.
+///
+/// # Canonical identity
+///
+/// Empty strings and single ASCII characters use reserved IDs. Other strings
+/// up to `InlineStr::CAPACITY` UTF-8 bytes are canonicalized to an inline value
+/// whose identity comes from its bytes. This needs no heap allocation or
+/// index entry, even when the input is a literal with a separate identity.
+///
+/// Longer strings can reuse an existing ID in the session's permanent string
+/// table. A new runtime intern stays in its original heap slot. If a later feed
+/// compiles an equal literal, it gets its own permanent ID. The live runtime
+/// intern still takes precedence so repeated calls keep returning the same
+/// object. Python leaves literal identity implementation-dependent, so callers
+/// use the value returned by `sys.intern()` for identity comparisons.
+///
+/// # Heap ownership
+///
+/// The weak index stores the hash and slot of each canonical heap string.
+/// A private per-heap seed makes it harder for sandboxed code to force many
+/// strings into the same hash range. Lookup checks the full text of candidates.
+/// Strings are immutable, so the heap can recompute the key at deletion.
+/// It removes the index entry before reusing the slot. Dumps persist the
+/// marker on the heap entry, and restore rebuilds the index from marked entries.
+///
+/// The index owns no reference. The argument stays alive through registration,
+/// and the returned heap value owns a separate reference. The VM performs
+/// the lookups and registration without re-entering Python.
+fn intern(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    let args = args.reject_kwargs("sys.intern", vm.heap)?;
+    let value = args.get_one_arg("sys.intern", vm.heap)?;
+    // Keep the argument's reference until the PyStr read guard is dropped.
+    defer_drop!(value, vm);
+
+    let string = PyStr::from_value(value, vm)
+        .ok_or_else(|| ExcType::type_error(format!("intern() argument must be str, not {}", value.py_type_name(vm))))?;
+    let text = string.as_str(vm);
+    // Normalize short strings regardless of how the argument is stored.
+    if text.len() <= InlineStr::CAPACITY {
+        return Ok(allocate_string(text, vm.heap));
+    }
+    // A marked slot already holds the canonical string. The fast path only
+    // increments the refcount, skipping hashing and text comparison.
+    if let PyStr::Heap(string) = &string
+        && vm.heap.is_interned_string(string.id())
+    {
+        return Ok(value.clone_with_heap(vm.heap));
+    }
+    // Honor an earlier runtime intern before accepting a permanent ID. A hit
+    // already carries an owned reference for the returned Value.
+    if let Some(id) = vm.heap.interned_string(text) {
+        return Ok(Value::Ref(id));
+    }
+
+    match &string {
+        PyStr::Interned(id) => Ok(Value::InternString(*id)),
+        PyStr::Heap(string) => {
+            // Only reuse existing permanent entries. Appending here would
+            // retain user strings for the rest of the session.
+            if let Some(id) = vm.interns.get_string_id_by_name(text) {
+                Ok(Value::InternString(id))
+            } else {
+                // Register the input in place and acquire the result's
+                // reference before the argument's reference is released.
+                vm.heap.remember_interned_string(string.id());
+                Ok(value.clone_with_heap(vm.heap))
+            }
+        }
+        PyStr::Inline(_) => unreachable!("inline strings are handled above"),
     }
 }
 

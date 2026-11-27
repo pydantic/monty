@@ -34,6 +34,8 @@ abiflags: str
 dont_write_bytecode: bool
 pycache_prefix: str | None
 
+def intern(string: str, /) -> str: ...
+
 # Type alias used as a mixin for structseq classes that cannot be instantiated at runtime
 # This can't be represented in the type system, so we just use `structseq[Any]`
 _UninstantiableStructseq: TypeAlias = structseq[Any]

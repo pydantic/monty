@@ -15,7 +15,7 @@ pub(crate) struct InlineStr {
 }
 
 impl InlineStr {
-    pub(super) const CAPACITY: usize = 15;
+    pub(crate) const CAPACITY: usize = 15;
 
     /// Returns `None` when the text exceeds the 15-byte inline capacity.
     pub(crate) fn new(text: &str) -> Option<Self> {
