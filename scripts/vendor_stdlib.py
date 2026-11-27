@@ -15,7 +15,6 @@ It also generates `crates/monty/src/modules/vendored/sources.rs`, the table the 
 """
 
 import argparse
-import ast
 import re
 import shutil
 import subprocess
@@ -82,10 +81,7 @@ def main() -> None:
         support: list[str] = manifest['tests']['support']
         test_files = [f'test/{suite}' for suite in suites] + support
         if args.prepare_tests:
-            projections: dict[str, list[str]] = manifest['tests'].get('project', {})
-            if unknown := projections.keys() - set(suites):
-                sys.exit(f'projected CPython suites must be enabled: {", ".join(sorted(unknown))}')
-            prepare_tests(commit, test_files, projections, support)
+            prepare_tests(commit, test_files)
         else:
             if not (TEST_TREE / 'Lib').is_dir():
                 sys.exit('Run `make prepare-cpython-tests` before editing the generated sources.')
@@ -115,7 +111,7 @@ def main() -> None:
         print(f'vendored {len(files)} runtime modules from CPython {tag}')
 
 
-def prepare_tests(commit: str, files: list[str], projections: dict[str, list[str]], support: list[str]) -> None:
+def prepare_tests(commit: str, files: list[str]) -> None:
     """Stage all of Lib/test, but only let patches edit suites and support files listed in the manifest."""
     root = f'cpython-{commit}'
     selected = {f'{root}/Lib/{file}' for file in files} | {f'{root}/LICENSE'}
@@ -137,61 +133,10 @@ def prepare_tests(commit: str, files: list[str], projections: dict[str, list[str
         for patch in patches:
             check_patch(patch, allowed)
             git_apply(patch, lib)
-        if projections:
-            project_tests(lib, source / 'monty' / 'Lib', projections, support)
         if TEST_TREE.exists():
             shutil.rmtree(TEST_TREE)
         source.rename(TEST_TREE)
     print(f'prepared CPython tests from {commit} in {TEST_TREE.relative_to(REPO)}')
-
-
-def project_tests(lib: Path, destination: Path, projections: dict[str, list[str]], support: list[str]) -> None:
-    """Stage selected methods for suites that cannot be imported in Monty as a whole."""
-    for file in ['test/__init__.py', *support]:
-        target = destination / file
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(lib / file, target)
-    for suite, methods in projections.items():
-        file = lib / 'test' / suite
-        source = file.read_text(encoding='utf-8')
-        classes = {node.name: node for node in ast.parse(source).body if isinstance(node, ast.ClassDef)}
-        lines = source.splitlines()
-        projected = ['import sys\nimport unittest\n']
-        remaining = set(methods)
-        if not remaining or len(remaining) != len(methods):
-            sys.exit(f'{suite}: projected method list is empty or contains duplicates')
-        for name, cls in classes.items():
-            selected: list[str] = []
-            for method in cls.body:
-                if (
-                    isinstance(method, ast.FunctionDef)
-                    and method.name.startswith('test')
-                    and (key := f'{name}.{method.name}') in remaining
-                ):
-                    remaining.remove(key)
-                    selected.append(project_method(lines, method))
-            if selected:
-                projected.append(f'class {name}(unittest.TestCase):\n' + '\n\n'.join(selected) + '\n')
-        if remaining:
-            sys.exit(f'{suite}: missing projected methods: {", ".join(sorted(remaining))}')
-        target = destination / 'test' / suite
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text('\n\n'.join(projected), encoding='utf-8', newline='\n')
-
-
-def project_method(source: list[str], method: ast.FunctionDef) -> str:
-    """Remove top-level CPython-only blocks before Monty parses the method."""
-    start = min([method.lineno, *(decorator.lineno for decorator in method.decorator_list)])
-    lines = source[start - 1 : method.end_lineno]
-    for statement in reversed(method.body):
-        if (
-            isinstance(statement, ast.If)
-            and not statement.orelse
-            and ast.unparse(statement.test) == "sys.platform != 'monty'"
-        ):
-            assert statement.end_lineno is not None
-            del lines[statement.lineno - start : statement.end_lineno - start + 1]
-    return '\n'.join(lines)
 
 
 def test_archive(commit: str) -> Path:

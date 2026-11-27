@@ -16,7 +16,7 @@ from pathlib import Path
 from threading import Lock
 
 from cpython_watchdog import CPythonTestTimeout
-from test_fixtures import exported_globals
+from test_fixtures import exported_globals, virtual_environment
 
 lock = Lock()
 
@@ -68,7 +68,7 @@ def run_file_and_get_traceback(
         # Async line offset: 1 lines for "async def __test_main():\n"
         line_offset = 1
 
-    with lock:
+    with lock, virtual_environment():
         # Set recursion limit for testing.
         previous_recursion_limit = sys.getrecursionlimit()
         if recursion_limit is not None:

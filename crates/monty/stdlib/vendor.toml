@@ -35,18 +35,4 @@ suites = [
     "test_module/__init__.py",
     "test_textwrap.py",
 ]
-support = [
-    "test/test_module/bad_getattr.py",
-    "test/test_module/bad_getattr2.py",
-    "test/test_module/good_getattr.py",
-    "unittest/__init__.py",
-    "unittest/case.py",
-    "unittest/util.py",
-]
-
-# These suites have unsupported imports and syntax outside the dir tests.
-# CPython runs the full files; Monty runs these methods from a generated test module.
-[tests.project]
-"test_builtin.py" = ["BuiltinTest.test_dir"]
-"test_descr.py" = ["ClassPropertiesAndMethods.test_dir"]
-"test_module/__init__.py" = ["ModuleTests.test_module_dir", "ModuleTests.test_module_dir_errors"]
+support = ["unittest/__init__.py", "unittest/case.py", "unittest/util.py"]

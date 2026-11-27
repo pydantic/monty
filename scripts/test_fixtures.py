@@ -18,8 +18,11 @@ import os
 import stat as stat_module
 import sys
 import types
+from collections.abc import Generator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from unittest.mock import patch
 
 
 def add_ints(a: int, b: int) -> int:
@@ -485,14 +488,8 @@ VIRTUAL_ENV: dict[str, str] = {
     'VIRTUAL_EMPTY': '',
 }
 
-# Store original os functions before monkey-patching
-# Check if already patched (happens when module is re-executed in same interpreter)
-if not hasattr(os, '_monty_original_getenv'):
-    os._monty_original_getenv = os.getenv  # pyright: ignore[reportAttributeAccessIssue]
-    os._monty_original_environ = os.environ  # pyright: ignore[reportAttributeAccessIssue]
-
-_original_getenv = os._monty_original_getenv  # pyright: ignore[reportAttributeAccessIssue,reportUnknownVariableType,reportUnknownMemberType]
-_original_environ = os._monty_original_environ  # pyright: ignore[reportAttributeAccessIssue,reportUnknownVariableType,reportUnknownMemberType]
+_original_getenv = os.getenv
+_original_environ = os.environ
 
 
 def _virtual_getenv(key: str, default: str | None = None) -> str | None:
@@ -505,18 +502,14 @@ def _virtual_getenv(key: str, default: str | None = None) -> str | None:
     # Check key type first to match CPython's behavior
     if not isinstance(key, str):  # pyright: ignore[reportUnnecessaryIsInstance]
         # to get the real error
-        return _original_getenv(key)  # pyright: ignore[reportUnknownVariableType]
+        return _original_getenv(key)
 
     if key.startswith('VIRTUAL_') or key in ('NONEXISTENT', 'ALSO_MISSING', 'MISSING'):
         value = VIRTUAL_ENV.get(key)
         if value is not None:
             return value
         return default
-    return _original_getenv(key, default)  # pyright: ignore[reportUnknownVariableType]
-
-
-# Monkey-patch os.getenv to use virtual environment for test keys
-os.getenv = _virtual_getenv
+    return _original_getenv(key, default)
 
 
 class VirtualEnviron:
@@ -534,7 +527,7 @@ class VirtualEnviron:
             return VIRTUAL_ENV[key]
         if key.startswith('VIRTUAL_') or key in ('NONEXISTENT', 'ALSO_MISSING', 'MISSING'):
             raise KeyError(key)
-        return _original_environ[key]  # pyright: ignore[reportUnknownVariableType]
+        return _original_environ[key]
 
     def __contains__(self, key: object) -> bool:
         if isinstance(key, str):
@@ -551,12 +544,12 @@ class VirtualEnviron:
     def get(self, key: str, default: str | None = None) -> str | None:
         # Check key type first - pass through to original environ to get proper error
         if not isinstance(key, str):  # pyright: ignore[reportUnnecessaryIsInstance]
-            return _original_environ.get(key, default)  # pyright: ignore[reportArgumentType,reportUnknownMemberType,reportUnknownVariableType]
+            return _original_environ.get(key, default)
         if key in VIRTUAL_ENV:
             return VIRTUAL_ENV[key]
         if key.startswith('VIRTUAL_') or key in ('NONEXISTENT', 'ALSO_MISSING', 'MISSING'):
             return default
-        return _original_environ.get(key, default)  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+        return _original_environ.get(key, default)
 
     def keys(self):
         """Return keys from virtual environment only (for test isolation)."""
@@ -571,8 +564,11 @@ class VirtualEnviron:
         return VIRTUAL_ENV.items()
 
 
-# Monkey-patch os.environ to use virtual environment for test keys
-os.environ = VirtualEnviron()
+@contextmanager
+def virtual_environment() -> Generator[None]:
+    """Install the virtual environment only while running a Monty test case on CPython."""
+    with patch.object(os, 'getenv', _virtual_getenv), patch.object(os, 'environ', VirtualEnviron()):
+        yield
 
 
 # Register the Rust runner's host-module fixtures for CPython's `import tools`.
