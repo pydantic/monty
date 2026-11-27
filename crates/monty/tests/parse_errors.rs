@@ -1,6 +1,6 @@
 use std::fmt::Write;
 
-use insta::assert_snapshot;
+use insta::{allow_duplicates, assert_snapshot};
 use monty::MontyRun;
 use monty_types::{CompileOptions, ExcType, MontyException, MontyObject};
 
@@ -629,11 +629,25 @@ fn matrix_multiplication_augmented_assignment_returns_syntax_error() {
 }
 
 #[test]
-fn del_statement_returns_not_implemented_error() {
-    // The del statement is not supported at parse time
-    let err = get_parse_err("x = 1\ndel x");
-    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
-    assert_snapshot!(err.message().unwrap(), @"The monty syntax parser does not yet support the 'del' statement");
+fn delete_debug_is_a_syntax_error() {
+    allow_duplicates! {
+        for source in ["del __debug__", "del obj.__debug__"] {
+            let err = get_parse_err(source);
+            assert_eq!(err.exc_type(), ExcType::SyntaxError);
+            assert_snapshot!(err.message().unwrap(), @"cannot delete __debug__");
+        }
+    }
+}
+
+#[test]
+fn invalid_delete_targets_return_syntax_error() {
+    allow_duplicates! {
+        for source in ["del *x", "del 1", "del f()"] {
+            let err = get_parse_err(source);
+            assert_eq!(err.exc_type(), ExcType::SyntaxError);
+            assert_snapshot!(err.message().unwrap(), @"Invalid delete target");
+        }
+    }
 }
 
 #[test]
@@ -938,22 +952,6 @@ fn moderate_class_annotation_within_limit() {
                 assert C.__annotations__ == {'y': 'dict[str, list[int]]', 'z': 'a.b.c'}\n";
     let result = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default());
     assert!(result.is_ok(), "ordinary class annotations should compile: {result:?}");
-}
-
-#[test]
-fn function_with_too_many_locals_and_except_as_returns_syntax_error() {
-    let mut code = "def f():\n".to_owned();
-    for i in 0..256 {
-        writeln!(code, "    l{i} = 0").unwrap();
-    }
-    code.push_str("    try:\n        1/0\n    except Exception as e:\n        pass\n");
-    let result = MontyRun::new(code, "test.py", vec![], CompileOptions::default());
-    let err = result.expect_err("expected compile error");
-    assert_eq!(err.exc_type(), ExcType::SyntaxError);
-    assert_eq!(
-        err.message(),
-        Some("cannot delete local variable in function with more than 256 locals (slot 256)"),
-    );
 }
 
 #[test]

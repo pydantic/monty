@@ -342,6 +342,17 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
         }
     }
 
+    fn py_delitem(&self, key: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        if let Some(result) = instance_call_dunder_sync(self.id(), "__delitem__", Some(key), vm)? {
+            result.drop_with(vm);
+            Ok(())
+        } else if class_defines(self.get(vm.heap).class(), "__setitem__", vm) {
+            Err(ExcType::attribute_error_descriptor_hook("__delitem__"))
+        } else {
+            Err(ExcType::type_error_not_sub_deletion(&self.py_type_name(vm), true))
+        }
+    }
+
     fn py_call(&mut self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         // A callable instance can itself be the class's __call__; bound native
         // dispatch must be guarded even when no Python frame is pushed.

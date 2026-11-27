@@ -201,6 +201,39 @@ impl<'h> HeapReadMut<'h, List> {
         Ok(())
     }
 
+    /// Releases the selected items before compacting the list in one pass.
+    /// Dropping references does not run Python, so the temporary holes are not visible.
+    fn delitem_slice(&self, slice: &Slice, vm: &mut VM<'h>) -> RunResult<()> {
+        let (start, stop, step) = slice.indices(self.get(vm.heap).len())?;
+        let mut index = start;
+        let mut first_removed: Option<usize> = None;
+        while if step > 0 { index < stop } else { index > stop } {
+            let slot = usize::try_from(index).expect("slice index is non-negative");
+            let item = mem::replace(&mut self.get_mut(vm.heap).items[slot], Value::Undefined);
+            item.drop_with(vm);
+            first_removed = Some(first_removed.map_or(slot, |first| first.min(slot)));
+            index = index.saturating_add(step);
+        }
+        if let Some(first) = first_removed {
+            let items = &mut self.get_mut(vm.heap).items;
+            if step.unsigned_abs() == 1 {
+                let end = if step > 0 { stop } else { start + 1 };
+                let end = usize::try_from(end).expect("slice end is non-negative");
+                drop(items.drain(first..end));
+            } else {
+                let mut write = first;
+                for read in first + 1..items.len() {
+                    if !matches!(items[read], Value::Undefined) {
+                        items.swap(write, read);
+                        write += 1;
+                    }
+                }
+                items.truncate(write);
+            }
+        }
+        Ok(())
+    }
+
     /// Appends an element to the end of the list.
     ///
     /// The caller transfers ownership of `item` to the list. The item's refcount
@@ -570,6 +603,24 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
         mem::swap(&mut self.get_mut(vm.heap).items[idx], value);
 
         Ok(())
+    }
+
+    fn py_delitem(&self, key: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        defer_drop!(key, vm);
+        if let Some(slice) = key.get_as::<Slice>(vm.heap).cloned() {
+            self.delitem_slice(&slice, vm)
+        } else {
+            let index = key.as_index(vm, Type::List)?;
+            let len = i64::try_from(self.get(vm.heap).len()).expect("list length exceeds i64::MAX");
+            let index = if index < 0 { index + len } else { index };
+            if !(0..len).contains(&index) {
+                return Err(ExcType::list_assignment_index_error());
+            }
+            let idx = usize::try_from(index).expect("index validated non-negative");
+            let item = self.get_mut(vm.heap).items.remove(idx);
+            item.drop_with(vm);
+            Ok(())
+        }
     }
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {

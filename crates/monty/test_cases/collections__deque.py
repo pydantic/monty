@@ -2,10 +2,6 @@
 #
 # Every expectation here is derived from CPython 3.14 (see playground/deque-spec.md).
 # This file is dual-run against CPython and Monty, so both must agree exactly.
-#
-# NOT tested here, and why:
-# - `del d[i]`: CPython supports it, but the `del` statement is unimplemented
-#   Monty-wide (a parse error), so including it would fail to parse the file.
 
 from collections import deque
 

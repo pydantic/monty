@@ -17,7 +17,6 @@ use ruff_text_size::{Ranged, TextRange, TextSize};
 
 use crate::{
     args::{ArgExprs, CallArg, CallKwarg, Kwarg},
-    builtins::{Builtins, BuiltinsFunctions},
     exception_private::{ExcType, ExcTypeExt, ExceptionRaise, RunError, SimpleException},
     expressions::{
         AssignTarget, Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName, Literal,
@@ -736,30 +735,7 @@ impl<'a, 'i> Parser<'a, 'i> {
                 Some(value) => Some(self.parse_expression(*value)?),
                 None => None,
             })),
-            Stmt::Delete(d) => {
-                let position = self.convert_range(d.range);
-                let mut targets = d.targets.into_iter();
-                let Some(AstExpr::Attribute(ast::ExprAttribute { value, attr, range, .. })) = targets.next() else {
-                    return Err(ParseError::not_implemented("the 'del' statement", position));
-                };
-                if targets.next().is_some() {
-                    return Err(ParseError::not_implemented("multiple del targets", position));
-                }
-                let object = self.parse_expression(*value)?;
-                let name = self.interner.intern(attr.id());
-                // CPython underlines the deleted attribute, excluding the `del` keyword.
-                let target_position = self.convert_range(range);
-                Ok(Node::Expr(ExprLoc::new(
-                    target_position,
-                    Expr::Call {
-                        callable: Callable::Builtin(Builtins::Function(BuiltinsFunctions::Delattr)),
-                        args: Box::new(ArgExprs::Two(
-                            object,
-                            ExprLoc::new(position, Expr::Literal(Literal::Str(name))),
-                        )),
-                    },
-                )))
-            }
+            Stmt::Delete(d) => self.parse_delete(d.targets),
             Stmt::TypeAlias(t) => Err(ParseError::not_implemented("type aliases", self.convert_range(t.range))),
             Stmt::Assign(ast::StmtAssign {
                 mut targets,
@@ -1342,7 +1318,7 @@ impl<'a, 'i> Parser<'a, 'i> {
     /// runs in its own scope and returns the namespace `Dict` that
     /// `type(name, bases, dict, **kw)` turns into the class. Methods become nested `FunctionDef`s; class variables become `Assign`s with arbitrary
     /// expressions (`name = <expr>` / `name: T = <expr>`). Every member name is
-    /// recorded in `members`, in source order, for namespace assembly.
+    /// collected during preparation for namespace assembly.
     ///
     /// `pass` and `...` are ignored; a leading docstring becomes a `__doc__`
     /// member, and annotated names the class's `__annotate__` function. Class
@@ -1381,12 +1357,7 @@ impl<'a, 'i> Parser<'a, 'i> {
         }
 
         let name = self.identifier(&class.name.id, class.name.range);
-        // The class-body statements (in source order) and the member names they
-        // bind. Both methods and class vars are ordinary bindings of the body
-        // scope; `members` records the order so the compiler can assemble the
-        // namespace dict from the body's locals.
         let mut body = Vec::new();
-        let mut members = Vec::new();
         // `(name, annotation)` pairs, compiled into the class's `__annotate__`
         // below (or, under `from __future__ import annotations`, stringized
         // into `__annotations__`).
@@ -1417,7 +1388,6 @@ impl<'a, 'i> Parser<'a, 'i> {
                         self.reject_class_body_walrus(&decorator.expression)?;
                     }
                     let (method, decorators) = self.parse_function_def(function)?;
-                    members.push(method.name);
                     body.push(Node::FunctionDef {
                         def: method,
                         decorators,
@@ -1439,7 +1409,7 @@ impl<'a, 'i> Parser<'a, 'i> {
                         ));
                     };
                     let ident = self.identifier(id, *name_range);
-                    self.parse_class_var(ident, *value, &mut members, &mut body)?;
+                    self.parse_class_var(ident, *value, &mut body)?;
                 }
                 // `name: T [= <expr>]` — an annotated class-level name. The
                 // annotation goes into the class's `__annotate__` (see below); a
@@ -1459,7 +1429,7 @@ impl<'a, 'i> Parser<'a, 'i> {
                         let ident = self.identifier(&id, name_range);
                         annotations.push((ident.name_id, annotation));
                         if let Some(value) = value {
-                            self.parse_class_var(ident, *value, &mut members, &mut body)?;
+                            self.parse_class_var(ident, *value, &mut body)?;
                         }
                     } else if value.is_some() {
                         // Complex target with a value (`x.y: T = v`) is unsupported;
@@ -1473,6 +1443,12 @@ impl<'a, 'i> Parser<'a, 'i> {
                             self.convert_range(range),
                         ));
                     }
+                }
+                Stmt::Delete(d) => {
+                    for target in &d.targets {
+                        self.reject_class_body_walrus(target)?;
+                    }
+                    body.push(self.parse_delete(d.targets)?);
                 }
                 // `pass` and `...` (the common `class C: ...` stub idiom) are
                 // no-ops. A leading string literal is the class docstring and
@@ -1511,7 +1487,6 @@ impl<'a, 'i> Parser<'a, 'i> {
         // The synthesized `__doc__` binding runs first (like CPython's docstring
         // store); the namespace assembly loads final local values, so an explicit
         // `__doc__` member still wins.
-        members.insert(0, doc_target);
         body.insert(
             0,
             Node::Assign {
@@ -1527,7 +1502,11 @@ impl<'a, 'i> Parser<'a, 'i> {
         if !annotations.is_empty() {
             if self.future_annotations {
                 let annotations_target = Identifier::new(self.interner.intern("__annotations__"), position);
-                if members.iter().any(|m| m.name_id == annotations_target.name_id) {
+                if body.iter().any(|node| match node {
+                    Node::Assign { target, .. } => target.name_id == annotations_target.name_id,
+                    Node::FunctionDef { def, .. } => def.name.name_id == annotations_target.name_id,
+                    _ => false,
+                }) {
                     // Being last, the synthetic assignment would clobber the body's own
                     // binding and lose these entries. CPython stores into whatever the name
                     // holds instead — merging into a dict, `TypeError` otherwise.
@@ -1537,7 +1516,6 @@ impl<'a, 'i> Parser<'a, 'i> {
                     ));
                 }
                 let items = self.annotation_items(annotations, position)?;
-                members.push(annotations_target);
                 body.push(Node::Assign {
                     target: annotations_target,
                     object: ExprLoc::new(position, Expr::Dict(items)),
@@ -1545,7 +1523,6 @@ impl<'a, 'i> Parser<'a, 'i> {
             } else {
                 let annotate_target = Identifier::new(self.interner.intern("__annotate_func__"), position);
                 let def = self.synthesize_annotate(annotations, annotate_target.name_id, position)?;
-                members.push(annotate_target);
                 body.push(Node::FunctionDef {
                     def,
                     decorators: Vec::new(),
@@ -1571,7 +1548,7 @@ impl<'a, 'i> Parser<'a, 'i> {
             bases,
             keywords,
             body,
-            members,
+            members: Vec::new(),
             decorators,
             position,
         })
@@ -1609,19 +1586,15 @@ impl<'a, 'i> Parser<'a, 'i> {
         }
     }
 
-    /// Parses a class-variable value and records the binding: rejects class-scope
-    /// walrus, parses the value expression, and appends the member / `Assign` pair
-    /// shared by the `Assign` and `AnnAssign` class-body arms.
+    /// Parses a class-variable assignment, rejecting class-scope walrus.
     fn parse_class_var(
         &mut self,
         ident: Identifier,
         value: AstExpr,
-        members: &mut Vec<Identifier>,
         body: &mut Vec<ParseNode>,
     ) -> Result<(), ParseError> {
         self.reject_class_body_walrus(&value)?;
         let object = self.parse_expression(value)?;
-        members.push(ident);
         body.push(Node::Assign { target: ident, object });
         Ok(())
     }
@@ -2449,31 +2422,55 @@ impl<'a, 'i> Parser<'a, 'i> {
         }
     }
 
+    /// Parses a deletion using the same target shapes as unpacking, without stars.
+    fn parse_delete(&mut self, targets: Vec<AstExpr>) -> Result<ParseNode, ParseError> {
+        let targets = targets
+            .into_iter()
+            .map(|target| self.parse_target(target, true))
+            .collect::<Result<_, _>>()?;
+        Ok(Node::Delete(targets))
+    }
+
     /// Parses an unpack target - either a single identifier or a nested tuple.
     ///
     /// Handles patterns like `a` (single variable), `a, b` (flat tuple), or `(a, b), c` (nested).
     /// Includes depth tracking to prevent stack overflow from deeply nested structures.
     fn parse_unpack_target(&mut self, ast: AstExpr) -> Result<UnpackTarget, ParseError> {
+        self.parse_target(ast, false)
+    }
+
+    fn parse_target(&mut self, ast: AstExpr, deleting: bool) -> Result<UnpackTarget, ParseError> {
         self.decr_depth_remaining(|| ast.range())?;
-        let result = self.parse_unpack_target_impl(ast);
+        let result = self.parse_target_impl(ast, deleting);
         self.depth_remaining += 1;
         result
     }
 
-    fn parse_unpack_target_impl(&mut self, ast: AstExpr) -> Result<UnpackTarget, ParseError> {
+    fn parse_target_impl(&mut self, ast: AstExpr, deleting: bool) -> Result<UnpackTarget, ParseError> {
         match ast {
-            AstExpr::Name(ast::ExprName { id, range, .. }) => Ok(UnpackTarget::Name(self.identifier(&id, range))),
+            AstExpr::Name(ast::ExprName { id, range, .. }) => {
+                if deleting && id.as_str() == "__debug__" {
+                    Err(ParseError::syntax("cannot delete __debug__", self.convert_range(range)))
+                } else {
+                    Ok(UnpackTarget::Name(self.identifier(&id, range)))
+                }
+            }
             AstExpr::Tuple(ast::ExprTuple { elts, range, .. }) => {
                 let position = self.convert_range(range);
                 let targets = elts
                     .into_iter()
-                    .map(|e| self.parse_unpack_target(e)) // Recursive call for nested tuples
+                    .map(|e| self.parse_target(e, deleting))
                     .collect::<Result<Vec<_>, _>>()?;
-                if targets.is_empty() {
-                    return Err(ParseError::syntax("empty tuple in unpack target", position));
+                if !deleting {
+                    if targets.is_empty() {
+                        return Err(ParseError::syntax("empty tuple in unpack target", position));
+                    }
+                    check_single_starred(&targets, position)?;
                 }
-                check_single_starred(&targets, position)?;
                 Ok(UnpackTarget::Tuple { targets, position })
+            }
+            AstExpr::Starred(ast::ExprStarred { range, .. }) if deleting => {
+                Err(ParseError::syntax("cannot delete starred", self.convert_range(range)))
             }
             AstExpr::Starred(ast::ExprStarred { value, .. }) => {
                 // `*rest` captures into a list, which is then stored like any
@@ -2485,13 +2482,18 @@ impl<'a, 'i> Parser<'a, 'i> {
                 let position = self.convert_range(range);
                 let targets = elts
                     .into_iter()
-                    .map(|e| self.parse_unpack_target(e))
+                    .map(|e| self.parse_target(e, deleting))
                     .collect::<Result<Vec<_>, _>>()?;
-                if targets.is_empty() {
-                    return Err(ParseError::syntax("empty list in unpack target", position));
+                if !deleting {
+                    if targets.is_empty() {
+                        return Err(ParseError::syntax("empty list in unpack target", position));
+                    }
+                    check_single_starred(&targets, position)?;
                 }
-                check_single_starred(&targets, position)?;
                 Ok(UnpackTarget::Tuple { targets, position })
+            }
+            AstExpr::Attribute(ast::ExprAttribute { attr, range, .. }) if deleting && attr.as_str() == "__debug__" => {
+                Err(ParseError::syntax("cannot delete __debug__", self.convert_range(range)))
             }
             AstExpr::Attribute(ast::ExprAttribute { value, attr, range, .. }) => Ok(UnpackTarget::Attr {
                 object: Box::new(self.parse_expression(*value)?),
@@ -2505,6 +2507,10 @@ impl<'a, 'i> Parser<'a, 'i> {
                 index: Box::new(self.parse_expression(*slice)?),
                 position: self.convert_range(range),
             }),
+            other if deleting => Err(ParseError::syntax(
+                format!("cannot delete {}", describe_expr_kind(&other)),
+                self.convert_range(other.range()),
+            )),
             other => Err(ParseError::syntax(
                 format!("invalid unpacking target: {}", describe_expr_kind(&other)),
                 self.convert_range(other.range()),

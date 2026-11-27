@@ -10,7 +10,7 @@
 use std::fmt::Write;
 
 use monty::MontyRun;
-use monty_types::{CompileOptions, ExcType, MontyException};
+use monty_types::{CompileOptions, ExcType, MontyException, MontyObject};
 
 /// Generates Python code with N local variables in a function.
 ///
@@ -98,6 +98,17 @@ fn assert_syntax_error(result: Result<MontyRun, MontyException>, expected_msg: &
 
 mod local_variable_limits {
     use super::*;
+
+    #[test]
+    fn delete_wide_local() {
+        let mut code = generate_many_locals(257);
+        code.truncate(code.find("    return").unwrap());
+        code.push_str(
+            "    try:\n        raise ValueError()\n    except ValueError as error:\n        del error\n    del v256\n    return 'v256' in locals() or 'error' in locals()\nf()",
+        );
+        let mut run = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+        assert_eq!(run.run_no_limits(vec![]).unwrap(), MontyObject::bool(false));
+    }
 
     #[test]
     fn locals_under_u8_limit_succeeds() {

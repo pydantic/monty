@@ -39,9 +39,7 @@ too, rather than something that type-checks and then fails at runtime.
     But `zip` and `enumerate` are eager (see [builtins.md](builtins.md)), so `d += enumerate(xs)` with a raising
     source raises before the extend begins and appends nothing, where CPython appends whatever was yielded first.
 
-`del d[i]` fails at *compile* time, since the `del` statement is unimplemented
-Monty-wide (see [language.md](language.md)), and subclassing (`class Q(deque)`)
-raises `TypeError`, since classes inherit only from classes and `object` (see
+Subclassing (`class Q(deque)`) raises `TypeError`, since classes inherit only from classes and `object` (see
 [classes.md](classes.md#inheritance)); neither is a deque limitation.
 
 ## `namedtuple`

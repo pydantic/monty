@@ -11,13 +11,6 @@ NotImplementedError: The monty syntax parser does not yet support type aliases
 
 Traceback (most recent call last):
   File "<python-input-2>", line 1, in <module>
-    exec("\n\ndel missing")
-    ~~~~~~~~~~~~~~~~~~~~~~~
-  File "<string>", line 3, in <module>
-NotImplementedError: The monty syntax parser does not yet support the 'del' statement
-
-Traceback (most recent call last):
-  File "<python-input-3>", line 1, in <module>
     exec("\n\n__name__ = 'changed'")
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   File "<string>", line 3, in <module>

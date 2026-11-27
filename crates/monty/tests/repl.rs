@@ -32,6 +32,23 @@ fn repl_executes_only_new_code() {
     assert_eq!(output, MontyObject::int(1));
 }
 
+#[test]
+fn deletion_updates_existing_bindings_after_dump() {
+    let (repl, _) =
+        init_repl("items = [1, 2, 3]\nname = 'before'\ndef clear():\n    global name\n    del name, items[1:]");
+    let mut repl = round_trip_repl(&repl);
+    assert_eq!(feed_run_print(&mut repl, "clear()").unwrap(), MontyObject::none());
+    let actual = feed_run_print(&mut repl, "('name' in locals(), items)").unwrap();
+    assert_eq!(
+        actual,
+        MontyObject::tuple([MontyObject::bool(false), MontyObject::list([MontyObject::int(1)])])
+    );
+    assert_eq!(
+        feed_run_print(&mut repl, "name = 42\nname").unwrap(),
+        MontyObject::int(42)
+    );
+}
+
 fn feed_run_print(repl: &mut MontyRepl, code: &str) -> Result<MontyObject, MontyException> {
     repl.feed_run(code, vec![], PrintWriter::Stdout)
 }
@@ -3476,7 +3493,7 @@ fn repl_call_function_return_export_propagates_memory_error() {
 fn repl_rejected_snippet_locations() {
     let (mut repl, _) = init_repl("pass");
     let mut errors = Vec::new();
-    for source in ["\n\ntype Alias = int", "\n\ndel missing", "\n\n__name__ = 'changed'"] {
+    for source in ["\n\ntype Alias = int", "\n\n__name__ = 'changed'"] {
         let error = feed_run_print(&mut repl, &format!("exec({source:?})")).unwrap_err();
         assert_eq!(error.traceback().last().unwrap().start.line, 3);
         errors.push(error.to_string());

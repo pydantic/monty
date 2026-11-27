@@ -274,6 +274,9 @@ pub struct Compiler<'a, 'i> {
     /// opcodes that index into the stack.
     is_module_scope: bool,
 
+    /// Whether unbound local deletion raises `NameError` (class namespace semantics).
+    is_class_scope: bool,
+
     /// Number of stack-resident locals in the running frame for this code object.
     ///
     /// - Function scope: equals the function's `namespace_size` (params + cells +
@@ -537,6 +540,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             fblocks: Vec::new(),
             finally_copies: 0,
             is_module_scope,
+            is_class_scope: false,
             frame_locals,
             comp_slots: Vec::new(),
             flags,
@@ -685,6 +689,11 @@ impl<'a, 'i> Compiler<'a, 'i> {
             Node::Expr(expr) => {
                 self.compile_expr(expr)?;
                 self.code.emit(Opcode::Pop)?; // Discard result
+            }
+            Node::Delete(targets) => {
+                for target in targets {
+                    self.compile_delete_target(target)?;
+                }
             }
             Node::Return(expr) => {
                 self.compile_return(expr.as_ref())?;
@@ -1233,6 +1242,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         flags: ScopeFlags,
     ) -> Result<Code, CompileError> {
         let mut compiler = Compiler::new(interns, false, num_locals, flags);
+        compiler.is_class_scope = true;
         compiler.compile_block(body)?;
 
         // Assembly errors (e.g. resource limits while building the dict)
@@ -4085,34 +4095,58 @@ impl<'a, 'i> Compiler<'a, 'i> {
         Ok(())
     }
 
-    /// Compiles deletion of a variable.
-    ///
-    /// At module level, `Local` scope emits `DeleteGlobal`
-    /// because module-level locals live in the globals array.
-    ///
-    /// Function-scope `Local` deletes are limited to the first 256 slots
-    /// because the only available opcode (`DeleteLocal`) takes a `u8`
-    /// operand; a wide variant has not been added because slot-255 deletes
-    /// are essentially unreachable in real code (each `except ... as e`
-    /// implicitly emits a delete on the bound name, but functions with 256+
-    /// locals plus an `except as` are exotic enough that we surface a
-    /// `SyntaxError` rather than introduce a new opcode just for this).
+    /// Compiles deletion of a name, item, attribute or group of targets.
+    fn compile_delete_target(&mut self, target: &UnpackTarget) -> Result<(), CompileError> {
+        match target {
+            UnpackTarget::Name(name) => {
+                self.code.set_location(name.position, None);
+                self.compile_delete(name)?;
+            }
+            UnpackTarget::Subscript {
+                container,
+                index,
+                position,
+            } => {
+                self.compile_expr(container)?;
+                self.compile_expr(index)?;
+                self.code.set_location(*position, None);
+                self.code.emit(Opcode::DeleteSubscr)?;
+            }
+            UnpackTarget::Attr { object, attr, position } => {
+                let name = attr.string_id().expect("attribute name in AST must be interned");
+                self.compile_expr(object)?;
+                self.code.set_location(*position, None);
+                let name_const = self.code.add_const(Value::InternString(name))?;
+                self.code.emit_u16(Opcode::LoadConst, name_const)?;
+                self.code
+                    .emit_call_builtin_function(BuiltinsFunctions::Delattr as u8, 2)?;
+                self.code.emit(Opcode::Pop)?;
+            }
+            UnpackTarget::Tuple { targets, .. } => {
+                for target in targets {
+                    self.compile_delete_target(target)?;
+                }
+            }
+            UnpackTarget::Starred(_) => unreachable!("starred deletion targets are rejected by the parser"),
+        }
+        Ok(())
+    }
+
+    /// Unbinds a name in its resolved scope.
     fn compile_delete(&mut self, target: &Identifier) -> Result<(), CompileError> {
         let slot = target.namespace_id().as_u16();
         match target.scope {
             NameScope::Local => {
                 if self.is_module_scope {
                     self.code.emit_u16(Opcode::DeleteGlobal, slot)?;
-                } else if let Ok(s) = u8::try_from(slot) {
-                    self.code.emit_u8(Opcode::DeleteLocal, s)?;
                 } else {
-                    return Err(CompileError::new(
-                        format!(
-                            "cannot delete local variable in function with more than {} locals (slot {slot})",
-                            u16::from(u8::MAX) + 1,
-                        ),
-                        target.position,
-                    ));
+                    self.code.register_local_name(slot, target.name_id);
+                    match u8::try_from(slot) {
+                        Ok(slot) if !self.is_class_scope => self.code.emit_u8(Opcode::DeleteLocal, slot)?,
+                        _ => self
+                            .code
+                            .emit_u16_u8(Opcode::DeleteLocalW, slot, u8::from(self.is_class_scope))?,
+                    }
                 }
             }
             NameScope::Global if self.flags.globals_by_name => {
@@ -4126,8 +4160,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 self.code.emit_name_op(Opcode::DeleteName, slot, target.name_id, 0)?;
             }
             NameScope::Cell => {
-                // unbind the cell (CPython's DELETE_DEREF) so a captured
-                // `except ... as` target reads as unbound after cleanup
+                self.code.register_local_name(slot, target.name_id);
                 self.code.emit_u16(Opcode::DeleteCell, slot)?;
             }
             NameScope::CompVar => unreachable!("no syntax exists to `del` a comprehension variable"),

@@ -42,6 +42,9 @@ assert wrap(TEXT, 20, max_lines=2, placeholder='~') == ['The quick brown fox', '
 assert wrap(TEXT, 20, max_lines=1) == ['The quick [...]']
 
 # === TextWrapper ===
+for helper in ('word_punct', 'letter', 'nowhitespace', 'whitespace'):
+    assert not hasattr(TextWrapper, helper), 'the regex helper should not be a class attribute'
+
 w = TextWrapper(width=15, initial_indent='> ', subsequent_indent='  ')
 assert w.wrap(TEXT) == ['> The quick', '  brown fox', '  jumps over', '  the lazy dog.']
 assert w.fill('a b') == '> a b'

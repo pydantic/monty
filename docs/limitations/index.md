@@ -25,12 +25,14 @@ For compilation and runtime limits, see [resource limits](resource_limits.md).
 - Decorators on functions and classes
 - Simple classes: instance methods, `__init__`, `__repr__`/`__str__`, `__eq__`/`__hash__`, `__iter__`/`__next__`,
     `__contains__`, `__index__`, `__int__`/`__float__`, `__abs__`, `__round__`, `__floor__`/`__ceil__`/`__trunc__`,
-    `__call__`, `__getitem__`/`__setitem__`, unary `+`/`-`/`~`, binary arithmetic and reflected operators, class variables
+    `__call__`, `__getitem__`/`__setitem__`/`__delitem__`, unary `+`/`-`/`~`, binary arithmetic and reflected operators,
+    class variables
 - `@dataclass`, with the `eq=` and `frozen=` options only (every other option raises `NotImplementedError`),
     `field()` (with `default=...` / `default_factory=...`) and `__post_init__`, but no `fields()` or `asdict()`, plus host
     class instances passed in and out (and host classes the sandbox may instantiate when granted)
 - List, dict and set comprehensions
 - `try` / `except` / `else` / `finally`, `raise ... from ...`
+- `del` on names, attributes, subscripts, and groups of targets
 - `for`, `while`, `if` / `elif` / `else`, `break`, `continue`, `pass`, `assert`, `global`, `nonlocal`, `return`
 - Descriptors, `property`, `classmethod`, `staticmethod`, and decorators on methods
 - `with` statements, for files and for classes implementing `__enter__` / `__exit__`
@@ -54,7 +56,6 @@ For compilation and runtime limits, see [resource limits](resource_limits.md).
 - Metaclasses (`class Foo(metaclass=M):`)
 - `yield` / `yield from` — there are no generator functions.
     Generator *expressions* parse, but currently materialise to a `list`
-- `del x`, `del d[k]`, and multiple deletion targets; single attribute deletion is supported
 - `try*` / `except*` exception groups
 - PEP 695 `type` aliases
 - `async with`, `async for` and async comprehensions
