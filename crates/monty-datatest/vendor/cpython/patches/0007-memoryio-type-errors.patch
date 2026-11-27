@@ -4,7 +4,7 @@ Suppress missing API diagnostics in methods excluded from Monty runtime executio
 
 --- a/test/test_memoryio.py
 +++ b/test/test_memoryio.py
-@@ -19,6 +19,17 @@
+@@ -20,6 +20,17 @@
      from test import support
      import _pyio as pyio
  
@@ -22,7 +22,7 @@ Suppress missing API diagnostics in methods excluded from Monty runtime executio
  class IntLike:
      def __init__(self, num):
          self._num = num
-@@ -26,7 +37,7 @@
+@@ -27,7 +38,7 @@
          return self._num
      __int__ = __index__
  
@@ -31,7 +31,7 @@ Suppress missing API diagnostics in methods excluded from Monty runtime executio
  
      def testInit(self):
          buf = self.buftype("1234567890")
-@@ -78,7 +89,7 @@
+@@ -79,7 +90,7 @@
          self.assertEqual(10000, bytesIo.tell())
  
  
@@ -40,7 +40,7 @@ Suppress missing API diagnostics in methods excluded from Monty runtime executio
  
      def test_detach(self):
          buf = self.ioclass()
-@@ -458,7 +469,7 @@
+@@ -459,7 +470,7 @@
          # little hack to allow the PickleTestMemIO class to derive from
          # self.ioclass without having to define all combinations explicitly on
          # the module-level.
@@ -49,7 +49,7 @@ Suppress missing API diagnostics in methods excluded from Monty runtime executio
          PickleTestMemIO.__module__ = '__main__'
          PickleTestMemIO.__qualname__ = PickleTestMemIO.__name__
          __main__.PickleTestMemIO = PickleTestMemIO
-@@ -467,7 +478,7 @@
+@@ -468,7 +479,7 @@
  
          # We only support pickle protocol 2 and onward since we use extended
          # __reduce__ API of PEP 307 to provide pickling support.
@@ -58,16 +58,7 @@ Suppress missing API diagnostics in methods excluded from Monty runtime executio
          for proto in range(2, pickle.HIGHEST_PROTOCOL + 1):
              for obj in (memio, submemio):
                  obj2 = pickle.loads(pickle.dumps(obj, protocol=proto))
-@@ -478,7 +489,7 @@
-                 obj2.close()
-                 with self.assertRaises(ValueError):
-                     pickle.dumps(obj2, proto)
--        delattr(__main__, 'PickleTestMemIO')
-+        delattr(__main__, 'PickleTestMemIO')  # ty: ignore[unresolved-reference]
- 
- 
- class PyBytesIOTest(MemoryTestMixin, MemorySeekTestMixin, unittest.TestCase):
-@@ -500,11 +511,11 @@
+@@ -502,11 +513,11 @@
          self.assertEqual(bytes(buf), b"1234567890")
          # Trying to change the size of the BytesIO while a buffer is exported
          # raises a BufferError.
@@ -82,7 +73,7 @@ Suppress missing API diagnostics in methods excluded from Monty runtime executio
              memio.close()
          self.assertFalse(memio.closed)
          # Mutating the buffer updates the BytesIO
-@@ -514,7 +525,7 @@
+@@ -516,7 +527,7 @@
          # After the buffer gets released, we can resize and close the BytesIO
          # again
          buf = None
@@ -91,7 +82,7 @@ Suppress missing API diagnostics in methods excluded from Monty runtime executio
          memio.truncate()
          memio.close()
          with self.assertRaises(ValueError):
-@@ -526,20 +537,20 @@
+@@ -528,20 +539,20 @@
          self.assertEqual(bytes(buf), b"")
          # Trying to change the size of the BytesIO while a buffer is exported
          # raises a BufferError.
@@ -117,7 +108,7 @@ Suppress missing API diagnostics in methods excluded from Monty runtime executio
  
          memio = self.ioclass(b"1234567890")
          buf = memio.getbuffer()
-@@ -549,12 +560,12 @@
+@@ -551,12 +562,12 @@
          a = [buf]
          a.append(a)
          # The Python implementation emits an unraisable exception.
@@ -132,7 +123,7 @@ Suppress missing API diagnostics in methods excluded from Monty runtime executio
              gc.collect()
          self.assertIsNone(memiowr())
          self.assertIsNone(bufwr())
-@@ -568,24 +579,24 @@
+@@ -570,24 +581,24 @@
          buf = self.buftype("1234567890")
          memio = self.ioclass(buf)
  
@@ -161,7 +152,7 @@ Suppress missing API diagnostics in methods excluded from Monty runtime executio
          a = array.array('b', b"hello world")
          memio = self.ioclass(buf)
          memio.readinto(a)
-@@ -594,7 +605,7 @@
+@@ -596,7 +607,7 @@
          with self.assertRaises(ValueError):
              memio.readinto(b)
          memio = self.ioclass(b"123")
@@ -170,7 +161,7 @@ Suppress missing API diagnostics in methods excluded from Monty runtime executio
          memio.seek(42)
          memio.readinto(b)
          self.assertEqual(b, b"")
-@@ -620,7 +631,7 @@
+@@ -622,7 +633,7 @@
          # Seek allows PY_SSIZE_T_MAX, read should handle that.
          # Past end of buffer read should always return 0 (EOF).
          self.assertEqual(sys.maxsize, memio.seek(sys.maxsize))
@@ -179,7 +170,7 @@ Suppress missing API diagnostics in methods excluded from Monty runtime executio
          self.assertEqual(0, memio.readinto(buf))
  
      def test_unicode(self):
-@@ -634,7 +645,7 @@
+@@ -636,7 +647,7 @@
  
      def test_bytes_array(self):
          buf = b"1234567890"
@@ -188,7 +179,7 @@ Suppress missing API diagnostics in methods excluded from Monty runtime executio
          a = array.array('b', list(buf))
          memio = self.ioclass(a)
          self.assertEqual(memio.getvalue(), buf)
-@@ -650,7 +661,7 @@
+@@ -652,7 +663,7 @@
          class B:
              def __buffer__(self, flags):
                  memio.close()
@@ -197,7 +188,7 @@ Suppress missing API diagnostics in methods excluded from Monty runtime executio
  
          memio = self.ioclass()
          with self.assertRaises(ValueError):
-@@ -664,7 +675,7 @@
+@@ -666,7 +677,7 @@
          class B:
              def __buffer__(self, flags):
                  memio.close()
@@ -206,7 +197,7 @@ Suppress missing API diagnostics in methods excluded from Monty runtime executio
  
          memio = self.ioclass()
          with self.assertRaises(ValueError):
-@@ -675,10 +686,10 @@
+@@ -677,10 +688,10 @@
              buf = None
              def __buffer__(self, flags):
                  self.buf = memio.getbuffer()
@@ -221,7 +212,7 @@ Suppress missing API diagnostics in methods excluded from Monty runtime executio
              memio.write(B())
  
      def test_writelines_concurrent_export(self):
-@@ -686,10 +697,10 @@
+@@ -688,10 +699,10 @@
              buf = None
              def __buffer__(self, flags):
                  self.buf = memio.getbuffer()
@@ -236,7 +227,7 @@ Suppress missing API diagnostics in methods excluded from Monty runtime executio
              memio.writelines([B()])
  
      def test_write_mutating_buffer(self):
-@@ -700,9 +711,9 @@
+@@ -702,9 +713,9 @@
              def __buffer__(self, flags):
                  self.count += 1
                  if self.count == 1:
@@ -248,7 +239,7 @@ Suppress missing API diagnostics in methods excluded from Monty runtime executio
  
          memio = self.ioclass(b'0123456789')
          memio.seek(2)
-@@ -722,7 +733,7 @@
+@@ -725,7 +736,7 @@
          stream.write(self.buftype('abc'))
          data = self.buftype('def')
          with self.assertRaises(MemoryError):
@@ -257,7 +248,7 @@ Suppress missing API diagnostics in methods excluded from Monty runtime executio
                  stream.write(data)
          stream.write(self.buftype('123'))
          self.assertEqual(stream.getvalue(), self.buftype('abc123'))
-@@ -732,13 +743,13 @@
+@@ -735,12 +746,12 @@
          stream = self.ioclass()
          stream.write(data)
          with self.assertRaises(MemoryError):
@@ -265,18 +256,14 @@ Suppress missing API diagnostics in methods excluded from Monty runtime executio
 +            with support.inject_memory_error_cm():  # ty: ignore[unresolved-attribute]
                  stream.truncate(5)
          self.assertEqual(stream.getvalue(), data)
--    test_memory_error = support.nomemtest(test_memory_error)
--
--
+ 
+ 
 -class TextIOTestMixin:
-+    test_memory_error = support.nomemtest(test_memory_error)  # ty: ignore[invalid-argument-type]
-+
-+
 +class TextIOTestMixin(_MixinBase):
  
      def test_newlines_property(self):
          memio = self.ioclass(newline=None)
-@@ -919,7 +930,7 @@
+@@ -921,7 +932,7 @@
      EOF = ""
  
      def ioclass(self, *args, **kwargs):
@@ -285,7 +272,7 @@ Suppress missing API diagnostics in methods excluded from Monty runtime executio
          return pickle.loads(pickle.dumps(pyio.StringIO(*args, **kwargs)))
  
  
-@@ -946,7 +957,7 @@
+@@ -948,7 +959,7 @@
          with self.ioclass(b'abc') as stream:
              size = Size(stream.getbuffer)
              try:
@@ -294,7 +281,7 @@ Suppress missing API diagnostics in methods excluded from Monty runtime executio
                      stream.truncate(size)
                  self.assertEqual(stream.getvalue(), b'abc')
              finally:
-@@ -962,7 +973,7 @@
+@@ -964,7 +975,7 @@
          memio = self.ioclass()
          state = memio.__getstate__()
          self.assertEqual(len(state), 3)
@@ -303,7 +290,7 @@ Suppress missing API diagnostics in methods excluded from Monty runtime executio
          self.assertIsInstance(state[1], int)
          if state[2] is not None:
              self.assertIsInstance(state[2], dict)
-@@ -974,7 +985,7 @@
+@@ -976,7 +987,7 @@
          # This checks whether __setstate__ does proper input validation.
          memio = self.ioclass()
          memio.__setstate__((b"no error", 0, None))
@@ -312,9 +299,9 @@ Suppress missing API diagnostics in methods excluded from Monty runtime executio
          memio.__setstate__((b"no error", 0, {'spam': 3}))
          with self.assertRaises(ValueError):
              memio.__setstate__((b"", -1, None))
-@@ -997,34 +1008,34 @@
-     check_sizeof = support.check_sizeof
+@@ -1000,26 +1011,26 @@
  
+     @support.cpython_only
      def test_sizeof(self):
 -        if support.Py_GIL_DISABLED:
 -            basesize = support.calcobjsize('P2n2Pni')
@@ -329,9 +316,7 @@ Suppress missing API diagnostics in methods excluded from Monty runtime executio
 +        check(io.BytesIO(), basesize )  # ty: ignore[call-non-callable]
          n = 1000  # use a variable to prevent constant folding
 -        check(io.BytesIO(b'a' * n), basesize + sys.getsizeof(b'a' * n))
--    test_sizeof = support.cpython_only(test_sizeof)
 +        check(io.BytesIO(b'a' * n), basesize + sys.getsizeof(b'a' * n))  # ty: ignore[call-non-callable, unresolved-attribute]
-+    test_sizeof = support.cpython_only(test_sizeof)  # ty: ignore[invalid-argument-type]
  
      # Various tests of copy-on-write behaviour for BytesIO.
  
@@ -347,33 +332,9 @@ Suppress missing API diagnostics in methods excluded from Monty runtime executio
 -        self.assertEqual(sys.getrefcount(imm), old_rc)
 +        self.assertEqual(sys.getrefcount(imm), old_rc)  # ty: ignore[unresolved-attribute]
  
+     @support.cpython_only
      def test_cow_truncate(self):
-         # Ensure truncate causes a copy.
-         def mutation(memio):
-             memio.truncate(1)
-         self._test_cow_mutation(mutation)
--    test_cow_truncate = support.cpython_only(test_cow_truncate)
-+    test_cow_truncate = support.cpython_only(test_cow_truncate)  # ty: ignore[invalid-argument-type]
- 
-     def test_cow_write(self):
-         # Ensure write that would not cause a resize still results in a copy.
-@@ -1032,7 +1043,7 @@
-             memio.seek(0)
-             memio.write(b'foo')
-         self._test_cow_mutation(mutation)
--    test_cow_write = support.cpython_only(test_cow_write)
-+    test_cow_write = support.cpython_only(test_cow_write)  # ty: ignore[invalid-argument-type]
- 
-     def test_cow_setstate(self):
-         # __setstate__ should cause buffer to be released.
-@@ -1041,23 +1052,23 @@
-         def mutation(memio):
-             memio.__setstate__(state)
-         self._test_cow_mutation(mutation)
--    test_cow_setstate = support.cpython_only(test_cow_setstate)
-+    test_cow_setstate = support.cpython_only(test_cow_setstate)  # ty: ignore[invalid-argument-type]
- 
-     def test_cow_mutable(self):
+@@ -1050,16 +1061,16 @@
          # BytesIO should accept only Bytes for copy-on-write sharing, since
          # arbitrary buffer-exporting objects like bytearray() aren't guaranteed
          # to be immutable.
@@ -383,9 +344,7 @@ Suppress missing API diagnostics in methods excluded from Monty runtime executio
 +        old_rc = sys.getrefcount(ba)  # ty: ignore[unresolved-attribute]
          memio = self.ioclass(ba)
 -        self.assertEqual(sys.getrefcount(ba), old_rc)
--    test_cow_mutable = support.cpython_only(test_cow_mutable)
 +        self.assertEqual(sys.getrefcount(ba), old_rc)  # ty: ignore[unresolved-attribute]
-+    test_cow_mutable = support.cpython_only(test_cow_mutable)  # ty: ignore[invalid-argument-type]
  
      def test_write_with_export(self):
          memio = self.ioclass(b"abcd")
@@ -396,7 +355,7 @@ Suppress missing API diagnostics in methods excluded from Monty runtime executio
                  memio.__init__(b"replacement")
              self.assertEqual(memio.tell(), 2)
              self.assertEqual(memio.getvalue(), b"abcd")
-@@ -1148,7 +1159,7 @@
+@@ -1150,7 +1161,7 @@
      UnsupportedOperation = io.UnsupportedOperation
  
      def ioclass(self, *args, **kwargs):

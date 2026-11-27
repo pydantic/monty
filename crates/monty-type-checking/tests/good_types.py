@@ -123,6 +123,27 @@ obj = object()
 t = type(42)
 
 
+# === Descriptors ===
+
+
+class DescriptorExample:
+    def __init__(self, value: int) -> None:
+        self.value = value
+
+    @classmethod
+    def from_string(cls, value: str) -> 'DescriptorExample':
+        return cls(int(value))
+
+    @staticmethod
+    def encode(value: str) -> bytes:
+        return value.encode()
+
+
+assert_type(DescriptorExample.from_string('42'), DescriptorExample)
+assert_type(DescriptorExample.encode('hello'), bytes)
+delattr(DescriptorExample(42), 'value')
+
+
 # === Primitive Types ===
 
 # bool
