@@ -55,6 +55,8 @@ Two exceptions:
 
 - `encoding="utf-8"` (any case, also `"utf8"`) is accepted as a documented
     no-op because Monty already uses UTF-8 for all text I/O.
+    So is `encoding="locale"`, the marker `io.text_encoding(None)` returns.
+    Monty reads it as UTF-8; CPython uses the host's locale encoding.
 - A wrong *type* for `encoding`/`errors`/`newline` (e.g. `encoding=123`)
     raises a typed `TypeError: open() argument '<name>' must be str or None, not <type>` rather than the generic "not
     yet supported" message.

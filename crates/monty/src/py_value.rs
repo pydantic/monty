@@ -205,6 +205,8 @@ macro_rules! forward_py_value {
             Self::Complex($value) => $body,
             Self::Path($value) => $body,
             Self::OpenFile($value) => $body,
+            Self::StringIo($value) => $body,
+            Self::BytesIo($value) => $body,
             Self::RePattern($value) => $body,
             Self::ReMatch($value) => $body,
             Self::Date($value) => $body,

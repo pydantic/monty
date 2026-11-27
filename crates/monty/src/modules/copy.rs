@@ -160,6 +160,16 @@ fn shallow_copy(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
             // A second generator at the same point in the same sequence, which is
             // what CPython's `__getstate__`/`__setstate__` pair produces.
             HeapReadOutput::Random(random) => Ok(random.allocate_like(vm)),
+            // CPython copies a stream through `__getstate__`, so its text and
+            // position but not its line-ending history; a closed one refuses.
+            HeapReadOutput::StringIo(stream) => {
+                let copy = stream.get(vm.heap).copy(vm)?;
+                Ok(Value::Ref(vm.heap.allocate(HeapData::StringIo(Box::new(copy)))))
+            }
+            HeapReadOutput::BytesIo(stream) => {
+                let copy = stream.get(vm.heap).copy(vm)?;
+                Ok(Value::Ref(vm.heap.allocate(HeapData::BytesIo(Box::new(copy)))))
+            }
             // `Context.__copy__`: the same settings and flags in a new object.
             HeapReadOutput::DecimalContext(context) => {
                 let settings = *context.get(vm.heap);
@@ -237,6 +247,8 @@ pub(crate) fn deep_copy(source: &Value, memo: &mut Memo, vm: &mut VM<'_>) -> Run
             HeapReadOutput::BoundMethod(bound) => bound.py_deep_copy(source, memo, vm),
             HeapReadOutput::Partial(partial) => partial.py_deep_copy(source, memo, vm),
             HeapReadOutput::Random(random) => random.py_deep_copy(source, memo, vm),
+            // A stream holds no references, so its deep copy is its shallow one.
+            HeapReadOutput::StringIo(_) | HeapReadOutput::BytesIo(_) => shallow_copy(source, vm),
             // A context holds no references, so its deep copy is its shallow one.
             HeapReadOutput::DecimalContext(context) => {
                 let settings = *context.get(vm.heap);
@@ -294,6 +306,8 @@ fn classify(output: &HeapReadOutput<'_>) -> Copyability {
         | HeapReadOutput::BoundMethod(_)
         | HeapReadOutput::Partial(_)
         | HeapReadOutput::Random(_)
+        | HeapReadOutput::StringIo(_)
+        | HeapReadOutput::BytesIo(_)
         | HeapReadOutput::DecimalContext(_) => Copyability::Rebuilt,
         // A shallow copy of an immutable container holds the same items, so
         // CPython hands back the original; only `deepcopy` rebuilds these.

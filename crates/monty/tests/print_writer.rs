@@ -399,6 +399,6 @@ fn print_file_other_than_a_sys_stream_raises() {
         .expect_err("only sys.stdout and sys.stderr can be written to");
     assert_snapshot!(
         err.message().unwrap(),
-        @"print() 'file' argument must be sys.stdout or sys.stderr, not int"
+        @"print() 'file' argument must be sys.stdout, sys.stderr, io.StringIO or io.BytesIO, not int"
     );
 }

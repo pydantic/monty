@@ -20,6 +20,7 @@ pub mod hash_table;
 pub mod hashlib;
 pub mod host_class;
 pub mod instance;
+pub mod io;
 pub mod iter;
 pub mod itertools;
 pub(crate) mod key_hash;

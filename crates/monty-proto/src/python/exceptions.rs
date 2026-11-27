@@ -65,6 +65,7 @@ pub fn exc_monty_to_py(py: Python<'_>, mut exc: MontyException) -> PyErr {
         ExcType::StopIteration => exceptions::PyStopIteration::new_err(msg),
         ExcType::SyntaxError => exceptions::PySyntaxError::new_err(msg),
         ExcType::TimeoutError => exceptions::PyTimeoutError::new_err(msg),
+        ExcType::BlockingIOError => exceptions::PyBlockingIOError::new_err(msg),
         ExcType::TypeError => exceptions::PyTypeError::new_err(msg),
         ExcType::ValueError => exceptions::PyValueError::new_err(msg),
         ExcType::UnicodeDecodeError | ExcType::UnicodeEncodeError => unicode_error_to_py(py, exc_type, exc_data, msg),
@@ -492,6 +493,8 @@ fn py_err_to_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcType {
             // be matched here — a standalone check after this branch is dead code
             } else if exceptions::PyTimeoutError::type_check(exc) {
                 ExcType::TimeoutError
+            } else if exceptions::PyBlockingIOError::type_check(exc) {
+                ExcType::BlockingIOError
             } else {
                 ExcType::OSError
             }

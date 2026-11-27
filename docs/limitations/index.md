@@ -78,6 +78,7 @@ The following modules are present:
 
 | Module          | Divergences                                       |
 | --------------- | ------------------------------------------------- |
+| `_io`           | [io.md](io.md)                                    |
 | `annotationlib` | [annotationlib.md](annotationlib.md)              |
 | `asyncio`       | [asyncio.md](asyncio.md)                          |
 | `base64`        | [base64.md](base64.md)                            |
@@ -94,6 +95,7 @@ The following modules are present:
 | `fnmatch`       | [fnmatch.md](fnmatch.md)                          |
 | `functools`     | [functools.md](functools.md)                      |
 | `hashlib`       | [hashlib.md](hashlib.md)                          |
+| `io`            | [io.md](io.md)                                    |
 | `itertools`     | [itertools.md](itertools.md)                      |
 | `json`          | [json.md](json.md)                                |
 | `keyword`       | [modules.md](modules.md#vendored-cpython-modules) |
@@ -113,13 +115,13 @@ The following modules are present:
 | `typing`        | [typing.md](typing.md)                            |
 | `unicodedata`   | [unicodedata.md](unicodedata.md)                  |
 
-Each covers only part of its CPython surface — often a small part. `colorsys`, `keyword`, `stat` and `textwrap` run CPython's own source.
+Each covers only part of its CPython surface — often a small part. `colorsys`, `keyword`, `stat` and `textwrap` run CPython's own source, and `io` a patched copy of it.
 `itertools`, `hashlib`, `tomllib` and `fnmatch` are the other exceptions: `itertools` implements every name it exports, `hashlib` every
 guaranteed algorithm, and `tomllib` and `fnmatch` their whole three- and four-name surfaces.
 The absent names are missing from the module namespace rather than stubbed, so they fail type checking as well as
 raising `AttributeError` at runtime.
 
-Notably absent: `enum`, `contextlib`, `io`, `string`, `struct`, `operator`,
+Notably absent: `enum`, `contextlib`, `string`, `struct`, `operator`,
 `inspect`, `logging`, `traceback`, `uuid`, `urllib`.
 Some of those are absent by design — `socket`, `subprocess`, `multiprocessing`, `threading` and `ctypes` would breach
 the sandbox — and others are simply not implemented yet.
