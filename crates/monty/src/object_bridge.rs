@@ -527,7 +527,7 @@ impl GraphExporter {
                 Ok(s) => {
                     // `py_repr` yields a heap `str` `Value`; extract its text and drop it.
                     defer_drop!(s, vm);
-                    MontyNode::Repr(s.try_to_str(vm).map_or_default(str::to_owned))
+                    MontyNode::Repr(s.try_as_str(vm).map_or_default(str::to_owned))
                 }
                 Err(err @ RunError::UncatchableExc(_)) => {
                     self.error = Some(err);

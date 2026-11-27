@@ -10,7 +10,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::StaticStrings,
-    types::{Class, Dict, List, OwnedTypeRef, PyTrait, Type, TypeRef, type_ref::c3_merge},
+    types::{Class, Dict, List, OwnedTypeRef, PyTrait, Tuple, Type, TypeRef, type_ref::c3_merge},
     value::Value,
 };
 
@@ -98,11 +98,7 @@ fn create_class(
     let bases = class_bases(bases, vm)?;
     let mro = linearize(&bases, vm)?;
 
-    let Value::Ref(ns_id) = namespace else {
-        let got = namespace.py_type(vm).cpython_arg_name(vm.heap, vm.interns);
-        return Err(ExcType::type_error_bad_arg_pos("type.__new__", 3, "dict", got));
-    };
-    let HeapData::Dict(source) = vm.heap.get(*ns_id) else {
+    let Some(source) = namespace.get_as::<Dict>(vm.heap) else {
         let got = namespace.py_type(vm).cpython_arg_name(vm.heap, vm.interns);
         return Err(ExcType::type_error_bad_arg_pos("type.__new__", 3, "dict", got));
     };
@@ -191,12 +187,9 @@ fn create_class(
 /// Monty classes derive only from other classes and `object`: the native
 /// types CPython lets a class subclass are rejected (see `limitations/classes.md`).
 fn class_bases(bases: &Value, vm: &VM<'_>) -> RunResult<Vec<TypeRef>> {
-    let tuple = match bases {
-        Value::Ref(id) if let HeapData::Tuple(tuple) = vm.heap.get(*id) => tuple,
-        _ => {
-            let got = bases.py_type(vm).cpython_arg_name(vm.heap, vm.interns);
-            return Err(ExcType::type_error_bad_arg_pos("type.__new__", 2, "tuple", got));
-        }
+    let Some(tuple) = bases.get_as::<Tuple>(vm.heap) else {
+        let got = bases.py_type(vm).cpython_arg_name(vm.heap, vm.interns);
+        return Err(ExcType::type_error_bad_arg_pos("type.__new__", 2, "tuple", got));
     };
     let mut out: Vec<TypeRef> = Vec::with_capacity(tuple.as_slice().len());
     for (index, base) in tuple.as_slice().iter().enumerate() {

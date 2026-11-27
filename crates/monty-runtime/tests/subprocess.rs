@@ -1516,8 +1516,8 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
             16_044_735,
         ),
         // `re.finditer` preflights the matches it builds from its scanned spans as a whole.
-        ("import re\nre.finditer('ab', 'ab ' * 10_000)", 3_217_199),
-        ("import re\nre.finditer('(a)(b)', 'ab ' * 10_000)", 4_596_045),
+        ("import re\nre.finditer('ab', 'ab ' * 10_000)", 3_218_319),
+        ("import re\nre.finditer('(a)(b)', 'ab ' * 10_000)", 4_597_165),
         // A split's piece buffer is grown under the same checks as `re.split`'s.
         ("('ab,' * 100_000).split(',')", 1_392_992),
         ("('ab,' * 100_000).rsplit(',')", 1_392_993),
@@ -1525,6 +1525,11 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         ("(b'ab,' * 100_000).rsplit(b',')", 1_401_217),
         // Empty lines allocate no heap entry, so only the line buffer's growth check sees them.
         ("('\\n' * 200_000).splitlines()", 1_292_858),
+        // `str.translate` grows its output through a builder on lookup misses too, not only for mapped values.
+        (
+            "s = 'a' + 'b' * 240_000\nlen(s.translate({97: 'x' * 240_000}))",
+            1_245_188,
+        ),
         // The json encoder preflights each doubling of its output buffer.
         ("import json\njson.dumps(['x' * 1000] * 2000)", 1_168_792),
         // `randbytes` charges its word buffer and the byte buffer it fills.
@@ -2758,6 +2763,31 @@ fn refused_findall_leaves_no_partial_result() {
     }
 }
 
+/// `str.translate` validates its arguments before copying the receiver, so an
+/// invalid call on a string too large to copy raises `TypeError`, not `MemoryError`.
+#[test]
+fn translate_checks_args_before_copying_receiver() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    assert_eq!(
+        child.feed_complete("s = 'x' * 600_000\nlen(s)"),
+        MontyObject::int(600_000)
+    );
+    for (code, message) in [
+        ("s.translate()", "str.translate() takes exactly one argument (0 given)"),
+        ("s.translate(table={})", "str.translate() takes no keyword arguments"),
+    ] {
+        let (_, event) = child.feed(code);
+        let error = expect_error(event);
+        assert_eq!(
+            (error.exc_type.as_str(), error.message.as_deref()),
+            ("TypeError", Some(message)),
+            "{code}"
+        );
+    }
+    child.shutdown();
+}
+
 /// Assert a `memory limit exceeded` message reports roughly `expected` bytes
 /// used against a 1 MiB limit.
 ///
@@ -2902,6 +2932,22 @@ fn expanding_codecs_fail_softly() {
         assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{call}");
         child.shutdown();
     }
+}
+
+/// A custom ignorechars needs a copy of the input while the decoder holds its output buffer.
+#[test]
+fn a85decode_budgets_for_custom_ignorechars() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(2_400_000));
+    child.feed_complete("import base64\nsrc = b'!' * 1_000_000");
+    assert_eq!(
+        child.feed_complete("len(base64.a85decode(src))"),
+        MontyObject::int(800_000)
+    );
+
+    let (_, event) = child.feed("len(base64.a85decode(src, ignorechars=b''))");
+    assert_eq!(expect_error(event).exc_type, "MemoryError");
+    child.shutdown();
 }
 
 /// A conversion that appends to, or frames, a buffer it filled exactly must

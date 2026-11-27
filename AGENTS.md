@@ -74,18 +74,19 @@ passes without it, so the PR that fixes the Monty gap drops the patch; that test
 line in a patch's reason exempts it.
 An import finds them after the native `StandardLib` modules and before the host (`module_finder.rs`), running them like
 a module from a file with no OS call. A newly vendored module also goes in `SANDBOX_MODULE_NAMES`, the typeshed
-`COPY_FILES`/`VERSIONS`, `limitations/modules.md` and a `test_cases` file.
+`crates/monty-typeshed/vendor.toml` and `VERSIONS` patch, `limitations/modules.md` and a `test_cases` file.
 Only list modules that load: `make stdlib-candidates` reports each candidate's first blocker, then every syntax
 blocker in its source and the modules with only one syntax blocker (which may still have import or runtime
 blockers).
 
-The manifest’s `[tests]` tree vendors upstream suites and their `unittest` dependencies into
-`crates/monty-datatest/vendor/cpython/`, which is not part of the runtime.
-`make test-cases` runs the adapted suites on Monty and CPython; `make check-stdlib` verifies both trees.
-Use `--test --make-patch NNNN-name --reason '...'` to save adaptations against the full upstream files.
+`make test-cpython` extracts `Lib/test` from the pinned CPython archive into the gitignored
+`crates/monty-datatest/vendor/cpython/work/` tree, type-checks the suites enabled in `[tests].suites`, and runs them on both interpreters.
+`make test-cases` runs only Monty's own cases and does not need the archive.
+Use `make prepare-cpython-tests`, edit the generated sources, then use `--test --make-patch NNNN-name --reason '...'`
+to save adaptations against the full upstream files.
 Keep definitions unless they block execution, and preserve the upstream inputs and assertions when adapting suite setup.
 
-Keep the CPython change summary in `crates/monty/stdlib/NOTICE` current when patches change.
+Keep the CPython change summary in `crates/monty/stdlib/NOTICE` current when runtime patches change.
 `make update-licenses` regenerates the licence bundle shipped with native and WASM workers.
 
 ## Cross-Platform Requirements
@@ -613,7 +614,8 @@ make lint                 Lint the code with ruff, clippy and mdformat
 make test-no-features     Run rust tests without any features enabled
 make test-memory-model-checks Run rust tests with memory-model-checks enabled - THIS IS EXTREMELY SLOW, SHOULD MOSTLY BE RUN IN CI OR IF ABSOLUTELY NECESSARY
 make test-ref-count-return Run rust tests with ref-count-return enabled
-make test-cases           Run tests cases only
+make test-cases           Run Monty's test cases on both interpreters
+make test-cpython         Type-check and run the enabled upstream CPython suites
 make test-type-checking   Run rust tests on monty-type-checking
 make pytest               Run Python tests with pytest
 make test-py              Build the python package (debug profile) and run tests

@@ -2119,15 +2119,24 @@ impl<'h> VM<'h> {
         }
     }
 
-    /// Loads a top-level built-in, a cached file module or a vendored CPython
-    /// module, or suspends with [`OsFunctionCall::Import`]: the host's value
-    /// becomes the module, and a host with no such module falls back to a `.py`
-    /// file (see `module_finder`). `LoadSubmodule` resolves the remaining dotted components.
+    /// Loads the first module in an import: a top-level name or the package named by leading dots.
+    /// `LoadSubmodule` resolves the remaining dotted components.
     fn load_module(&mut self, module_id: u16) -> RunResult<CallResult> {
         let name_id = StringId::from_index(module_id);
-        match self.interns.static_string(name_id).and_then(StandardLib::from_static) {
+        let name = self.interns.get_str(name_id);
+        if name.starts_with('.') {
+            // `from . import x`: the compiler names the package by its dots alone
+            self.import_relative_package(name.len())
+        } else {
+            self.import_absolute(name, self.interns.static_string(name_id))
+        }
+    }
+
+    /// Loads a native module before consulting the file cache, vendored sources or host.
+    pub(super) fn import_absolute(&mut self, name: &str, static_name: Option<StaticStrings>) -> RunResult<CallResult> {
+        match static_name.and_then(StandardLib::from_static) {
             Some(module) => Ok(CallResult::Value(Value::Ref(module.create(self)))),
-            None => self.import_top_level(self.interns.get_str(name_id)),
+            None => self.import_top_level(name),
         }
     }
 

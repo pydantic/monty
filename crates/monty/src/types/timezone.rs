@@ -24,7 +24,7 @@ use crate::{
         LazyHeapSet, PyTrait, Type, TypeRef,
         str::{StringRepr, allocate_string},
         timedelta,
-        timedelta::{MICROSECONDS_PER_SECOND, SECONDS_PER_HOUR, SECONDS_PER_MINUTE},
+        timedelta::{MICROSECONDS_PER_SECOND, SECONDS_PER_HOUR, SECONDS_PER_MINUTE, TimeDelta},
     },
     value::{EitherStr, Value},
 };
@@ -138,10 +138,7 @@ fn extract_offset_seconds(offset_arg: &Value, heap: &Heap, interns: &Interns) ->
             offset_arg.py_type_heap(heap).cpython_arg_name(heap, interns),
         ))
     };
-    let Value::Ref(offset_id) = offset_arg else {
-        return Err(bad_type());
-    };
-    let HeapData::TimeDelta(delta) = heap.get(*offset_id) else {
+    let Some(delta) = offset_arg.get_as::<TimeDelta>(heap) else {
         return Err(bad_type());
     };
 
@@ -275,7 +272,7 @@ pub(crate) fn format_offset_timedelta_repr(offset_seconds: i32) -> String {
 
 fn extract_name(name_arg: &Value, heap: &Heap, interns: &Interns) -> RunResult<Option<String>> {
     name_arg
-        .try_to_str_heap(heap, interns)
+        .try_as_str_heap(heap, interns)
         .map(|name| Some(name.to_owned()))
         .map_err(|_| bad_name_arg(name_arg, heap, interns))
 }

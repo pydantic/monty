@@ -1,5 +1,5 @@
 """Monty's `statistics`: the common descriptive functions on `int`/`float` data.
-`NormalDist`, `kde`, `geometric_mean`, `harmonic_mean`, `median_grouped`, `covariance`,
+`NormalDist`, `kde`, `kde_random`, `geometric_mean`, `harmonic_mean`, `median_grouped`, `covariance`,
 `correlation` and `linear_regression` are not provided."""
 
 from collections.abc import Hashable, Iterable

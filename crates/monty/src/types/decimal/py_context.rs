@@ -17,7 +17,7 @@ use super::{
     py::{self, ContextMethod},
 };
 use crate::{
-    args::{ArgValues, FromArgs, is_long_int},
+    args::{ArgValues, FromArgs},
     builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop,
@@ -415,7 +415,9 @@ fn integer_arg(value: &Value, vm: &VM<'_>) -> RunResult<Option<i64>> {
     match value {
         Value::Int(n) => Ok(Some(*n)),
         Value::Bool(b) => Ok(Some(i64::from(*b))),
-        _ if is_long_int(value, vm) => Err(ExcType::overflow_error("Python int too large to convert to C ssize_t")),
+        _ if value.as_long_int(vm).is_some() => {
+            Err(ExcType::overflow_error("Python int too large to convert to C ssize_t"))
+        }
         _ => Err(ExcType::type_error("an integer is required")),
     }
 }

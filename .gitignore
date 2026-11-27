@@ -21,6 +21,7 @@
 /.worktrees/
 /.zed/
 /scripts/json_files/
+/crates/monty-datatest/vendor/cpython/work/
 .DS_Store
 /.codex/
 

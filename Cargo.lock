@@ -2455,11 +2455,15 @@ dependencies = [
  "monty",
  "monty-fixture",
  "monty-fs",
+ "monty-type-checking",
  "monty-types",
  "pyo3",
  "pyo3-build-config",
+ "regex-syntax",
+ "serde",
  "similar 3.2.1",
  "tempfile",
+ "toml",
 ]
 
 [[package]]

@@ -151,7 +151,6 @@ __all__ = [
     "TypeGuard",
     "TypeIs",
     "TYPE_CHECKING",
-    "type_repr",
     "Never",
     "NoReturn",
     "ReadOnly",
@@ -629,7 +628,7 @@ TypeForm: _SpecialForm
 if sys.version_info >= (3, 14):
     from typing import evaluate_forward_ref as evaluate_forward_ref
 
-    from annotationlib import Format as Format, get_annotations as get_annotations, type_repr as type_repr
+    from annotationlib import Format as Format, get_annotations as get_annotations
 else:
     class Format(enum.IntEnum):
         VALUE = 1
@@ -697,7 +696,6 @@ else:
         format: Format | None = None,
         _recursive_guard: Container[str] = ...,
     ) -> AnnotationForm: ...
-    def type_repr(value: object) -> str: ...
 
 # PEP 661
 class Sentinel:

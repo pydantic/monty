@@ -636,11 +636,6 @@ impl LongInt {
         self.0.is_zero()
     }
 
-    /// Checks if the value is negative.
-    pub fn is_negative(&self) -> bool {
-        self.0.is_negative()
-    }
-
     /// Tries to convert to i64.
     ///
     /// Returns `Some(i64)` if the value fits, `None` otherwise.

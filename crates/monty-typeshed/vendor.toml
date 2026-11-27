@@ -1,0 +1,63 @@
+# Upstream stdlib paths selected for Monty's checker. This is not a transitive
+# closure: imports from omitted dependencies (e.g. contextlib, codecs and
+# importlib) can resolve to Unknown.
+commit = "0e16ea31d2e188fdc126cb31e7c4fcc6b5a8da96"
+# Review upstream licence changes before updating this hash.
+license_sha256 = "295f8538c94ae5c3043301cf7cff1c852dab6a786a8ddee471e061b40d5ecabe"
+
+# Stub-only helpers live in _typeshed; asyncio and sys replace upstream packages.
+additions = ["_typeshed/_monty.pyi", "asyncio.pyi", "sys.pyi"]
+
+files = [
+    "VERSIONS",
+    "_collections_abc.pyi",
+    "_io.pyi",
+    "_stat.pyi",
+    "_typeshed/__init__.pyi",
+    # ty uses TypedDictFallback to resolve TypedDict members (issue #799).
+    "_typeshed/_type_checker_internals.pyi",
+    # Without abstractmethod, protocol members such as Iterator.__next__ infer as Unknown.
+    "abc.pyi",
+    "annotationlib.pyi",
+    "base64.pyi",
+    "binascii.pyi",
+    "bisect.pyi",
+    "builtins.pyi",
+    "collections/__init__.pyi",
+    "collections/abc.pyi",
+    "colorsys.pyi",
+    "copy.pyi",
+    "csv.pyi",
+    "dataclasses.pyi",
+    "datetime.pyi",
+    "decimal.pyi",
+    "enum.pyi",
+    "errno.pyi",
+    "fnmatch.pyi",
+    "functools.pyi",
+    "genericpath.pyi",
+    "hashlib.pyi",
+    "io.pyi",
+    "itertools.pyi",
+    "json/__init__.pyi",
+    "json/decoder.pyi",
+    "json/encoder.pyi",
+    "keyword.pyi",
+    "math.pyi",
+    "os/__init__.pyi",
+    "os/path.pyi",
+    "pathlib/__init__.pyi",
+    "pathlib/types.pyi",
+    "posixpath.pyi",
+    "random.pyi",
+    "re.pyi",
+    "stat.pyi",
+    "statistics.pyi",
+    "textwrap.pyi",
+    "time.pyi",
+    "tomllib.pyi",
+    "types.pyi",
+    "typing.pyi",
+    "typing_extensions.pyi",
+    "unicodedata.pyi",
+]

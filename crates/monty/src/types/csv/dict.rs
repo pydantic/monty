@@ -603,20 +603,14 @@ fn with_writer<'h, T>(
 /// Whether the wrapped `_csv.writer` targets a file, with its bound `write` and dialect;
 /// `None` if `writer` is not one.
 fn writer_parts(writer: &Value, vm: &VM<'_>) -> Option<(bool, Value, Arc<Dialect>)> {
-    match writer {
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Csv(csv) => match &**csv {
-                CsvObject::Writer(writer) => Some((
-                    writer.targets_file(vm),
-                    writer.write_method(vm.heap),
-                    Arc::clone(&writer.dialect),
-                )),
-                _ => None,
-            },
-            _ => None,
-        },
-        _ => None,
-    }
+    let CsvObject::Writer(writer) = writer.get_as::<CsvObject>(vm.heap)? else {
+        return None;
+    };
+    Some((
+        writer.targets_file(vm),
+        writer.write_method(vm.heap),
+        Arc::clone(&writer.dialect),
+    ))
 }
 
 /// Reads one field of the `DictWriter` under a short borrow.
@@ -642,7 +636,7 @@ fn next_row(reader: &Value, vm: &mut VM<'_>) -> RunResult<Option<Vec<Value>>> {
 /// `fieldnames` as owned values: a `list` (what a header read produces) is copied directly,
 /// preflighted as a bulk copy; any other iterable is iterated as `zip` or `list()` would.
 fn fieldnames_items(fieldnames: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
-    if let Some(HeapData::List(list)) = fieldnames.ref_id().map(|id| vm.heap.get(id)) {
+    if let Some(list) = fieldnames.get_as::<List>(vm.heap) {
         return list.items().to_vec(vm.heap);
     }
     collect_iterable(fieldnames, vm)
@@ -650,14 +644,8 @@ fn fieldnames_items(fieldnames: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>
 
 /// The wrapped reader's `line_num`.
 fn reader_line_num(reader: &Value, vm: &VM<'_>) -> u64 {
-    match reader {
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Csv(csv) => match &**csv {
-                CsvObject::Reader(reader) => reader.line_num,
-                _ => 0,
-            },
-            _ => 0,
-        },
+    match reader.get_as::<CsvObject>(vm.heap) {
+        Some(CsvObject::Reader(reader)) => reader.line_num,
         _ => 0,
     }
 }

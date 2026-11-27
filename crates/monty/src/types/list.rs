@@ -23,7 +23,7 @@ use crate::{
     resource_checks::{check_repeat_size, check_value_buffer_growth, repeated_len, try_vec_with_capacity},
     sorting::parse_and_sort,
     types::{
-        LazyHeapSet, Type, TypeRef,
+        LazyHeapSet, Slice, Type, TypeRef,
         sequence::SequenceItems,
         slice::{normalize_sequence_index, slice_collect_iterator, value_to_i64_bound},
     },
@@ -519,9 +519,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         // Check for slice first (Value::Ref pointing to HeapData::Slice)
-        if let Value::Ref(id) = key
-            && let HeapData::Slice(slice) = vm.heap.get(*id)
-        {
+        if let Some(slice) = key.get_as::<Slice>(vm.heap) {
             return self.getitem_slice(slice, vm);
         }
 
@@ -547,9 +545,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
         defer_drop!(key, vm);
         defer_drop_mut!(value, vm);
 
-        if let Value::Ref(id) = key
-            && let HeapData::Slice(slice) = vm.heap.get(*id)
-        {
+        if let Some(slice) = key.get_as::<Slice>(vm.heap) {
             let slice = slice.clone();
             return self.setitem_slice(&slice, value, vm);
         }

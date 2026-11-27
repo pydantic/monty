@@ -136,6 +136,8 @@ next(counter)
 alias = list[int]
 opt = int | None
 where = pathlib.Path('/data') / 'file.txt'
+relative_globals = {'__package__': 'os'}
+exec('def leaf(path):\n    from .path import basename\n    return basename(path)', relative_globals)
 
 
 def with_default(x, y=[1]):
@@ -201,6 +203,7 @@ assert joined == 'x-y' and list(str_it) == ['b', 'c'] and list(range_it) == [1, 
 assert list(dk_it) == ['b', 3] and list(dv_it) == [[2, 3], 'int key'] and next(counter) == 6
 assert alias == list[int] and opt == (int | None) and str(where) == '/data/file.txt'
 assert with_default(1) == 2
+assert relative_globals['leaf']('/data/file.txt') == 'file.txt'
 assert functools.reduce(lambda a, b: a + b, [1, 2, 3]) == 6
 assert add5(2) == 7
 (result, c.value)
@@ -284,11 +287,10 @@ fn fixture_dump_loads_and_resumes() {
     );
 }
 
-/// Older fixtures remain readable after adding inline strings, the star-import opcode, suspendable
-/// iteration (version 17) and native continuations (version 18).
+/// Suspended sessions from older supported versions resume their host call.
 #[test]
 fn older_version_fixtures_load_and_resume() {
-    for version in [14, 15, 16, 17] {
+    for version in 14..DUMP_VERSION {
         let bytes = fs::read(fixture_path_for(version)).expect("older fixture exists");
         let loaded = Dump::load(&bytes).expect("older dumps remain supported");
         assert_eq!(loaded.script_name, "fixture.py");
