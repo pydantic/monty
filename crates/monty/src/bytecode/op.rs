@@ -61,6 +61,13 @@ pub const IMPORT_STAR_LOAD: u8 = 1;
 /// namespace (locals dict, globals dict or a global slot).
 pub const IMPORT_STAR_BIND: u8 = 2;
 
+/// `Yield` mode: `[value] -> [sent]`, suspending the generator with `value`.
+pub const YIELD_VALUE: u8 = 0;
+
+/// `Yield` mode: `[iterator, sent] -> [result]`, advancing the delegate of a
+/// `yield from` and re-executing until it is exhausted with `result`.
+pub const YIELD_FROM: u8 = 1;
+
 /// Encodes an optional fused comparison into the `Assert`/`AssertFailed`
 /// flags operand: `ASSERT_CMP_FLAG | as_operand` when present, `0` when not.
 pub fn assert_flags(cmp_op: Option<CmpOperator>) -> u8 {
@@ -93,7 +100,7 @@ pub fn decode_assert_flags(flags: u8) -> Option<Option<CmpOperator>> {
 /// Opcode bytes are part of Monty's serialized `Code` format. Explicit
 /// discriminants prevent source reordering or removal from changing that format
 /// accidentally; intentional renumbering requires a dump-format version bump.
-#[monty_macros::explicit_discriminants(checksum = 0xcfa6_6168_5f74_b86e)]
+#[monty_macros::explicit_discriminants(checksum = 0xffe6_83b8_aa5d_8585)]
 #[repr(u8)]
 #[cfg_attr(test, derive(strum::EnumIter))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromRepr)]
@@ -619,6 +626,9 @@ pub enum Opcode {
     /// `IMPORT_STAR_LOAD` or `IMPORT_STAR_BIND`); see `Compiler::compile_import_star`
     /// for the loop the three modes form.
     ImportStar = 131,
+    /// Suspends the running generator. Operand: u8 mode, `YIELD_VALUE` or
+    /// `YIELD_FROM`; see `VM::yield_from` for how delegation re-executes it.
+    Yield = 132,
 }
 
 /// `LoadName` flag: the load is in call position, so an unresolved name under
@@ -746,7 +756,8 @@ impl Opcode {
             | Self::MatchClass
             | Self::MatchAttr
             | Self::SinkTop
-            | Self::ImportStar => OperandShape::U8,
+            | Self::ImportStar
+            | Self::Yield => OperandShape::U8,
             Self::LoadSmallInt => OperandShape::I8,
             Self::LoadModule
             | Self::LoadConst
@@ -1025,6 +1036,14 @@ impl Opcode {
                     -2
                 } else {
                     1
+                }
+            }
+            // A yielded value is replaced by the sent one; a delegate is replaced by its result.
+            (Yield, Operand::U8(mode)) => {
+                if mode == YIELD_FROM {
+                    -1
+                } else {
+                    0
                 }
             }
 

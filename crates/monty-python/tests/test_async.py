@@ -719,6 +719,10 @@ summaries
     assert records == snapshot(['summary(python async_result_1)', 'summary(python async_result_2)'])
 
 
+@pytest.mark.xfail(
+    reason='`*` unpacking a generator expression cannot suspend for host calls; see limitations/generators.md',
+    strict=True,
+)
 async def test_llm_gather_fan_out(asession: AsyncMontySession):
     """LLM uses asyncio.gather to fan out many concurrent requests."""
 

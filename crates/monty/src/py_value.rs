@@ -27,7 +27,7 @@ use crate::{
     intern::{FunctionId, StaticStrings},
     modules::{ModuleFunctions, asyncio::task_call_method, collections::defaultdict::defaultdict_missing},
     types::{
-        GenericAlias, LazyHeapSet, LongInt, Property, PyTrait, Type, TypeRef, Union, allocate_string, allocate_tuple,
+        GenericAlias, LazyHeapSet, LongInt, Property, PyTrait, Type, TypeRef, Union, allocate_tuple,
         bytes::PyBytes,
         file::unloaded_iteration_error,
         long_int::{PyInt, arithmetic::float_binary},
@@ -173,6 +173,7 @@ macro_rules! forward_py_value {
             Self::SetIterator($value) => $body,
             Self::CallableIterator($value) => $body,
             Self::MapFilter($value) => $body,
+            Self::Generator($value) => $body,
             Self::Itertools($value) => $body,
             Self::DirScan($value) => $body,
             Self::Csv($value) => $body,
@@ -403,7 +404,7 @@ impl<'h> PyValue<'h> {
             Self::Marker(value) => Ok(value.py_repr_fmt(f)?),
             Self::Property(value) => Ok(write!(f, "<property {value:?}>")?),
             Self::Cell(cell) => Ok(write!(f, "<cell: {} object>", cell.get(vm.heap).0.py_type_name(vm))?),
-            Self::Exception(e) => Ok(e.get(vm.heap).py_repr_fmt(f)?),
+            Self::Exception(e) => e.py_repr_fmt(f, vm, heap_ids),
             Self::Module(m) => Ok(f.write_str(&m.get(vm.heap).repr(vm.interns))?),
             Self::Coroutine(coro) => {
                 let func = vm.interns.get_function(coro.get(vm.heap).func_id);
@@ -655,7 +656,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
 
     fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
         forward_py_value!(self, |value| value.py_str(vm), {
-            Self::Exception(value) => Ok(allocate_string(value.get(vm.heap).py_str(), vm.heap)),
+            Self::Exception(value) => value.py_str(vm),
             _ => self.py_repr(vm),
         })
     }
@@ -989,6 +990,7 @@ mod tests {
     use crate::{
         builtins::BuiltinsFunctions,
         defer_drop_mut,
+        exception_private::ExceptionValue,
         heap::{DropGuard, HeapData, HeapReader},
         heap_data::CellValue,
         intern::{BytesId, CompileInterns, LongIntId, StringId},
@@ -1081,7 +1083,10 @@ mod tests {
             defer_drop!(cell, vm);
             assert_eq!(cell.py_value(vm).py_hash(vm).unwrap(), Some(identity_hash(cell_id)));
 
-            let exception = Value::allocate(SimpleException::new(ExcType::ValueError, None), vm.heap);
+            let exception = Value::allocate(
+                ExceptionValue::from(SimpleException::new(ExcType::ValueError, None)),
+                vm.heap,
+            );
             defer_drop!(exception, vm);
             assert_eq!(exception.py_value(vm).py_hash(vm).unwrap(), None);
         });

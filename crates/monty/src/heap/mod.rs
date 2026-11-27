@@ -2109,6 +2109,7 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
         HeapData::SetIterator(iter) => on_child(iter.source_id()),
         HeapData::CallableIterator(iter) => iter.for_each_child_id(on_child),
         HeapData::MapFilter(iter) => iter.for_each_child_id(on_child),
+        HeapData::Generator(generator) => generator.for_each_child_id(on_child),
         HeapData::DirScan(scan) => scan.for_each_child_id(on_child),
         HeapData::Itertools(iter) => iter.for_each_child_id(on_child),
         HeapData::Csv(csv) => csv.for_each_child_id(on_child),
@@ -2243,8 +2244,14 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
         // Mirror `py_dec_ref_ids_for_data`: both own references to decimal contexts.
         HeapData::DecimalSignalDict(dict) => on_child(dict.context_id()),
         HeapData::DecimalContextManager(manager) => manager.context_ids().for_each(on_child),
-        // The owned `__cause__` / `__context__`; exceptions are still not GC-tracked.
-        HeapData::Exception(exc) => exc.owned_chain_ids().for_each(on_child),
+        // The owned `__cause__` / `__context__`; only a `StopIteration` that owns a value is GC-tracked.
+        HeapData::Exception(exc) => {
+            exc.owned_chain_ids().for_each(&mut on_child);
+            // A `StopIteration` carries an arbitrary value.
+            if let Some(Value::Ref(id)) = exc.value.as_deref() {
+                on_child(*id);
+            }
+        }
         // Leaf types with no heap references
         _ => {}
     }
@@ -2303,6 +2310,7 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         HeapData::SetIterator(iter) => iter.py_dec_ref_ids(stack),
         HeapData::CallableIterator(iter) => iter.py_dec_ref_ids(stack),
         HeapData::MapFilter(iter) => iter.py_dec_ref_ids(stack),
+        HeapData::Generator(generator) => generator.py_dec_ref_ids(stack),
         HeapData::DirScan(scan) => scan.py_dec_ref_ids(stack),
         HeapData::Itertools(iter) => iter.py_dec_ref_ids(stack),
         HeapData::Csv(csv) => csv.py_dec_ref_ids(stack),

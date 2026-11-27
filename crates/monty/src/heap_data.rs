@@ -17,7 +17,7 @@ use crate::{
     },
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcTypeExt, RunResult, SimpleException},
+    exception_private::{ExcTypeExt, ExceptionValue, RunResult},
     hash::HashValue,
     heap::{HeapId, HeapItem, HeapObjectRead},
     intern::FunctionId,
@@ -78,7 +78,7 @@ macro_rules! heap_payloads {
             Slice(inline $crate::types::Slice),
             /// An exception instance such as `ValueError('message')`.
             #[serde(rename = "X")]
-            Exception(inline $crate::exception_private::SimpleException),
+            Exception(inline $crate::exception_private::ExceptionValue),
             /// A host-backed class instance (the heap form of the wire `ClassInstance`).
             HostClass(boxed $crate::types::HostClass),
             /// The lightweight type object `type(x)` materializes for a `HostClass`
@@ -127,6 +127,8 @@ macro_rules! heap_payloads {
             CallableIterator(inline $crate::types::callable_iterator::CallableIterator),
             /// A lazy `map` or `filter`, retaining its callback and source iterators.
             MapFilter(boxed $crate::types::map_filter::MapFilter),
+            /// A generator object, holding its paused frame between yields.
+            Generator(boxed $crate::bytecode::Generator),
             /// An arbitrary-precision integer used when a Python `int` does not fit in `i64`.
             #[serde(rename = "G")]
             LongInt(inline $crate::types::LongInt),
@@ -240,8 +242,8 @@ impl HeapData {
     /// Returns whether this heap data type can participate in reference cycles.
     ///
     /// Only container types that can hold references to other heap objects need to be
-    /// tracked for GC purposes. Leaf types like Str, Bytes, Range, and Exception cannot
-    /// form cycles and should not count toward the GC allocation threshold.
+    /// tracked for GC purposes. Leaf types like Str, Bytes, Range, and most exceptions
+    /// cannot form cycles and should not count toward the GC allocation threshold.
     ///
     /// This optimization allows programs that allocate many leaf objects (like strings)
     /// to avoid triggering unnecessary GC cycles.
@@ -250,6 +252,8 @@ impl HeapData {
     #[inline]
     pub(crate) fn is_gc_tracked(&self) -> bool {
         match self {
+            // Tracked only when it owns a `StopIteration` value; a chained exception that owns one is tracked itself.
+            Self::Exception(exception) => exception.value.is_some(),
             Self::Itertools(iter) => iter.is_gc_tracked(),
             Self::DirScan(scan) => scan.is_gc_tracked(),
             Self::List(_)
@@ -283,6 +287,7 @@ impl HeapData {
             | Self::SetIterator(_)
             | Self::CallableIterator(_)
             | Self::MapFilter(_)
+            | Self::Generator(_)
             | Self::Module(_)
             | Self::Coroutine(_)
             | Self::GatherFuture(_)
@@ -301,7 +306,6 @@ impl HeapData {
             | Self::Bytes(_)
             | Self::Range(_)
             | Self::Slice(_)
-            | Self::Exception(_)
             | Self::DataclassParams(_)
             | Self::StringIterator(_)
             | Self::BytesIterator(_)
@@ -427,6 +431,7 @@ impl HeapData {
             Self::SetIterator(_) => Type::SetIterator,
             Self::CallableIterator(_) => Type::CallableIterator,
             Self::MapFilter(iter) => iter.py_type(),
+            Self::Generator(_) => Type::WalkGenerator,
             Self::Itertools(i) => i.py_type(),
             Self::DirScan(scan) => scan.py_type(),
             Self::Csv(csv) => csv.py_type(),
@@ -661,11 +666,13 @@ fn hash_func_id(func_id: FunctionId) -> HashValue {
     HashValue::new(hasher.finish())
 }
 
-impl HeapItem for SimpleException {
+impl HeapItem for ExceptionValue {
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-        // Only the chain holds references; they are always exceptions, so an
-        // exception still cannot reach a container and stays a GC leaf.
+        // The chain only holds exceptions; a `StopIteration` value can be anything.
         stack.extend(self.owned_chain_ids());
+        if let Some(value) = &mut self.value {
+            value.py_dec_ref_ids(stack);
+        }
     }
 }
 

@@ -797,9 +797,11 @@ if is_monty:
     f.seek(0)
     assert list(f) == ['first\n', 'second\n', 'third']
     f.close()
-# generator expressions compile to `for` loops, so they can load an unread file
+# Advancing a generator expression with `next()` can suspend to read the file.
 with open(root / 'iter.txt') as f:
-    assert list(line.strip() for line in f) == ['first', 'second', 'third']
+    lines = (line.strip() for line in f)
+    assert next(lines) == 'first'
+    assert list(lines) == ['second', 'third']
 
 # Lazy adaptors can load an unread source when consumed by a comprehension.
 with open(root / 'iter.txt') as f:

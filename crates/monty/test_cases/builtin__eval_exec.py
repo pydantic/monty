@@ -160,6 +160,11 @@ try:
 except SyntaxError as e:
     assert str(e) == "'await' outside async function (<string>, line 3)"
 try:
+    exec('def g():\n    x = await y\n    yield x')
+    assert False, 'expected SyntaxError'
+except SyntaxError as e:
+    assert str(e) == "'await' outside async function (<string>, line 2)"
+try:
     eval('await x')
     assert False, 'expected SyntaxError'
 except SyntaxError as e:
