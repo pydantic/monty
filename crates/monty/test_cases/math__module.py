@@ -136,6 +136,17 @@ assert math.isqrt(99) == 9
 assert math.isqrt(100) == 10
 assert math.isqrt(True) == 1
 
+# Past a machine word, isqrt runs CPython's precision-doubling recursion, polling the time
+# limit between steps; check the floor property and exact squares on both sides.
+big_n = 10**20001 + 12345
+big_root = math.isqrt(big_n)
+assert big_root * big_root <= big_n < (big_root + 1) * (big_root + 1)
+assert (big_root % 1000003, len(bin(big_root)) - 2) == (485302, 33221)
+big_s = 3**30000 + 5
+assert math.isqrt(big_s * big_s) == big_s
+assert math.isqrt(big_s * big_s - 1) == big_s - 1
+assert math.isqrt(big_s * big_s + 1) == big_s
+
 threw = False
 try:
     math.isqrt(-1)
@@ -569,6 +580,22 @@ except TypeError:
     threw = True
 assert threw
 
+# Operands past 4096 bits take the polled Lehmer gcd. Cover a common factor, a sign, a tiny
+# second operand (the case binary gcd walked bit by bit) and consecutive Fibonacci numbers,
+# the worst case for any Euclid-style gcd.
+gcd_a = 3**20000 + 1
+gcd_b = 7**10000 + 3
+assert math.gcd(gcd_a, gcd_b) == 2
+assert math.gcd(gcd_a * 1001, gcd_b * 1001) == 2002
+assert math.gcd(-gcd_a * 91, gcd_b * 91) == 182
+assert math.gcd(gcd_a, 2**61 - 1) == 1
+assert math.gcd(gcd_a * (2**61 - 1), 2**61 - 1) == 2**61 - 1
+fib = [0, 1]
+for _ in range(30000):
+    fib.append(fib[-1] + fib[-2])
+assert math.gcd(fib[30000], fib[29999]) == 1
+assert math.gcd(fib[30000], fib[29997]) == 2
+
 # === math.lcm() ===
 assert math.lcm(4, 6) == 12
 assert math.lcm(0, 5) == 0
@@ -578,6 +605,9 @@ assert math.lcm(3, 7) == 21
 assert math.lcm(6, 6) == 6
 assert math.lcm(-4, 6) == 12
 assert math.lcm(-4, -6) == 12
+lcm_big = math.lcm(gcd_a, gcd_b, 2**64 + 13)
+assert (lcm_big % 1000003, len(bin(lcm_big)) - 2) == (897569, 59836)
+assert math.lcm(-gcd_a * 6, gcd_b * 4) % 1000003 == 897450
 assert math.lcm(True, 2) == 2
 assert math.lcm(False, 5) == 0
 
