@@ -13,7 +13,7 @@ use crate::{
     expressions::CmpOperator,
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::{StaticStrings, StringId},
-    types::{LazyHeapSet, PyTrait, Type, TypeRef},
+    types::{LazyHeapSet, PyTrait, Tuple, Type, TypeRef},
     value::Value,
 };
 
@@ -117,14 +117,7 @@ impl VM<'_> {
     pub(super) fn make_exception(&mut self, exc_value: &Value, is_raise: bool) -> RunError {
         let simple_exc = match exc_value {
             // Exception instance on heap
-            Value::Ref(heap_id) => {
-                if let HeapData::Exception(exc) = self.heap.get(*heap_id) {
-                    exc.clone()
-                } else {
-                    // Not an exception type
-                    SimpleException::new_msg(ExcType::TypeError, "exceptions must derive from BaseException")
-                }
-            }
+            value if let Some(exc) = value.get_as::<SimpleException>(self.heap) => exc.clone(),
             // Exception type (e.g., `raise ValueError` instead of `raise ValueError()`)
             // Instantiate with no message
             Value::Builtin(Builtins::Type(ty)) if let Some(exc_type) = ty.exc_type() => {
@@ -201,10 +194,7 @@ impl VM<'_> {
 
     /// Allocates `exc_type()` with no message, for `raise ExcType from ...` and its cause.
     fn allocate_exception(&mut self, exc_type: ExcType) -> Value {
-        Value::Ref(
-            self.heap
-                .allocate(HeapData::Exception(SimpleException::new_none(exc_type))),
-        )
+        Value::allocate(SimpleException::new_none(exc_type), self.heap)
     }
 
     /// Stores `cause` (an owned reference) as `__cause__` of the exception `id`,
@@ -632,8 +622,7 @@ impl VM<'_> {
     /// Allocates an Exception on the heap and returns a Value::Ref to it.
     fn create_exception_value(&mut self, exc: &ExceptionRaise) -> Value {
         let exception = exc.exc.clone();
-        let heap_id = self.heap.allocate(HeapData::Exception(exception));
-        Value::Ref(heap_id)
+        Value::allocate(exception, self.heap)
     }
 
     /// Checks if an exception matches an `except` clause's exception type.
@@ -665,10 +654,7 @@ impl VM<'_> {
         }
         // Flat tuple of exception classes. CPython does not descend into
         // nested tuples in this position, so neither do we.
-        let Value::Ref(id) = exc_type else {
-            return Err(ExcType::except_invalid_type_error());
-        };
-        let HeapData::Tuple(tuple) = self.heap.get(*id) else {
+        let Some(tuple) = exc_type.get_as::<Tuple>(self.heap) else {
             // A non-tuple heap value (e.g. an exception instance) is not a
             // valid exception type for an `except` clause.
             return Err(ExcType::except_invalid_type_error());

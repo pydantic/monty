@@ -1,5 +1,5 @@
 """Monty's `fnmatch`: the four functions, without 3.14's `filterfalse` or `__all__`.
-`fnmatch()` and `filter()`'s pattern go through `os.fspath`, so they take a path too."""
+`fnmatch()` converts both arguments with `os.fspath`, and `filter()` converts its pattern."""
 
 from collections.abc import Iterable
 from os import PathLike

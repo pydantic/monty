@@ -167,7 +167,7 @@ pub(crate) fn allocate_naive(
 ) -> Value {
     let datetime = from_components(year, month, day, hour, minute, second, microsecond, None, None, heap)
         .expect("caller guarantees in-range datetime components");
-    Value::Ref(heap.allocate(HeapData::DateTime(datetime)))
+    Value::allocate(datetime, heap)
 }
 
 /// Returns true when this is an aware datetime.
@@ -253,7 +253,7 @@ pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     let (tz, tz_ref) = tzinfo_from_value(tzinfo, vm.heap, vm.interns)?;
     let dt = from_components(year, month, day, hour, minute, second, microsecond, tz, tz_ref, vm.heap)?;
-    Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(dt))))
+    Ok(Value::allocate(dt, vm.heap))
 }
 
 /// Argument shape for `datetime(year, month, day, hour=0, minute=0, second=0,
@@ -327,7 +327,7 @@ pub(crate) fn class_fromordinal(vm: &mut VM<'_>, args: ArgValues) -> RunResult<V
         timezone_name: None,
         tzinfo_ref: None,
     };
-    Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(dt))))
+    Ok(Value::allocate(dt, vm.heap))
 }
 
 /// Reads `datetime.now(tz=None)` from the session clock, preserving `tz` identity.
@@ -351,7 +351,7 @@ pub(crate) fn class_now(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResul
     }
     .ok_or_else(date_out_of_range)?;
     attach_or_allocate_tzinfo_ref(&mut dt, tz_ref, vm.heap);
-    Ok(CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::DateTime(dt)))))
+    Ok(CallResult::Value(Value::allocate(dt, vm.heap)))
 }
 
 /// `datetime.fromtimestamp(timestamp, tz=None)`: the instant `timestamp` seconds
@@ -389,7 +389,7 @@ pub(crate) fn class_fromtimestamp(vm: &mut VM<'_>, args: ArgValues) -> RunResult
         }
     };
     attach_or_allocate_tzinfo_ref(&mut dt, tz_ref, vm.heap);
-    Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(dt))))
+    Ok(Value::allocate(dt, vm.heap))
 }
 
 /// Argument shape for `datetime.fromtimestamp(timestamp, tz=None)`, a
@@ -565,9 +565,7 @@ fn astimezone(dt: &DateTime, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Call
     let mut converted =
         from_utc_naive_with_timezone_parts(utc, target.offset_seconds, target.name).ok_or_else(date_out_of_range)?;
     attach_or_allocate_tzinfo_ref(&mut converted, tz_ref, vm.heap);
-    Ok(CallResult::Value(Value::Ref(
-        vm.heap.allocate(HeapData::DateTime(converted)),
-    )))
+    Ok(CallResult::Value(Value::allocate(converted, vm.heap)))
 }
 
 /// CPython finds a naive value's local offset by rendering the days either side
@@ -664,7 +662,7 @@ pub(crate) fn class_strptime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Valu
         tzinfo_ref: None,
     };
     attach_or_allocate_tzinfo_ref(&mut dt, None, heap);
-    Ok(Value::Ref(heap.allocate(HeapData::DateTime(dt))))
+    Ok(Value::allocate(dt, heap))
 }
 
 /// Classmethod `datetime.fromisoformat(date_string)`.
@@ -686,7 +684,7 @@ pub(crate) fn class_fromisoformat(heap: &mut Heap, args: ArgValues, interns: &In
     let dt = parse_iso_datetime(&s, heap)
         .ok_or_else(|| SimpleException::new_msg(ExcType::ValueError, format!("Invalid isoformat string: '{s}'")))?;
 
-    Ok(Value::Ref(heap.allocate(HeapData::DateTime(dt))))
+    Ok(Value::allocate(dt, heap))
 }
 
 /// `datetime.combine(date, time, tzinfo=self.tzinfo)`.
@@ -730,7 +728,7 @@ fn combine_allocate(
 ) -> RunResult<Value> {
     let (hour, minute, second, microsecond) = time.components_i32();
     let combined = from_components(year, month, day, hour, minute, second, microsecond, tz, tz_ref, vm.heap)?;
-    Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(combined))))
+    Ok(Value::allocate(combined, vm.heap))
 }
 
 /// Argument shape for `datetime.combine(date, time, tzinfo=self.tzinfo)`.
@@ -780,13 +778,9 @@ fn combine_date_part(date: &Value, vm: &mut VM<'_>) -> RunResult<(i32, i32, i32)
 /// it, so it is only safe while the caller's guard keeps the source `time`
 /// alive — which is exactly how long [`class_combine`] uses it.
 fn combine_time_part(time: &Value, vm: &mut VM<'_>) -> RunResult<Time> {
-    match time {
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Time(t) => Ok(t.clone()),
-            _ => Err(combine_bad_time_arg(time, vm)),
-        },
-        _ => Err(combine_bad_time_arg(time, vm)),
-    }
+    time.get_as::<Time>(vm.heap)
+        .cloned()
+        .ok_or_else(|| combine_bad_time_arg(time, vm))
 }
 
 /// The `combine() argument 2 must be datetime.time, not X` error.
@@ -875,7 +869,7 @@ fn offset_datetime(datetime: &DateTime, delta: SignedDuration, heap: &mut Heap) 
         ..datetime.clone()
     };
     attach_or_allocate_tzinfo_ref(&mut next, datetime.tzinfo_ref, heap);
-    Ok(Value::Ref(heap.allocate(HeapData::DateTime(next))))
+    Ok(Value::allocate(next, heap))
 }
 
 /// `datetime - datetime` returns a timedelta with the difference.
@@ -888,7 +882,7 @@ pub(crate) fn py_sub_datetime(a: &DateTime, b: &DateTime, heap: &mut Heap) -> Op
 
     let diff = i128::from(utc_micros(a)?) - i128::from(utc_micros(b)?);
     let delta = timedelta::from_total_microseconds(diff).ok()?;
-    Some(Value::Ref(heap.allocate(HeapData::TimeDelta(delta))))
+    Some(Value::allocate(delta, heap))
 }
 
 /// Validates a `tzinfo` argument and extracts its timezone data plus heap identity.
@@ -1074,9 +1068,9 @@ struct IsoformatArgs {
 /// with the argument's length rather than its type.
 fn isoformat_separator(sep: Option<&Value>, vm: &VM<'_>) -> RunResult<char> {
     let Some(sep) = sep else { return Ok('T') };
-    // `try_to_str_heap`'s own message is the generic `expected string, not X`, so
+    // `try_as_str_heap`'s own message is the generic `expected string, not X`, so
     // only its success is used and the rejection is reworded here.
-    match sep.try_to_str_heap(vm.heap, vm.interns).ok() {
+    match sep.try_as_str_heap(vm.heap, vm.interns).ok() {
         Some(s) if s.chars().count() == 1 => Ok(s.chars().next().expect("just counted one char")),
         Some(s) => Err(ExcType::type_error_bad_arg_pos(
             "isoformat",
@@ -1147,7 +1141,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
     }
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        let Some(HeapReadOutput::DateTime(other)) = other.read_heap(vm) else {
+        let Some(other) = other.read_as::<DateTime>(vm.heap) else {
             return Ok(None);
         };
         let a = self.get(vm.heap);
@@ -1237,7 +1231,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
     }
 
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let Some(HeapReadOutput::TimeDelta(other)) = other.read_heap(vm) else {
+        let Some(other) = other.read_as::<TimeDelta>(vm.heap) else {
             return Ok(None);
         };
         let value = self.get(vm.heap).clone();
@@ -1302,7 +1296,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
                     i32::from(dt.naive.month()),
                     i32::from(dt.naive.day()),
                 )?;
-                Ok(CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::Date(d)))))
+                Ok(CallResult::Value(Value::allocate(d, vm.heap)))
             }
             Some(method @ (StaticStrings::Time | StaticStrings::Timetz)) => {
                 // `time()` drops the timezone, `timetz()` keeps it — the only
@@ -1406,7 +1400,7 @@ impl<'h> HeapObjectRead<'h, DateTime> {
         } else {
             match rebuilt {
                 Some(tz) if tz.offset_seconds == 0 && tz.name.is_none() => vm.heap.get_timezone_utc(),
-                Some(tz) => Value::Ref(vm.heap.allocate(HeapData::TimeZone(tz))),
+                Some(tz) => Value::allocate(tz, vm.heap),
                 None => Value::None,
             }
         }
@@ -1459,7 +1453,7 @@ impl<'h> HeapObjectRead<'h, DateTime> {
             new_tz_ref,
             vm.heap,
         )?;
-        Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(new_dt))))
+        Ok(Value::allocate(new_dt, vm.heap))
     }
 }
 
@@ -1487,3 +1481,7 @@ struct DatetimeReplaceArgs {
     #[from_args(kw_only, default)]
     tzinfo: Option<Value>,
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/datetime.rs"]
+mod tests;

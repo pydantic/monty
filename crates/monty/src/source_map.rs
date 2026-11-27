@@ -246,23 +246,6 @@ pub(crate) trait StackFrameExt {
             hide_frame_name: false,
         }
     }
-
-    /// Builds a `StackFrame` with caret markers suppressed.
-    ///
-    /// Used for errors like `ImportError` and `ModuleNotFoundError`, where
-    /// CPython shows the source preview line but no `~~~` carets beneath it.
-    fn from_position_no_caret(position: CodeRange, filename: &str, source_map: &mut SourceMap<'_>) -> StackFrame {
-        let (start, end, preview_line) = source_map.resolve_range(position);
-        StackFrame {
-            filename: filename.to_string(),
-            start,
-            end,
-            frame_name: None,
-            preview_line,
-            hide_caret: true,
-            hide_frame_name: false,
-        }
-    }
 }
 
 impl StackFrameExt for StackFrame {}

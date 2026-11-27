@@ -95,7 +95,7 @@ pub(crate) fn builtin_object_new(vm: &mut VM<'_>, args: ArgValues) -> RunResult<
     }
     vm.heap.inc_ref(class_id);
     let instance = Instance::new(class_id, Dict::new());
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Instance(Box::new(instance)))))
+    Ok(Value::allocate(instance, vm.heap))
 }
 
 /// Arguments of `object.__init__(self, /, *args, **kwargs)`.

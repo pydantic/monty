@@ -18,7 +18,7 @@ use crate::{
     bytecode::VM,
     defer_drop_mut,
     exception_private::RunResult,
-    heap::{ContainsHeap, DropWithContext, HeapData},
+    heap::{ContainsHeap, DropWithContext},
     types::{Dict, List, LongInt, TimeZone, date, datetime, str::allocate_string, time},
     value::{VALUE_SIZE, Value},
 };
@@ -153,8 +153,8 @@ impl Frame {
     /// Allocates the heap object for a frame whose children are all stored.
     fn finish(frame: Option<Self>, vm: &mut VM<'_>) -> Value {
         match frame.expect("Descend follows a push") {
-            Self::List { values, .. } => Value::Ref(vm.heap.allocate(HeapData::List(List::new(values)))),
-            Self::Dict { dict, .. } => Value::Ref(vm.heap.allocate(HeapData::Dict(dict))),
+            Self::List { values, .. } => Value::allocate(List::new(values), vm.heap),
+            Self::Dict { dict, .. } => Value::allocate(dict, vm.heap),
         }
     }
 }
@@ -187,5 +187,5 @@ fn allocate_datetime(date: TomlDate, time: TomlTime, offset_seconds: Option<i32>
         None,
         vm.heap,
     )?;
-    Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(datetime))))
+    Ok(Value::allocate(datetime, vm.heap))
 }

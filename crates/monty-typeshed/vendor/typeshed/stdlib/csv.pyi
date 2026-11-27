@@ -7,9 +7,10 @@
 # Extend in lockstep with `crates/monty/src/modules/csv.rs`.
 
 from collections.abc import Collection, Iterable, Mapping, Sequence
-from typing import Any, Final, Generic, Literal, TypeVar
+from typing import Any, Final, Generic, Literal, TypeVar, final
 
 from _typeshed import SupportsWrite
+from _typeshed._monty import _CsvReader, _CsvWriter
 from typing_extensions import Self, TypeAlias
 
 __all__ = [
@@ -49,6 +50,7 @@ _DialectLike: TypeAlias = str | Dialect | type | object
 
 class Error(Exception): ...
 
+@final
 class Dialect:
     delimiter: str
     quotechar: str | None
@@ -76,19 +78,6 @@ excel: Dialect
 excel_tab: Dialect
 unix_dialect: Dialect
 
-class Reader:
-    @property
-    def dialect(self) -> Dialect: ...
-    line_num: int
-    def __iter__(self) -> Self: ...
-    def __next__(self) -> list[str]: ...
-
-class Writer:
-    @property
-    def dialect(self) -> Dialect: ...
-    def writerow(self, row: Iterable[Any], /) -> Any: ...
-    def writerows(self, rows: Iterable[Iterable[Any]], /) -> None: ...
-
 def reader(
     csvfile: Iterable[str],
     /,
@@ -102,7 +91,7 @@ def reader(
     lineterminator: str = '\r\n',
     quoting: _QuotingType = 0,
     strict: bool = False,
-) -> Reader: ...
+) -> _CsvReader: ...
 def writer(
     csvfile: SupportsWrite[str],
     /,
@@ -116,16 +105,17 @@ def writer(
     lineterminator: str = '\r\n',
     quoting: _QuotingType = 0,
     strict: bool = False,
-) -> Writer: ...
+) -> _CsvWriter: ...
 def get_dialect(name: str) -> Dialect: ...
 def list_dialects() -> list[str]: ...
 def field_size_limit() -> int: ...
 
+@final
 class DictReader(Generic[_T]):
     fieldnames: Sequence[_T] | None
     restkey: _T | None
     restval: str | Any | None
-    reader: Reader
+    reader: _CsvReader
     dialect: _DialectLike
     line_num: int
     def __init__(
@@ -148,11 +138,12 @@ class DictReader(Generic[_T]):
     def __iter__(self) -> Self: ...
     def __next__(self) -> dict[_T | Any, str | Any]: ...
 
+@final
 class DictWriter(Generic[_T]):
     fieldnames: Collection[_T]
     restval: Any | None
     extrasaction: Literal['raise', 'ignore']
-    writer: Writer
+    writer: _CsvWriter
     def __init__(
         self,
         f: SupportsWrite[str],

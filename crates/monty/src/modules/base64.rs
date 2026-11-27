@@ -13,7 +13,7 @@
 //! Encoders take bytes only; decoders also take ASCII `str` (CPython's
 //! `_bytes_from_decode_data`).
 
-use std::borrow::Cow;
+use std::ops::Range;
 
 use monty_types::ResourceTracker;
 
@@ -22,11 +22,16 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{Heap, HeapData},
+    heap::HeapData,
     intern::StaticStrings,
     modules::ModuleFunctions,
+    py_value::PyValue,
     resource_checks::check_estimated_size,
-    types::{Module, PyTrait, bytes::bytes_repr},
+    types::{
+        Module, PyTrait,
+        bytes::{PyBytes, allocate_bytes, bytes_repr},
+        str::PyStr,
+    },
     value::Value,
 };
 
@@ -183,13 +188,13 @@ fn call_b64encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(s, vm);
     defer_drop!(altchars, vm);
 
-    let mut encoded = b64_encode(encode_input(s, vm)?.as_ref(), &vm.heap.tracker)?;
+    let mut encoded = b64_encode(s.try_as_bytes(vm)?, &vm.heap.tracker)?;
     if !matches!(altchars, Value::None) {
         // CPython asserts on the raw object's length before `bytes.maketrans`
         // type-checks it, so a 1-byte `str` is an AssertionError, not a TypeError.
         assert_len(altchars, 2, vm)?;
-        let alt = encode_input(altchars, vm)?.into_owned();
-        translate(&mut encoded, b"+/", &alt);
+        let alt = altchars.try_as_bytes(vm)?;
+        translate(&mut encoded, b"+/", alt);
     }
     Ok(allocate_bytes(encoded, vm.heap))
 }
@@ -204,15 +209,14 @@ fn call_b64decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(altchars, vm);
     defer_drop!(validate, vm);
 
-    let mut data = decode_input(s, vm)?.into_owned();
-    if !matches!(altchars, Value::None) {
-        // Unlike the encode path, CPython coerces before asserting the length.
-        let alt = decode_input(altchars, vm)?.into_owned();
-        assert_len_bytes(&alt, 2)?;
-        translate(&mut data, &alt, b"+/");
-    }
+    let input = DecoderInput::new(s, vm)?;
+    let alt = if matches!(altchars, Value::None) {
+        None
+    } else {
+        Some(decode_chars::<2>(altchars, vm)?)
+    };
     let strict = validate.py_bool(vm)?;
-    let decoded = b64_decode(&data, strict)?;
+    let decoded = b64_decode(input.as_slice(vm), strict, alt)?;
     Ok(allocate_bytes(decoded, vm.heap))
 }
 
@@ -220,7 +224,7 @@ fn call_b64decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 fn call_standard_b64encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let StandardB64EncodeArgs { s } = StandardB64EncodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
-    let encoded = b64_encode(encode_input(s, vm)?.as_ref(), &vm.heap.tracker)?;
+    let encoded = b64_encode(s.try_as_bytes(vm)?, &vm.heap.tracker)?;
     Ok(allocate_bytes(encoded, vm.heap))
 }
 
@@ -228,7 +232,7 @@ fn call_standard_b64encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>
 fn call_standard_b64decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let StandardB64DecodeArgs { s } = StandardB64DecodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
-    let decoded = b64_decode(decode_input(s, vm)?.as_ref(), false)?;
+    let decoded = b64_decode(decode_input(s, vm)?, false, None)?;
     Ok(allocate_bytes(decoded, vm.heap))
 }
 
@@ -237,7 +241,7 @@ fn call_standard_b64decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>
 fn call_urlsafe_b64encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let UrlsafeB64EncodeArgs { s } = UrlsafeB64EncodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
-    let mut encoded = b64_encode(encode_input(s, vm)?.as_ref(), &vm.heap.tracker)?;
+    let mut encoded = b64_encode(s.try_as_bytes(vm)?, &vm.heap.tracker)?;
     translate(&mut encoded, b"+/", b"-_");
     Ok(allocate_bytes(encoded, vm.heap))
 }
@@ -246,9 +250,7 @@ fn call_urlsafe_b64encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> 
 fn call_urlsafe_b64decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let UrlsafeB64DecodeArgs { s } = UrlsafeB64DecodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
-    let mut data = decode_input(s, vm)?.into_owned();
-    translate(&mut data, b"-_", b"+/");
-    let decoded = b64_decode(&data, false)?;
+    let decoded = b64_decode(decode_input(s, vm)?, false, Some(*b"-_"))?;
     Ok(allocate_bytes(decoded, vm.heap))
 }
 
@@ -256,7 +258,7 @@ fn call_urlsafe_b64decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> 
 fn call_b32encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let B32EncodeArgs { s } = B32EncodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
-    let encoded = b32_encode(memoryview_input(s, vm)?.as_ref(), B32_ALPHABET, &vm.heap.tracker)?;
+    let encoded = b32_encode(s.try_as_bytes(vm)?, B32_ALPHABET, &vm.heap.tracker)?;
     Ok(allocate_bytes(encoded, vm.heap))
 }
 
@@ -270,16 +272,17 @@ fn call_b32decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(casefold, vm);
     defer_drop!(map01, vm);
 
-    let mut data = decode_input(s, vm)?.into_owned();
-    if !data.len().is_multiple_of(8) {
+    let input = DecoderInput::new(s, vm)?;
+    if !input.as_slice(vm).len().is_multiple_of(8) {
         return Err(incorrect_padding());
     }
-    if !matches!(map01, Value::None) {
-        let map = decode_input(map01, vm)?.into_owned();
-        assert_len_bytes(&map, 1)?;
-        translate(&mut data, b"01", &[b'O', map[0]]);
-    }
-    let decoded = b32_decode(&data, B32_ALPHABET, casefold.py_bool(vm)?)?;
+    let map01 = if matches!(map01, Value::None) {
+        None
+    } else {
+        Some(decode_chars::<1>(map01, vm)?[0])
+    };
+    let fold = casefold.py_bool(vm)?;
+    let decoded = b32_decode(input.as_slice(vm), B32_ALPHABET, fold, map01)?;
     Ok(allocate_bytes(decoded, vm.heap))
 }
 
@@ -287,7 +290,7 @@ fn call_b32decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 fn call_b32hexencode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let B32HexEncodeArgs { s } = B32HexEncodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
-    let encoded = b32_encode(memoryview_input(s, vm)?.as_ref(), B32HEX_ALPHABET, &vm.heap.tracker)?;
+    let encoded = b32_encode(s.try_as_bytes(vm)?, B32HEX_ALPHABET, &vm.heap.tracker)?;
     Ok(allocate_bytes(encoded, vm.heap))
 }
 
@@ -298,11 +301,12 @@ fn call_b32hexdecode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(s, vm);
     defer_drop!(casefold, vm);
 
-    let data = decode_input(s, vm)?.into_owned();
-    if !data.len().is_multiple_of(8) {
+    let input = DecoderInput::new(s, vm)?;
+    if !input.as_slice(vm).len().is_multiple_of(8) {
         return Err(incorrect_padding());
     }
-    let decoded = b32_decode(&data, B32HEX_ALPHABET, casefold.py_bool(vm)?)?;
+    let fold = casefold.py_bool(vm)?;
+    let decoded = b32_decode(input.as_slice(vm), B32HEX_ALPHABET, fold, None)?;
     Ok(allocate_bytes(decoded, vm.heap))
 }
 
@@ -310,7 +314,7 @@ fn call_b32hexdecode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 fn call_b16encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let B16EncodeArgs { s } = B16EncodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
-    let encoded = b16_encode(encode_input(s, vm)?.as_ref(), &vm.heap.tracker)?;
+    let encoded = b16_encode(s.try_as_bytes(vm)?, &vm.heap.tracker)?;
     Ok(allocate_bytes(encoded, vm.heap))
 }
 
@@ -321,8 +325,9 @@ fn call_b16decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(s, vm);
     defer_drop!(casefold, vm);
 
-    let data = decode_input(s, vm)?.into_owned();
-    let decoded = b16_decode(&data, casefold.py_bool(vm)?)?;
+    let input = DecoderInput::new(s, vm)?;
+    let fold = casefold.py_bool(vm)?;
+    let decoded = b16_decode(input.as_slice(vm), fold)?;
     Ok(allocate_bytes(decoded, vm.heap))
 }
 
@@ -354,7 +359,7 @@ fn call_encodebytes(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 fn call_decodebytes(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let DecodebytesArgs { s } = DecodebytesArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
-    let decoded = b64_decode(input_type_check(s, vm)?.as_ref(), false)?;
+    let decoded = b64_decode(input_type_check(s, vm)?, false, None)?;
     Ok(allocate_bytes(decoded, vm.heap))
 }
 
@@ -368,7 +373,7 @@ fn call_b85encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(pad, vm);
 
     let pad = pad.py_bool(vm)?;
-    let encoded = b85_encode(memoryview_input(b, vm)?.as_ref(), B85_ALPHABET, pad, &vm.heap.tracker)?;
+    let encoded = b85_encode(b.try_as_bytes(vm)?, B85_ALPHABET, pad, &vm.heap.tracker)?;
     Ok(allocate_bytes(encoded, vm.heap))
 }
 
@@ -377,7 +382,7 @@ fn call_b85decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let B85DecodeArgs { b } = B85DecodeArgs::from_args(args, vm)?;
     defer_drop!(b, vm);
 
-    let decoded = b85_decode(decode_input(b, vm)?.as_ref(), B85_ALPHABET, "base85")?;
+    let decoded = b85_decode(decode_input(b, vm)?, B85_ALPHABET, "base85")?;
     Ok(allocate_bytes(decoded, vm.heap))
 }
 
@@ -386,7 +391,7 @@ fn call_z85encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let Z85EncodeArgs { s } = Z85EncodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
 
-    let encoded = b85_encode(memoryview_input(s, vm)?.as_ref(), Z85_ALPHABET, false, &vm.heap.tracker)?;
+    let encoded = b85_encode(s.try_as_bytes(vm)?, Z85_ALPHABET, false, &vm.heap.tracker)?;
     Ok(allocate_bytes(encoded, vm.heap))
 }
 
@@ -395,7 +400,7 @@ fn call_z85decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let Z85DecodeArgs { s } = Z85DecodeArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
 
-    let decoded = b85_decode(decode_input(s, vm)?.as_ref(), Z85_ALPHABET, "z85")?;
+    let decoded = b85_decode(decode_input(s, vm)?, Z85_ALPHABET, "z85")?;
     Ok(allocate_bytes(decoded, vm.heap))
 }
 
@@ -418,21 +423,17 @@ fn call_a85encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(pad, vm);
     defer_drop!(adobe, vm);
 
-    // CPython coerces the input before any flag and reaches `pad` only when the
-    // length needs padding. Which flag raises first is unobservable while
-    // `__bool__` goes undispatched (`limitations/classes.md`), but this order
-    // holds once it lands. Owned as `tobytes()` is: a dispatched `__bool__`
-    // re-enters the interpreter and could mutate a `bytearray`.
-    let data = memoryview_input(b, vm)?.into_owned();
+    // Coerce the input before testing flags. CPython only tests `pad` for a partial group.
+    let input = PyBytes::from_value(b, vm).ok_or_else(|| ExcType::type_error_bytes_like(b.py_type_name(vm)))?;
     let fold = foldspaces.py_bool(vm)?;
-    let keep_padding = data.len() % 4 != 0 && pad.py_bool(vm)?;
+    let keep_padding = input.as_slice(vm).len() % 4 != 0 && pad.py_bool(vm)?;
     let adobe = adobe.py_bool(vm)?;
     let framing = if adobe {
         A85_ADOBE_START.len() + A85_ADOBE_END.len()
     } else {
         0
     };
-    let mut encoded = a85_encode(&data, keep_padding, fold, framing, &vm.heap.tracker)?;
+    let mut encoded = a85_encode(input.as_slice(vm), keep_padding, fold, framing, &vm.heap.tracker)?;
 
     if adobe {
         encoded.splice(0..0, *A85_ADOBE_START);
@@ -466,17 +467,27 @@ fn call_a85decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(adobe, vm);
     defer_drop!(ignorechars, vm);
 
-    // Owned so the decode loop can re-enter the interpreter for a caller-given
-    // `ignorechars`, which the borrowed input would rule out.
-    let data = decode_input(b, vm)?.into_owned();
-    let framed = a85_strip_adobe(&data, adobe.py_bool(vm)?)?;
+    let input = DecoderInput::new(b, vm)?;
+    let adobe = adobe.py_bool(vm)?;
+    let body = a85_body_range(input.as_slice(vm), adobe)?;
     let fold = foldspaces.py_bool(vm)?;
-    let ignore = match ignorechars.as_ref() {
-        Some(value) => IgnoreChars::Given(value),
-        None => IgnoreChars::Default,
+    let data = &input.as_slice(vm)[body];
+    let capacity = a85_decoded_size(data, fold);
+    let input_copy_size = if ignorechars.is_some() { data.len() } else { 0 };
+    check_estimated_size(capacity.saturating_add(input_copy_size), &vm.heap.tracker)?;
+    let decoded = if let Some(ignore) = ignorechars.as_ref() {
+        // Python membership may re-enter the VM while the decoder scans its input.
+        let owned = data.to_vec();
+        a85_decode(&owned, fold, capacity, |i, byte| {
+            vm.heap.tracker.check_time_every(i)?;
+            ignore.py_contains(&Value::Int(i64::from(byte)), vm)
+        })?
+    } else {
+        a85_decode(data, fold, capacity, |i, byte| {
+            vm.heap.tracker.check_time_every(i)?;
+            Ok(matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | 0x0b))
+        })?
     };
-
-    let decoded = a85_decode(framed, fold, &ignore, vm)?;
     Ok(allocate_bytes(decoded, vm.heap))
 }
 
@@ -575,7 +586,7 @@ struct A85EncodeArgs {
 ///
 /// `ignorechars` is absent rather than defaulted: CPython tests membership in
 /// whatever object was passed, so an explicit argument takes a different path
-/// from the built-in set — see [`IgnoreChars`].
+/// from the built-in set.
 #[derive(FromArgs)]
 #[from_args(name = "a85decode", style = def)]
 struct A85DecodeArgs {
@@ -652,11 +663,7 @@ pub(super) fn b64_encode_reserving(data: &[u8], extra: usize, tracker: &Resource
 /// `b64decode(b'YQ==YQ==')` is three bytes, not two `a`s. The state machine
 /// transcribes CPython's, since which error an input produces depends on
 /// exactly where CPython gives up.
-pub(super) fn b64_decode(data: &[u8], strict: bool) -> RunResult<Vec<u8>> {
-    if strict && data.first() == Some(&b'=') {
-        return Err(binascii_error("Leading padding not allowed"));
-    }
-
+pub(super) fn b64_decode(data: &[u8], strict: bool, alt: Option<[u8; 2]>) -> RunResult<Vec<u8>> {
     let mut out: Vec<u8> = Vec::with_capacity(data.len().div_ceil(4) * 3);
     let mut quad_pos = 0u8;
     let mut leftchar = 0u8;
@@ -666,9 +673,18 @@ pub(super) fn b64_decode(data: &[u8], strict: bool) -> RunResult<Vec<u8>> {
     // non-zero `quad_pos` legal at end of input.
     let mut quad_closed = false;
 
-    for byte in data {
-        if *byte == b'=' {
+    for (i, &raw) in data.iter().enumerate() {
+        // maketrans uses the last mapping when both alternate characters are equal.
+        let byte = match alt {
+            Some([_, slash]) if raw == slash => b'/',
+            Some([plus, _]) if raw == plus => b'+',
+            _ => raw,
+        };
+        if byte == b'=' {
             if strict {
+                if i == 0 {
+                    return Err(binascii_error("Leading padding not allowed"));
+                }
                 // A pad is only ever legal two or three characters into an
                 // open quad. One character in, CPython reports the same
                 // "1 more than a multiple of 4" error it would at end of input.
@@ -690,7 +706,7 @@ pub(super) fn b64_decode(data: &[u8], strict: bool) -> RunResult<Vec<u8>> {
             continue;
         }
 
-        let Some(sextet) = b64_value(*byte) else {
+        let Some(sextet) = b64_value(byte) else {
             if strict {
                 return Err(binascii_error("Only base64 data is allowed"));
             }
@@ -794,29 +810,30 @@ fn b32_encode(data: &[u8], alphabet: &[u8; 32], tracker: &ResourceTracker) -> Ru
 /// Decodes base32 over `alphabet`.
 ///
 /// Assumes the caller has already checked that the length is a multiple of
-/// eight and applied any `map01` translation — CPython performs both before
-/// this point and the resulting error ordering is observable.
-fn b32_decode(data: &[u8], alphabet: &[u8; 32], casefold: bool) -> RunResult<Vec<u8>> {
-    let folded: Cow<'_, [u8]> = if casefold {
-        Cow::Owned(data.to_ascii_uppercase())
-    } else {
-        Cow::Borrowed(data)
+/// eight. Translation applies before padding removal and case folding.
+fn b32_decode(data: &[u8], alphabet: &[u8; 32], casefold: bool, map01: Option<u8>) -> RunResult<Vec<u8>> {
+    let translate_digit = |byte| match (byte, map01) {
+        (b'0', Some(_)) => b'O',
+        (b'1', Some(one)) => one,
+        _ => byte,
     };
     let stripped = {
-        let mut end = folded.len();
-        while end > 0 && folded[end - 1] == b'=' {
+        let mut end = data.len();
+        while end > 0 && translate_digit(data[end - 1]) == b'=' {
             end -= 1;
         }
-        &folded[..end]
+        &data[..end]
     };
-    let pad_chars = folded.len() - stripped.len();
+    let pad_chars = data.len() - stripped.len();
 
     let mut out = Vec::with_capacity(stripped.len() / 8 * 5 + 5);
     let mut last_acc: u64 = 0;
     for group in stripped.chunks(8) {
         let mut acc: u64 = 0;
-        for byte in group {
-            let Some(value) = alphabet.iter().position(|c| c == byte) else {
+        for &raw in group {
+            let byte = translate_digit(raw);
+            let digit = if casefold { byte.to_ascii_uppercase() } else { byte };
+            let Some(value) = alphabet.iter().position(|&c| c == digit) else {
                 return Err(binascii_error("Non-base32 digit found"));
             };
             acc = (acc << 5) | u64::try_from(value).expect("alphabet index fits u64");
@@ -854,35 +871,27 @@ fn b16_encode(data: &[u8], tracker: &ResourceTracker) -> RunResult<Vec<u8>> {
     Ok(out)
 }
 
-/// Decodes uppercase hex, folding case first when asked.
+/// Decodes hex digits, accepting lowercase when case folding is enabled.
 ///
 /// CPython screens the whole input for non-`[0-9A-F]` bytes before
 /// `binascii.unhexlify` sees it, so a bad digit outranks an odd length.
 fn b16_decode(data: &[u8], casefold: bool) -> RunResult<Vec<u8>> {
-    let folded: Cow<'_, [u8]> = if casefold {
-        Cow::Owned(data.to_ascii_uppercase())
-    } else {
-        Cow::Borrowed(data)
+    let digit = |byte| match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        b'a'..=b'f' if casefold => Ok(byte - b'a' + 10),
+        _ => Err(binascii_error("Non-base16 digit found")),
     };
-    if folded.iter().any(|b| !matches!(b, b'0'..=b'9' | b'A'..=b'F')) {
-        return Err(binascii_error("Non-base16 digit found"));
+    let (pairs, trailing) = data.as_chunks::<2>();
+    let mut out = Vec::with_capacity(pairs.len());
+    for &[high, low] in pairs {
+        out.push((digit(high)? << 4) | digit(low)?);
     }
-    if !folded.len().is_multiple_of(2) {
+    if let [last] = trailing {
+        digit(*last)?;
         return Err(binascii_error("Odd-length string"));
     }
-    Ok(folded
-        .chunks(2)
-        .map(|pair| (hex_value(pair[0]) << 4) | hex_value(pair[1]))
-        .collect())
-}
-
-/// Maps a validated uppercase hex digit to its value.
-fn hex_value(byte: u8) -> u8 {
-    if byte.is_ascii_digit() {
-        byte - b'0'
-    } else {
-        byte - b'A' + 10
-    }
+    Ok(out)
 }
 
 /// Encodes bytes as base85 over `alphabet`, five characters per four bytes.
@@ -1068,9 +1077,9 @@ fn a85_width(wrapcol: &Value, vm: &mut VM<'_>) -> RunResult<usize> {
 /// Only the terminator is required — PDF streams carry it without the opening
 /// marker — and the two overlap in `b'<~>'`, where Python's slicing yields an
 /// empty body rather than failing.
-fn a85_strip_adobe(data: &[u8], adobe: bool) -> RunResult<&[u8]> {
+fn a85_body_range(data: &[u8], adobe: bool) -> RunResult<Range<usize>> {
     if !adobe {
-        Ok(data)
+        Ok(0..data.len())
     } else if data.ends_with(A85_ADOBE_END) {
         let end = data.len() - A85_ADOBE_END.len();
         let start = if data.starts_with(A85_ADOBE_START) {
@@ -1078,7 +1087,7 @@ fn a85_strip_adobe(data: &[u8], adobe: bool) -> RunResult<&[u8]> {
         } else {
             0
         };
-        Ok(data.get(start..end).unwrap_or_default())
+        Ok(start.min(end)..end)
     } else {
         Err(codec_value_error("Ascii85 encoded byte sequences must end with b'~>'"))
     }
@@ -1092,9 +1101,12 @@ fn a85_strip_adobe(data: &[u8], adobe: bool) -> RunResult<&[u8]> {
 ///
 /// Alone among the decoders this can outgrow its input, so its buffer is sized
 /// by [`a85_decoded_size`] rather than from the input's length.
-fn a85_decode(data: &[u8], foldspaces: bool, ignore: &IgnoreChars<'_>, vm: &mut VM<'_>) -> RunResult<Vec<u8>> {
-    let capacity = a85_decoded_size(data, foldspaces);
-    check_estimated_size(capacity, &vm.heap.tracker)?;
+fn a85_decode(
+    data: &[u8],
+    foldspaces: bool,
+    capacity: usize,
+    mut skips: impl FnMut(usize, u8) -> RunResult<bool>,
+) -> RunResult<Vec<u8>> {
     let mut out: Vec<u8> = Vec::with_capacity(capacity);
     let mut acc: u64 = 0;
     let mut digits = 0u8;
@@ -1127,12 +1139,9 @@ fn a85_decode(data: &[u8], foldspaces: bool, ignore: &IgnoreChars<'_>, vm: &mut 
             }
             out.extend_from_slice(b"    ");
         } else {
-            // `ignorechars` is a Python container, so this is a `py_contains`
-            // per byte — linear for `bytes`. Nothing here returns to the VM's
-            // dispatch checkpoint, so the loop polls the clock itself.
-            vm.heap.tracker.check_time_every(ignored)?;
+            let skip = skips(ignored, byte)?;
             ignored += 1;
-            if !ignore.skips(byte, vm)? {
+            if !skip {
                 return Err(codec_value_error(format!(
                     "Non-Ascii85 digit found: {}",
                     char::from(byte)
@@ -1168,28 +1177,6 @@ fn a85_decoded_size(data: &[u8], foldspaces: bool) -> usize {
     digits.div_ceil(5).saturating_add(words).saturating_mul(4)
 }
 
-/// Which bytes `a85decode` skips rather than decoding.
-///
-/// Splitting the default out keeps the common case a byte comparison: an
-/// explicit argument is tested with Python's `in`, which re-enters the
-/// interpreter and is where a `str` argument raises the way CPython's does.
-enum IgnoreChars<'a> {
-    /// `ignorechars` left at its `b' \t\n\r\v'` default.
-    Default,
-    /// The object the caller passed, whatever its type.
-    Given(&'a Value),
-}
-
-impl IgnoreChars<'_> {
-    /// Answers CPython's `x in ignorechars` for a byte no digit rule matched.
-    fn skips(&self, byte: u8, vm: &mut VM<'_>) -> RunResult<bool> {
-        match self {
-            Self::Default => Ok(matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | 0x0b)),
-            Self::Given(value) => value.py_contains(&Value::Int(i64::from(byte)), vm),
-        }
-    }
-}
-
 /// Builds the plain `ValueError` the ascii85 and base85 codecs raise — not
 /// `binascii.Error`, since none of them reaches `binascii`.
 fn codec_value_error(message: impl Into<String>) -> RunError {
@@ -1213,82 +1200,78 @@ fn translate(data: &mut [u8], from: &[u8], to: &[u8]) {
     }
 }
 
-/// Borrows the bytes of an encoder input.
-///
-/// Encoders reach `binascii` without a coercion step, so a `str` fails the
-/// buffer protocol with CPython's `a bytes-like object is required` wording.
-pub(super) fn encode_input<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<Cow<'a, [u8]>> {
-    encode_input_prefixed(value, vm, "")
+/// Holds immutable input across Python calls without borrowing the VM.
+enum DecoderInput<'h> {
+    Bytes(PyBytes<'h>),
+    Ascii(PyStr<'h>),
 }
 
-/// Borrows the bytes of an encoder that coerces with `memoryview(s).tobytes()`
-/// first — the base32 and base85 pair — whose `TypeError` is prefixed as a
-/// result. The base64 and base16 encoders reach `binascii` directly instead.
-fn memoryview_input<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<Cow<'a, [u8]>> {
-    encode_input_prefixed(value, vm, "memoryview: ")
+impl<'h> DecoderInput<'h> {
+    fn new(value: &Value, vm: &VM<'h>) -> RunResult<Self> {
+        match value.py_value(vm) {
+            PyValue::Bytes(bytes) => Ok(Self::Bytes(bytes)),
+            PyValue::Str(text) => {
+                ascii_bytes(text.as_str(vm))?;
+                Ok(Self::Ascii(text))
+            }
+            _ => Err(decode_type_error(value, vm, DECODE_INPUT_TYPES)),
+        }
+    }
+
+    fn as_slice<'a>(&'a self, vm: &'a VM<'h>) -> &'a [u8] {
+        match self {
+            Self::Bytes(bytes) => bytes.as_slice(vm),
+            Self::Ascii(text) => text.as_str(vm).as_bytes(),
+        }
+    }
 }
 
-/// Shared body of the encoder coercions, where `prefix` selects the wording.
-fn encode_input_prefixed<'a>(value: &'a Value, vm: &'a VM<'_>, prefix: &str) -> RunResult<Cow<'a, [u8]>> {
-    value_as_bytes(value, vm).ok_or_else(|| {
-        ExcType::type_error(format!(
-            "{prefix}a bytes-like object is required, not '{}'",
-            value.py_type_name(vm)
-        ))
-    })
-}
+const DECODE_INPUT_TYPES: &str = "a bytes-like object or ASCII string";
 
 /// Borrows the bytes of a decoder input — CPython's `_bytes_from_decode_data`.
 ///
 /// Decoders additionally accept `str`, provided it is pure ASCII.
-pub(super) fn decode_input<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<Cow<'a, [u8]>> {
-    decode_input_described(value, vm, "a bytes-like object or ASCII string")
+pub(super) fn decode_input<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<&'a [u8]> {
+    decode_input_described(value, vm, DECODE_INPUT_TYPES)
 }
 
 /// The same coercion with `expected` naming the accepted types, which
 /// `binascii`'s own functions word differently from `base64`'s.
-pub(super) fn decode_input_described<'a>(value: &'a Value, vm: &'a VM<'_>, expected: &str) -> RunResult<Cow<'a, [u8]>> {
+pub(super) fn decode_input_described<'a>(value: &'a Value, vm: &'a VM<'_>, expected: &str) -> RunResult<&'a [u8]> {
     if let Some(text) = value.as_str(vm) {
-        if text.is_ascii() {
-            Ok(Cow::Borrowed(text.as_bytes()))
-        } else {
-            Err(SimpleException::new_msg(
-                ExcType::ValueError,
-                "string argument should contain only ASCII characters",
-            )
-            .into())
-        }
+        ascii_bytes(text)
     } else {
-        value_as_bytes(value, vm).ok_or_else(|| {
-            ExcType::type_error(format!(
-                "argument should be {expected}, not '{}'",
-                value.py_type_name(vm)
-            ))
-        })
+        value.as_bytes(vm).ok_or_else(|| decode_type_error(value, vm, expected))
     }
+}
+
+fn ascii_bytes(text: &str) -> RunResult<&[u8]> {
+    if text.is_ascii() {
+        Ok(text.as_bytes())
+    } else {
+        Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            "string argument should contain only ASCII characters",
+        )
+        .into())
+    }
+}
+
+fn decode_type_error(value: &Value, vm: &VM<'_>, expected: &str) -> RunError {
+    ExcType::type_error(format!(
+        "argument should be {expected}, not '{}'",
+        value.py_type_name(vm)
+    ))
 }
 
 /// Borrows the bytes of an `encodebytes` / `decodebytes` argument.
 ///
 /// These two go through `base64._input_type_check`, whose message differs from
 /// both other paths.
-fn input_type_check<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<Cow<'a, [u8]>> {
-    value_as_bytes(value, vm)
+fn input_type_check<'a>(value: &Value, vm: &'a VM<'_>) -> RunResult<&'a [u8]> {
+    value
+        .as_bytes(vm)
         .ok_or_else(|| ExcType::type_error(format!("expected bytes-like object, not {}", value.py_type_name(vm))))
-}
-
-/// Borrows the bytes behind a `bytes` value, interned or heap-allocated.
-///
-/// `None` for anything else — each caller supplies its own error message.
-fn value_as_bytes<'a>(value: &'a Value, vm: &'a VM<'_>) -> Option<Cow<'a, [u8]>> {
-    match value {
-        Value::InternBytes(bytes_id) => Some(Cow::Borrowed(vm.interns.get_bytes(*bytes_id))),
-        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
-            HeapData::Bytes(bytes) => Some(Cow::Borrowed(bytes.as_slice())),
-            _ => None,
-        },
-        _ => None,
-    }
 }
 
 /// Reproduces `assert len(value) == expected, repr(value)` on a raw argument.
@@ -1311,12 +1294,11 @@ fn assert_len(value: &Value, expected: usize, vm: &mut VM<'_>) -> RunResult<()> 
 /// The decoders coerce before asserting, so both the length and the `repr` in
 /// the message come from the bytes — `b64decode(s, altchars='-')` reports
 /// `b'-'`, not the `str` the caller passed.
-fn assert_len_bytes(bytes: &[u8], expected: usize) -> RunResult<()> {
-    if bytes.len() == expected {
-        Ok(())
-    } else {
-        Err(SimpleException::new_msg(ExcType::AssertionError, bytes_repr(bytes)).into())
-    }
+fn decode_chars<const N: usize>(value: &Value, vm: &VM<'_>) -> RunResult<[u8; N]> {
+    let bytes = decode_input(value, vm)?;
+    bytes
+        .try_into()
+        .map_err(|_| SimpleException::new_msg(ExcType::AssertionError, bytes_repr(bytes)).into())
 }
 
 /// Builds the `AssertionError` whose message is `repr(value)`.
@@ -1325,14 +1307,6 @@ fn assertion_error(value: &Value, vm: &mut VM<'_>) -> RunResult<RunError> {
     defer_drop!(repr, vm);
     let message = repr.as_str(vm).expect("py_repr returns str").to_owned();
     Ok(SimpleException::new_msg(ExcType::AssertionError, message).into())
-}
-
-/// Allocates a decoded/encoded byte string on the heap.
-///
-/// No resource preflight: every result here is bounded by a small constant
-/// multiple of an input that the heap already accounts for.
-pub(super) fn allocate_bytes(data: Vec<u8>, heap: &Heap) -> Value {
-    Value::Ref(heap.allocate(HeapData::Bytes(data.into())))
 }
 
 /// `binascii.Error("Incorrect padding")` — shared by the base64 and base32

@@ -4,7 +4,6 @@ use crate::{
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::HeapData,
     types::callable_iterator::CallableIterator,
     value::Value,
 };
@@ -15,9 +14,7 @@ pub(crate) fn builtin_iter(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallRe
     if let Some(sentinel) = sentinel {
         if object.is_callable(vm) {
             let iter = CallableIterator::new(object, sentinel);
-            Ok(CallResult::Value(Value::Ref(
-                vm.heap.allocate(HeapData::CallableIterator(iter)),
-            )))
+            Ok(CallResult::Value(Value::allocate(iter, vm.heap)))
         } else {
             object.drop_with(vm);
             sentinel.drop_with(vm);

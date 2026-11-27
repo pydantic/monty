@@ -1949,7 +1949,7 @@ async function dumpSession(
   onPrint: PrintCallback,
   poison: (err: Error) => Error,
 ): Promise<Buffer> {
-  const turn = (await native.dump(onPrint)) as NativeTurn | DumpedTurn
+  const turn = (await native.dump(onPrint, captureTraceparent())) as NativeTurn | DumpedTurn
   switch (turn.kind) {
     case 'dumped':
       return bufferFrom(turn.state)

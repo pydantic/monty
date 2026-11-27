@@ -22,7 +22,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{DropGuard, HeapData, HeapReadOutput},
+    heap::{DropGuard, HeapReadOutput},
     intern::StaticStrings,
     modules::{ModuleFunctions, collections::counter_init, math},
     resource_checks::try_vec_with_capacity,
@@ -611,7 +611,7 @@ data_args!(MultimodeArgs, "multimode");
 
 /// Allocates `items` as a new `list`.
 fn list_value(items: Vec<Value>, vm: &mut VM<'_>) -> Value {
-    Value::Ref(vm.heap.allocate(HeapData::List(List::new(items))))
+    Value::allocate(List::new(items), vm.heap)
 }
 
 /// An empty buffer with room for exactly `count` values, after checking that it fits the memory budget.

@@ -33,6 +33,7 @@ in the next feed, and after a dump (see [random.md](random.md)).
 | `dataclasses`   | [dataclasses.md](dataclasses.md)      |
 | `datetime`      | [datetime.md](datetime.md)            |
 | `decimal`       | [decimal.md](decimal.md)              |
+| `errno`         | [errno.md](errno.md)                  |
 | `fnmatch`       | [fnmatch.md](fnmatch.md)              |
 | `functools`     | [functools.md](functools.md)          |
 | `hashlib`       | [hashlib.md](hashlib.md)              |
@@ -49,6 +50,7 @@ in the next feed, and after a dump (see [random.md](random.md)).
 | `stat`          | [vendored](#vendored-cpython-modules) |
 | `statistics`    | [statistics.md](statistics.md)        |
 | `sys`           | [sys.md](sys.md)                      |
+| `textwrap`      | [vendored](#vendored-cpython-modules) |
 | `time`          | [time.md](time.md)                    |
 | `tomllib`       | [tomllib.md](tomllib.md)              |
 | `typing`        | [typing.md](typing.md)                |
@@ -96,7 +98,7 @@ typeshed's `abc` declarations.
 
 ## Vendored CPython modules
 
-`colorsys`, `keyword` and `stat` run CPython 3.14's own `Lib/*.py`, copied from the release pinned in
+`colorsys`, `keyword`, `stat` and `textwrap` run CPython 3.14's own `Lib/*.py`, copied from the release pinned in
 `crates/monty/stdlib/vendor.toml`, so they match CPython wherever the language features they use do.
 They differ from CPython's modules in how they are loaded:
 
@@ -127,6 +129,14 @@ pure-Python functions accept.
     raises `OverflowError: can't convert negative value to unsigned int`.
 - Platform-specific constants take `stat.py`'s portable values: `S_IFWHT` is `0` and `SF_SETTABLE` is `0xffff0000`,
     where CPython on macOS reports `0o160000` and `0x3fff0000`.
+
+`textwrap` is patched because Monty does not parse `del` yet: the class-body `del` that CPython uses to remove the
+regex building blocks is dropped, so `TextWrapper.word_punct`, `TextWrapper.letter`, `TextWrapper.nowhitespace`
+and `TextWrapper.whitespace` exist as class attributes (CPython deletes them), and the statements `del chunks[-1]` and
+`del cur_line[-1]` are `.pop()` calls with the same effect.
+`dedent()` is also patched to name a non-`str` argument's type by `__name__` in its `TypeError`, because Monty types
+have no `__qualname__` (see [classes.md](classes.md)): a class defined inside a function shows as `'Adder'` where
+CPython shows `'make.<locals>.Adder'`.
 
 ## Star imports
 
@@ -201,8 +211,7 @@ Differences from CPython:
     `__path__` directories, joined to the working directory.
     Monty reads lists, tuples, and named tuples for `__path__`. CPython also searches other iterable paths.
     Only the first 32 directories of `__path__` are searched; later entries are ignored.
-    Relative imports (`from . import x`) are rejected, so a package that uses them raises
-    `ImportError: attempted relative import with no known parent package` when imported.
+    Relative imports inside a package are supported; see [language.md](language.md#imports) for their differences.
     Directories without an `__init__.py` (namespace packages) are not found.
 - Module globals are `__name__`, `__file__`, `__package__` and, for a package, `__path__`; `__spec__`, `__loader__`,
     `__cached__`, `__builtins__` and `__doc__` are not defined.

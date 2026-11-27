@@ -99,11 +99,26 @@ See [comprehensions.md](comprehensions.md) for the comprehension target restrict
 
 ## Imports
 
-- Only the bundled stdlib modules listed in [modules.md](modules.md) can be
-    imported. Importing anything else raises `ModuleNotFoundError`.
-- Relative imports (`from . import x`) raise `ImportError: "attempted relative import with no known parent package"`;
-    there is no package
-    system.
+- Imports can load bundled modules, [host modules](modules.md#host-modules) and
+    [modules from files](modules.md#modules-from-files).
+    Monty does not search the host Python installation.
+- Relative imports (`from . import x`, `from ..pkg import y`) resolve against the importing module's `__package__`,
+    else its `__name__` (less the last component unless `__path__` is set), as CPython does, with these differences:
+    - `__spec__` is never consulted, and falling back on `__name__` issues no `ImportWarning`.
+    - The main script and REPL feeds have no package, even if they assign `__package__`, so a relative import there
+        raises `ImportError: attempted relative import with no known parent package`.
+        `exec()` with an explicit globals dict reads that dict's `__package__` and `__name__`.
+    - Each component of the resolved package name must be a Python identifier and not a keyword.
+        For example, with `__package__ = 'my-plugin'`, `from . import x` raises `ModuleNotFoundError` even if the
+        package exists; CPython can import it.
+    - If neither `pkg` nor `pkg.sub` is loaded, `exec('from . import x', {'__package__': 'pkg.sub'})` raises
+        `ModuleNotFoundError` naming `pkg.sub` instead of importing `pkg` first as CPython does.
+        This can fail even when both packages exist, including when a previous import of those packages raised.
+    - If `pkg/__init__.py` imports `pkg.sibling` and then raises, a later `from .sibling import x` in a surviving
+        module of `pkg` can rerun the initializer, repeating its side effects or raising again.
+        CPython uses the cached `pkg.sibling` without rerunning the initializer.
+    - With `__package__ = 'os.path'`, `from .missing import x` reports `No module named 'posixpath.missing'` instead
+        of naming `os.path.missing` as CPython does.
 - `__import__` is not defined.
 
 ## `__future__` imports
@@ -224,7 +239,7 @@ CPython accepts this code, and `outer()` returns `1`.
 Monty identifies non-NaN floats by their IEEE-754 bits rather than by object identity.
 Separately created non-NaN floats with identical bits therefore have the same `id()` and compare identical with `is`.
 
-Sessions restored from dumps written before dump version 17 can retain bitwise identities for stored NaNs.
+Sessions restored from dumps written before dump version 18 can retain bitwise identities for stored NaNs.
 Distinct same-bit NaNs in those sessions can compare identical with `is`, collapse into one dict or set key,
 and be treated as equal by container operations that check identity before equality.
 

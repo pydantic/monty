@@ -151,7 +151,7 @@ pub(super) fn reader_fieldnames<'h>(obj: &HeapReadMut<'h, CsvObject>, vm: &mut V
     };
     defer_drop!(reader, vm);
     if unset && let Some(header) = next_row(reader, vm)? {
-        let header = Value::Ref(vm.heap.allocate(HeapData::List(List::new(header))));
+        let header = Value::allocate(List::new(header), vm.heap);
         if let CsvObject::DictReader(dict_reader) = obj.get_mut(vm.heap) {
             dict_reader.fieldnames = Some(header);
         }
@@ -246,7 +246,7 @@ pub(super) fn reader_next<'h>(obj: &HeapReadMut<'h, CsvObject>, vm: &mut VM<'h>)
     }
     if name_count < item_count {
         let extra = List::new(mem::take(items));
-        let extra = Value::Ref(vm.heap.allocate(HeapData::List(extra)));
+        let extra = Value::allocate(extra, vm.heap);
         if let Some(old) = dict.set(restkey.clone_with_heap(vm.heap), extra, vm)? {
             old.drop_with(vm);
         }
@@ -262,7 +262,7 @@ pub(super) fn reader_next<'h>(obj: &HeapReadMut<'h, CsvObject>, vm: &mut VM<'h>)
     if let CsvObject::DictReader(dict_reader) = obj.get_mut(vm.heap) {
         dict_reader.dict_hint = key_count;
     }
-    Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Dict(dict)))))
+    Ok(Some(Value::allocate(dict, vm.heap)))
 }
 
 /// `DictWriter.writerow(rowdict)`: flattens the dict in `fieldnames` order and writes it.
@@ -301,7 +301,7 @@ pub(super) fn writer_writeheader<'h>(
         }
     }
     let (header, vm) = header_guard.into_parts();
-    let header = Value::Ref(vm.heap.allocate(HeapData::Dict(header)));
+    let header = Value::allocate(header, vm.heap);
     defer_drop!(header, vm);
     let spec: Option<RowSpec> = None;
     defer_drop_mut!(spec, vm);
@@ -337,10 +337,10 @@ pub(super) fn writer_writerows<'h>(
         let (flattened, vm) = lists_guard.as_parts_mut();
         for rowdict in rows {
             let items = dict_to_list(obj, spec, rowdict, vm)?;
-            flattened.push(Value::Ref(vm.heap.allocate(HeapData::List(List::new(items)))));
+            flattened.push(Value::allocate(List::new(items), vm.heap));
         }
         let (lists, vm) = lists_guard.into_parts();
-        let rows = Value::Ref(vm.heap.allocate(HeapData::List(List::new(lists))));
+        let rows = Value::allocate(List::new(lists), vm.heap);
         defer_drop!(rows, vm);
         with_writer(writer, vm, |writer_obj, vm| {
             let rows = rows.clone_with_heap(vm.heap);
@@ -462,7 +462,7 @@ fn known_names(names: &[Value], vm: &mut VM<'_>) -> RunResult<Value> {
         known.add(name.clone_with_heap(vm.heap), vm)?;
     }
     let (known, vm) = known_guard.into_parts();
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Set(known))))
+    Ok(Value::allocate(known, vm.heap))
 }
 
 /// `DictWriter._dict_to_list`: `rowdict.get(key, restval)` for each field name, after the
@@ -603,20 +603,14 @@ fn with_writer<'h, T>(
 /// Whether the wrapped `_csv.writer` targets a file, with its bound `write` and dialect;
 /// `None` if `writer` is not one.
 fn writer_parts(writer: &Value, vm: &VM<'_>) -> Option<(bool, Value, Arc<Dialect>)> {
-    match writer {
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Csv(csv) => match &**csv {
-                CsvObject::Writer(writer) => Some((
-                    writer.targets_file(vm),
-                    writer.write_method(vm.heap),
-                    Arc::clone(&writer.dialect),
-                )),
-                _ => None,
-            },
-            _ => None,
-        },
-        _ => None,
-    }
+    let CsvObject::Writer(writer) = writer.get_as::<CsvObject>(vm.heap)? else {
+        return None;
+    };
+    Some((
+        writer.targets_file(vm),
+        writer.write_method(vm.heap),
+        Arc::clone(&writer.dialect),
+    ))
 }
 
 /// Reads one field of the `DictWriter` under a short borrow.
@@ -642,7 +636,7 @@ fn next_row(reader: &Value, vm: &mut VM<'_>) -> RunResult<Option<Vec<Value>>> {
 /// `fieldnames` as owned values: a `list` (what a header read produces) is copied directly,
 /// preflighted as a bulk copy; any other iterable is iterated as `zip` or `list()` would.
 fn fieldnames_items(fieldnames: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
-    if let Some(HeapData::List(list)) = fieldnames.ref_id().map(|id| vm.heap.get(id)) {
+    if let Some(list) = fieldnames.get_as::<List>(vm.heap) {
         return list.items().to_vec(vm.heap);
     }
     collect_iterable(fieldnames, vm)
@@ -650,14 +644,8 @@ fn fieldnames_items(fieldnames: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>
 
 /// The wrapped reader's `line_num`.
 fn reader_line_num(reader: &Value, vm: &VM<'_>) -> u64 {
-    match reader {
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Csv(csv) => match &**csv {
-                CsvObject::Reader(reader) => reader.line_num,
-                _ => 0,
-            },
-            _ => 0,
-        },
+    match reader.get_as::<CsvObject>(vm.heap) {
+        Some(CsvObject::Reader(reader)) => reader.line_num,
         _ => 0,
     }
 }

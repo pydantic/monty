@@ -812,8 +812,7 @@ impl Set {
             None => Self::new(),
             Some(v) => Self::from_iterable(v, vm)?,
         };
-        let heap_id = vm.heap.allocate(HeapData::Set(set));
-        Ok(Value::Ref(heap_id))
+        Ok(Value::allocate(set, vm.heap))
     }
 
     /// Creates a set from an iterable value, adding and hashing items incrementally.
@@ -1038,8 +1037,7 @@ impl<'h> HeapRead<'h, Set> {
     #[inline(never)]
     fn set_algebra(&self, other: Value, op: SetAlgebra, vm: &mut VM<'h>) -> RunResult<Value> {
         let result = self.storage().algebra_from_value(other, op, vm)?;
-        let heap_id = vm.heap.allocate(HeapData::Set(Set(result)));
-        Ok(Value::Ref(heap_id))
+        Ok(Value::allocate(Set(result), vm.heap))
     }
 }
 
@@ -1139,8 +1137,7 @@ impl<'h> HeapRead<'h, FrozenSet> {
     #[inline(never)]
     fn set_algebra(&self, other: Value, op: SetAlgebra, vm: &mut VM<'h>) -> RunResult<Value> {
         let result = self.storage().algebra_from_value(other, op, vm)?;
-        let heap_id = vm.heap.allocate(HeapData::FrozenSet(FrozenSet::wrap(result)));
-        Ok(Value::Ref(heap_id))
+        Ok(Value::allocate(FrozenSet::wrap(result), vm.heap))
     }
 
     /// Keeps allocating storage methods out of the identity-copy dispatch frame.
@@ -1271,32 +1268,28 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Set> {
         let Some(result) = self.sub_value(other, vm)? else {
             return Ok(None);
         };
-        let result_id = vm.heap.allocate(HeapData::Set(result));
-        Ok(Some(Value::Ref(result_id)))
+        Ok(Some(Value::allocate(result, vm.heap)))
     }
 
     fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let Some(result) = self.and_value(other, vm)? else {
             return Ok(None);
         };
-        let result_id = vm.heap.allocate(HeapData::Set(result));
-        Ok(Some(Value::Ref(result_id)))
+        Ok(Some(Value::allocate(result, vm.heap)))
     }
 
     fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let Some(result) = self.or_value(other, vm)? else {
             return Ok(None);
         };
-        let result_id = vm.heap.allocate(HeapData::Set(result));
-        Ok(Some(Value::Ref(result_id)))
+        Ok(Some(Value::allocate(result, vm.heap)))
     }
 
     fn py_xor_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let Some(result) = self.xor_value(other, vm)? else {
             return Ok(None);
         };
-        let result_id = vm.heap.allocate(HeapData::Set(result));
-        Ok(Some(Value::Ref(result_id)))
+        Ok(Some(Value::allocate(result, vm.heap)))
     }
 
     fn py_isub_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
@@ -1350,8 +1343,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Set> {
             Some(StaticStrings::Copy) => {
                 args.check_zero_args("set.copy", vm.heap)?;
                 let copy = self.copy(vm)?;
-                let heap_id = vm.heap.allocate(HeapData::Set(copy));
-                Ok(Value::Ref(heap_id))
+                Ok(Value::allocate(copy, vm.heap))
             }
             Some(StaticStrings::Update) => {
                 let other = args.get_one_arg("set.update", vm.heap)?;
@@ -1524,8 +1516,7 @@ impl FrozenSet {
                     None => Self::new(),
                     Some(v) => Self::from_set(Set::from_iterable(v, vm)?),
                 };
-                let heap_id = vm.heap.allocate(HeapData::FrozenSet(frozenset));
-                Ok(Value::Ref(heap_id))
+                Ok(Value::allocate(frozenset, vm.heap))
             }
         }
     }
@@ -1608,32 +1599,28 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, FrozenSet> {
         let Some(result) = self.sub_value(other, vm)? else {
             return Ok(None);
         };
-        let result_id = vm.heap.allocate(HeapData::FrozenSet(result));
-        Ok(Some(Value::Ref(result_id)))
+        Ok(Some(Value::allocate(result, vm.heap)))
     }
 
     fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let Some(result) = self.and_value(other, vm)? else {
             return Ok(None);
         };
-        let result_id = vm.heap.allocate(HeapData::FrozenSet(result));
-        Ok(Some(Value::Ref(result_id)))
+        Ok(Some(Value::allocate(result, vm.heap)))
     }
 
     fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let Some(result) = self.or_value(other, vm)? else {
             return Ok(None);
         };
-        let result_id = vm.heap.allocate(HeapData::FrozenSet(result));
-        Ok(Some(Value::Ref(result_id)))
+        Ok(Some(Value::allocate(result, vm.heap)))
     }
 
     fn py_xor_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let Some(result) = self.xor_value(other, vm)? else {
             return Ok(None);
         };
-        let result_id = vm.heap.allocate(HeapData::FrozenSet(result));
-        Ok(Some(Value::Ref(result_id)))
+        Ok(Some(Value::allocate(result, vm.heap)))
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
@@ -1893,8 +1880,6 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, FrozenSet> {
             built.add(copied, vm)?;
         }
         let (built, vm) = guard.into_parts();
-        Ok(Value::Ref(
-            vm.heap.allocate(HeapData::FrozenSet(FrozenSet::from_set(built))),
-        ))
+        Ok(Value::allocate(FrozenSet::from_set(built), vm.heap))
     }
 }

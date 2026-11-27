@@ -21,6 +21,7 @@ mod compile;
 mod storage;
 
 use std::{
+    borrow::Cow,
     cell::{Cell, RefCell},
     collections::BTreeMap,
     mem,
@@ -30,7 +31,7 @@ use std::{
     sync::{Arc, LazyLock},
 };
 
-use ahash::{AHashMap, AHashSet};
+use ahash::AHashMap;
 pub(crate) use compile::CompileInterns;
 use num_bigint::BigInt;
 use storage::Entries;
@@ -574,6 +575,9 @@ pub enum StaticStrings {
     AlgorithmsAvailable,
     /// `hashlib.algorithms_guaranteed`.
     AlgorithmsGuaranteed,
+    /// `asyncio.ALL_COMPLETED`.
+    #[strum(serialize = "ALL_COMPLETED")]
+    AllCompleted,
     /// `json.dumps(allow_nan=...)` keyword.
     #[strum(serialize = "allow_nan")]
     AllowNan,
@@ -750,6 +754,10 @@ pub enum StaticStrings {
     /// `typing.Callable` marker.
     #[strum(serialize = "Callable")]
     Callable,
+    /// `asyncio.Task.cancel()` method.
+    Cancel,
+    /// `asyncio.Task.cancelled()` method.
+    Cancelled,
     /// `capitalize()` method, shared by `str` and `bytes`.
     Capitalize,
     /// Kwarg name `capitals` — `decimal.Context()`.
@@ -841,6 +849,8 @@ pub enum StaticStrings {
     Copyright,
     /// `math.copysign()` function.
     Copysign,
+    /// `coro` parameter of `asyncio.create_task()`.
+    Coro,
     /// `math.cos()` function.
     Cos,
     /// `math.cosh()` function.
@@ -861,6 +871,9 @@ pub enum StaticStrings {
     /// `binascii.crc_hqx()` function.
     #[strum(serialize = "crc_hqx")]
     CrcHqx,
+    /// `asyncio.create_task()` function.
+    #[strum(serialize = "create_task")]
+    CreateTask,
     /// Module name for `import csv`.
     Csv,
     /// `time.ctime()` function.
@@ -1007,6 +1020,8 @@ pub enum StaticStrings {
     Dklen,
     /// `field(doc=...)`, CPython's per-field docstring.
     Doc,
+    /// `asyncio.Task.done()` method.
+    Done,
     /// `sys.dont_write_bytecode` attribute.
     DontWriteBytecode,
     /// `re.DOTALL` flag
@@ -1136,19 +1151,151 @@ pub enum StaticStrings {
     /// The uncached callable.
     #[strum(serialize = "__wrapped__")]
     DunderWrapped,
+    #[strum(serialize = "E2BIG")]
+    E2big,
+    #[strum(serialize = "EACCES")]
+    Eacces,
+    #[strum(serialize = "EADDRINUSE")]
+    Eaddrinuse,
+    #[strum(serialize = "EADDRNOTAVAIL")]
+    Eaddrnotavail,
+    #[strum(serialize = "EADV")]
+    Eadv,
+    #[strum(serialize = "EAFNOSUPPORT")]
+    Eafnosupport,
+    #[strum(serialize = "EAGAIN")]
+    Eagain,
+    #[strum(serialize = "EALREADY")]
+    Ealready,
+    #[strum(serialize = "EBADE")]
+    Ebade,
+    #[strum(serialize = "EBADF")]
+    Ebadf,
+    #[strum(serialize = "EBADFD")]
+    Ebadfd,
+    #[strum(serialize = "EBADMSG")]
+    Ebadmsg,
+    #[strum(serialize = "EBADR")]
+    Ebadr,
+    #[strum(serialize = "EBADRQC")]
+    Ebadrqc,
+    #[strum(serialize = "EBADSLT")]
+    Ebadslt,
+    #[strum(serialize = "EBFONT")]
+    Ebfont,
+    #[strum(serialize = "EBUSY")]
+    Ebusy,
+    #[strum(serialize = "ECANCELED")]
+    Ecanceled,
+    #[strum(serialize = "ECHILD")]
+    Echild,
+    #[strum(serialize = "ECHRNG")]
+    Echrng,
+    #[strum(serialize = "ECOMM")]
+    Ecomm,
+    #[strum(serialize = "ECONNABORTED")]
+    Econnaborted,
+    #[strum(serialize = "ECONNREFUSED")]
+    Econnrefused,
+    #[strum(serialize = "ECONNRESET")]
+    Econnreset,
+    #[strum(serialize = "EDEADLK")]
+    Edeadlk,
+    #[strum(serialize = "EDEADLOCK")]
+    Edeadlock,
+    #[strum(serialize = "EDESTADDRREQ")]
+    Edestaddrreq,
+    #[strum(serialize = "EDOM")]
+    Edom,
+    #[strum(serialize = "EDOTDOT")]
+    Edotdot,
+    #[strum(serialize = "EDQUOT")]
+    Edquot,
+    #[strum(serialize = "EEXIST")]
+    Eexist,
+    #[strum(serialize = "EFAULT")]
+    Efault,
+    #[strum(serialize = "EFBIG")]
+    Efbig,
+    #[strum(serialize = "EHOSTDOWN")]
+    Ehostdown,
+    #[strum(serialize = "EHOSTUNREACH")]
+    Ehostunreach,
+    #[strum(serialize = "EHWPOISON")]
+    Ehwpoison,
+    #[strum(serialize = "EIDRM")]
+    Eidrm,
+    #[strum(serialize = "EILSEQ")]
+    Eilseq,
+    #[strum(serialize = "EINPROGRESS")]
+    Einprogress,
+    #[strum(serialize = "EINTR")]
+    Eintr,
+    #[strum(serialize = "EINVAL")]
+    Einval,
+    #[strum(serialize = "EIO")]
+    Eio,
+    #[strum(serialize = "EISCONN")]
+    Eisconn,
+    #[strum(serialize = "EISDIR")]
+    Eisdir,
+    #[strum(serialize = "EISNAM")]
+    Eisnam,
+    #[strum(serialize = "EKEYEXPIRED")]
+    Ekeyexpired,
+    #[strum(serialize = "EKEYREJECTED")]
+    Ekeyrejected,
+    #[strum(serialize = "EKEYREVOKED")]
+    Ekeyrevoked,
+    #[strum(serialize = "EL2HLT")]
+    El2hlt,
+    #[strum(serialize = "EL2NSYNC")]
+    El2nsync,
+    #[strum(serialize = "EL3HLT")]
+    El3hlt,
+    #[strum(serialize = "EL3RST")]
+    El3rst,
     /// `Counter.elements()` method.
     Elements,
+    #[strum(serialize = "ELIBACC")]
+    Elibacc,
+    #[strum(serialize = "ELIBBAD")]
+    Elibbad,
+    #[strum(serialize = "ELIBEXEC")]
+    Elibexec,
+    #[strum(serialize = "ELIBMAX")]
+    Elibmax,
+    #[strum(serialize = "ELIBSCN")]
+    Elibscn,
     /// `repr()`/`str()` text of `Ellipsis`, interned so rendering allocates nothing.
     #[strum(serialize = "Ellipsis")]
     EllipsisRepr,
+    #[strum(serialize = "ELNRNG")]
+    Elnrng,
+    #[strum(serialize = "ELOOP")]
+    Eloop,
     /// Kwarg name `Emax` — `decimal.Context()`.
     #[strum(serialize = "Emax")]
     Emax,
+    #[strum(serialize = "EMEDIUMTYPE")]
+    Emediumtype,
+    #[strum(serialize = "EMFILE")]
+    Emfile,
     /// Kwarg name `Emin` — `decimal.Context()`.
     #[strum(serialize = "Emin")]
     Emin,
+    #[strum(serialize = "EMLINK")]
+    Emlink,
+    #[strum(serialize = "EMSGSIZE")]
+    Emsgsize,
+    #[strum(serialize = "EMULTIHOP")]
+    Emultihop,
     /// `gc.enable()` function.
     Enable,
+    #[strum(serialize = "ENAMETOOLONG")]
+    Enametoolong,
+    #[strum(serialize = "ENAVAIL")]
+    Enavail,
     /// `str.encode()` method.
     Encode,
     /// `base64.encodebytes()` function.
@@ -1160,6 +1307,74 @@ pub enum StaticStrings {
     End,
     /// `endswith()` method, shared by `str` and `bytes`.
     Endswith,
+    #[strum(serialize = "ENETDOWN")]
+    Enetdown,
+    #[strum(serialize = "ENETRESET")]
+    Enetreset,
+    #[strum(serialize = "ENETUNREACH")]
+    Enetunreach,
+    #[strum(serialize = "ENFILE")]
+    Enfile,
+    #[strum(serialize = "ENOANO")]
+    Enoano,
+    #[strum(serialize = "ENOBUFS")]
+    Enobufs,
+    #[strum(serialize = "ENOCSI")]
+    Enocsi,
+    #[strum(serialize = "ENODATA")]
+    Enodata,
+    #[strum(serialize = "ENODEV")]
+    Enodev,
+    #[strum(serialize = "ENOENT")]
+    Enoent,
+    #[strum(serialize = "ENOEXEC")]
+    Enoexec,
+    #[strum(serialize = "ENOKEY")]
+    Enokey,
+    #[strum(serialize = "ENOLCK")]
+    Enolck,
+    #[strum(serialize = "ENOLINK")]
+    Enolink,
+    #[strum(serialize = "ENOMEDIUM")]
+    Enomedium,
+    #[strum(serialize = "ENOMEM")]
+    Enomem,
+    #[strum(serialize = "ENOMSG")]
+    Enomsg,
+    #[strum(serialize = "ENONET")]
+    Enonet,
+    #[strum(serialize = "ENOPKG")]
+    Enopkg,
+    #[strum(serialize = "ENOPROTOOPT")]
+    Enoprotoopt,
+    #[strum(serialize = "ENOSPC")]
+    Enospc,
+    #[strum(serialize = "ENOSR")]
+    Enosr,
+    #[strum(serialize = "ENOSTR")]
+    Enostr,
+    #[strum(serialize = "ENOSYS")]
+    Enosys,
+    #[strum(serialize = "ENOTBLK")]
+    Enotblk,
+    #[strum(serialize = "ENOTCONN")]
+    Enotconn,
+    #[strum(serialize = "ENOTDIR")]
+    Enotdir,
+    #[strum(serialize = "ENOTEMPTY")]
+    Enotempty,
+    #[strum(serialize = "ENOTNAM")]
+    Enotnam,
+    #[strum(serialize = "ENOTRECOVERABLE")]
+    Enotrecoverable,
+    #[strum(serialize = "ENOTSOCK")]
+    Enotsock,
+    #[strum(serialize = "ENOTSUP")]
+    Enotsup,
+    #[strum(serialize = "ENOTTY")]
+    Enotty,
+    #[strum(serialize = "ENOTUNIQ")]
+    Enotuniq,
     /// `json.dumps(ensure_ascii=...)` keyword.
     #[strum(serialize = "ensure_ascii")]
     EnsureAscii,
@@ -1168,14 +1383,50 @@ pub enum StaticStrings {
     Enter,
     /// `os.environ` attribute.
     Environ,
+    #[strum(serialize = "ENXIO")]
+    Enxio,
+    #[strum(serialize = "EOPNOTSUPP")]
+    Eopnotsupp,
+    #[strum(serialize = "EOVERFLOW")]
+    Eoverflow,
+    #[strum(serialize = "EOWNERDEAD")]
+    Eownerdead,
+    #[strum(serialize = "EPERM")]
+    Eperm,
+    #[strum(serialize = "EPFNOSUPPORT")]
+    Epfnosupport,
+    #[strum(serialize = "EPIPE")]
+    Epipe,
+    #[strum(serialize = "EPROTO")]
+    Eproto,
+    #[strum(serialize = "EPROTONOSUPPORT")]
+    Eprotonosupport,
+    #[strum(serialize = "EPROTOTYPE")]
+    Eprototype,
     /// `sys.float_info.epsilon` field.
     Epsilon,
     /// `@dataclass(eq=...)`.
     Eq,
+    #[strum(serialize = "ERANGE")]
+    Erange,
+    #[strum(serialize = "EREMCHG")]
+    Eremchg,
+    #[strum(serialize = "EREMOTE")]
+    Eremote,
+    #[strum(serialize = "EREMOTEIO")]
+    Eremoteio,
+    #[strum(serialize = "ERESTART")]
+    Erestart,
     /// `math.erf()` function.
     Erf,
     /// `math.erfc()` function.
     Erfc,
+    #[strum(serialize = "ERFKILL")]
+    Erfkill,
+    #[strum(serialize = "EROFS")]
+    Erofs,
+    /// Module name for Linux error-number constants.
+    Errno,
     /// `re.error` exception alias (same as `re.PatternError`)
     #[strum(serialize = "error")]
     Error,
@@ -1183,12 +1434,44 @@ pub enum StaticStrings {
     /// is the lowercase `re.error` alias.
     #[strum(serialize = "Error")]
     ErrorClass,
+    /// Numeric errno values mapped to their symbolic names.
+    Errorcode,
     /// Kwarg name `errors` — `open(errors=...)`.
     Errors,
     /// `re.escape()` function
     Escape,
     /// `escapechar` dialect attribute and `csv` format parameter.
     Escapechar,
+    #[strum(serialize = "ESHUTDOWN")]
+    Eshutdown,
+    #[strum(serialize = "ESOCKTNOSUPPORT")]
+    Esocktnosupport,
+    #[strum(serialize = "ESPIPE")]
+    Espipe,
+    #[strum(serialize = "ESRCH")]
+    Esrch,
+    #[strum(serialize = "ESRMNT")]
+    Esrmnt,
+    #[strum(serialize = "ESTALE")]
+    Estale,
+    #[strum(serialize = "ESTRPIPE")]
+    Estrpipe,
+    #[strum(serialize = "ETIME")]
+    Etime,
+    #[strum(serialize = "ETIMEDOUT")]
+    Etimedout,
+    #[strum(serialize = "ETOOMANYREFS")]
+    Etoomanyrefs,
+    #[strum(serialize = "ETXTBSY")]
+    Etxtbsy,
+    #[strum(serialize = "EUCLEAN")]
+    Euclean,
+    #[strum(serialize = "EUNATCH")]
+    Eunatch,
+    #[strum(serialize = "EUSERS")]
+    Eusers,
+    #[strum(serialize = "EWOULDBLOCK")]
+    Ewouldblock,
     /// `eval_str` parameter of `annotationlib.get_annotations()`.
     EvalStr,
     /// `ForwardRef.evaluate()` method.
@@ -1197,10 +1480,16 @@ pub enum StaticStrings {
     Excel,
     /// `csv.excel_tab` dialect.
     ExcelTab,
+    /// `asyncio.Task.exception()` method.
+    Exception,
+    #[strum(serialize = "EXDEV")]
+    Exdev,
     /// `sys.exec_prefix` attribute.
     ExecPrefix,
     /// `sys.executable` attribute.
     Executable,
+    #[strum(serialize = "EXFULL")]
+    Exfull,
     /// Kwarg name `exist_ok` — `Path.mkdir(exist_ok=...)`.
     ExistOk,
     /// `Path.exists()` method — yields a host call.
@@ -1278,6 +1567,12 @@ pub enum StaticStrings {
     Findall,
     /// `re.finditer()` / `pattern.finditer()` method
     Finditer,
+    /// `asyncio.FIRST_COMPLETED`.
+    #[strum(serialize = "FIRST_COMPLETED")]
+    FirstCompleted,
+    /// `asyncio.FIRST_EXCEPTION`.
+    #[strum(serialize = "FIRST_EXCEPTION")]
+    FirstException,
     /// `pattern.flags`
     Flags,
     /// `sys.float_info` attribute.
@@ -1348,6 +1643,8 @@ pub enum StaticStrings {
     /// `typing.FrozenSet` marker.
     #[strum(serialize = "FrozenSet")]
     FrozenSet,
+    /// `fs` parameter of `asyncio.wait()`.
+    Fs,
     /// `Path.__fspath__()` method, answered without host I/O.
     #[strum(serialize = "__fspath__")]
     Fspath,
@@ -1381,8 +1678,12 @@ pub enum StaticStrings {
     Get,
     /// `annotationlib.get_annotations()` function.
     GetAnnotations,
+    /// `asyncio.Task.get_coro()` method.
+    GetCoro,
     /// `csv.get_dialect()` function.
     GetDialect,
+    /// `asyncio.Task.get_name()` method.
+    GetName,
     /// `typing.get_type_hints()` function.
     GetTypeHints,
     /// `os.path.getatime()` function.
@@ -1524,6 +1825,9 @@ pub enum StaticStrings {
     /// `decimal.InvalidOperation` signal.
     #[strum(serialize = "InvalidOperation")]
     InvalidOperation,
+    /// `asyncio.InvalidStateError` class.
+    #[strum(serialize = "InvalidStateError")]
+    InvalidStateError,
     /// `Path.is_absolute()` method, answered without host I/O.
     IsAbsolute,
     /// `is_argument` parameter of `annotationlib.ForwardRef()`.
@@ -1728,7 +2032,7 @@ pub enum StaticStrings {
     Major,
     /// `os.makedirs()` function.
     Makedirs,
-    /// `bytes.maketrans()` staticmethod.
+    /// `bytes.maketrans()` and `str.maketrans()` static methods.
     Maketrans,
     /// `sys.float_info.mant_dig` field.
     MantDig,
@@ -2197,11 +2501,13 @@ pub enum StaticStrings {
     Restkey,
     /// `restval` parameter and attribute of `csv.DictReader` / `csv.DictWriter`.
     Restval,
-    /// `result` parameter of `asyncio.sleep()`.
+    /// `result` parameter of `asyncio.sleep()` and `Task.result()` method.
     #[strum(serialize = "result")]
-    ResultArg,
+    Result,
     /// Kwarg name `return_exceptions` — `asyncio.gather(return_exceptions=...)`.
     ReturnExceptions,
+    /// `return_when` parameter of `asyncio.wait()`.
+    ReturnWhen,
     /// `list.reverse()` method.
     Reverse,
     /// `rfind()` method, shared by `str` and `bytes`.
@@ -2304,6 +2610,8 @@ pub enum StaticStrings {
     Sequence,
     /// `sys.version_info.serial` field.
     Serial,
+    /// `asyncio.Task.set_name()` method.
+    SetName,
     /// `typing.Set` marker.
     #[strum(serialize = "Set")]
     SetType,
@@ -2506,6 +2814,9 @@ pub enum StaticStrings {
     Tanh,
     /// Destination keyword for Path.rename and Path.replace.
     Target,
+    /// `asyncio.Task` class.
+    #[strum(serialize = "Task")]
+    Task,
     /// `math.tau` constant
     Tau,
     /// `itertools.tee()` function.
@@ -2530,6 +2841,8 @@ pub enum StaticStrings {
     TimeNs,
     /// The `datetime.timedelta` type.
     Timedelta,
+    /// `timeout` parameter of `asyncio.wait()`.
+    Timeout,
     /// `times` keyword argument of `itertools.repeat()`.
     Times,
     /// `timespec` keyword of `time.isoformat()` and `datetime.isoformat()`.
@@ -2583,7 +2896,7 @@ pub enum StaticStrings {
     Total,
     /// `timedelta.total_seconds()` method.
     TotalSeconds,
-    /// `fnmatch.translate()` function.
+    /// `fnmatch.translate()` function and `str.translate()` method.
     Translate,
     /// Kwarg name `traps` — `decimal.Context()`.
     Traps,
@@ -2706,12 +3019,17 @@ pub enum StaticStrings {
     Variance,
     /// `sys.flags.verbose` field.
     Verbose,
+    /// `re.VERBOSE` flag constant.
+    #[strum(serialize = "VERBOSE")]
+    VerboseFlag,
     /// `sys.version` attribute.
     Version,
     /// `sys.version_info` attribute.
     VersionInfo,
     /// `random.vonmisesvariate()` function.
     Vonmisesvariate,
+    /// `asyncio.wait()` function.
+    Wait,
     /// `os.walk()` / `Path.walk()` — yields a host scan.
     Walk,
     /// `sys.flags.warn_default_encoding` field.
@@ -2784,8 +3102,8 @@ struct InternedString {
 enum InternedText {
     /// Text recognized by this build, requiring no owned allocation.
     Static(&'static str),
-    /// Source or snapshot text unknown to the static registry.
-    Owned(Box<str>),
+    /// Source or snapshot text shared with its reverse lookup key.
+    Owned(Arc<str>),
 }
 
 impl AsRef<str> for InternedText {
@@ -2818,12 +3136,20 @@ impl InternedString {
     }
 
     /// Creates an entry owning text not present in the static registry.
-    fn owned(value: String) -> Self {
+    fn owned(value: Arc<str>) -> Self {
         Self {
             static_tag: None,
             char_len: Self::count_chars(&value),
-            text: WithHash::for_str(InternedText::Owned(value.into_boxed_str())),
+            text: WithHash::for_str(InternedText::Owned(value)),
         }
+    }
+
+    /// Returns the shared lookup key for a non-static entry.
+    fn owned_text(&self) -> &Arc<str> {
+        let InternedText::Owned(text) = self.text.value() else {
+            unreachable!("static entries are indexed by tag");
+        };
+        text
     }
 
     /// Returns the interned text.
@@ -2859,10 +3185,15 @@ impl serde::Serialize for InternedString {
 
 impl<'de> serde::Deserialize<'de> for InternedString {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+        // Borrow the CBOR text until it resolves to a static tag or its final allocation.
+        #[derive(serde::Deserialize)]
+        #[serde(transparent)]
+        struct Text<'a>(#[serde(borrow)] Cow<'a, str>);
+
+        let Text(value) = Text::deserialize(deserializer)?;
         Ok(match StaticStrings::from_str(&value) {
             Ok(static_string) => Self::static_string(static_string),
-            Err(_) => Self::owned(value),
+            Err(_) => Self::owned(Arc::from(value.as_ref())),
         })
     }
 }
@@ -2959,7 +3290,7 @@ fn next_string_id(strings_len: usize) -> StringId {
 
 /// Reverse of [`get_str`]: the `StringId` for `s`, or `None` if never interned.
 fn get_string_id_by_name(
-    string_map: &AHashMap<String, StringId>,
+    string_map: &AHashMap<Arc<str>, StringId>,
     static_string_ids: &RefCell<AHashMap<StaticStrings, StringId>>,
     s: &str,
 ) -> Option<StringId> {
@@ -3016,7 +3347,7 @@ pub(crate) struct Interns {
     #[serde(default)]
     file_sources: Entries<FileSource>,
     #[serde(skip)]
-    string_id_by_name: RefCell<AHashMap<String, StringId>>,
+    string_id_by_name: RefCell<AHashMap<Arc<str>, StringId>>,
     #[serde(skip)]
     static_string_ids: RefCell<AHashMap<StaticStrings, StringId>>,
     /// Prevents runtime insertion or a second compiler from consuming provisional IDs.
@@ -3051,21 +3382,29 @@ impl TryFrom<InternsWire> for Interns {
     type Error = String;
 
     fn try_from(wire: InternsWire) -> Result<Self, Self::Error> {
-        let mut string_id_by_name = AHashMap::new();
-        let mut static_string_ids = AHashMap::new();
-        let mut seen = AHashSet::new();
-        for (index, entry) in wire.strings.iter().enumerate() {
+        let strings = &wire.strings;
+        let static_count = strings.iter().filter(|entry| entry.static_value().is_some()).count();
+        let mut string_id_by_name = AHashMap::with_capacity(strings.len() - static_count);
+        let mut static_string_ids = AHashMap::with_capacity(static_count);
+
+        for (index, entry) in strings.iter().enumerate() {
             let text = entry.as_str();
-            if text.is_empty() || text.len() == 1 || !seen.insert(text) {
-                return Err(format!("duplicate or reserved interned string {text:?}"));
+            let invalid_entry = || format!("duplicate or reserved interned string {text:?}");
+            if text.len() <= 1 {
+                return Err(invalid_entry());
             }
+
             let id = next_string_id(index);
-            if let Some(value) = entry.static_value() {
-                static_string_ids.insert(value, id);
-            } else {
-                string_id_by_name.insert(text.to_owned(), id);
+            // The decoded tag partitions the text, so duplicates hit the same map.
+            let previous = match entry.static_value() {
+                Some(value) => static_string_ids.insert(value, id),
+                None => string_id_by_name.insert(Arc::clone(entry.owned_text()), id),
+            };
+            if previous.is_some() {
+                return Err(invalid_entry());
             }
         }
+
         Ok(Self {
             strings: wire.strings,
             bytes: wire.bytes,
@@ -3162,8 +3501,9 @@ impl Interns {
             intern_static(&self.static_string_ids, &self.strings, value)
         } else {
             let id = next_string_id(self.strings.len());
-            self.strings.push(InternedString::owned(text.to_owned()));
-            self.string_id_by_name.borrow_mut().insert(text.to_owned(), id);
+            let text: Arc<str> = Arc::from(text);
+            self.strings.push(InternedString::owned(Arc::clone(&text)));
+            self.string_id_by_name.borrow_mut().insert(text, id);
             id
         }
     }

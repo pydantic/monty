@@ -10,7 +10,7 @@
 //! Everything here exists only for that compatibility, so it can be deleted
 //! together once `MIN_SUPPORTED_DUMP_VERSION` passes [`LEGACY_DUMP_VERSION`].
 
-use super::{DataclassOptions, Installer, install_generated_methods};
+use super::{DataclassOptions, DataclassParams, Installer, install_generated_methods};
 use crate::{
     heap::{DropWithContext, Heap, HeapData, HeapId, HeapReadOutput, HeapReader},
     intern::Interns,
@@ -60,13 +60,9 @@ fn upgrade_class(class_id: HeapId, heap: &mut HeapReader<'_>, interns: &Interns)
 
 /// The fields mapping and options of a dataclass, or `None` for any other class.
 fn legacy_dataclass(class_id: HeapId, heap: &Heap, interns: &Interns) -> Option<(HeapId, DataclassOptions)> {
-    let options = match namespace_member(class_id, "__dataclass_params__", heap, interns) {
-        Some(Value::Ref(id)) => match heap.get(*id) {
-            HeapData::DataclassParams(params) => params.options(),
-            _ => return None,
-        },
-        _ => return None,
-    };
+    let options = namespace_member(class_id, "__dataclass_params__", heap, interns)?
+        .get_as::<DataclassParams>(heap)?
+        .options();
     match namespace_member(class_id, "__dataclass_fields__", heap, interns) {
         Some(Value::Ref(id)) if matches!(heap.get(*id), HeapData::Dict(_)) => Some((*id, options)),
         _ => None,

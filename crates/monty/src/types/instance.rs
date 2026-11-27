@@ -99,7 +99,7 @@ pub(crate) struct BoundMethod {
 impl BoundMethod {
     /// Allocates `func` bound to `instance`, taking both references.
     pub(crate) fn allocate(instance: Value, func: Value, heap: &Heap) -> Value {
-        Value::Ref(heap.allocate(HeapData::BoundMethod(Self { instance, func })))
+        Value::allocate(Self { instance, func }, heap)
     }
 }
 
@@ -655,7 +655,7 @@ impl<'h> HeapRead<'h, BoundMethod> {
     /// never a copy of the function, which is shared as all functions are.
     pub(crate) fn allocate_like(&self, instance: Value, vm: &mut VM<'h>) -> Value {
         let func = self.get(vm.heap).func.clone_with_heap(vm.heap);
-        Value::Ref(vm.heap.allocate(HeapData::BoundMethod(BoundMethod { instance, func })))
+        Value::allocate(BoundMethod { instance, func }, vm.heap)
     }
 }
 

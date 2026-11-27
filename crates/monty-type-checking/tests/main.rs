@@ -46,6 +46,123 @@ result = add(1, 2)
 }
 
 #[test]
+fn narrowed_stdlib_stubs_accept_supported_calls() {
+    let code = r"
+import asyncio
+import csv
+import functools
+import hashlib
+import itertools
+import random
+import sys
+import time
+import tomllib
+from typing import Any, Literal, assert_type
+
+assert_type(sys.platform, Literal['monty'])
+assert_type(time.localtime()[0], int)
+assert_type(time.localtime()[10], str | None)
+assert_type(random.choices([1, 2], cum_weights=(float(i) for i in [1, 2])), list[int])
+assert_type(tomllib.load(open('config.toml', 'rb')), dict[str, Any])
+assert_type(csv.reader(['a,b']).dialect.delimiter, str)
+assert_type(hashlib.sha256().copy().digest(), bytes)
+assert_type(hashlib.shake_128().hexdigest(3), str)
+
+@functools.cache
+def identity(n: int) -> int:
+    return n
+
+assert_type(identity.cache_info().hits, int)
+assert_type(identity(3), int)
+
+for _, group in itertools.groupby([1, 2]):
+    assert isinstance(group, itertools._grouper)
+    assert_type(next(group), int)
+assert isinstance(itertools.tee([1, 2])[0], itertools._tee)
+assert isinstance(None, itertools._tee_dataobject) is False
+
+async def main() -> int:
+    task = asyncio.create_task(asyncio.sleep(0, int('1')))
+    done, pending = await asyncio.wait({task}, return_when=asyncio.ALL_COMPLETED)
+    assert_type(next(iter(done)).result(), int)
+    result = await asyncio.gather(task, asyncio.sleep(0, int('2')))
+    assert_type(result, list[int])
+    result.append(3)
+    try:
+        return task.result()
+    except asyncio.InvalidStateError:
+        return 0
+
+assert_type(asyncio.run(main()), int)
+";
+    let diagnostics = check_concise(code, "supported.py");
+    assert_eq!(diagnostics, None);
+}
+
+#[test]
+fn narrowed_stdlib_stubs_reject_unsupported_calls() {
+    let code = r"
+import asyncio
+import csv
+import datetime
+import functools
+import hashlib
+import itertools
+import tomllib
+from typing import Generator
+from typing_extensions import type_repr
+
+class CustomAwaitable:
+    def __await__(self) -> Generator[None, None, int]:
+        raise ValueError()
+
+class CustomReader:
+    def read(self, length: int = -1, /) -> bytes:
+        return b'x = 1'
+
+class CustomDialect(csv.Dialect): ...
+class CustomDictReader(csv.DictReader[str]): ...
+class CustomDictWriter(csv.DictWriter[str]): ...
+
+csv.Reader
+csv.Writer
+functools._lru_cache_wrapper
+functools._CacheInfo
+hashlib.HASH
+hashlib.HASHXOF
+itertools._tee()
+datetime.date(2026, 1, 1).timetuple()
+datetime.datetime(2026, 1, 1).utctimetuple()
+tomllib.load(CustomReader())
+
+async def main() -> None:
+    await asyncio.gather(CustomAwaitable())
+    await asyncio.gather(return_exceptions=False)
+
+asyncio.run(main(), debug=True)
+";
+    assert_snapshot!(check_concise(code, "unsupported.py").expect("expected type errors"), @"
+    unsupported.py:10:31: error[import-not-found] Module `typing_extensions` has no member `type_repr`
+    unsupported.py:20:21: error[subclass-of-final-class] Class `CustomDialect` cannot inherit from final class `Dialect`
+    unsupported.py:21:24: error[subclass-of-final-class] Class `CustomDictReader` cannot inherit from final class `DictReader`
+    unsupported.py:22:24: error[subclass-of-final-class] Class `CustomDictWriter` cannot inherit from final class `DictWriter`
+    unsupported.py:24:1: error[unresolved-attribute] Module `csv` has no member `Reader`
+    unsupported.py:25:1: error[unresolved-attribute] Module `csv` has no member `Writer`
+    unsupported.py:26:1: error[unresolved-attribute] Module `functools` has no member `_lru_cache_wrapper`
+    unsupported.py:27:1: error[unresolved-attribute] Module `functools` has no member `_CacheInfo`
+    unsupported.py:28:1: error[unresolved-attribute] Module `hashlib` has no member `HASH`
+    unsupported.py:29:1: error[unresolved-attribute] Module `hashlib` has no member `HASHXOF`
+    unsupported.py:30:1: error[missing-argument] No argument provided for required parameter `_unavailable` of constructor `_tee.__new__`
+    unsupported.py:31:1: error[unresolved-attribute] Object of type `date` has no attribute `timetuple`
+    unsupported.py:32:1: error[unresolved-attribute] Object of type `datetime` has no attribute `utctimetuple`
+    unsupported.py:33:14: error[invalid-argument-type] Argument to function `load` is incorrect: Expected `BinaryIO`, found `CustomReader`
+    unsupported.py:36:26: error[invalid-argument-type] Argument to function `gather` is incorrect: Expected `_Future[Unknown] | Coroutine[Any, Any, Unknown]`, found `CustomAwaitable`
+    unsupported.py:37:26: error[unknown-argument] Argument `return_exceptions` does not match any known parameter of function `gather`
+    unsupported.py:39:21: error[unknown-argument] Argument `debug` does not match any known parameter of function `run`
+    ");
+}
+
+#[test]
 fn type_checking_error() {
     let code = "\
 def add(x: int, y: int) -> int:
@@ -643,4 +760,19 @@ insort([1, 2], 2)
 fn bisect_does_not_declare_runtime_all_metadata() {
     let diagnostics = check_concise("import bisect\nbisect.__all__", "main.py").expect("__all__ is absent at runtime");
     assert_snapshot!(diagnostics, @"main.py:2:1: error[unresolved-attribute] Module `bisect` has no member `__all__`");
+}
+
+#[test]
+fn errno_constants_and_reverse_lookup_type_check() {
+    let code = r"
+from collections.abc import Mapping
+from errno import EACCES, EHWPOISON, errorcode
+from typing import assert_type
+
+assert_type(EHWPOISON, int)
+assert_type(errorcode, Mapping[int, str])
+assert_type(errorcode[EACCES], str)
+assert_type(errorcode.get(EACCES), str | None)
+";
+    assert_eq!(check_concise(code, "main.py"), None);
 }

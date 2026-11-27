@@ -1,3 +1,11 @@
+use std::{array, cell::Cell, ffi::c_int, fmt::Write, ops, str};
+
+use memchr::memmem::{Finder, FinderRev};
+use monty_types::{ResourceError, ResourceTracker};
+pub use monty_types::{bytes_repr, bytes_repr_fmt};
+use smallvec::smallvec;
+
+use super::{LazyHeapSet, PyTrait, Type, TypeRef};
 /// Python bytes type, wrapping a `Vec<u8>`.
 ///
 /// This type provides Python bytes semantics with operations on ASCII bytes only.
@@ -65,14 +73,6 @@
 ///
 /// # Unimplemented Methods
 /// - `expandtabs(tabsize=8)` - Tab expansion
-use std::{array, cell::Cell, ffi::c_int, fmt::Write, ops, str};
-
-use memchr::memmem::{Finder, FinderRev};
-use monty_types::{ResourceError, ResourceTracker};
-pub use monty_types::{bytes_repr, bytes_repr_fmt};
-use smallvec::smallvec;
-
-use super::{LazyHeapSet, PyTrait, Type, TypeRef};
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
@@ -92,7 +92,7 @@ use crate::{
         check_estimated_size, check_repeat_size, check_replace_size, push_checked, repeated_len, try_vec_with_capacity,
     },
     types::{
-        List,
+        List, Slice,
         iter::checked_preallocation_hint,
         py_trait::PyObjectIdentity,
         slice::{SearchRange, search_range, slice_collect_iterator},
@@ -211,8 +211,7 @@ impl Bytes {
                 }
             }
         };
-        let heap_id = vm.heap.allocate(HeapData::Bytes(Self::new(new_data)));
-        Ok(Value::Ref(heap_id))
+        Ok(Value::allocate(Self::new(new_data), vm.heap))
     }
 }
 
@@ -320,7 +319,7 @@ pub(crate) fn concat_bytes(lhs: &[u8], rhs: &[u8], heap: &Heap) -> Result<Value,
     let mut result = Vec::with_capacity(result_len);
     result.extend_from_slice(lhs);
     result.extend_from_slice(rhs);
-    Ok(Value::Ref(heap.allocate(HeapData::Bytes(result.into()))))
+    Ok(Value::allocate(Bytes::from(result), heap))
 }
 
 /// Repeats bytes after validating the allocation against resource limits.
@@ -337,7 +336,7 @@ fn repeat_bytes(value: &[u8], count: usize, vm: &VM<'_>) -> RunResult<Option<Val
             repeated.extend_from_within(..repeated.len().min(total - repeated.len()));
         }
     }
-    Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Bytes(repeated.into())))))
+    Ok(Some(Value::allocate(Bytes::from(repeated), vm.heap)))
 }
 
 /// An allocation-free bytes view retaining its interned or heap identity.
@@ -582,11 +581,9 @@ fn bytes_add(bytes: &[u8], other: &Value, vm: &VM<'_>) -> RunResult<Option<Value
 
 /// Indexes a protected buffer, allowing `__index__` to run before borrowing it.
 fn bytes_getitem<'h>(bytes: &impl HeapView<'h, [u8]>, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
-    if let Value::Ref(id) = key
-        && let HeapData::Slice(slice) = vm.heap.get(*id)
-    {
+    if let Some(slice) = key.get_as::<Slice>(vm.heap) {
         let result = slice_collect_iterator(vm, slice, bytes.get(vm.heap).iter(), |b| *b)?;
-        Ok(Value::Ref(vm.heap.allocate(HeapData::Bytes(Bytes::new(result)))))
+        Ok(Value::allocate(Bytes::new(result), vm.heap))
     } else {
         let index = key.as_index(vm, Type::Bytes)?;
         let byte = get_byte_at_index(bytes.get(vm.heap), index).ok_or_else(ExcType::bytes_index_error)?;
@@ -1518,8 +1515,7 @@ fn bytes_split<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM
 
     let (list_items, vm) = items_guard.into_parts();
     let list = List::new(list_items);
-    let heap_id = vm.heap.allocate(HeapData::List(list));
-    Ok(Value::Ref(heap_id))
+    Ok(Value::allocate(list, vm.heap))
 }
 
 /// Implements Python's `bytes.rsplit([sep[, maxsplit]])` method.
@@ -1568,8 +1564,7 @@ fn bytes_rsplit<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut V
 
     let (list_items, vm) = items_guard.into_parts();
     let list = List::new(list_items);
-    let heap_id = vm.heap.allocate(HeapData::List(list));
-    Ok(Value::Ref(heap_id))
+    Ok(Value::allocate(list, vm.heap))
 }
 
 /// Coerces extracted `sep` / `maxsplit` `Value`s into the runtime shape used
@@ -1835,8 +1830,7 @@ fn bytes_splitlines<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &m
 
     let (lines, vm) = lines_guard.into_parts();
     let list = List::new(lines);
-    let heap_id = vm.heap.allocate(HeapData::List(list));
-    Ok(Value::Ref(heap_id))
+    Ok(Value::allocate(list, vm.heap))
 }
 
 /// Parses arguments for bytes.splitlines method.
@@ -2529,8 +2523,7 @@ fn hex_char_to_value(c: char) -> Option<u8> {
 
 /// Allocates bytes on the heap.
 pub(crate) fn allocate_bytes(bytes: Vec<u8>, heap: &Heap) -> Value {
-    let heap_id = heap.allocate(HeapData::Bytes(Bytes::new(bytes)));
-    Value::Ref(heap_id)
+    Value::allocate(Bytes::new(bytes), heap)
 }
 
 /// Source representation retained by a bytes iterator.
@@ -2675,25 +2668,6 @@ pub(crate) fn bytes_contains(container: &[u8], item: &Value, vm: &VM<'_>) -> Run
 // maketrans and translate methods
 // =============================================================================
 
-/// Extracts a byte slice from a `Value`, raising CPython's
-/// `TypeError: a bytes-like object is required, not '<type>'` on any non-bytes value.
-fn extract_bytes_like<'a>(value: &Value, vm: &'a VM<'_>) -> RunResult<&'a [u8]> {
-    match value {
-        Value::InternBytes(id) => Ok(vm.interns.get_bytes(*id)),
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Bytes(b) => Ok(b.as_slice()),
-            _ => Err(ExcType::type_error(format!(
-                "a bytes-like object is required, not '{}'",
-                value.py_type_name(vm)
-            ))),
-        },
-        _ => Err(ExcType::type_error(format!(
-            "a bytes-like object is required, not '{}'",
-            value.py_type_name(vm)
-        ))),
-    }
-}
-
 /// Implements Python's `bytes.maketrans(frm, to)` staticmethod.
 pub(crate) fn bytes_maketrans(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
     let args = args.reject_kwargs("bytes.maketrans", vm.heap)?;
@@ -2701,8 +2675,8 @@ pub(crate) fn bytes_maketrans(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Val
     defer_drop!(frm_val, vm);
     defer_drop!(to_val, vm);
 
-    let frm = extract_bytes_like(frm_val, vm)?;
-    let to = extract_bytes_like(to_val, vm)?;
+    let frm = frm_val.try_as_bytes(vm)?;
+    let to = to_val.try_as_bytes(vm)?;
 
     if frm.len() != to.len() {
         return Err(ExcType::value_error("maketrans arguments must have same length"));
@@ -2736,7 +2710,7 @@ fn bytes_translate<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mu
     let table_arr: Option<[u8; 256]> = match table {
         Value::None => None,
         v => {
-            let slice = extract_bytes_like(v, vm)?;
+            let slice = v.try_as_bytes(vm)?;
             let Ok(arr) = <[u8; 256]>::try_from(slice) else {
                 return Err(ExcType::value_error("translation table must be 256 characters long"));
             };
@@ -2748,7 +2722,7 @@ fn bytes_translate<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mu
     let has_delete = match delete {
         None => false,
         Some(v) => {
-            let slice = extract_bytes_like(v, vm)?;
+            let slice = v.try_as_bytes(vm)?;
             for &b in slice {
                 delete_mask[usize::from(b)] = true;
             }

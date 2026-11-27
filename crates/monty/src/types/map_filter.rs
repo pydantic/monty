@@ -12,7 +12,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     frozen::{FrozenFunction, FrozenFunctions},
     hash::{HashValue, identity_hash},
-    heap::{DropGuard, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    heap::{DropGuard, HeapId, HeapItem, HeapObjectRead},
     modules::ModuleFunctions,
     py_value::PyValue,
     types::{LazyHeapSet, List, PyTrait, Type, TypeRef},
@@ -49,7 +49,7 @@ impl MapFilter {
                     .require_synchronous(vm)?;
             }
             let ((function, iterators), vm) = inputs.into_parts();
-            let iterators = Value::Ref(vm.heap.allocate(HeapData::List(List::new(iterators))));
+            let iterators = Value::allocate(List::new(iterators), vm.heap);
             Ok(CallResult::Value(
                 Self::Map {
                     function,
@@ -59,7 +59,7 @@ impl MapFilter {
                 .allocate(vm),
             ))
         } else {
-            let iterables = Value::Ref(vm.heap.allocate(HeapData::List(List::new(iterables))));
+            let iterables = Value::allocate(List::new(iterables), vm.heap);
             vm.call_frozen_exact(
                 FrozenFunction::MapInit,
                 [
@@ -97,7 +97,7 @@ impl MapFilter {
 
     /// Transfers a fully acquired adaptor into the heap.
     fn allocate(self, vm: &VM<'_>) -> Value {
-        Value::Ref(vm.heap.allocate(HeapData::MapFilter(Box::new(self))))
+        Value::allocate(self, vm.heap)
     }
 
     /// Returns the public builtin type, independent of the shared storage representation.
@@ -170,7 +170,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, MapFilter> {
                 iterators,
                 strict,
             } => {
-                let Some(HeapReadOutput::List(sources)) = iterators.read_heap(vm) else {
+                let Some(sources) = iterators.read_as::<List>(vm.heap) else {
                     unreachable!("map owns a private list of source iterators")
                 };
                 let sources = sources.get(vm.heap).items();

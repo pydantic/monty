@@ -16,10 +16,10 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropGuard, HeapData},
+    heap::DropGuard,
     intern::StaticStrings,
     modules::ModuleFunctions,
-    os_dispatch::{value_as_bytes, value_as_path_str},
+    os_dispatch::value_as_path_str,
     types::{List, Module, str::allocate_string},
     value::Value,
 };
@@ -145,7 +145,7 @@ fn filter(names: Value, pat: Value, vm: &mut VM<'_>) -> RunResult<Value> {
         }
     }
     let (out, vm) = out_guard.into_parts();
-    Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(out)))))
+    Ok(Value::allocate(List::new(out), vm.heap))
 }
 
 /// `fnmatchcase(name, pat)` on converted arguments.
@@ -215,7 +215,7 @@ impl Text {
     fn extract(value: &Value, vm: &VM<'_>) -> Option<Self> {
         value_as_path_str(value, vm.heap, vm.interns)
             .map(Self::str)
-            .or_else(|| value_as_bytes(value, vm.heap, vm.interns).map(Self::bytes))
+            .or_else(|| value.as_bytes(vm).map(Self::bytes))
     }
 
     /// `str` or `bytes` text only, else `None`.
@@ -223,7 +223,7 @@ impl Text {
         if value.is_str(vm.heap) {
             value_as_path_str(value, vm.heap, vm.interns).map(Self::str)
         } else {
-            value_as_bytes(value, vm.heap, vm.interns).map(Self::bytes)
+            value.as_bytes(vm).map(Self::bytes)
         }
     }
 

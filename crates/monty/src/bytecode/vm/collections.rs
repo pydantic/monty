@@ -19,8 +19,7 @@ impl VM<'_> {
     pub(super) fn build_list(&mut self, count: usize) {
         let items = self.pop_n(count);
         let list = List::new(items);
-        let heap_id = self.heap.allocate(HeapData::List(list));
-        self.push(Value::Ref(heap_id));
+        self.push(Value::allocate(list, self.heap));
     }
 
     /// Builds a tuple from the top n stack values.
@@ -61,8 +60,7 @@ impl VM<'_> {
             }
         }
         let (dict, this) = dict_guard.into_parts();
-        let heap_id = this.heap.allocate(HeapData::Dict(dict));
-        this.push(Value::Ref(heap_id));
+        this.push(Value::allocate(dict, this.heap));
         Ok(())
     }
 
@@ -84,8 +82,7 @@ impl VM<'_> {
             set.add(item, this)?;
         }
         let (set, this) = set_guard.into_parts();
-        let heap_id = this.heap.allocate(HeapData::Set(set));
-        this.push(Value::Ref(heap_id));
+        this.push(Value::allocate(set, this.heap));
         Ok(())
     }
 
@@ -108,8 +105,7 @@ impl VM<'_> {
         let step = value_to_option_i64(step_val, this)?;
 
         let slice = Slice::new(start, stop, step);
-        let heap_id = this.heap.allocate(HeapData::Slice(slice));
-        this.push(Value::Ref(heap_id));
+        this.push(Value::allocate(slice, this.heap));
         Ok(())
     }
 
@@ -242,15 +238,10 @@ impl VM<'_> {
         let (dict_ref, this) = dict_ref_guard.as_parts();
 
         // Check that mapping is a dict (Ref pointing to Dict) and clone key-value pairs
-        let copied_items: Vec<(Value, Value)> = if let Value::Ref(id) = mapping {
-            if let HeapData::Dict(dict) = this.heap.get(*id) {
-                dict.iter()
-                    .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
-                    .collect()
-            } else {
-                let type_name = mapping.py_type_name(this).to_string();
-                return Err(ExcType::type_error_kwargs_not_mapping(func_name, &type_name));
-            }
+        let copied_items: Vec<(Value, Value)> = if let Some(dict) = mapping.get_as::<Dict>(this.heap) {
+            dict.iter()
+                .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
+                .collect()
         } else {
             let type_name = mapping.py_type_name(this).to_string();
             return Err(ExcType::type_error_kwargs_not_mapping(func_name, &type_name));
@@ -316,15 +307,10 @@ impl VM<'_> {
         defer_drop!(mapping, this);
 
         // Clone all key/value pairs out of the mapping before mutating the target dict
-        let copied_items: Vec<(Value, Value)> = if let Value::Ref(id) = mapping {
-            if let HeapData::Dict(dict) = this.heap.get(*id) {
-                dict.iter()
-                    .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
-                    .collect()
-            } else {
-                let type_ = mapping.py_type_name(this);
-                return Err(ExcType::type_error_not_mapping(&type_));
-            }
+        let copied_items: Vec<(Value, Value)> = if let Some(dict) = mapping.get_as::<Dict>(this.heap) {
+            dict.iter()
+                .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
+                .collect()
         } else {
             let type_ = mapping.py_type_name(this);
             return Err(ExcType::type_error_not_mapping(&type_));
@@ -571,8 +557,7 @@ impl VM<'_> {
 
         // Middle items as a list (starred target)
         let middle_list: Vec<Value> = items.drain(before..).collect();
-        let list_id = this.heap.allocate(HeapData::List(List::new(middle_list)));
-        this.push(Value::Ref(list_id));
+        this.push(Value::allocate(List::new(middle_list), this.heap));
 
         // Before items
         for item in items.drain(..).rev() {
@@ -613,13 +598,7 @@ pub(crate) fn unpack_exact(value: &Value, count: usize, vm: &mut VM<'_>) -> RunR
     }
     // Dicts also report their total size in the "too many" error; other
     // iterables stop at the first surplus item without reporting a total.
-    let total = match value {
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Dict(dict) => Some(dict.len()),
-            _ => None,
-        },
-        _ => None,
-    };
+    let total = value.get_as::<Dict>(vm.heap).map(Dict::len);
     // Pull one past `count` so a too-long iterable is detected without
     // draining it — CPython stops consuming there too, which is why every
     // other type has no total to report.

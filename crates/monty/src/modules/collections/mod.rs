@@ -31,7 +31,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropWithContext, HeapData, HeapReadOutput},
+    heap::{DropWithContext, HeapReadOutput},
     intern::StaticStrings,
     types::{
         Dict, Module, NamedTupleClass, PyTrait, Type,
@@ -142,7 +142,7 @@ pub(crate) fn counter_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>
 
     let mut dict = Dict::new();
     dict.make_counter();
-    let value = Value::Ref(vm.heap.allocate(HeapData::Dict(dict)));
+    let value = Value::allocate(dict, vm.heap);
     let Value::Ref(dict_id) = value else {
         unreachable!("just allocated a ref");
     };
@@ -255,7 +255,7 @@ fn namedtuple(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         name
     } else {
         let as_str = typename.py_str(vm)?;
-        let owned = as_str.try_to_str(vm).map(str::to_owned);
+        let owned = as_str.try_as_str(vm).map(str::to_owned);
         as_str.drop_with(vm);
         EitherStr::from(owned?)
     };
@@ -284,7 +284,7 @@ fn namedtuple(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     let field_names: Vec<EitherStr> = names.into_iter().map(EitherStr::Heap).collect();
     let class = NamedTupleClass::new(type_name, field_names, default_values, module);
-    Ok(Value::Ref(vm.heap.allocate(HeapData::NamedTupleClass(Box::new(class)))))
+    Ok(Value::allocate(class, vm.heap))
 }
 
 /// Parses the `field_names` argument into owned strings.

@@ -158,7 +158,7 @@ pub(crate) fn call(cache_id: HeapId, args: ArgValues, vm: &mut VM<'_>) -> RunRes
     } else {
         cache.get_mut(vm.heap).misses += 1;
         let kwargs = Dict::from_pairs(take(keywords), vm)?;
-        let kwargs = Value::Ref(vm.heap.allocate(HeapData::Dict(kwargs)));
+        let kwargs = Value::allocate(kwargs, vm.heap);
         let args = allocate_tuple(TupleVec::from_vec(take(positional)), vm.heap);
         let store = Value::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::Store));
         let function = func.clone_with_heap(vm);
@@ -203,7 +203,7 @@ fn decorate(maxsize: Option<u64>, typed: bool, args: ArgValues, vm: &mut VM<'_>)
 pub(crate) fn allocate(func: Option<Value>, maxsize: Option<u64>, typed: bool, vm: &mut VM<'_>) -> RunResult<Value> {
     if func.as_ref().is_none_or(|func| func.is_callable(vm)) {
         let cache = LruCache::new(func, maxsize, typed);
-        Ok(Value::Ref(vm.heap.allocate(HeapData::LruCache(Box::new(cache)))))
+        Ok(Value::allocate(cache, vm.heap))
     } else {
         func.drop_with(vm);
         Err(ExcType::partial_not_callable())
@@ -461,7 +461,7 @@ impl<'h> HeapObjectRead<'h, LruCache> {
             ],
             items,
         );
-        Value::Ref(vm.heap.allocate(HeapData::NamedTuple(Box::new(info))))
+        Value::allocate(info, vm.heap)
     }
 
     /// Empties the cache and resets the hit/miss counters, as CPython does.
@@ -487,7 +487,7 @@ impl<'h> HeapObjectRead<'h, LruCache> {
             ),
         ];
         let dict = Dict::from_pairs(pairs, vm)?;
-        Ok(Value::Ref(vm.heap.allocate(HeapData::Dict(dict))))
+        Ok(Value::allocate(dict, vm.heap))
     }
 }
 

@@ -4,7 +4,7 @@ use std::{
     mem,
 };
 
-use monty_types::{ExcData, JsonErrorData, MontyException, StackFrame, UnicodeErrorData};
+use monty_types::{ExcData, JsonErrorData, MontyException, StackFrame, UnicodeErrorData, UnicodeErrorObject};
 use smallvec::smallvec;
 
 use crate::{
@@ -12,7 +12,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     fstring::{FormatError, ascii_escape},
-    heap::{DropWithContext, HeapData, HeapId, HeapRead},
+    heap::{DropWithContext, HeapId, HeapRead},
     intern::{Interns, StaticStrings, StringId},
     parse::CodeRange,
     py_value::PyValue,
@@ -250,6 +250,38 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn cannot_reuse_already_awaited_coroutine() -> RunError {
         SimpleException::new_msg(ExcType::RuntimeError, "cannot reuse already awaited coroutine").into()
+    }
+
+    /// Creates the canonical `RuntimeError: cannot reuse already awaited future`,
+    /// raised when an already-consumed future or task is awaited again.
+    #[must_use]
+    fn cannot_reuse_already_awaited_future() -> RunError {
+        SimpleException::new_msg(ExcType::RuntimeError, "cannot reuse already awaited future").into()
+    }
+
+    /// `RuntimeError: coroutine is being awaited already` — a second task
+    /// awaiting a coroutine-like awaitable that another await is still driving.
+    #[must_use]
+    fn coroutine_being_awaited_already() -> RunError {
+        SimpleException::new_msg(ExcType::RuntimeError, "coroutine is being awaited already").into()
+    }
+
+    /// `ValueError: Set of Tasks/Futures is empty.` — `asyncio.wait` given no inputs.
+    #[must_use]
+    fn wait_empty_input() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "Set of Tasks/Futures is empty.").into()
+    }
+
+    /// `AttributeError: '<type>' object has no attribute 'add_done_callback'` —
+    /// an `asyncio.wait` input that is neither a task nor a future. CPython
+    /// fails on the first callback it tries to attach.
+    #[must_use]
+    fn wait_input_not_future(type_name: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::AttributeError,
+            format!("'{type_name}' object has no attribute 'add_done_callback'"),
+        )
+        .into()
     }
 
     /// `ValueError: generator already executing` — a generator advanced from
@@ -1080,6 +1112,12 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::TypeError, msg).into()
     }
 
+    /// The buffer protocol's type error for an unsupported argument.
+    #[must_use]
+    fn type_error_bytes_like(type_name: impl fmt::Display) -> RunError {
+        Self::type_error(format_args!("a bytes-like object is required, not '{type_name}'"))
+    }
+
     /// Creates the TypeError raised when a `with` statement's context expression
     /// does not implement the context-manager protocol.
     ///
@@ -1119,7 +1157,7 @@ pub(crate) trait ExcTypeExt: Sized {
             Ok(repr_value) => {
                 defer_drop!(repr_value, vm);
                 repr_value
-                    .try_to_str(vm)
+                    .try_as_str(vm)
                     .map_or_else(|_| format!("<{}>", key.py_type_name(vm)), str::to_owned)
             }
             Err(err) => return err,
@@ -1890,6 +1928,19 @@ pub(crate) trait ExcTypeExt: Sized {
         ))
     }
 
+    /// The `ImportError` for a relative import in a module with no `__package__`,
+    /// such as the main script or a top-level module.
+    #[must_use]
+    fn relative_import_no_parent() -> RunError {
+        import_error_without_caret("attempted relative import with no known parent package".to_owned())
+    }
+
+    /// The `ImportError` for a relative import with more dots than `__package__` has components.
+    #[must_use]
+    fn relative_import_beyond_top_level() -> RunError {
+        import_error_without_caret("attempted relative import beyond top-level package".to_owned())
+    }
+
     /// The `TypeError` for a non-`str` name `from module import *` would bind:
     /// an item of `__all__`, or a key of the module's namespace without one.
     /// Like every star-import error, CPython shows it without carets.
@@ -2269,6 +2320,74 @@ pub(crate) trait ExcTypeExt: Sized {
             format!("sequence item {index}: expected str instance, {item_type} found"),
         )
         .into()
+    }
+
+    /// Creates a TypeError for `str.translate()` when a mapping returns something other than an int, `None` or str.
+    ///
+    /// Matches CPython's format: `TypeError: character mapping must return integer, None or str`
+    #[must_use]
+    fn type_error_translate_value() -> RunError {
+        SimpleException::new_msg(ExcType::TypeError, "character mapping must return integer, None or str").into()
+    }
+
+    /// Creates a ValueError for `str.translate()` when a mapped int is not a code point.
+    ///
+    /// Matches CPython's format: `ValueError: character mapping must be in range(0x110000)`
+    #[must_use]
+    fn value_error_translate_range() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "character mapping must be in range(0x110000)").into()
+    }
+
+    /// Creates a ValueError for `str.maketrans(x, y)` when `x` and `y` differ in length.
+    ///
+    /// Matches CPython's format: `ValueError: the first two maketrans arguments must have equal length`
+    #[must_use]
+    fn value_error_maketrans_lengths() -> RunError {
+        SimpleException::new_msg(
+            ExcType::ValueError,
+            "the first two maketrans arguments must have equal length",
+        )
+        .into()
+    }
+
+    /// Creates a ValueError for a `str.maketrans(dict)` key that is not one character long (typo is CPython's).
+    ///
+    /// Matches CPython's format: `ValueError: string keys in translatetable must be of length 1`
+    #[must_use]
+    fn value_error_maketrans_key_length() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "string keys in translatetable must be of length 1").into()
+    }
+
+    /// Creates a TypeError for `str.maketrans(x)` when `x` is not a dict.
+    ///
+    /// Matches CPython's format: `TypeError: if you give only one argument to maketrans it must be a dict`
+    #[must_use]
+    fn type_error_maketrans_dict() -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            "if you give only one argument to maketrans it must be a dict",
+        )
+        .into()
+    }
+
+    /// Creates a TypeError for `str.maketrans(x, y)` when `x` is not a str.
+    ///
+    /// Matches CPython's format: `TypeError: first maketrans argument must be a string if there is a second argument`
+    #[must_use]
+    fn type_error_maketrans_first_str() -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            "first maketrans argument must be a string if there is a second argument",
+        )
+        .into()
+    }
+
+    /// Creates a TypeError for a `str.maketrans(dict)` key that is neither a str nor an int (typo is CPython's).
+    ///
+    /// Matches CPython's format: `TypeError: keys in translate table mustbe strings or integers`
+    #[must_use]
+    fn type_error_maketrans_key_type() -> RunError {
+        SimpleException::new_msg(ExcType::TypeError, "keys in translate table mustbe strings or integers").into()
     }
 
     /// Creates a TypeError for str.join() when the argument is not iterable.
@@ -2817,8 +2936,7 @@ impl ExcTypeExt for ExcType {
                 "exceptions can only be called with zero or one string argument",
             )),
         }?;
-        let heap_id = vm.heap.allocate(HeapData::Exception(exc));
-        Ok(Value::Ref(heap_id))
+        Ok(Value::allocate(exc, vm.heap))
     }
 }
 
@@ -3093,6 +3211,20 @@ impl From<MontyException> for ExceptionRaise {
 }
 
 impl ExceptionRaise {
+    /// Heap bytes a clone allocates for the message, structured payload, and frames.
+    fn clone_allocation_size(&self) -> usize {
+        self.exc
+            .arg()
+            .map_or(0, String::len)
+            .saturating_add(exc_data_clone_size(&self.exc.data))
+            .saturating_add(self.frame.as_ref().map_or(0, RawStackFrame::clone_allocation_size))
+            .saturating_add(self.snippet_frame.as_ref().map_or(0, |frame| {
+                mem::size_of::<StackFrame>()
+                    .saturating_add(frame.filename.len())
+                    .saturating_add(frame.frame_name.as_ref().map_or(0, String::len))
+            }))
+    }
+
     /// Adds a caller's frame as the outermost frame in the traceback chain.
     ///
     /// This is used when an exception propagates up through call frames.
@@ -3184,6 +3316,23 @@ impl ExceptionRaise {
     }
 }
 
+/// Heap bytes a clone of `data` allocates for its boxed structured payload.
+fn exc_data_clone_size(data: &ExcData) -> usize {
+    match data {
+        ExcData::None => 0,
+        ExcData::Unicode(data) => mem::size_of::<UnicodeErrorData>()
+            .saturating_add(data.encoding.len())
+            .saturating_add(data.reason.len())
+            .saturating_add(match &data.object {
+                UnicodeErrorObject::Bytes(bytes) => bytes.len(),
+                UnicodeErrorObject::Str(text) => text.len(),
+            }),
+        ExcData::Json(data) => mem::size_of::<JsonErrorData>()
+            .saturating_add(data.msg.len())
+            .saturating_add(data.doc.as_ref().map_or(0, String::len)),
+    }
+}
+
 /// A stack frame for traceback information.
 ///
 /// Stores position information and optional function name as StringId.
@@ -3203,6 +3352,11 @@ pub struct RawStackFrame {
 }
 
 impl RawStackFrame {
+    /// Heap bytes a clone allocates for this frame and its boxed parents.
+    fn clone_allocation_size(&self) -> usize {
+        mem::size_of::<Self>().saturating_add(self.parent.as_ref().map_or(0, |parent| parent.clone_allocation_size()))
+    }
+
     pub(crate) fn new(position: CodeRange, frame_name: StringId, parent: Option<&Self>) -> Self {
         Self {
             position,
@@ -3287,6 +3441,17 @@ impl From<fmt::Error> for RunError {
 }
 
 impl RunError {
+    /// Heap bytes a clone allocates for its exception payload, excluding the inline value.
+    pub(crate) fn clone_allocation_size(&self) -> usize {
+        match self {
+            Self::Internal(message) => match message {
+                Cow::Borrowed(_) => 0,
+                Cow::Owned(message) => message.len(),
+            },
+            Self::Exc(exc) | Self::UncatchableExc(exc) => exc.clone_allocation_size(),
+        }
+    }
+
     /// Whether this is a catchable `exc_type`, matching only `Exc` so an uncatchable
     /// host or resource error is never swallowed by a guard that expects one.
     pub(crate) fn is_catchable(&self, exc_type: ExcType) -> bool {

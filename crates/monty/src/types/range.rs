@@ -17,8 +17,8 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
-    heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
-    types::{LazyHeapSet, PyTrait, Type, TypeRef},
+    heap::{Heap, HeapId, HeapItem, HeapObjectRead},
+    types::{LazyHeapSet, PyTrait, Slice, Type, TypeRef},
     value::Value,
 };
 
@@ -143,7 +143,7 @@ impl Range {
             _ => return Err(ExcType::type_error_at_most("range", 3, pos_args.len())),
         };
 
-        Ok(Value::Ref(vm.heap.allocate(HeapData::Range(range))))
+        Ok(Value::allocate(range, vm.heap))
     }
 
     /// Handles slice-based indexing for ranges.
@@ -176,7 +176,7 @@ impl Range {
         let new_stop = i64::try_from(new_stop_i128).map_err(|_| ExcType::overflow_c_ssize_t())?;
 
         let new_range = Self::new(new_start, new_stop, new_step);
-        Ok(Value::Ref(heap.allocate(HeapData::Range(new_range))))
+        Ok(Value::allocate(new_range, heap))
     }
 }
 
@@ -231,9 +231,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Range> {
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         // Check for slice first (Value::Ref pointing to HeapData::Slice)
-        if let Value::Ref(id) = key
-            && let HeapData::Slice(slice) = vm.heap.get(*id)
-        {
+        if let Some(slice) = key.get_as::<Slice>(vm.heap) {
             let range = *self.get(vm.heap);
             return range.getitem_slice(slice, vm.heap);
         }
@@ -267,7 +265,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Range> {
     }
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        let Some(HeapReadOutput::Range(other)) = other.read_heap(vm) else {
+        let Some(other) = other.read_as::<Range>(vm.heap) else {
             return Ok(None);
         };
         let a = self.get(vm.heap);
@@ -340,11 +338,14 @@ pub(crate) struct RangeIterator {
 impl RangeIterator {
     /// Allocates independent iteration state copied from `range`.
     fn allocate(range: Range, vm: &mut VM<'_>) -> Value {
-        Value::Ref(vm.heap.allocate(HeapData::RangeIterator(Self {
-            next: range.start,
-            step: range.step,
-            remaining: range.len(),
-        })))
+        Value::allocate(
+            Self {
+                next: range.start,
+                step: range.step,
+                remaining: range.len(),
+            },
+            vm.heap,
+        )
     }
 
     /// Returns the exact number of values not yet yielded.

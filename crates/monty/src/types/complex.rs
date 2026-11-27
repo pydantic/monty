@@ -58,7 +58,7 @@ impl Complex {
 
     /// Allocates this complex on the heap, handing back the owning value.
     pub(crate) fn into_value(self, heap: &Heap) -> Value {
-        Value::Ref(heap.allocate(HeapData::Complex(self)))
+        Value::allocate(self, heap)
     }
 
     /// `-z`.
@@ -604,7 +604,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let c = *self.get(vm.heap);
         Ok(match other {
-            Value::Ref(id) if let HeapData::Complex(o) = vm.heap.get(*id) => Some(c.eq(*o)),
+            value if let Some(o) = value.get_as::<Complex>(vm.heap) => Some(c.eq(*o)),
             _ => eq_f64(c.real, other, vm).map(|real_eq| real_eq && c.imag == 0.0),
         })
     }

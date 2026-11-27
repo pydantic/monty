@@ -17,7 +17,7 @@ use super::{
     py::{self, ContextMethod},
 };
 use crate::{
-    args::{ArgValues, FromArgs, is_long_int},
+    args::{ArgValues, FromArgs},
     builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop,
@@ -226,7 +226,7 @@ pub(crate) fn localcontext(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>
     apply_fields(&mut settings, fields, vm)?;
     let local = vm.heap.allocate(HeapData::DecimalContext(settings));
     let manager = ContextManager { local, saved: None };
-    Ok(Value::Ref(vm.heap.allocate(HeapData::DecimalContextManager(manager))))
+    Ok(Value::allocate(manager, vm.heap))
 }
 
 /// Arguments of `decimal.Context(...)`.
@@ -270,7 +270,7 @@ pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let mut settings = settings_of(vm, default);
     settings.flags = Conditions::EMPTY;
     apply_fields(&mut settings, fields, vm)?;
-    Ok(Value::Ref(vm.heap.allocate(HeapData::DecimalContext(settings))))
+    Ok(Value::allocate(settings, vm.heap))
 }
 
 /// `decimal.IEEEContext(bits)`: the context of an IEEE 754 decimal interchange format.
@@ -298,7 +298,7 @@ pub(crate) fn ieee_context(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>
         flags: Conditions::EMPTY,
         traps: Conditions::EMPTY,
     };
-    Ok(Value::Ref(vm.heap.allocate(HeapData::DecimalContext(settings))))
+    Ok(Value::allocate(settings, vm.heap))
 }
 
 /// `decimal.IEEE_CONTEXT_MAX_BITS` on 64-bit builds.
@@ -415,7 +415,9 @@ fn integer_arg(value: &Value, vm: &VM<'_>) -> RunResult<Option<i64>> {
     match value {
         Value::Int(n) => Ok(Some(*n)),
         Value::Bool(b) => Ok(Some(i64::from(*b))),
-        _ if is_long_int(value, vm) => Err(ExcType::overflow_error("Python int too large to convert to C ssize_t")),
+        _ if value.as_long_int(vm).is_some() => {
+            Err(ExcType::overflow_error("Python int too large to convert to C ssize_t"))
+        }
         _ => Err(ExcType::type_error("an integer is required")),
     }
 }
@@ -539,7 +541,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DecContext> {
                     context: self.id(),
                     traps: field == ContextField::Traps,
                 };
-                Value::Ref(vm.heap.allocate(HeapData::DecimalSignalDict(dict)))
+                Value::allocate(dict, vm.heap)
             }
             _ => field.get(self.get(vm.heap), vm),
         };
@@ -585,9 +587,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DecContext> {
                     vm.heap,
                 )?;
                 let settings = *self.get(vm.heap);
-                Ok(CallResult::Value(Value::Ref(
-                    vm.heap.allocate(HeapData::DecimalContext(settings)),
-                )))
+                Ok(CallResult::Value(Value::allocate(settings, vm.heap)))
             }
             "Etiny" => {
                 args.check_zero_args("Context.Etiny", vm.heap)?;
@@ -703,7 +703,7 @@ impl<'h> HeapObjectRead<'h, SignalDict> {
         for (signal, key) in signal_keys() {
             dict.set(key, Value::Bool(set.has_signal(signal)), vm)?;
         }
-        Ok(Value::Ref(vm.heap.allocate(HeapData::Dict(dict))))
+        Ok(Value::allocate(dict, vm.heap))
     }
 
     /// A `list` of the keys, values or `(key, value)` items.
@@ -719,7 +719,7 @@ impl<'h> HeapObjectRead<'h, SignalDict> {
                 }
             })
             .collect();
-        Value::Ref(vm.heap.allocate(HeapData::List(List::new(items))))
+        Value::allocate(List::new(items), vm.heap)
     }
 }
 

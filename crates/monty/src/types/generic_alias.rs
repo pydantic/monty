@@ -32,7 +32,7 @@ use crate::{
     },
     intern::StaticStrings,
     types::{
-        LazyHeapSet, PyTrait, Type, TypeRef, Union,
+        LazyHeapSet, List, PyTrait, Tuple, Type, TypeRef, Union,
         instance::class_name,
         key_hash::hash_or_culprit,
         list::repr_should_truncate,
@@ -91,10 +91,7 @@ impl GenericAlias {
         debug_assert!(form.is_generic_form(), "{form:?} is not subscriptable");
         let mut key_guard = DropGuard::new(key, vm);
         let (key, vm) = key_guard.as_parts();
-        let count = match key {
-            Value::Ref(id) if let HeapData::Tuple(items) = vm.heap.get(*id) => items.as_slice().len(),
-            _ => 1,
-        };
+        let count = key.get_as::<Tuple>(vm.heap).map_or(1, |items| items.as_slice().len());
         match form.0 {
             StaticStrings::Annotated if count < 2 => {
                 return Err(ExcType::type_error(
@@ -139,7 +136,7 @@ impl GenericAlias {
         } else {
             allocate_tuple(smallvec![key], vm.heap)
         };
-        Value::Ref(vm.heap.allocate(HeapData::GenericAlias(Self { origin, args })))
+        Value::allocate(Self { origin, args }, vm.heap)
     }
 
     /// The subscripted type or form.
@@ -175,10 +172,7 @@ impl GenericAlias {
 
     /// The `T` of `Annotated[T, *metadata]`, owned.
     fn annotated_type(&self, heap: &Heap) -> Value {
-        let Value::Ref(id) = self.args else {
-            unreachable!("GenericAlias::args is always a tuple")
-        };
-        let HeapData::Tuple(items) = heap.get(id) else {
+        let Some(items) = self.args.get_as::<Tuple>(heap) else {
             unreachable!("GenericAlias::args is always a tuple")
         };
         items.as_slice()[0].clone_with_heap(heap)
@@ -285,7 +279,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
     /// holds this alias, and comparing two such cycles raises `RecursionError`
     /// rather than overflowing the native stack.
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        let Some(HeapReadOutput::GenericAlias(other)) = other.read_heap(vm) else {
+        let Some(other) = other.read_as::<GenericAlias>(vm.heap) else {
             return Ok(None);
         };
         let mut guard = vm.recursion_guard()?;
@@ -340,7 +334,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
         let vm = &mut *guard;
         let (origin, args) = self.parts(vm);
         defer_drop!(args, vm);
-        let Some(HeapReadOutput::Tuple(args)) = args.read_heap(vm) else {
+        let Some(args) = args.read_as::<Tuple>(vm.heap) else {
             unreachable!("GenericAlias::args is always a tuple")
         };
 
@@ -401,7 +395,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
             Some(StaticStrings::DunderMetadata) if self.get(vm.heap).is_annotated() => {
                 let (_, args) = self.parts(vm);
                 defer_drop!(args, vm);
-                let Some(HeapReadOutput::Tuple(args)) = args.read_heap(vm) else {
+                let Some(args) = args.read_as::<Tuple>(vm.heap) else {
                     unreachable!("GenericAlias::args is always a tuple")
                 };
                 let count = args.get(vm.heap).as_slice().len() - 1;
@@ -506,7 +500,7 @@ fn none_to_none_type(key: Value, limit: usize, vm: &mut VM<'_>) -> RunResult<Val
     // The reader on `key` must be released before `key`, possibly the last
     // reference to a fresh tuple, is dropped below.
     let converted = {
-        let Some(HeapReadOutput::Tuple(items)) = key.read_heap(vm) else {
+        let Some(items) = key.read_as::<Tuple>(vm.heap) else {
             return Ok(if matches!(key, Value::None) { none_type() } else { key });
         };
         let count = items.get(vm.heap).as_slice().len();
@@ -537,16 +531,16 @@ fn flatten_annotated(key: Value, vm: &mut VM<'_>) -> RunResult<Value> {
     defer_drop!(key, vm);
     // The readers on `key` must be released before it can be dropped.
     let flattened = {
-        let Some(HeapReadOutput::Tuple(items)) = key.read_heap(vm) else {
+        let Some(items) = key.read_as::<Tuple>(vm.heap) else {
             unreachable!("Annotated takes at least two arguments")
         };
         let first = items.clone_item(0, vm);
         defer_drop!(first, vm);
-        match first.read_heap(vm) {
-            Some(HeapReadOutput::GenericAlias(inner)) if inner.get(vm.heap).is_annotated() => {
+        match first.read_as::<GenericAlias>(vm.heap) {
+            Some(inner) if inner.get(vm.heap).is_annotated() => {
                 let (_, inner_args) = inner.parts(vm);
                 defer_drop!(inner_args, vm);
-                let Some(HeapReadOutput::Tuple(inner_items)) = inner_args.read_heap(vm) else {
+                let Some(inner_items) = inner_args.read_as::<Tuple>(vm.heap) else {
                     unreachable!("GenericAlias::args is always a tuple")
                 };
                 let count = items.get(vm.heap).as_slice().len();
@@ -599,10 +593,8 @@ fn literal_params(key: Value, vm: &mut VM<'_>) -> RunResult<Value> {
     for index in 0..written.len() {
         vm.heap.tracker.check_time_every(index)?;
         let value = mem::replace(&mut written[index], Value::None);
-        let nested = match value.read_heap(vm) {
-            Some(HeapReadOutput::GenericAlias(alias)) if alias.get(vm.heap).origin == LITERAL => {
-                Some(alias.parts(vm).1)
-            }
+        let nested = match value.read_as::<GenericAlias>(vm.heap) {
+            Some(alias) if alias.get(vm.heap).origin == LITERAL => Some(alias.parts(vm).1),
             _ => None,
         };
         match nested {
@@ -657,19 +649,14 @@ fn literal_params(key: Value, vm: &mut VM<'_>) -> RunResult<Value> {
 /// How many values a nested `Literal` contributes when flattened; `None` for
 /// any other value, which contributes itself.
 fn nested_literal_len(value: &Value, vm: &VM<'_>) -> Option<usize> {
-    let Value::Ref(id) = value else { return None };
-    let HeapData::GenericAlias(alias) = vm.heap.get(*id) else {
-        return None;
-    };
+    let alias = value.get_as::<GenericAlias>(vm.heap)?;
     if alias.origin != LITERAL {
         return None;
     }
-    let Value::Ref(args) = alias.args else {
-        unreachable!("GenericAlias::args is always a tuple")
-    };
-    let HeapData::Tuple(items) = vm.heap.get(args) else {
-        unreachable!("GenericAlias::args is always a tuple")
-    };
+    let items = alias
+        .args
+        .get_as::<Tuple>(vm.heap)
+        .expect("GenericAlias::args is always a tuple");
     Some(items.as_slice().len())
 }
 
@@ -757,12 +744,12 @@ fn literal_hash(args: &Value, vm: &mut VM<'_>) -> RunResult<Option<HashValue>> {
 /// the list is preflighted like any container copy.
 fn callable_params(key: Value, vm: &mut VM<'_>) -> RunResult<Value> {
     defer_drop!(key, vm);
-    let Some(HeapReadOutput::Tuple(pair)) = key.read_heap(vm) else {
+    let Some(pair) = key.read_as::<Tuple>(vm.heap) else {
         unreachable!("Callable takes a parameter list and a result")
     };
     let params = pair.clone_item(0, vm);
     defer_drop!(params, vm);
-    let mut flattened = if let Some(HeapReadOutput::List(list)) = params.read_heap(vm) {
+    let mut flattened = if let Some(list) = params.read_as::<List>(vm.heap) {
         let items = list.get(vm.heap).items();
         vm.heap
             .tracker
@@ -796,7 +783,7 @@ fn is_abc_form(form: Marker) -> bool {
 
 /// Owned clones of a tuple's items, preflighted like any container copy.
 fn tuple_items(tuple: &Value, vm: &mut VM<'_>) -> RunResult<TupleVec> {
-    let Some(HeapReadOutput::Tuple(items)) = tuple.read_heap(vm) else {
+    let Some(items) = tuple.read_as::<Tuple>(vm.heap) else {
         unreachable!("GenericAlias::args is always a tuple")
     };
     let count = items.get(vm.heap).as_slice().len();
@@ -821,20 +808,20 @@ pub(crate) fn call_alias_with(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Val
     } = AliasWithArgs::from_args(args, vm)?;
     defer_drop!(alias, vm);
     defer_drop!(resolved, vm);
-    let Some(HeapReadOutput::GenericAlias(generic)) = alias.read_heap(vm) else {
+    let Some(generic) = alias.read_as::<GenericAlias>(vm.heap) else {
         unreachable!("frozen code passes a generic alias")
     };
     let (origin, args) = generic.parts(vm);
     defer_drop!(args, vm);
     if generic.get(vm.heap).is_annotated() {
-        let Some(HeapReadOutput::Tuple(resolved_items)) = resolved.read_heap(vm) else {
+        let Some(resolved_items) = resolved.read_as::<Tuple>(vm.heap) else {
             unreachable!("frozen code passes the resolved args as a tuple")
         };
         let inner = resolved_items.clone_item(0, vm);
         if !matches!(include_extras, Value::Bool(true)) {
             return Ok(inner);
         }
-        let Some(HeapReadOutput::Tuple(stored)) = args.read_heap(vm) else {
+        let Some(stored) = args.read_as::<Tuple>(vm.heap) else {
             unreachable!("GenericAlias::args is always a tuple")
         };
         defer_drop!(inner, vm);
@@ -893,7 +880,7 @@ pub(crate) fn repr_type_arg(
 /// `ga_repr` only looks inside a top-level list, a list nested deeper takes its
 /// ordinary repr, whose cycle protection keeps a self-referential list finite.
 fn repr_list_arg(item: &Value, f: &mut impl Write, vm: &mut VM<'_>, heap_ids: &mut LazyHeapSet) -> RunResult<bool> {
-    let Some(HeapReadOutput::List(list)) = item.read_heap(vm) else {
+    let Some(list) = item.read_as::<List>(vm.heap) else {
         return Ok(false);
     };
     f.write_char('[')?;

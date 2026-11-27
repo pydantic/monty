@@ -36,6 +36,9 @@ implementation**.
 - `ResourceTracker` / `ResourceLimits` — the resource tracker the
   interpreter uses to enforce time/memory/recursion limits, plus the
   `max_suspensions` budget hosts enforce themselves.
+- `ModuleStub` — a dotted module path and its `.pyi` source.
+  `ModuleStub::validate_module` checks a borrowed path without allocating the stub.
+  `ModuleStub::new` applies the same path checks when constructing an owned stub.
 - `PrintStream` / `PrintWriter` / `CollectedStreams` — `print()` output
   capture, and the labelled buffer behind `PrintWriter::CollectStreams`.
 - `CompileOptions`, `ExtFunctionResult`, `NameLookupResult`, `FileMode`, and

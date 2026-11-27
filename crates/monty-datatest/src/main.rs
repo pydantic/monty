@@ -1,8 +1,8 @@
 //! Data-driven test harness: runs every Python file in
 //! `crates/monty/test_cases/` against both Monty and CPython (via pyo3) and
-//! compares the results. It also runs selected CPython stdlib suites from
-//! `vendor/cpython/` on both. Run via `make test-cases`; see `AGENTS.md` for
-//! the test-case file conventions.
+//! compares the results. Run via `make test-cases`; see `AGENTS.md` for the
+//! test-case file conventions. `make test-cpython` type-checks and runs
+//! selected upstream CPython suites.
 
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
@@ -44,19 +44,17 @@ use monty_types::{
 use pyo3::{prelude::*, types::PyDict};
 use similar::TextDiff;
 
+#[cfg(feature = "cpython-tests")]
+mod stdlib_suite;
+#[cfg(feature = "cpython-tests")]
+use stdlib_suite::{
+    STDLIB_TESTS_DIR, run_test_cases_cpython_stdlib, run_test_cases_monty_stdlib, run_type_check_stdlib, suite_pattern,
+};
+
 const SCRIPTS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts");
 const TEST_CASES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../monty/test_cases");
 const WORKSPACE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 const TEST_CASES_RELATIVE_DIR: &str = "crates/monty/test_cases";
-const STDLIB_TESTS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/vendor/cpython/Lib/test");
-
-/// The patched `unittest` support files run in the suite's namespace, without package discovery.
-const STDLIB_TEST_PREAMBLE: &str = concat!(
-    include_str!("../vendor/cpython/Lib/unittest/util.py"),
-    "\n",
-    include_str!("../vendor/cpython/Lib/unittest/case.py"),
-    "\n",
-);
 
 static CANONICAL_WS_DIR: LazyLock<PathBuf> =
     LazyLock::new(|| canonicalize(WORKSPACE_ROOT).expect("Failed to canonicalize workspace root"));
@@ -1870,12 +1868,6 @@ fn try_run_mount_fs_test(
     expectation: &Expectation,
     config: &TestConfig,
 ) -> Result<(), TestFailure> {
-    let test_name = path
-        .strip_prefix(TEST_CASES_RELATIVE_DIR)
-        .unwrap_or(path)
-        .display()
-        .to_string();
-
     let tmpdir = create_mount_fs_tempdir();
     let mut mount_table = MountTable::new();
     mount_table
@@ -1886,6 +1878,22 @@ fn try_run_mount_fs_test(
             None,
         )
         .expect("failed to mount temp dir for mount-fs test");
+    try_run_mounted_test(path, code, expectation, config, &mut mount_table)
+}
+
+/// Runs a fixture with mounts under the sandbox's `/mnt` working directory.
+fn try_run_mounted_test(
+    path: &Path,
+    code: &str,
+    expectation: &Expectation,
+    config: &TestConfig,
+    mount_table: &mut MountTable,
+) -> Result<(), TestFailure> {
+    let test_name = path
+        .strip_prefix(TEST_CASES_RELATIVE_DIR)
+        .unwrap_or(path)
+        .display()
+        .to_string();
 
     // Like the pool, the working directory defaults to the first mount.
     let exec = match new_monty_run(code, &test_name, config).map(|mut exec| {
@@ -1903,7 +1911,7 @@ fn try_run_mount_fs_test(
         }
     };
 
-    let result = run_mount_fs_iter_loop(exec, &mut mount_table, config.limits.clone());
+    let result = run_mount_fs_iter_loop(exec, mount_table, config);
 
     match result {
         Ok(_) => match expectation {
@@ -1952,16 +1960,13 @@ fn try_run_mount_fs_test(
     Ok(())
 }
 
-/// Execution loop for `mount-fs` tests.
-///
-/// Dispatches OS calls through the mount table. Name lookups resolve `root`
-/// to `Path('/mnt')` so Python code can access the mounted directory.
+/// Dispatches OS calls through the mounts. Only `mount-fs` fixtures get `root` and the host `tools` module.
 fn run_mount_fs_iter_loop(
     exec: MontyRun,
     mount_table: &mut MountTable,
-    limits: ResourceLimits,
+    config: &TestConfig,
 ) -> Result<MontyObject, MontyException> {
-    let mut progress = exec.start(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)?;
+    let mut progress = exec.start(vec![], ResourceTracker::new(config.limits.clone()), PrintWriter::Stdout)?;
 
     loop {
         // As in `run_iter_loop`: every suspension goes through the dump format,
@@ -1982,7 +1987,7 @@ fn run_mount_fs_iter_loop(
             }
             RunProgress::NameLookup(lookup) => {
                 let result = match lookup.name.as_str() {
-                    "root" => NameLookupResult::from(MontyObject::path("/mnt".to_owned())),
+                    "root" if config.mount_fs => NameLookupResult::from(MontyObject::path("/mnt".to_owned())),
                     _ => NameLookupResult::Undefined,
                 };
                 progress = lookup.resume(result, PrintWriter::Stdout)?;
@@ -1990,8 +1995,7 @@ fn run_mount_fs_iter_loop(
             RunProgress::OsCall(call) => {
                 // Dispatch through the mount table first.
                 progress = call.resume_with(PrintWriter::Stdout, |fc| match fc {
-                    // Any module but the tools fixture is a file on the mount, or missing.
-                    OsFunctionCall::Import(args) if args.module != "tools" => {
+                    OsFunctionCall::Import(args) if !config.mount_fs || args.module != "tools" => {
                         find_module_file(&args, |path| mount_table.read_module(path))
                             .unwrap_or_else(|| ExtFunctionResult::NotFound(IMPORT_CALL.to_owned()))
                     }
@@ -2964,52 +2968,43 @@ where
 /// Handles xfail with strict semantics: if a test's header sets `xfail = ['monty']`, it must fail.
 /// If an xfail test passes unexpectedly, that's an error.
 fn run_test_cases_monty(path: &Path) -> Result<(), Box<dyn Error>> {
-    run_monty_fixture(path, "")
-}
-
-/// Runs a vendored CPython suite in Monty with the test-only `TestCase` subset in scope.
-fn run_test_cases_monty_stdlib(path: &Path) -> Result<(), Box<dyn Error>> {
-    run_monty_fixture(path, STDLIB_TEST_PREAMBLE)
-}
-
-/// Runs a Monty fixture, optionally with assertion helpers before its body.
-fn run_monty_fixture(path: &Path, preamble: &str) -> Result<(), Box<dyn Error>> {
     // Joined onto the workspace rather than read relative to the process cwd:
     // the harness never changes directory, so a CPython fixture that calls
     // `os.chdir` cannot race another thread's fixture read.
     let path = CANONICAL_WS_DIR.join(path).canonicalize()?;
-    let path = path.strip_prefix(CANONICAL_WS_DIR.as_path())?;
+    let (code, expectation, config) = parse_fixture(&fs::read_to_string(&path)?);
+    run_monty_case(&path, config.xfail_monty, move |path| {
+        if config.mount_fs {
+            try_run_mount_fs_test(path, &code, &expectation, &config)
+        } else if config.iter_mode {
+            try_run_iter_test(path, &code, &expectation, &config)
+        } else {
+            try_run_test(path, &code, &expectation, &config)?;
+            // Suspending cases already round-trip at every host call; this covers the rest.
+            // Not for xfail cases, whose expected failure must come from the run itself.
+            #[cfg(not(feature = "memory-model-checks"))]
+            if !config.xfail_monty {
+                idle_dump_round_trip(path, &code, &config)?;
+            }
+            Ok(())
+        }
+    })
+}
 
-    let content = fs::read_to_string(CANONICAL_WS_DIR.join(path))?;
-    let (code, expectation, config) = parse_fixture(&content);
+/// Runs a Monty case with the harness timeout and failure reporting.
+fn run_monty_case(
+    path: &Path,
+    xfail_monty: bool,
+    run: impl FnOnce(&Path) -> Result<(), TestFailure> + Send + 'static,
+) -> Result<(), Box<dyn Error>> {
+    let path = path.strip_prefix(CANONICAL_WS_DIR.as_path())?;
     let test_name = path
         .strip_prefix(TEST_CASES_RELATIVE_DIR)
         .unwrap_or(path)
         .display()
         .to_string();
-
-    let code = prepend_fixture_code(code, preamble);
-    let path_owned = path.to_owned();
-    let iter_mode = config.iter_mode;
-    let mount_fs = config.mount_fs;
-    let xfail_monty = config.xfail_monty;
-
-    let result = run_with_timeout(TEST_TIMEOUT, move || {
-        if mount_fs {
-            try_run_mount_fs_test(&path_owned, &code, &expectation, &config)
-        } else if iter_mode {
-            try_run_iter_test(&path_owned, &code, &expectation, &config)
-        } else {
-            try_run_test(&path_owned, &code, &expectation, &config)?;
-            // Suspending cases already round-trip at every host call; this covers the rest.
-            // Not for xfail cases, whose expected failure must come from the run itself.
-            #[cfg(not(feature = "memory-model-checks"))]
-            if !config.xfail_monty {
-                idle_dump_round_trip(&path_owned, &code, &config)?;
-            }
-            Ok(())
-        }
-    });
+    let path = path.to_owned();
+    let result = run_with_timeout(TEST_TIMEOUT, move || run(&path));
 
     // Handle timeout/panic errors from the test thread
     let result = match result {
@@ -3045,16 +3040,6 @@ fn run_monty_fixture(path: &Path, preamble: &str) -> Result<(), Box<dyn Error>> 
 /// Handles xfail with strict semantics: if a test's header sets `xfail = ['cpython']`, it must fail.
 /// If an xfail test passes unexpectedly, that's an error.
 fn run_test_cases_cpython(path: &Path) -> Result<(), Box<dyn Error>> {
-    run_cpython_fixture(path, "")
-}
-
-/// Runs the same adapted suite and assertions in CPython without changing `sys.modules`.
-fn run_test_cases_cpython_stdlib(path: &Path) -> Result<(), Box<dyn Error>> {
-    run_cpython_fixture(path, STDLIB_TEST_PREAMBLE)
-}
-
-/// Runs a CPython fixture, optionally with assertion helpers before its body.
-fn run_cpython_fixture(path: &Path, preamble: &str) -> Result<(), Box<dyn Error>> {
     // Joined onto the workspace rather than read relative to the process cwd:
     // the harness never changes directory, so a CPython fixture that calls
     // `os.chdir` cannot race another thread's fixture read.
@@ -3075,7 +3060,6 @@ fn run_cpython_fixture(path: &Path, preamble: &str) -> Result<(), Box<dyn Error>
         return Ok(());
     }
 
-    let code = prepend_fixture_code(code, preamble);
     let result = try_run_cpython_test(path, &code, &expectation, &config);
 
     if config.xfail_cpython {
@@ -3090,20 +3074,19 @@ fn run_cpython_fixture(path: &Path, preamble: &str) -> Result<(), Box<dyn Error>
     Ok(())
 }
 
-/// Puts the assertion helpers in the fixture's scope without registering a module.
-fn prepend_fixture_code(code: String, preamble: &str) -> String {
-    if preamble.is_empty() {
-        code
-    } else {
-        format!("{preamble}{code}")
-    }
-}
-
+#[cfg(not(feature = "cpython-tests"))]
 datatest_stable::harness! {
     { test = run_test_cases_monty, root = TEST_CASES_DIR, pattern = r"^.*\.py$" },
     { test = run_test_cases_cpython, root = TEST_CASES_DIR, pattern = r"^.*\.py$" },
-    { test = run_test_cases_monty_stdlib, root = STDLIB_TESTS_DIR, pattern = r"^test_.*\.py$" },
-    { test = run_test_cases_cpython_stdlib, root = STDLIB_TESTS_DIR, pattern = r"^test_.*\.py$" },
+}
+
+#[cfg(feature = "cpython-tests")]
+datatest_stable::harness! {
+    { test = run_test_cases_monty, root = TEST_CASES_DIR, pattern = r"^.*\.py$" },
+    { test = run_test_cases_cpython, root = TEST_CASES_DIR, pattern = r"^.*\.py$" },
+    { test = run_test_cases_monty_stdlib, root = STDLIB_TESTS_DIR, pattern = suite_pattern() },
+    { test = run_test_cases_cpython_stdlib, root = STDLIB_TESTS_DIR, pattern = suite_pattern() },
+    { test = run_type_check_stdlib, root = STDLIB_TESTS_DIR, pattern = suite_pattern() },
 }
 
 #[cfg(test)]

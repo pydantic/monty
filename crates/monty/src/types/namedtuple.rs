@@ -41,7 +41,7 @@ use crate::{
     modules::copy::{Memo, PyDeepCopy, deep_copy_slots},
     resource_checks::{check_repeat_size, repeated_len},
     types::{
-        Dict, Type, TypeRef, Union, allocate_tuple,
+        Dict, Slice, Type, TypeRef, Union, allocate_tuple,
         instance::BoundMethod,
         iter::collect_owned_iterable,
         key_hash::hash_or_culprit,
@@ -231,7 +231,7 @@ impl<'h> HeapRead<'h, NamedTuple> {
             vm.heap.inc_ref(class_id);
         }
         let named = NamedTuple::with_class(name, field_names, items, class_id);
-        Value::Ref(vm.heap.allocate(HeapData::NamedTuple(Box::new(named))))
+        Value::allocate(named, vm.heap)
     }
 
     /// Returns `Some(value)` if the index is in bounds, `None` otherwise.
@@ -422,9 +422,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTuple> {
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         // A slice degrades to a plain tuple, as in CPython — the field names
         // describe the original instance only, so they cannot survive a slice.
-        if let Value::Ref(key_id) = key
-            && let HeapData::Slice(slice_obj) = vm.heap.get(*key_id)
-        {
+        if let Some(slice_obj) = key.get_as::<Slice>(vm.heap) {
             let items = slice_collect_iterator(vm, slice_obj, self.get(vm.heap).as_vec().iter(), |v| {
                 v.clone_with_heap(vm)
             })?;
@@ -776,7 +774,7 @@ impl<'h> HeapRead<'h, NamedTuple> {
             pairs.push((key, value));
         }
         let dict = Dict::from_pairs(pairs, vm)?;
-        Ok(Value::Ref(vm.heap.allocate(HeapData::Dict(dict))))
+        Ok(Value::allocate(dict, vm.heap))
     }
 
     /// `p._replace(**kwargs)` — a copy with the named fields overridden.
@@ -1023,7 +1021,7 @@ impl<'h> HeapRead<'h, NamedTupleClass> {
             pairs.push((key, value));
         }
         let dict = Dict::from_pairs(pairs, vm)?;
-        Ok(Value::Ref(vm.heap.allocate(HeapData::Dict(dict))))
+        Ok(Value::allocate(dict, vm.heap))
     }
 }
 
