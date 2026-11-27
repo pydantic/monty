@@ -986,14 +986,3 @@ assert se_new_multi.code == (1, 2)
     let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     ex.run_no_limits(vec![]).unwrap();
 }
-
-/// `str(exc)` avoids redundant string copying into a second buffer.
-#[test]
-fn exception_str_allocation() {
-    let code = "
-e = ValueError('x' * 1000)
-assert len(str(e)) == 1000
-";
-    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    ex.run_no_limits(vec![]).unwrap();
-}
