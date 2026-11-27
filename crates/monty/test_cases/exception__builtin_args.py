@@ -54,6 +54,40 @@ s_exit = SystemExit(1, 2)
 assert s_exit.code == (1, 2)
 assert s_exit.code is s_exit.args
 
+# SystemExit .code before and after .args access
+se_single = SystemExit(5)
+assert se_single.code == 5
+assert se_single.args == (5,)
+assert se_single.code == 5
+
+se_empty = SystemExit()
+assert se_empty.code is None
+assert se_empty.args == ()
+assert se_empty.code is None
+
+se_multi = SystemExit(1, 2)
+assert se_multi.code == (1, 2)
+assert se_multi.args == (1, 2)
+assert se_multi.code == (1, 2)
+
+se_init = SystemExit.__new__(SystemExit)
+se_init.__init__(5)
+assert se_init.code == 5
+assert se_init.args == (5,)
+assert se_init.code == 5
+
+se_init_empty = SystemExit.__new__(SystemExit)
+se_init_empty.__init__()
+assert se_init_empty.code is None
+assert se_init_empty.args == ()
+assert se_init_empty.code is None
+
+se_init_multi = SystemExit.__new__(SystemExit)
+se_init_multi.__init__(1, 2)
+assert se_init_multi.code == (1, 2)
+assert se_init_multi.args == (1, 2)
+assert se_init_multi.code == (1, 2)
+
 # StopIteration and SystemExit __init__
 si = StopIteration()
 si.__init__(99)

@@ -697,7 +697,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
         forward_py_value!(self, |value| value.py_str(vm), {
             Self::Exception(value) => {
                 let s = value.py_str(vm)?;
-                Ok(allocate_string(s.as_str(), vm.heap))
+                Ok(allocate_string(s, vm.heap))
             }
             _ => self.py_repr(vm),
         })

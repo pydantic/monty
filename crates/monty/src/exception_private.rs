@@ -3889,10 +3889,17 @@ impl<'h> HeapObjectRead<'h, PyException> {
                     let code = match &exc.args {
                         ExceptionArgs::OneValue(v) => v.clone_with_heap(vm.heap),
                         ExceptionArgs::OneStr(s) => allocate_string(s.as_str(), vm.heap),
-                        ExceptionArgs::Tuple(id) => {
-                            vm.heap.inc_ref(*id);
-                            Value::Ref(*id)
-                        }
+                        ExceptionArgs::Tuple(id) => match vm.heap.get(*id) {
+                            HeapData::Tuple(t) => match t.as_slice() {
+                                [] => Value::None,
+                                [single] => single.clone_with_heap(vm.heap),
+                                _ => {
+                                    vm.heap.inc_ref(*id);
+                                    Value::Ref(*id)
+                                }
+                            },
+                            _ => Value::None,
+                        },
                         ExceptionArgs::Empty => Value::None,
                     };
                     return Some(CallResult::Value(code));
@@ -3934,7 +3941,7 @@ impl<'h> HeapObjectRead<'h, PyException> {
                 t
             }
             ExceptionArgs::OneStr(s) => {
-                let str_val = allocate_string(s.as_str(), vm.heap);
+                let str_val = allocate_string(s, vm.heap);
                 let t = allocate_tuple(smallvec![str_val], vm.heap);
                 if let Value::Ref(id) = t {
                     let exc = self.get_mut(vm.heap);
