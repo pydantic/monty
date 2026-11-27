@@ -33,6 +33,20 @@ fn character_lengths_survive_text_only_serialization() {
 }
 
 #[test]
+fn reserved_symbol_ids_match_across_compilation_and_runtime() {
+    let symbols = SymbolTable::new("");
+    let mut overlay = CompileSymbols::new(&symbols);
+    for (index, &text) in RESERVED_STRS.iter().enumerate() {
+        let id = SymbolId(index.try_into().unwrap());
+        let tag = text.parse::<StaticStrings>().unwrap();
+        assert_eq!(overlay.get_or_insert_static_symbol(tag), id);
+        assert_eq!(overlay.get_symbol_id_by_name(text), Some(id));
+        assert_eq!(symbols.get_symbol_id_by_name(text), Some(id));
+        assert_eq!(symbols.static_string(id), Some(tag));
+    }
+}
+
+#[test]
 fn symbol_table_restore_rejects_duplicate_and_reserved_strings() {
     let cases: &[(&[&str], &str)] = &[
         (&[""], ""),

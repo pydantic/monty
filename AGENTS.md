@@ -378,7 +378,7 @@ Never roll back a snippet after execution starts: its definitions may already be
 
 Snippet source IDs occupy a separate range from canonical string IDs.
 They display as `<string>` without allowing duplicate entries in the string-deduplication maps.
-Resolve filenames with `SymbolTable::get_filename`; ordinary `get_str` only accepts symbol IDs.
+Resolve filenames with `SymbolTable::get_filename`. Use `get_str` only for canonical string IDs.
 
 ### HeapReader API — Safe Heap Access
 

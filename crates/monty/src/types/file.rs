@@ -978,9 +978,7 @@ pub(crate) fn apply_open_name(
 /// [`CallResult::OsCallWithEffect`](crate::bytecode::CallResult::OsCallWithEffect).
 ///
 /// Invariants on entry:
-/// - `result` is `Value::Ref(_)` (or an interned `String`/`Bytes`) coming
-///   from `OsFunction::ReadText` / `ReadBytes`. The host boundary guarantees
-///   one of these for the OS functions we emit.
+/// - `result` is a string from `OsFunction::ReadText` or bytes from `OsFunction::ReadBytes`.
 /// - `OpenFile::pending_read` is `Some(_)`. If it isn't (snapshot/restore
 ///   mismatch or VM bug) we raise an internal `RuntimeError` rather than
 ///   panic, so a host can recover.

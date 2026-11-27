@@ -582,10 +582,7 @@ impl HeapItem for RePattern {
 
 /// Argument shape for `Pattern.sub(repl, string, count=0)`.
 ///
-/// `string` uses `static_string = "StringAttr"` because `StringAttr` is the
-/// `StaticStrings` entry that symbols `"string"` (the bare `String` variant
-/// is taken by the `re.Pattern.string` attribute name in CPython's class
-/// hierarchy).
+/// [`StaticStrings::StringAttr`] represents the keyword `string`.
 #[derive(FromArgs)]
 #[from_args(name = "sub", style = c_named, at_most_total)]
 struct PatternSubArgs {

@@ -3,10 +3,8 @@
 //! A `NameMap` is the single source of truth for a scope's name → slot
 //! assignment. Slots are allocated sequentially as new names are seen
 //! (`ensure_slot`), so the position in the registry IS the `NamespaceId`
-//! that the compiler will encode into bytecode. The reverse direction
-//! (`name_at`) gives the VM the `SymbolId` for a slot, which the runtime
-//! uses to produce `NameError` / `UnboundLocalError` messages naming the
-//! actual variable.
+//! that the compiler will encode into bytecode. The VM indexes [`NameMap::names`] by slot to find
+//! the variable name for `NameError` and `UnboundLocalError` messages.
 //!
 //! Owning both directions in one structure is what fixes the historical
 //! foot-gun where a scope kept a `name → slot` hashmap alongside a parallel
@@ -30,10 +28,8 @@ use crate::{
 /// Ordered map from symbols to namespace slots.
 ///
 /// Slots are dense and assigned in insertion order: the first inserted name
-/// gets slot `0`, the second slot `1`, and so on. This means
-/// `name_at(slot)` is a `Vec` index lookup and `len()` equals the next slot
-/// that would be allocated — there is no separate `namespace_size`
-/// counter to keep in sync.
+/// gets slot `0`, the second slot `1`, and so on. The slot indexes [`Self::names`], and
+/// `len()` gives the next available slot.
 ///
 /// Used for module globals, function locals, and any other scope that
 /// needs a stable string → bytecode-slot mapping.

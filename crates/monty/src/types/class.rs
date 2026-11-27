@@ -168,7 +168,7 @@ impl<'h> HeapReadMut<'h, Class> {
     }
 
     /// [`set_attr`](Self::set_attr) for a dump upgrade, which has no VM and
-    /// cannot fail: see `HeapRead::<Dict>::set_symbol`.
+    /// cannot fail. See [`HeapReadMut::<Dict>::set_symbol`].
     pub(crate) fn set_symbol_attr(
         &self,
         name: SymbolId,

@@ -470,9 +470,8 @@ impl Executor {
     /// The argument tuple occupies a namespace slot named `<monty-call-args>`,
     /// which no Python source can spell; the caller commits the map back after
     /// the call (the function may have bound new globals) and clears that slot,
-    /// so it is reused by the next call. The session's [`SymbolTable`] are extended
-    /// in place (two ids, no parse) and moved into the executor on success; on
-    /// failure they stay with the caller.
+    /// so it is reused by the next call. On success the executor takes the session's [`SymbolTable`]
+    /// with entries for the filename and argument slot. On failure the caller retains the table.
     #[expect(
         clippy::too_many_arguments,
         reason = "synthetic calls combine existing REPL and call-site metadata"

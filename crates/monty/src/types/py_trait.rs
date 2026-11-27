@@ -115,7 +115,7 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
 
     /// Returns the number of elements in this container.
     ///
-    /// For symbols, returns the number of Unicode codepoints (characters), matching Python.
+    /// For strings, returns the number of Unicode code points.
     /// Returns `None` if the type doesn't support `len()`.
     fn py_len(&self, vm: &VM<'h>) -> Option<usize>;
 

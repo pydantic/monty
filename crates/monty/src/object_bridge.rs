@@ -1106,8 +1106,7 @@ fn import_node(
                 let pairs = clone_pairs(&attrs, built, vm);
                 let dict = Dict::from_pairs(pairs, vm)
                     .map_err(|_| InvalidInputError::invalid_type("unhashable class instance attr keys"))?;
-                // Guarded while the class type symbols (its attrs can fail
-                // too); `HostClass::new` then takes both.
+                // Keep the instance attributes guarded until class type lookup or allocation succeeds.
                 let mut dict_guard = DropGuard::new(dict, vm);
                 let (_, vm) = dict_guard.as_parts_mut();
                 let class_attrs = clone_pairs(&class.attrs, built, vm);

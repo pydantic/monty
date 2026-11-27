@@ -777,7 +777,7 @@ impl HeapItem for List {
 /// Writes a formatted sequence of values to a formatter.
 ///
 /// This helper function is used to implement `__repr__` for sequence types like
-/// lists and tuples. It writes items as comma-separated repr symbols.
+/// lists and tuples. It writes each item's `repr`, separated by commas.
 ///
 /// There is no length parameter: `get_item` is asked for indices from 0 until
 /// it returns `None`. For an immutable sequence (tuple) that is simply its

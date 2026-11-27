@@ -1,8 +1,7 @@
 //! Permanent symbols and compiled literals.
 //!
-//! This module provides interners that store unique strings, bytes, and long integers in vectors
-//! and return indices (`SymbolId`, `BytesId`, `LongIntId`) for efficient storage and comparison.
-//! This avoids the overhead of cloning strings or using atomic reference counting.
+//! The symbol table deduplicates strings and stores bytes and long integer literals.
+//! Compiled code refers to these entries by [`SymbolId`], [`BytesId`], and [`LongIntId`].
 //!
 //! One table serves parsing, preparation, compilation and execution. Runtime paths
 //! can append static strings without invalidating existing borrows.
@@ -3658,7 +3657,7 @@ pub(crate) struct FileSource {
 }
 
 impl SymbolTable {
-    /// Moves session ownership without initializing another symbols.
+    /// Moves session ownership without initializing another symbol table.
     pub(crate) fn take(&mut self) -> Self {
         mem::replace(self, Self::placeholder())
     }

@@ -778,8 +778,7 @@ impl<'h> PyTrait<'h> for Value {
     }
 
     fn py_is_iterator(&self, vm: &VM<'_>) -> bool {
-        // No immediate value is an iterator; interned `str`/`bytes` are iterable
-        // but, as in CPython, are not their own iterators.
+        // All iterators are heap objects.
         match self {
             Self::Ref(id) => PyValue::from_heap(*id, vm.heap).py_is_iterator(vm),
             _ => false,
@@ -2123,7 +2122,7 @@ impl EitherStr {
         }
     }
 
-    /// Checks whether this keyword matches the given symbol IDentifier.
+    /// Checks whether this keyword matches the given symbol ID.
     pub fn matches(&self, target: SymbolId, symbols: &SymbolTable) -> bool {
         match self {
             Self::Symbol(id) => *id == target,

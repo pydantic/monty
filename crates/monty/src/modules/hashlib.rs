@@ -111,7 +111,7 @@ fn algorithm_names(vm: &mut VM<'_>) -> Value {
         // code, so the only failure is a memory limit already past its hard ceiling.
         names
             .add(name, vm)
-            .expect("adding a symbol to a fresh set cannot raise");
+            .expect("adding a string to a fresh set cannot raise");
     }
     Value::allocate(names, vm.heap)
 }
