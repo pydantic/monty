@@ -1379,7 +1379,8 @@ impl<'a, 'i> Parser<'a, 'i> {
         // `__doc__ = ...` later in the body overwrites it, as in CPython.
         let doc_target = Identifier::new(self.interner.intern("__doc__"), self.convert_range(class.name.range));
         let mut doc_value = ExprLoc::new(self.convert_range(class.name.range), Expr::Literal(Literal::None));
-        // A method can capture `__class__` through `super` without naming it.
+        // Prepare only borrows the interner. Intern `__class__` here because a
+        // `super` reference can capture it even if no method names it explicitly.
         self.interner.intern("__class__");
 
         for (i, stmt) in class.body.into_iter().enumerate() {

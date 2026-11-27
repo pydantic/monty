@@ -2,6 +2,9 @@
 # gc-interval = 1
 # ///
 
+from collections import defaultdict
+from datetime import datetime
+
 
 # === Cooperative lookup uses the receiver's MRO, not the defining class's bases ===
 class Root:
@@ -91,6 +94,18 @@ assert super(Left, Diamond).read(instance) == 10
 assert super(*[Right, instance]).label == 'root'
 assert super(Left).__self__ is None
 assert super(Left, None).__self_class__ is None
+
+
+# === Native methods use the defining type's implementation ===
+dt = datetime(2026, 8, 24, 12, 34)
+assert super(datetime, dt).isoformat() == '2026-08-24'
+assert super(datetime, datetime).isoformat(dt) == '2026-08-24'
+
+# The inherited class method binds to defaultdict, not dict.
+for receiver in (defaultdict, defaultdict()):
+    result = super(defaultdict, receiver).fromkeys(['key'], 1)
+    assert type(result) is defaultdict
+    assert result == {'key': 1}
 
 
 # === Class-bound super passes the most-derived class to the next hook ===

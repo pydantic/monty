@@ -62,7 +62,8 @@ subclass-first rule for reflected operators and `==` all follow CPython.
     `type 'bool' is not an acceptable base type`. In particular there are no
     user-defined exception classes yet (see [exceptions.md](exceptions.md)).
 - **`super` uses the actual type of its receiver.** Unlike CPython, it does not fall back to a receiver's overridden `__class__` attribute.
-    Only members Monty exposes for ordinary class lookup are available through `super`; it does not resolve host-backed attributes.
+    `super` does not resolve host-backed attributes.
+    Builtin methods found through `super` can be called directly but generally cannot be read as values (see [builtins.md](builtins.md)).
     Unbound `super` objects do not act as descriptors when stored on a class, and `super.__get__` is not exposed.
 - **No metaclasses**: `class Foo(metaclass=M)` and `**kwargs` unpacking in a
     class statement are rejected at parse time.

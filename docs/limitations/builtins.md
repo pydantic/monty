@@ -15,7 +15,7 @@ Python.
 ## Implemented type constructors (also builtins)
 
 `bool`, `bytes`, `complex`, `dict`, `float`, `frozenset`, `int`, `list`, `range`,
-`set`, `slice`, `str`, `tuple`. Exception classes (`ValueError`,
+`set`, `slice`, `str`, `super`, `tuple`. Exception classes (`ValueError`,
 `TypeError`, etc.) are also names in the builtin namespace.
 
 ## Builtins that are NOT implemented

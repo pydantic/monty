@@ -10,7 +10,9 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead},
-    py_attrs::AttrDef,
+    intern::StaticStrings,
+    modules::copy::{Memo, PyDeepCopy, deep_copy},
+    py_attrs::{self, AttrDef, ClassMethodCall, MethodCall},
     types::{BoundMethod, LazyHeapSet, PyTrait, Type, TypeRef, instance::is_method_value},
     value::{EitherStr, Value},
 };
@@ -50,6 +52,11 @@ pub(crate) fn super_new(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     } else {
         implicit_super_args(vm)?
     };
+    allocate_super(start, receiver, vm)
+}
+
+/// Binds the proxy to the receiver's current type, or leaves it unbound for `None`.
+fn allocate_super(start: TypeRef, receiver: &Value, vm: &VM<'_>) -> RunResult<Value> {
     let receiver_type = if matches!(receiver, Value::None) {
         Value::None
     } else {
@@ -118,13 +125,20 @@ impl Super {
     }
 }
 
+/// A Python value or a native descriptor available for direct calls.
+enum Member {
+    Value(Value),
+    Method(Type, MethodCall, TypeRef),
+    ClassMethod(ClassMethodCall, TypeRef),
+}
+
 impl<'h> HeapRead<'h, Super> {
     /// Looks up a member directly on each class after `start`, bypassing instance attributes.
-    fn getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> Option<Value> {
+    fn lookup_member(&self, attr: &EitherStr, vm: &mut VM<'h>) -> Option<Member> {
         let name = attr.as_str(vm.interns);
         // CPython always reads the proxy's own `__class__`, not the receiver's.
         if name == "__class__" {
-            return Some(TypeRef::Native(Type::Super).to_value(vm.heap));
+            return Some(Member::Value(TypeRef::Native(Type::Super).to_value(vm.heap)));
         }
         let proxy = self.get(vm.heap);
         if let Some(receiver_type) = TypeRef::from_value(&proxy.receiver_type, vm.heap) {
@@ -136,33 +150,14 @@ impl<'h> HeapRead<'h, Super> {
                     .mro()
                     .skip_while(|&ty| TypeRef::Native(ty) != start)
                     .skip(1)
-                    .find_map(|ty| native_member(ty, attr, vm))
+                    .find_map(|ty| native_member(ty, receiver_type, attr, vm))
             } else {
                 lookup_class_member(receiver_type, start, attr, vm)
             };
             if let Some(member) = member {
-                let proxy = self.get(vm.heap);
-                let object_method = matches!(
-                    member,
-                    Value::Builtin(Builtins::Function(
-                        BuiltinsFunctions::ObjectInit
-                            | BuiltinsFunctions::ObjectSetattr
-                            | BuiltinsFunctions::ObjectInitSubclass
-                    ))
-                );
-                let bind = object_method || is_method_value(&member, vm);
-                let receiver = match name {
-                    "__new__" => None,
-                    "__init_subclass__" if bind => Some(&proxy.receiver_type),
-                    _ if bind && TypeRef::from_value(&proxy.receiver, vm.heap) != Some(receiver_type) => {
-                        Some(&proxy.receiver)
-                    }
-                    _ => None,
-                };
-                return Some(if let Some(receiver) = receiver {
-                    BoundMethod::allocate(receiver.clone_with_heap(vm.heap), member, vm.heap)
-                } else {
-                    member
+                return Some(match member {
+                    Member::Value(value) => Member::Value(self.bind_value(value, name, receiver_type, vm)),
+                    method => method,
                 });
             }
         }
@@ -173,7 +168,53 @@ impl<'h> HeapRead<'h, Super> {
             "__self_class__" => &proxy.receiver_type,
             _ => return None,
         };
-        Some(member.clone_with_heap(vm.heap))
+        Some(Member::Value(member.clone_with_heap(vm.heap)))
+    }
+
+    /// Binds Python methods and the builtin functions used for `object`'s methods.
+    fn bind_value(&self, member: Value, name: &str, receiver_type: TypeRef, vm: &VM<'h>) -> Value {
+        let proxy = self.get(vm.heap);
+        let object_method = matches!(
+            member,
+            Value::Builtin(Builtins::Function(
+                BuiltinsFunctions::ObjectInit
+                    | BuiltinsFunctions::ObjectSetattr
+                    | BuiltinsFunctions::ObjectInitSubclass
+            ))
+        );
+        let bind = object_method || is_method_value(&member, vm);
+        let receiver = match name {
+            "__new__" => None,
+            "__init_subclass__" if bind => Some(&proxy.receiver_type),
+            _ if bind && TypeRef::from_value(&proxy.receiver, vm.heap) != Some(receiver_type) => Some(&proxy.receiver),
+            _ => None,
+        };
+        if let Some(receiver) = receiver {
+            BoundMethod::allocate(receiver.clone_with_heap(vm.heap), member, vm.heap)
+        } else {
+            member
+        }
+    }
+}
+
+impl<'h> PyDeepCopy<'h> for HeapRead<'h, Super> {
+    #[inline(never)]
+    fn py_deep_copy(&self, _source: &Value, memo: &mut Memo, vm: &mut VM<'h>) -> RunResult<Value> {
+        let attr = EitherStr::Interned(vm.interns.intern_static(StaticStrings::DunderDeepcopy));
+        if let Some(Member::Value(hook)) = self.lookup_member(&attr, vm)
+            && !matches!(hook, Value::None)
+        {
+            defer_drop!(hook, vm);
+            vm.evaluate_function(hook, ArgValues::One(memo.dict_value(vm)))
+        } else {
+            let proxy = self.get(vm.heap);
+            let start = TypeRef::from_value(&proxy.start, vm.heap).expect("super start is a type");
+            let receiver = proxy.receiver.clone_with_heap(vm.heap);
+            defer_drop!(receiver, vm);
+            let copied = deep_copy(receiver, memo, vm)?;
+            defer_drop!(copied, vm);
+            allocate_super(start, copied, vm)
+        }
     }
 }
 
@@ -216,22 +257,37 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Super> {
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        Ok(self.getattr(attr, vm).map(CallResult::Value))
+        Ok(match self.lookup_member(attr, vm) {
+            Some(Member::Value(value)) => Some(CallResult::Value(value)),
+            _ => None,
+        })
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        if let Some(member) = self.getattr(attr, vm) {
-            defer_drop!(member, vm);
-            vm.call_function(member, args)
-        } else {
-            args.drop_with(vm);
-            Err(ExcType::attribute_error("super", attr.as_str(vm.interns)))
+        match self.lookup_member(attr, vm) {
+            Some(Member::Value(value)) => {
+                defer_drop!(value, vm);
+                vm.call_function(value, args)
+            }
+            Some(Member::Method(owner, call, receiver_type)) => {
+                let receiver = &self.get(vm.heap).receiver;
+                if TypeRef::from_value(receiver, vm.heap) == Some(receiver_type) {
+                    py_attrs::call_unbound(owner, attr, call, args, vm)
+                } else {
+                    py_attrs::call_method(owner, &mut receiver.py_value(vm), attr, call, args, vm)
+                }
+            }
+            Some(Member::ClassMethod(call, receiver_type)) => call(receiver_type, args, vm),
+            None => {
+                args.drop_with(vm);
+                Err(ExcType::attribute_error("super", attr.as_str(vm.interns)))
+            }
         }
     }
 }
 
 /// Searches the user classes, then the native tail, without invoking any host lookup.
-fn lookup_class_member(receiver: TypeRef, start: TypeRef, attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
+fn lookup_class_member(receiver: TypeRef, start: TypeRef, attr: &EitherStr, vm: &mut VM<'_>) -> Option<Member> {
     let name = attr.as_str(vm.interns);
     for ty in receiver.mro(vm.heap).skip_while(|&ty| ty != start).skip(1) {
         match ty {
@@ -239,20 +295,21 @@ fn lookup_class_member(receiver: TypeRef, start: TypeRef, attr: &EitherStr, vm: 
                 if let HeapData::Class(class) = vm.heap.get(id)
                     && let Some(member) = class.namespace().get_by_str(name, vm.heap, vm.interns)
                 {
-                    return Some(member.clone_with_heap(vm.heap));
+                    return Some(Member::Value(member.clone_with_heap(vm.heap)));
                 }
             }
-            TypeRef::Native(ty) => return ty.mro().find_map(|ty| native_member(ty, attr, vm)),
+            TypeRef::Native(ty) => return ty.mro().find_map(|ty| native_member(ty, receiver, attr, vm)),
         }
     }
     None
 }
 
-/// Reads value entries in a native type's own namespace, not its ancestors'.
-fn native_member(ty: Type, attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
+/// Looks in a native type's own namespace, not its ancestors'.
+fn native_member(ty: Type, receiver_type: TypeRef, attr: &EitherStr, vm: &mut VM<'_>) -> Option<Member> {
     let name = attr.static_string(vm.interns)?;
-    match (ty.def().attrs?.lookup)(name)? {
-        AttrDef::Value(get) => Some(get(vm)),
-        AttrDef::Method(_) | AttrDef::ClassMethod(_) => None,
-    }
+    Some(match (ty.def().attrs?.lookup)(name)? {
+        AttrDef::Value(get) => Member::Value(get(vm)),
+        AttrDef::Method(call) => Member::Method(ty, call, receiver_type),
+        AttrDef::ClassMethod(call) => Member::ClassMethod(call, receiver_type),
+    })
 }

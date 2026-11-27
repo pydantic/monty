@@ -1,0 +1,14 @@
+Run the upstream super copy tests on both interpreters. Keep the classmethod assertion on CPython only because Monty does not yet support classmethod.
+
+--- a/test/test_super.py
++++ b/test/test_super.py
+@@ -402,7 +402,8 @@
+ 
+         s = super(C, E)
+         u = copy.deepcopy(s)
+-        self.assertEqual(u.cm(), s.cm())  # ty: ignore[missing-argument]
++        if sys.platform != 'monty':
++            self.assertEqual(u.cm(), s.cm())
+         self.assertEqual(u.f, s.f)
+         self.assertIsNot(u, s)
+         self.assertIs(type(u), type(s))
