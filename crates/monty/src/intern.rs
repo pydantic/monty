@@ -1641,6 +1641,8 @@ pub enum StaticStrings {
     FalseRepr,
     /// `fanout` parameter of `hashlib.blake2b()`.
     Fanout,
+    Fdel,
+    Fget,
     /// `dataclasses.field()` function, and the `Field` type name.
     Field,
     /// `namedtuple(field_names=...)` keyword argument.
@@ -1753,6 +1755,7 @@ pub enum StaticStrings {
     FrozenSet,
     /// `fs` parameter of `asyncio.wait()`.
     Fs,
+    Fset,
     /// `Path.__fspath__()` method, answered without host I/O.
     #[strum(serialize = "__fspath__")]
     Fspath,
