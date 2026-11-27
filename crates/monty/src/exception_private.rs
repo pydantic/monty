@@ -37,6 +37,21 @@ pub use monty_types::{ExcType, unicode_decode_error_msg};
 /// stay in `monty` as a `pub(crate)` extension trait with default bodies.
 /// Import the trait to call them as `ExcType::type_error(...)`.
 pub(crate) trait ExcTypeExt: Sized {
+    /// Mutation-only descriptors report the missing protocol hook by name.
+    fn attribute_error_descriptor_hook(name: &str) -> RunError {
+        SimpleException::new_msg(ExcType::AttributeError, name).into()
+    }
+
+    /// CPython names the property, when available, and the actual receiver's class.
+    fn attribute_error_property(name_repr: Option<&str>, owner: &str, accessor: &str) -> RunError {
+        let name = name_repr.map_or_else(String::new, |name| format!(" {name}"));
+        SimpleException::new_msg(
+            ExcType::AttributeError,
+            format!("property{name} of '{owner}' object has no {accessor}"),
+        )
+        .into()
+    }
+
     /// Creates an exception instance from an exception type and arguments,
     /// handling constructor calls like `ValueError('message')`.
     fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>;

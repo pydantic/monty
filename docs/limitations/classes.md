@@ -35,7 +35,7 @@ CPython-matching features: instance methods, `__init__` (full parameter
 shapes), instance and class attribute get/set (including `setattr(Foo, ...)`
 and function-attributes-become-methods), bound methods, class variables
 (arbitrary expressions, evaluated in a real suspendable class-body scope),
-**class decorators** (`@deco class Foo`),
+class and method decorators (including `property`, `classmethod`, and `staticmethod`),
 `__repr__`/`__str__`/`__enter__`/`__exit__`/`__eq__`/`__hash__` dispatch,
 `__call__`, `__getitem__`/`__setitem__`, unary `+`/`-`, and binary numeric operators
 (including `@`, `divmod()` and `pow()`) with their reflected forms,
@@ -164,6 +164,7 @@ order and error wording, but with these divergences:
     evaluation such as `list(map(f, xs))`, `list(filter(f, xs))`, `sorted()`/`list.sort(key=...)`,
     `min()`/`max(key=...)`, arithmetic and subscript dunders, and exotic `__init__` recursion.
     A chain of callable instances stored as class-level `__call__` members also has this cap;
+    descriptor-mediated chains instead use the separate internal-frame cap, and
     ordinary Python-function `__call__` recursion uses the normal frame limit
     (see the "Recursion" section of [resource_limits.md](resource_limits.md)).
 - **Comprehensions in the class body** can see class variables, because Monty
@@ -436,13 +437,10 @@ every construction request. Divergences:
 ## What does NOT exist for user code
 
 - Subclassing native types and exceptions (see "Inheritance" above).
-- Metaclasses, `__set_name__`, and any other metaclass-driven namespace
+- Metaclasses and any other metaclass-driven namespace
     customization.
-- `__slots__`, descriptors (`__get__` / `__set__` / `__delete__`).
+- `__slots__`.
 - Abstract base classes (`abc.ABC`, `@abstractmethod`).
-- Method decorators — `@classmethod`, `@staticmethod`, `@property`, and any
-    decorator on a `def` inside a class body (rejected at parse time). Decorators
-    on classes and on non-method functions are supported.
 - **No public class or instance `__dict__`.** Use [`dir(cls)` or `dir(obj)`](builtins.md#behavioural-divergences)
     to list names.
 - **Tracebacks from decorator application point at the whole `class` statement**
@@ -554,3 +552,18 @@ are never frozen in the sandbox (see "Host class instances" above). Subclass
 of `AttributeError`, so `except AttributeError:` catches it, as in CPython's
 `dataclasses` module. A plain `class` is never frozen, and
 `object.__setattr__` writes past the check either way.
+
+## Descriptor limitations
+
+- Direct calls (`obj.attr(...)`) evaluate arguments before descriptor binding.
+    Read the attribute into a variable first when binding order matters.
+- `property` does not infer `__doc__` from its getter; pass `doc=` explicitly.
+    `__doc__` and `__name__` cannot be reassigned on the property object.
+- `classmethod` and `staticmethod` expose `__func__`, `__wrapped__`, and `__name__`, but do not copy
+    other function metadata (including `__doc__`) or expose a writable wrapper `__dict__`.
+- Descriptor types cannot be subclassed, since sandbox classes can only inherit from other sandbox classes and `object`.
+- Native operations that already run Python hooks synchronously, including dataclass comparison and repr,
+    also require descriptor reads to finish synchronously.
+    Data-descriptor setters in the synthesized dataclass initializer also cannot suspend; see [dataclasses.md](dataclasses.md).
+- Explicit `property.__get__` and other methods on the descriptor *type* are unavailable;
+    access the methods on the descriptor object instead (`descriptor.__get__(obj, cls)`).

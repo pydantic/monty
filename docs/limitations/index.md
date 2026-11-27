@@ -32,6 +32,7 @@ For compilation and runtime limits, see [resource limits](resource_limits.md).
 - List, dict and set comprehensions
 - `try` / `except` / `else` / `finally`, `raise ... from ...`
 - `for`, `while`, `if` / `elif` / `else`, `break`, `continue`, `pass`, `assert`, `global`, `nonlocal`, `return`
+- Descriptors, `property`, `classmethod`, `staticmethod`, and decorators on methods
 - `with` statements, for files and for classes implementing `__enter__` / `__exit__`
 - Binary write/update files (`open(path, 'w+b')`); other update modes remain unsupported.
     See [open.md](open.md) for file buffering and method limitations.
@@ -51,10 +52,9 @@ For compilation and runtime limits, see [resource limits](resource_limits.md).
 **Rejected at parse time**, with `NotImplementedError` before any code runs:
 
 - Metaclasses (`class Foo(metaclass=M):`)
-- Decorators on methods — so no `@classmethod`, `@staticmethod`, `@property`
 - `yield` / `yield from` — there are no generator functions.
     Generator *expressions* parse, but currently materialise to a `list`
-- `del`, both `del x` and `del d[k]`
+- `del x`, `del d[k]`, and multiple deletion targets; single attribute deletion is supported
 - `try*` / `except*` exception groups
 - PEP 695 `type` aliases
 - `async with`, `async for` and async comprehensions

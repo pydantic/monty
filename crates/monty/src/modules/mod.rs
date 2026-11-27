@@ -12,6 +12,7 @@ use crate::{
     frozen::{self, FrozenFunctions},
     heap::{HeapData, HeapId},
     intern::StaticStrings,
+    types::builtin_descriptor::DescriptorMethod,
 };
 
 pub(crate) mod _io;
@@ -262,7 +263,7 @@ impl StandardLib {
 /// Every dump reaches these through `Value::ModuleFunction`, encoded by variant
 /// name, so renaming a variant needs `#[serde(alias)]` (see `DUMP_VERSION`).
 /// Explicit discriminants are permanent module identity codes; never change or reuse them.
-#[monty_macros::explicit_discriminants(checksum = 0xb5cd_b4d0_73ca_9edc)]
+#[monty_macros::explicit_discriminants(checksum = 0xd95b_d548_e8bd_d94c)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, strum::EnumDiscriminants)]
 #[repr(u8)]
 pub(crate) enum ModuleFunctions {
@@ -305,6 +306,7 @@ pub(crate) enum ModuleFunctions {
     /// CPython. See [`sys`] for the rationale.
     #[cfg(feature = "test-hooks")]
     Sys(sys::SysFunctions) = 27,
+    Descriptor(DescriptorMethod) = 29,
 }
 
 impl fmt::Display for ModuleFunctions {
@@ -325,6 +327,7 @@ impl fmt::Display for ModuleFunctions {
             Self::Binascii(func) => write!(f, "{func}"),
             Self::Random(func) => write!(f, "{func}"),
             Self::Copy(func) => write!(f, "{func}"),
+            Self::Descriptor(method) => write!(f, "{method}"),
             Self::Frozen(func) => write!(f, "{func}"),
             Self::Time(func) => write!(f, "{func}"),
             Self::Hashlib(func) => write!(f, "{func}"),
@@ -367,6 +370,7 @@ impl ModuleFunctions {
             Self::Binascii(functions) => binascii::call(vm, functions, args).map(CallResult::Value),
             Self::Random(functions) => random::call(vm, functions, args),
             Self::Copy(functions) => copy::call(vm, functions, args).map(CallResult::Value),
+            Self::Descriptor(method) => method.call(vm, args),
             Self::Frozen(functions) => frozen::call_helper(functions, args, vm),
             Self::Time(functions) => time::call(vm, functions, args),
             Self::Hashlib(functions) => hashlib::call(vm, functions, args).map(CallResult::Value),
