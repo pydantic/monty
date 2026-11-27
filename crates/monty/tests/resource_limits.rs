@@ -680,6 +680,35 @@ fn timeout_in_three_arg_pow() {
     );
 }
 
+/// Consecutive Fibonacci numbers keep Euclid's algorithm running for many steps.
+#[test]
+fn timeout_in_modular_inverse() {
+    let code = "
+def fib_pair(n):
+    if n == 0:
+        return 0, 1
+    a, b = fib_pair(n // 2)
+    c = a * (2 * b - a)
+    d = a * a + b * b
+    return (d, c + d) if n % 2 else (c, d)
+
+base, modulus = fib_pair(500_000)
+interrupt()
+pow(base, -1, modulus)
+";
+    let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let progress = run
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let mut call = resolve_name_lookups(progress).unwrap().into_function_call().unwrap();
+    call.tracker_mut().set_max_feed_duration(Duration::from_millis(100));
+    let started = ThreadTime::now();
+    let result = call.resume(MontyObject::none(), PrintWriter::Stdout);
+    let elapsed = started.elapsed();
+    assert_eq!(result.unwrap_err().exc_type(), ExcType::TimeoutError);
+    assert!(elapsed < Duration::from_secs(2), "inverse took {elapsed:?}");
+}
+
 /// Test that `list(range(huge))` respects the time limit.
 ///
 /// The `list()` constructor drains its concrete Python iterator.

@@ -557,6 +557,8 @@ impl Mt19937 {
     /// Draws `k > 0` bits, preflighting the word buffer and the integer built from it.
     pub(crate) fn getrandbits_big(&mut self, k: u64, tracker: &ResourceTracker) -> RunResult<BigUint> {
         let words = usize::try_from(k.div_ceil(32)).map_err(|_| ExcType::value_error("number of bits too large"))?;
+        // On 64-bit targets `BigUint::new` packs the u32 buffer into a separate u64 buffer;
+        // on 32-bit targets it can reuse the input. Budget for both buffers.
         tracker.check_allocation(words.saturating_mul(8))?;
         Ok(BigUint::new(self.getrandbits_words(k, words, tracker)?))
     }

@@ -1114,10 +1114,9 @@ fn modular_inverse(mut base: BigInt, modulus: &BigInt, tracker: &ResourceTracker
     let mut remainder = modulus.clone();
     let mut coefficient = BigInt::ZERO;
     let mut next_coefficient = BigInt::one();
-    let mut step = 0;
     while !base.is_zero() {
-        tracker.check_time_every(step)?;
-        step += 1;
+        // Division and coefficient multiplication can each process modulus-sized operands.
+        tracker.check_time()?;
         let (quotient, next_remainder) = remainder.div_rem(&base);
         (remainder, base) = (base, next_remainder);
         let next = coefficient - quotient * &next_coefficient;
