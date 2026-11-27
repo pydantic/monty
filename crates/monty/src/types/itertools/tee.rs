@@ -120,10 +120,7 @@ pub(crate) fn new_group(source: Value, consumers: usize, vm: &mut VM<'_>) -> Vec
 /// `__copy__` for the same reason: the copies replay from the original's
 /// position rather than draining it.
 pub(crate) fn fork_group(tee: &Value, consumers: usize, vm: &mut VM<'_>) -> Option<Vec<Value>> {
-    let Value::Ref(id) = tee else { return None };
-    let HeapReadOutput::Itertools(read) = vm.heap.read(*id) else {
-        return None;
-    };
+    let read = tee.read_as::<ItertoolsIter>(vm.heap)?;
     let ItertoolsIter::Tee(existing) = read.get(vm.heap) else {
         return None;
     };

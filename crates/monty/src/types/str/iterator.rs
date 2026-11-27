@@ -86,15 +86,18 @@ impl StringIterator {
             StringIteratorSource::Intern(_) => None,
             StringIteratorSource::Inline(_) => None,
         };
-        let id = vm.heap.allocate(HeapData::StringIterator(Self {
-            source,
-            byte_offset: 0,
-            ascii,
-        }));
+        let iterator = Value::allocate(
+            Self {
+                source,
+                byte_offset: 0,
+                ascii,
+            },
+            vm.heap,
+        );
         if let Some(source_id) = source_id {
             vm.heap.inc_ref(source_id);
         }
-        Value::Ref(id)
+        iterator
     }
 }
 

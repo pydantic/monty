@@ -161,10 +161,7 @@ impl VM<'_> {
         let list_ref = this.pop();
         defer_drop!(list_ref, this);
 
-        let Value::Ref(id) = list_ref else {
-            return Err(RunError::internal("ListToTuple: expected list ref"));
-        };
-        let HeapData::List(list) = this.heap.get(*id) else {
+        let Some(list) = list_ref.get_as::<List>(this.heap) else {
             return Err(RunError::internal("ListToTuple: expected list"));
         };
         let items = list.items().cloned(this.heap).collect();
@@ -365,22 +362,15 @@ impl VM<'_> {
         }
         let copied_items: Vec<Value> = collect_iterable(iterable, this)?;
 
-        // The target set sits at `depth` positions below TOS (which is now gone after pop)
-        let stack_len = this.stack.len();
-        let set_pos = stack_len - 1 - depth;
-        // SAFETY: the compiler always emits BuildSet before SetExtend, so the
-        // target is always a Value::Ref.  This is a VM invariant: reaching this else
-        // arm means a compiler bug.
-        let Value::Ref(set_id) = this.stack[set_pos] else {
-            unreachable!("SetExtend: target is always a Ref — compiler invariant")
-        };
-
         let copied_items = copied_items.into_iter();
         defer_drop_mut!(copied_items, this);
+
+        // BuildSet leaves the target `depth` slots below the new stack top.
+        let set_pos = this.stack.len() - 1 - depth;
+        let Some(set) = this.stack[set_pos].read_as::<Set>(this.heap) else {
+            unreachable!("SetExtend: expected a set target")
+        };
         for item in copied_items {
-            let HeapReadOutput::Set(set) = this.heap.read(set_id) else {
-                unreachable!("SetExtend: heap entry is always a Set — compiler invariant")
-            };
             set.add(item, this)?;
         }
 
@@ -402,12 +392,7 @@ impl VM<'_> {
         let list_pos = stack_len - 1 - depth;
 
         // Get the list reference
-        let Value::Ref(list_id) = self.stack[list_pos] else {
-            value.drop_with(self);
-            return Err(RunError::internal("ListAppend: expected list ref on stack"));
-        };
-
-        let HeapReadOutput::List(list) = self.heap.read(list_id) else {
+        let Some(list) = self.stack[list_pos].read_as::<List>(self.heap) else {
             value.drop_with(self);
             return Err(RunError::internal("ListAppend: expected list on heap"));
         };
@@ -425,12 +410,7 @@ impl VM<'_> {
         let set_pos = stack_len - 1 - depth;
 
         // Get the set reference
-        let Value::Ref(set_id) = self.stack[set_pos] else {
-            value.drop_with(self);
-            return Err(RunError::internal("SetAdd: expected set ref on stack"));
-        };
-
-        let HeapReadOutput::Set(set) = self.heap.read(set_id) else {
+        let Some(set) = self.stack[set_pos].read_as::<Set>(self.heap) else {
             value.drop_with(self);
             return Err(RunError::internal("SetAdd: expected set on heap"));
         };
@@ -451,13 +431,7 @@ impl VM<'_> {
         let dict_pos = stack_len - 1 - depth;
 
         // Get the dict reference
-        let Value::Ref(dict_id) = self.stack[dict_pos] else {
-            key.drop_with(self);
-            value.drop_with(self);
-            return Err(RunError::internal("DictSetItem: expected dict ref on stack"));
-        };
-
-        let HeapReadOutput::Dict(dict) = self.heap.read(dict_id) else {
+        let Some(dict) = self.stack[dict_pos].read_as::<Dict>(self.heap) else {
             key.drop_with(self);
             value.drop_with(self);
             return Err(RunError::internal("DictSetItem: expected dict on heap"));

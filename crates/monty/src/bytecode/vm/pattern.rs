@@ -16,7 +16,9 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{DropGuard, DropWithContext, HeapData, HeapReadOutput},
-    types::{Dict, PyTrait, Type, TypeRef, key_hash::set_element_hash, tuple::allocate_tuple, type_ref::is_class_like},
+    types::{
+        Dict, PyTrait, Tuple, Type, TypeRef, key_hash::set_element_hash, tuple::allocate_tuple, type_ref::is_class_like,
+    },
     value::{EitherStr, Value},
 };
 
@@ -154,10 +156,7 @@ impl VM<'_> {
         let cls = this.stack[len - 2].clone_with_heap(this.heap);
         defer_drop!(subject, this);
         defer_drop!(cls, this);
-        let Value::Ref(names_id) = &this.stack[len - 1] else {
-            unreachable!("MatchAttr follows a successful MatchClass, which pushed the names tuple")
-        };
-        let HeapReadOutput::Tuple(names) = this.heap.read(*names_id) else {
+        let Some(names) = this.stack[len - 1].read_as::<Tuple>(this.heap) else {
             unreachable!("MatchAttr follows a successful MatchClass, which pushed the names tuple")
         };
         let name = names.clone_item(index, this);
@@ -226,11 +225,7 @@ impl VM<'_> {
 /// earlier key was already found missing. Only keys with equal hashes are
 /// compared, so large distinct keys never cost a full `==` each.
 fn lookup_pattern_keys(subject: &Value, keys: &Value, vm: &mut VM<'_>) -> RunResult<Option<Vec<Value>>> {
-    let (Value::Ref(subject_id), Value::Ref(keys_id)) = (subject, keys) else {
-        return Ok(None);
-    };
-    let (HeapReadOutput::Dict(dict), HeapReadOutput::Tuple(keys)) = (vm.heap.read(*subject_id), vm.heap.read(*keys_id))
-    else {
+    let (Some(dict), Some(keys)) = (subject.read_as::<Dict>(vm.heap), keys.read_as::<Tuple>(vm.heap)) else {
         return Ok(None);
     };
     let len = keys.get(vm.heap).as_slice().len();
@@ -260,11 +255,7 @@ fn lookup_pattern_keys(subject: &Value, keys: &Value, vm: &mut VM<'_>) -> RunRes
 /// Builds the `**rest` dict: a plain `dict` copy of `subject` with every key
 /// in the `keys` tuple removed.
 fn build_rest_dict(subject: &Value, keys: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
-    let (Value::Ref(subject_id), Value::Ref(keys_id)) = (subject, keys) else {
-        unreachable!("MatchKeys rest mode runs after a successful mapping MatchShape")
-    };
-    let (HeapReadOutput::Dict(dict), HeapReadOutput::Tuple(keys)) = (vm.heap.read(*subject_id), vm.heap.read(*keys_id))
-    else {
+    let (Some(dict), Some(keys)) = (subject.read_as::<Dict>(vm.heap), keys.read_as::<Tuple>(vm.heap)) else {
         unreachable!("MatchKeys rest mode runs after a successful mapping MatchShape")
     };
     let pairs = dict.clone_all_pairs(vm)?;
@@ -311,10 +302,7 @@ fn class_pattern_names(
             }
         }
     }
-    let Value::Ref(kwd_id) = kwd_names else {
-        unreachable!("MatchClass keyword names are a tuple built by the compiler")
-    };
-    let HeapReadOutput::Tuple(kwd_names) = vm.heap.read(*kwd_id) else {
+    let Some(kwd_names) = kwd_names.read_as::<Tuple>(vm.heap) else {
         unreachable!("MatchClass keyword names are a tuple built by the compiler")
     };
     let len = kwd_names.get(vm.heap).as_slice().len();
@@ -378,10 +366,7 @@ fn class_match_args(cls: &Value, nargs: usize, vm: &mut VM<'_>) -> RunResult<Mat
         return Ok(MatchArgs::Names(Vec::new()));
     };
     defer_drop!(match_args, vm);
-    let Value::Ref(args_id) = match_args else {
-        return Err(match_args_type_error(cls, match_args, vm));
-    };
-    let HeapReadOutput::Tuple(tuple) = vm.heap.read(*args_id) else {
+    let Some(tuple) = match_args.read_as::<Tuple>(vm.heap) else {
         return Err(match_args_type_error(cls, match_args, vm));
     };
     check_count(tuple.get(vm.heap).as_slice().len(), vm)?;
