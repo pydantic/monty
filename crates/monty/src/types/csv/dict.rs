@@ -3,6 +3,7 @@
 
 use std::{mem, sync::Arc};
 
+use monty_macros::py_signature;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -263,16 +264,15 @@ pub(super) fn reader_next<'h>(obj: &HeapReadMut<'h, CsvObject>, vm: &mut VM<'h>)
 }
 
 /// `DictWriter.writerow(rowdict)`: flattens the dict in `fieldnames` order and writes it.
+#[py_signature("writerow(self, rowdict, /)", owner = "DictWriter")]
 pub(super) fn writer_writerow<'h>(
     obj: &HeapRead<'h, CsvObject>,
-    args: ArgValues,
+    params: &DictwriterWriterowArgs,
     vm: &mut VM<'h>,
 ) -> RunResult<CallResult> {
-    let rowdict = args.get_one_arg("DictWriter.writerow", vm.heap)?;
-    defer_drop!(rowdict, vm);
     let spec: Option<RowSpec> = None;
     defer_drop_mut!(spec, vm);
-    let items = dict_to_list(obj, spec, rowdict, vm)?;
+    let items = dict_to_list(obj, spec, &params.rowdict, vm)?;
     defer_drop!(items, vm);
     write_items(obj, items, vm)
 }
@@ -280,12 +280,8 @@ pub(super) fn writer_writerow<'h>(
 /// `DictWriter.writeheader()`: `self.writerow(dict(zip(self.fieldnames, self.fieldnames)))`,
 /// returning what `write()` did. The dict is what rejects an unhashable name, and a repeated
 /// name collapses in it, so the row goes through it as in CPython.
-pub(super) fn writer_writeheader<'h>(
-    obj: &HeapRead<'h, CsvObject>,
-    args: ArgValues,
-    vm: &mut VM<'h>,
-) -> RunResult<CallResult> {
-    args.check_zero_args("DictWriter.writeheader", vm.heap)?;
+#[py_signature("writeheader(self, /)", owner = "DictWriter")]
+pub(super) fn writer_writeheader<'h>(obj: &HeapRead<'h, CsvObject>, vm: &mut VM<'h>) -> RunResult<CallResult> {
     let fieldnames = dict_writer_part(obj, vm, |writer| writer.fieldnames.clone_with_heap(vm.heap));
     defer_drop!(fieldnames, vm);
     let names = fieldnames_items(fieldnames, vm)?;
@@ -311,13 +307,12 @@ pub(super) fn writer_writeheader<'h>(
 ///
 /// A file target gets every row in one host write, so the dicts are all flattened first;
 /// any other target is written synchronously as each dict arrives.
+#[py_signature("writerows(self, rowdicts, /)", owner = "DictWriter")]
 pub(super) fn writer_writerows<'h>(
     obj: &HeapRead<'h, CsvObject>,
-    args: ArgValues,
+    params: &DictwriterWriterowsArgs,
     vm: &mut VM<'h>,
 ) -> RunResult<CallResult> {
-    let rowdicts = args.get_one_arg("DictWriter.writerows", vm.heap)?;
-    defer_drop!(rowdicts, vm);
     let writer = dict_writer_part(obj, vm, |writer| writer.writer.clone_with_heap(vm.heap));
     defer_drop!(writer, vm);
     let Some((targets_file, target, write, dialect)) = writer_parts(writer, vm) else {
@@ -329,7 +324,7 @@ pub(super) fn writer_writerows<'h>(
     let spec: Option<RowSpec> = None;
     defer_drop_mut!(spec, vm);
     if targets_file {
-        let rows = collect_iterable(rowdicts, vm)?;
+        let rows = collect_iterable(&params.rowdicts, vm)?;
         defer_drop!(rows, vm);
         let mut lists_guard = DropGuard::new(Vec::with_capacity(rows.len()), vm);
         let (flattened, vm) = lists_guard.as_parts_mut();
@@ -345,7 +340,7 @@ pub(super) fn writer_writerows<'h>(
             super::writer::writerows(writer_obj, ArgValues::One(rows), vm)
         })
     } else {
-        let iterator = rowdicts.py_iter(vm)?.require_synchronous(vm)?;
+        let iterator = params.rowdicts.py_iter(vm)?.require_synchronous(vm)?;
         defer_drop!(iterator, vm);
         let terminator_chars = terminator_chars(&dialect.lineterminator);
         let mut line = String::new();

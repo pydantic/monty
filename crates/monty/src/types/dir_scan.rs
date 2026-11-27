@@ -11,7 +11,7 @@
 
 use std::{borrow::Cow, fmt::Write};
 
-use monty_macros::pyattrs;
+use monty_macros::{py_signature, pyattrs};
 use monty_types::{
     MontyObject, MontyPath, OsFunctionCall, ResourceError, ResourceTracker, ScanArgs, StringRepr,
     scan::{
@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use smallvec::smallvec;
 
 use crate::{
-    args::{ArgValues, FromArgs, LaxBool},
+    args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -310,28 +310,16 @@ impl DirScan {
 }
 
 /// `DirEntry.is_dir(*, follow_symlinks=True)`.
-#[derive(FromArgs)]
-#[from_args(name = "is_dir", style = c_named)]
-struct IsDirArgs {
-    #[from_args(kw_only, default = LaxBool::new(true))]
-    follow_symlinks: LaxBool,
-}
+#[py_signature("is_dir(*, follow_symlinks: bool=True)")]
+struct IsDirArgs;
 
 /// `DirEntry.is_file(*, follow_symlinks=True)`.
-#[derive(FromArgs)]
-#[from_args(name = "is_file", style = c_named)]
-struct IsFileArgs {
-    #[from_args(kw_only, default = LaxBool::new(true))]
-    follow_symlinks: LaxBool,
-}
+#[py_signature("is_file(*, follow_symlinks: bool=True)")]
+struct IsFileArgs;
 
 /// `DirEntry.stat(*, follow_symlinks=True)`.
-#[derive(FromArgs)]
-#[from_args(name = "stat", style = c_named)]
-struct StatArgs {
-    #[from_args(kw_only, default = LaxBool::new(true))]
-    follow_symlinks: LaxBool,
-}
+#[py_signature("stat(*, follow_symlinks: bool=True)")]
+struct StatArgs;
 
 /// Takes one step of a walk: prunes by the last `dirnames`, then pops steps
 /// until one yields, reporting listing errors to `onerror` on the way.

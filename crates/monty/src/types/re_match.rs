@@ -11,13 +11,12 @@
 
 use std::{cell::OnceCell, cmp::Ordering, fmt::Write};
 
-use monty_macros::pyattrs;
+use monty_macros::{py_signature, pyattrs};
 use smallvec::smallvec;
 
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     bytecode::{CallResult, VM},
-    defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropGuard, Heap, HeapId, HeapItem, HeapObjectRead, HeapRead},
     intern::StaticStrings,
@@ -442,12 +441,8 @@ fn group_index(n: i64) -> usize {
 
 /// Argument shape for `re.Match.groupdict(default=None)` — one optional
 /// pos-or-keyword `default` value used to fill groups that didn't match.
-#[derive(FromArgs)]
-#[from_args(name = "groupdict", at_most_total)]
-struct GroupdictArgs {
-    #[from_args(default)]
-    default: Option<Value>,
-}
+#[py_signature("groupdict(default=...)")]
+struct GroupdictArgs;
 
 pub(crate) struct PyReMatchImpl;
 
@@ -460,21 +455,15 @@ impl<'heap> PyAttrs<'heap> for PyReMatchImpl {
     /// - `m.group()` → equivalent to `m.group(0)`, returns full match string
     /// - `m.group(n)` → returns the nth group (integer or named string)
     /// - `m.group(n1, n2, ...)` → returns a tuple of groups
-    #[pymethod(Group)]
-    fn group<'h>(m: &HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        match args {
-            ArgValues::Empty => m.get(vm.heap).get_group(0, vm.heap),
-            ArgValues::One(v) => {
-                let result = resolve_group_arg(m.get(vm.heap), &v, vm);
-                v.drop_with(vm);
-                result
-            }
-            other => {
-                let pos = other.into_pos_only("re.Match.group", vm.heap)?;
-                defer_drop_mut!(pos, vm);
+    #[pymethod(Group, "group(self, /, *groups)", owner = "re.Match")]
+    fn group<'h>(m: &HeapRead<'h, ReMatch>, params: &GroupArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+        match params.groups.as_slice() {
+            [] => m.get(vm.heap).get_group(0, vm.heap),
+            [value] => resolve_group_arg(m.get(vm.heap), value, vm),
+            groups => {
                 let mut elements_guard = DropGuard::new(smallvec::smallvec![], vm);
                 let (elements, vm) = elements_guard.as_parts_mut();
-                for val in pos.as_slice() {
+                for val in groups {
                     elements.push(resolve_group_arg(m.get(vm.heap), val, vm)?);
                 }
                 let (elements, vm) = elements_guard.into_parts();

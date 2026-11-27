@@ -6,8 +6,10 @@
 //! raises the `TypeError` CPython's pickler would. `__copy__`/`__deepcopy__`
 //! are still honoured. Divergences are listed in `limitations/copy.md`.
 
+use monty_macros::py_signature;
+
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
@@ -53,35 +55,19 @@ pub(super) fn call(vm: &mut VM<'_>, function: CopyFunctions, args: ArgValues) ->
     }
 }
 
-/// A pure-Python `def` in CPython, so the parameter binds without a type check.
-#[derive(FromArgs)]
-#[from_args(name = "copy", style = def)]
-struct CopyArgs {
-    x: Value,
-}
-
 /// `copy.copy(x)`: a new object holding the *same* items as `x`.
-fn call_copy(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let CopyArgs { x } = CopyArgs::from_args(args, vm)?;
-    defer_drop!(x, vm);
-    shallow_copy(x, vm)
-}
-
-/// CPython's signature. `_nil` is its private "missing from `memo`" sentinel,
-/// accepted for arity parity and never read.
-#[derive(FromArgs)]
-#[from_args(name = "deepcopy", style = def)]
-struct DeepcopyArgs {
-    x: Value,
-    #[from_args(default = Value::None, static_string = "Memo")]
-    memo: Value,
-    #[from_args(default = Value::None, static_string = "NilSentinel")]
-    _nil: Value,
+#[py_signature("copy(x)")]
+fn call_copy(vm: &mut VM<'_>, params: &CopyArgs) -> RunResult<Value> {
+    shallow_copy(&params.x, vm)
 }
 
 /// `copy.deepcopy(x, memo=None)`: rebuilds `x` and everything it holds.
-fn call_deepcopy(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let DeepcopyArgs { x, memo, _nil: nil } = DeepcopyArgs::from_args(args, vm)?;
+///
+/// CPython's signature. `_nil` is its private "missing from `memo`" sentinel,
+/// accepted for arity parity and never read.
+#[py_signature("deepcopy(x, memo=None, _nil=None)")]
+fn call_deepcopy(vm: &mut VM<'_>, params: &mut DeepcopyArgs) -> RunResult<Value> {
+    let DeepcopyArgsFields { x, memo, _nil: nil } = params.take_all();
     defer_drop!(x, vm);
     defer_drop!(nil, vm);
     let memo = Memo::new(memo, vm)?;

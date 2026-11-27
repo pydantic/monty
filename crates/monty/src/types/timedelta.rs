@@ -12,12 +12,12 @@ use std::{
 };
 
 use jiff::SignedDuration;
-use monty_macros::pyattrs;
+use monty_macros::{py_signature, pyattrs};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
 use smallvec::smallvec;
 
 use crate::{
-    args::{ArgValues, FromArgs, FromValue, FromValueFail},
+    args::{ArgValues, FromValue, FromValueFail},
     bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
@@ -251,53 +251,18 @@ pub(crate) fn allocate_micros(total_microseconds: i128, heap: &Heap) -> Value {
 }
 
 /// Creates a `timedelta` from constructor arguments.
-///
-/// Supports positional `(days, seconds, microseconds)` and keyword arguments
-/// `days`, `seconds`, `microseconds`, `milliseconds`, `minutes`, `hours`, `weeks`.
-pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let TimedeltaArgs {
-        days,
-        seconds,
-        microseconds,
-        milliseconds,
-        minutes,
-        hours,
-        weeks,
-    } = TimedeltaArgs::from_args(args, vm)?;
-
-    let total_microseconds = checked_component(weeks, 7 * DAY_MICROSECONDS)?
-        + checked_component(days, DAY_MICROSECONDS)?
-        + checked_component(hours, HOUR_MICROSECONDS)?
-        + checked_component(minutes, MINUTE_MICROSECONDS)?
-        + checked_component(seconds, MICROSECONDS_PER_SECOND)?
-        + checked_component(milliseconds, MILLISECONDS_PER_SECOND)?
-        + microseconds.0;
+#[py_signature("timedelta(days=0, seconds=0, microseconds=0, milliseconds=0, minutes=0, hours=0, weeks=0)", convert(days = DeltaComponent, seconds = DeltaComponent, microseconds = DeltaComponent, milliseconds = DeltaComponent, minutes = DeltaComponent, hours = DeltaComponent, weeks = DeltaComponent))]
+pub(crate) fn init(vm: &mut VM<'_>, params: &TimedeltaArgs) -> RunResult<Value> {
+    let total_microseconds = checked_component(params.weeks.0, 7 * DAY_MICROSECONDS)?
+        + checked_component(params.days.0, DAY_MICROSECONDS)?
+        + checked_component(params.hours.0, HOUR_MICROSECONDS)?
+        + checked_component(params.minutes.0, MINUTE_MICROSECONDS)?
+        + checked_component(params.seconds.0, MICROSECONDS_PER_SECOND)?
+        + checked_component(params.milliseconds.0, MILLISECONDS_PER_SECOND)?
+        + params.microseconds.0;
 
     let delta = from_total_microseconds(total_microseconds)?;
     Ok(Value::allocate(delta, vm.heap))
-}
-
-/// Argument shape for `timedelta(days=0, seconds=0, microseconds=0, *, milliseconds=0, minutes=0, hours=0, weeks=0)`.
-///
-/// CPython accepts the first three as positional-or-keyword and the rest as
-/// keyword-only. All default to 0 so an empty `timedelta()` is legal.
-#[derive(FromArgs)]
-#[from_args(name = "timedelta")]
-struct TimedeltaArgs {
-    #[from_args(default)]
-    days: DeltaComponent,
-    #[from_args(default)]
-    seconds: DeltaComponent,
-    #[from_args(default)]
-    microseconds: DeltaComponent,
-    #[from_args(kw_only, default)]
-    milliseconds: DeltaComponent,
-    #[from_args(kw_only, default)]
-    minutes: DeltaComponent,
-    #[from_args(kw_only, default)]
-    hours: DeltaComponent,
-    #[from_args(kw_only, default)]
-    weeks: DeltaComponent,
 }
 
 /// One `timedelta(...)` constructor component, held as `i128` so the
@@ -310,6 +275,12 @@ struct TimedeltaArgs {
 /// even though they would fit in i128.
 #[derive(Clone, Copy, Default)]
 struct DeltaComponent(i128);
+
+impl From<i64> for DeltaComponent {
+    fn from(value: i64) -> Self {
+        Self(i128::from(value))
+    }
+}
 
 impl FromValue for DeltaComponent {
     const EXPECTED_TYPE_NAME: Option<&'static str> = Some("int");
@@ -331,8 +302,8 @@ impl FromValue for DeltaComponent {
     }
 }
 
-fn checked_component(value: DeltaComponent, unit_microseconds: i128) -> RunResult<i128> {
-    value.0.checked_mul(unit_microseconds).ok_or_else(|| {
+fn checked_component(value: i128, unit_microseconds: i128) -> RunResult<i128> {
+    value.checked_mul(unit_microseconds).ok_or_else(|| {
         SimpleException::new_msg(ExcType::OverflowError, "timedelta argument overflow while normalizing").into()
     })
 }

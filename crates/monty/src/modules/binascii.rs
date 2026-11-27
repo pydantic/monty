@@ -16,15 +16,15 @@
 //! The byte-level codecs live in [`super::base64`], where they were written
 //! first; `binascii` re-exposes them under the names CPython puts them at.
 
+use monty_macros::py_signature;
 use monty_types::ResourceTracker;
 
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     builtins::Builtins,
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::DropWithContext,
     intern::StaticStrings,
     modules::{
         ModuleFunctions,
@@ -156,12 +156,7 @@ fn call_hexlify(vm: &mut VM<'_>, args: ArgValues, name: &str) -> RunResult<Value
 /// keywords are rejected wholesale before the arity is even counted, both
 /// under the module-qualified `name`.
 fn call_unhexlify(vm: &mut VM<'_>, args: ArgValues, name: &str) -> RunResult<Value> {
-    let mut positional = args.into_pos_only(name, vm.heap)?;
-    let count = positional.len();
-    let Some(hexstr) = positional.next().filter(|_| count == 1) else {
-        positional.drop_with(vm.heap);
-        return Err(ExcType::type_error_arg_count(name, 1, count));
-    };
+    let hexstr = args.reject_kwargs(name, vm.heap)?.get_one_arg(name, vm.heap)?;
     defer_drop!(hexstr, vm);
 
     let decoded = hex_decode(decode_input_described(hexstr, vm, "bytes, buffer or ASCII string")?)?;
@@ -246,16 +241,13 @@ fn call_b2a_uu(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `binascii.a2b_uu(data)` — the inverse, tolerant of either padding
 /// convention and of a line truncated before its length byte promised.
-fn call_a2b_uu(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let mut positional = args.into_pos_only("binascii.a2b_uu", vm.heap)?;
-    let count = positional.len();
-    let Some(data) = positional.next().filter(|_| count == 1) else {
-        positional.drop_with(vm.heap);
-        return Err(ExcType::type_error_arg_count("binascii.a2b_uu", 1, count));
-    };
-    defer_drop!(data, vm);
-
-    let decoded = uu_decode(decode_input_described(data, vm, "bytes, buffer or ASCII string")?)?;
+#[py_signature("a2b_uu(data, /)", error_name = "binascii.a2b_uu", reject_keywords)]
+fn call_a2b_uu(vm: &mut VM<'_>, params: &BinasciiA2bUuArgs) -> RunResult<Value> {
+    let decoded = uu_decode(decode_input_described(
+        &params.data,
+        vm,
+        "bytes, buffer or ASCII string",
+    )?)?;
     Ok(allocate_bytes(decoded, vm.heap))
 }
 
@@ -301,103 +293,43 @@ fn call_a2b_qp(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 ///
 /// `PyArg_ParseTupleAndKeywords` with a `:name`, plus the up-front count that
 /// reports `takes at most 3 arguments` rather than an unexpected keyword.
-#[derive(FromArgs)]
-#[from_args(name = "hexlify", style = c_named, at_most_total)]
-struct HexlifyArgs {
-    data: Value,
-    #[from_args(default)]
-    sep: Option<Value>,
-    #[from_args(default = 1)]
-    bytes_per_sep: i32,
-}
+#[py_signature("hexlify(data, sep=..., bytes_per_sep: c_int=1)")]
+struct HexlifyArgs;
 
 /// The same shape under the `b2a_hex` name, which its signature errors report.
-#[derive(FromArgs)]
-#[from_args(name = "b2a_hex", style = c_named, at_most_total)]
-struct B2aHexArgs {
-    data: Value,
-    #[from_args(default)]
-    sep: Option<Value>,
-    #[from_args(default = 1)]
-    bytes_per_sep: i32,
-}
+#[py_signature("b2a_hex(data, sep=..., bytes_per_sep: c_int=1)")]
+struct B2aHexArgs;
 
 /// Argument shape for `b2a_base64(data, *, newline=True)`.
-#[derive(FromArgs)]
-#[from_args(name = "b2a_base64", style = c_named)]
-struct B2aBase64Args {
-    #[from_args(pos_only)]
-    data: Value,
-    #[from_args(kw_only, default = Value::Bool(true))]
-    newline: Value,
-}
+#[py_signature("b2a_base64(data, /, *, newline=True)")]
+struct B2aBase64Args;
 
 /// Argument shape for `a2b_base64(data, *, strict_mode=False)`.
-#[derive(FromArgs)]
-#[from_args(name = "a2b_base64", style = c_named)]
-struct A2bBase64Args {
-    #[from_args(pos_only)]
-    data: Value,
-    #[from_args(kw_only, default = Value::Bool(false))]
-    strict_mode: Value,
-}
+#[py_signature("a2b_base64(data, /, *, strict_mode=False)")]
+struct A2bBase64Args;
 
 /// Argument shape for `crc32(data, crc=0)` — positional-only, so keywords are
 /// rejected outright with the module-qualified name.
-#[derive(FromArgs)]
-#[from_args(name = "crc32", style = unpack, kwarg_error_name = "binascii.crc32")]
-struct Crc32Args {
-    #[from_args(pos_only)]
-    data: Value,
-    // Absent rather than `None`: CPython's `crc` defaults to unset, so an
-    // explicit `None` reaches the integer conversion and is rejected there.
-    #[from_args(pos_only, default)]
-    crc: Option<Value>,
-}
+#[py_signature("crc32(data, crc=..., /)", kwarg_error_name = "binascii.crc32")]
+struct Crc32Args;
 
 /// Argument shape for `crc_hqx(data, crc)` — like `crc32`, but with `crc`
 /// required rather than defaulted.
-#[derive(FromArgs)]
-#[from_args(name = "crc_hqx", style = unpack, kwarg_error_name = "binascii.crc_hqx")]
-struct CrcHqxArgs {
-    #[from_args(pos_only)]
-    data: Value,
-    #[from_args(pos_only)]
-    crc: Value,
-}
+#[py_signature("crc_hqx(data, crc, /)", kwarg_error_name = "binascii.crc_hqx")]
+struct CrcHqxArgs;
 
 /// Argument shape for `b2a_uu(data, *, backtick=False)`.
-#[derive(FromArgs)]
-#[from_args(name = "b2a_uu", style = c_named)]
-struct B2aUuArgs {
-    #[from_args(pos_only)]
-    data: Value,
-    #[from_args(kw_only, default = Value::Bool(false))]
-    backtick: Value,
-}
+#[py_signature("b2a_uu(data, /, *, backtick=False)")]
+struct B2aUuArgs;
 
 /// Argument shape for `b2a_qp(data, quotetabs=False, istext=True, header=False)`,
 /// whose three flags are all positional-or-keyword.
-#[derive(FromArgs)]
-#[from_args(name = "b2a_qp", style = c_named, at_most_total)]
-struct B2aQpArgs {
-    data: Value,
-    #[from_args(default = Value::Bool(false))]
-    quotetabs: Value,
-    #[from_args(default = Value::Bool(true))]
-    istext: Value,
-    #[from_args(default = Value::Bool(false))]
-    header: Value,
-}
+#[py_signature("b2a_qp(data, quotetabs=False, istext=True, header=False)")]
+struct B2aQpArgs;
 
 /// Argument shape for `a2b_qp(data, header=False)`.
-#[derive(FromArgs)]
-#[from_args(name = "a2b_qp", style = c_named, at_most_total)]
-struct A2bQpArgs {
-    data: Value,
-    #[from_args(default = Value::Bool(false))]
-    header: Value,
-}
+#[py_signature("a2b_qp(data, header=False)")]
+struct A2bQpArgs;
 
 /// Reduces an `int` to the `unsigned int` CPython's `I` format takes, which
 /// wraps modulo 2**32 rather than rejecting a value out of range — so a

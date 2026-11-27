@@ -13,6 +13,7 @@ use jiff::{
     SignedDuration,
     civil::{self, DateTime},
 };
+use monty_macros::py_signature;
 use monty_types::{
     MontyTimeZone, OsFunctionCall, ProcessTime, ResourceTracker, SandboxTimeZone, SleepError, SleepMode, TimeCaller,
     local_wall_clock, sleep_duration, unix_seconds,
@@ -21,10 +22,10 @@ use num_traits::ToPrimitive;
 use smallvec::smallvec;
 
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropWithContext, HeapReadOutput},
+    heap::HeapReadOutput,
     intern::StaticStrings,
     modules::ModuleFunctions,
     os_dispatch::PostConversionEffect,
@@ -178,30 +179,18 @@ fn convert_clock(vm: &mut VM<'_>, args: ArgValues, caller: TimeCaller, reading: 
     }
 }
 
-/// `time.gmtime(secs=None)`; `PyArg_ParseTuple` in CPython, hence `parse_tuple`.
+/// `time.gmtime(secs=None)`.
 /// [`LocaltimeArgs`] and [`CtimeArgs`] are the same shape under their own names.
-#[derive(FromArgs)]
-#[from_args(name = "gmtime", style = parse_tuple)]
-struct GmtimeArgs {
-    #[from_args(pos_only, default = Value::None)]
-    seconds: Value,
-}
+#[py_signature("gmtime(seconds=None, /)")]
+struct GmtimeArgs;
 
 /// `time.localtime(secs=None)`; see [`GmtimeArgs`].
-#[derive(FromArgs)]
-#[from_args(name = "localtime", style = parse_tuple)]
-struct LocaltimeArgs {
-    #[from_args(pos_only, default = Value::None)]
-    seconds: Value,
-}
+#[py_signature("localtime(seconds=None, /)")]
+struct LocaltimeArgs;
 
 /// `time.ctime(secs=None)`; see [`GmtimeArgs`].
-#[derive(FromArgs)]
-#[from_args(name = "ctime", style = parse_tuple)]
-struct CtimeArgs {
-    #[from_args(pos_only, default = Value::None)]
-    seconds: Value,
-}
+#[py_signature("ctime(seconds=None, /)")]
+struct CtimeArgs;
 
 /// Suspends with the shared `time.time` call, carrying the work still to do on
 /// the host's answer.
@@ -294,20 +283,16 @@ fn process_time(vm: &mut VM<'_>, args: ArgValues, function: TimeFunctions, nanos
 /// Validates the delay in every mode, then applies [`host_sleep`].
 /// [`PostConversionEffect::DiscardResult`] makes the call return `None`
 /// regardless of the host's answer; `Zero` skips the wait.
-fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+#[py_signature("sleep(seconds, /)", error_name = "time.sleep", reject_keywords)]
+fn sleep(vm: &mut VM<'_>, params: &TimeSleepArgs) -> RunResult<CallResult> {
     // METH_O in CPython: keywords are refused wholesale, before arity.
-    let seconds = args
-        .reject_kwargs("time.sleep", vm.heap)?
-        .get_one_arg("time.sleep", vm.heap)?;
-    let result = sleep_seconds(&seconds, vm).and_then(|secs| {
+    let duration = sleep_seconds(&params.seconds, vm).and_then(|secs| {
         sleep_duration(secs).map_err(|err| match err {
             SleepError::NotANumber => ExcType::invalid_nan(),
             SleepError::Negative => ExcType::value_error("sleep length must be non-negative"),
             SleepError::TooLarge => ExcType::sleep_too_long(),
         })
-    });
-    seconds.drop_with(vm.heap);
-    let duration = result?;
+    })?;
     let call = match host_sleep(vm, duration) {
         Some(HostSleep::System(delay)) => OsFunctionCall::SystemSleep(delay),
         Some(HostSleep::CallHost(delay)) => OsFunctionCall::Sleep(delay),
@@ -372,14 +357,11 @@ fn sleep_seconds(value: &Value, vm: &mut VM<'_>) -> RunResult<f64> {
 
 /// `time.mktime(t)`: the inverse of `localtime`, reading `t` as wall time in the
 /// session zone. `METH_O` in CPython, hence the module-qualified arity message.
-fn mktime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    let value = args
-        .reject_kwargs("time.mktime", vm.heap)?
-        .get_one_arg("time.mktime", vm.heap)?;
+#[py_signature("mktime(t, /)", error_name = "time.mktime", reject_keywords)]
+fn mktime(vm: &mut VM<'_>, params: &TimeMktimeArgs) -> RunResult<CallResult> {
     // Only the wall clock matters, and CPython does not range-check the
     // weekday or year day here as `asctime`/`strftime` do.
-    let wall = time_tuple_parts(&value, "mktime", vm).and_then(|(items, _)| naive_from_time_tuple(&items));
-    value.drop_with(vm.heap);
+    let wall = time_tuple_parts(&params.t, "mktime", vm).and_then(|(items, _)| naive_from_time_tuple(&items));
     let utc = vm
         .env
         .os_policy
@@ -390,35 +372,19 @@ fn mktime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 }
 
 /// `time.asctime(t=None)`: the fixed 24-character form, from `t` or the clock.
-/// `PyArg_UnpackTuple` in CPython, unlike its `gmtime` neighbours.
-fn asctime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    let Some(value) = args
-        .reject_kwargs("asctime", vm.heap)?
-        .get_zero_one_arg("asctime", vm.heap)?
-    else {
+#[py_signature("asctime(t=..., /)", reject_keywords)]
+fn asctime(vm: &mut VM<'_>, params: &AsctimeArgs) -> RunResult<CallResult> {
+    let Some(value) = &params.t else {
         return suspend_or_apply(vm, TimeCaller::Asctime, ClockReading::Ctime);
     };
-    let fields = time_fields(&value, "asctime", vm);
-    value.drop_with(vm.heap);
-    Ok(CallResult::Value(allocate_string(fields?.asctime(), vm.heap)))
+    let fields = time_fields(value, "asctime", vm)?;
+    Ok(CallResult::Value(allocate_string(fields.asctime(), vm.heap)))
 }
 
 /// `time.strftime(format, t=None)`, formatting `t` or the clock.
-fn strftime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    let StrftimeArgs { format, t } = StrftimeArgs::from_args(args, vm)?;
-    let result = strftime_result(&format, &t, vm);
-    (format, t).drop_with(vm.heap);
-    result
-}
-
-/// `time.strftime(format, t=None)`; `PyArg_ParseTuple` in CPython.
-#[derive(FromArgs)]
-#[from_args(name = "strftime", style = parse_tuple)]
-struct StrftimeArgs {
-    #[from_args(pos_only)]
-    format: Value,
-    #[from_args(pos_only, default = Value::None)]
-    t: Value,
+#[py_signature("strftime(format, t=None, /)")]
+fn strftime(vm: &mut VM<'_>, params: &StrftimeArgs) -> RunResult<CallResult> {
+    strftime_result(&params.format, &params.t, vm)
 }
 
 /// [`strftime`] without the argument cleanup, so every exit releases both.
@@ -436,20 +402,9 @@ fn strftime_result(format: &Value, t: &Value, vm: &mut VM<'_>) -> RunResult<Call
 ///
 /// CPython's is the pure-Python `_strptime_time`, which is why the binding
 /// errors name that function rather than `strptime`.
-fn strptime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    let StrptimeArgs { data_string, format } = StrptimeArgs::from_args(args, vm)?;
-    let result = strptime_result(&data_string, &format, vm);
-    (data_string, format).drop_with(vm.heap);
-    result.map(CallResult::Value)
-}
-
-/// `time.strptime(data_string, format)` — the pure-Python `_strptime_time`.
-#[derive(FromArgs)]
-#[from_args(name = "_strptime_time", style = def)]
-struct StrptimeArgs {
-    data_string: Value,
-    #[from_args(default = Value::None)]
-    format: Value,
+#[py_signature("_strptime_time(data_string, format=None)")]
+fn strptime(vm: &mut VM<'_>, params: &StrptimeArgs) -> RunResult<CallResult> {
+    strptime_result(&params.data_string, &params.format, vm).map(CallResult::Value)
 }
 
 /// [`strptime`] without the argument cleanup.

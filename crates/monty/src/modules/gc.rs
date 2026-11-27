@@ -13,6 +13,8 @@
 //! - `gc.disable()` / `gc.enable()` — toggle automatic collection.
 //!   Explicit `gc.collect()` calls still run while disabled.
 
+use monty_macros::py_signature;
+
 use crate::{
     args::ArgValues, bytecode::VM, exception_private::RunResult, intern::StaticStrings, modules::ModuleFunctions,
     types::Module, value::Value,
@@ -72,8 +74,8 @@ pub(super) fn call(vm: &mut VM<'_>, function: GcFunctions, args: ArgValues) -> R
 /// Counts are clamped to `i64::MAX` if they ever exceed it; in practice a single
 /// heap can't hold that many entries, but the conversion is fallible so we
 /// saturate rather than panic.
-fn collect(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    args.check_zero_args("gc.collect", vm.heap)?;
+#[py_signature("collect()", error_name = "gc.collect")]
+fn collect(vm: &mut VM<'_>) -> RunResult<Value> {
     let freed = vm.__force_gc_for_tests();
     Ok(Value::Int(i64::try_from(freed).unwrap_or(i64::MAX)))
 }
@@ -83,8 +85,8 @@ fn collect(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// Returns `None` to match CPython. Explicit [`collect`] calls still run while
 /// auto-GC is disabled, so a script can build a known amount of garbage and then
 /// time exactly one collection pass.
-fn disable(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    args.check_zero_args("gc.disable", vm.heap)?;
+#[py_signature("disable()", error_name = "gc.disable")]
+fn disable(vm: &mut VM<'_>) -> RunResult<Value> {
     vm.heap.disable_gc();
     Ok(Value::None)
 }
@@ -92,8 +94,8 @@ fn disable(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `gc.enable()` — re-enables automatic GC after a prior [`disable`].
 ///
 /// Returns `None` to match CPython. Calling on an already-enabled heap is a no-op.
-fn enable(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    args.check_zero_args("gc.enable", vm.heap)?;
+#[py_signature("enable()", error_name = "gc.enable")]
+fn enable(vm: &mut VM<'_>) -> RunResult<Value> {
     vm.heap.enable_gc();
     Ok(Value::None)
 }

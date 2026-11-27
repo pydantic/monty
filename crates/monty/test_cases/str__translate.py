@@ -1,4 +1,11 @@
 # === maketrans: dict form ===
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
+
 assert str.maketrans({'a': 'b', 98: None, 'c': 100}) == {97: 'b', 98: None, 99: 100}
 assert str.maketrans({}) == {}
 assert str.maketrans({'a': 1.5}) == {97: 1.5}
@@ -52,13 +59,18 @@ try:
     str.maketrans()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'maketrans expected at least 1 argument, got 0'
+    assert str(e) == _error_message(
+        monty="maketrans() missing 1 required positional argument: 'x'",
+        cpython='maketrans expected at least 1 argument, got 0',
+    )
 
 try:
     str.maketrans('a', 'b', 'c', 'd')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'maketrans expected at most 3 arguments, got 4'
+    assert str(e) == _error_message(
+        monty='maketrans() takes at most 3 arguments (4 given)', cpython='maketrans expected at most 3 arguments, got 4'
+    )
 
 try:
     str.maketrans({1.5: 'a'})
@@ -70,7 +82,10 @@ try:
     str.maketrans(x='a')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'str.maketrans() takes no keyword arguments'
+    assert str(e) == _error_message(
+        monty="maketrans() got some positional-only arguments passed as keyword arguments: 'x'",
+        cpython='str.maketrans() takes no keyword arguments',
+    )
 
 # === translate: mappings ===
 assert 'hello'.translate({104: 'J', 101: None, 108: 'LL'}) == 'JLLLLo'

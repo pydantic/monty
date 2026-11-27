@@ -1,7 +1,8 @@
 //! Implementation of the isinstance() builtin function.
 
+use monty_macros::py_signature;
+
 use crate::{
-    args::ArgValues,
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
@@ -13,12 +14,9 @@ use crate::{
 /// Implementation of the isinstance() builtin function.
 ///
 /// Checks if an object is an instance of a class or a tuple of classes.
-pub fn builtin_isinstance(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let (obj, classinfo) = args.get_two_args("isinstance", vm.heap)?;
-    defer_drop!(obj, vm);
-    defer_drop!(classinfo, vm);
-
-    isinstance_check(obj, classinfo, vm).map(Value::Bool)
+#[py_signature("isinstance(obj, class_or_tuple, /)")]
+pub fn builtin_isinstance(vm: &mut VM<'_>, params: &IsinstanceArgs) -> RunResult<Value> {
+    isinstance_check(&params.obj, &params.class_or_tuple, vm).map(Value::Bool)
 }
 
 /// Checks if `obj` matches a single classinfo entry.

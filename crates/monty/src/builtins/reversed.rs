@@ -1,43 +1,30 @@
 //! Implementation of the reversed() builtin function.
 
+use monty_macros::py_signature;
+
 use crate::{
-    args::{ArgValues, FromArgs},
     bytecode::VM,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::HeapData,
-    types::{List, iter::collect_owned_iterable},
+    types::{List, iter::collect_iterable},
     value::Value,
 };
-
-/// Argument shape for `reversed(sequence, /)` — positional-only, so
-/// `style = unpack` gives CPython's exact-arity wording
-/// (`reversed expected 1 argument, got 2`) and the blanket
-/// `reversed() takes no keyword arguments` rejection.
-#[derive(FromArgs)]
-#[from_args(name = "reversed", style = unpack)]
-struct ReversedArgs {
-    #[from_args(pos_only)]
-    sequence: Value,
-}
 
 /// Implementation of the reversed() builtin function.
 ///
 /// Returns a list with elements in reverse order.
 /// Note: In Python this returns an iterator, but we return a list for simplicity.
-pub fn builtin_reversed(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let ReversedArgs { sequence } = ReversedArgs::from_args(args, vm)?;
-
+#[py_signature("reversed(sequence, /)")]
+pub fn builtin_reversed(vm: &mut VM<'_>, params: &ReversedArgs) -> RunResult<Value> {
     // Being iterable is not enough: CPython needs `__reversed__`, or
     // `__len__` + `__getitem__`. Check before iterating so unordered and
     // one-shot iterables are rejected rather than silently reversed.
-    if !is_reversible(&sequence, vm) {
-        let err = ExcType::type_error_not_reversible(&sequence.py_type_name(vm));
-        sequence.drop_with(vm);
-        return Err(err);
+    if !is_reversible(&params.sequence, vm) {
+        return Err(ExcType::type_error_not_reversible(&params.sequence.py_type_name(vm)));
     }
 
     // Collect all items
-    let mut items: Vec<_> = collect_owned_iterable(sequence, vm)?;
+    let mut items = collect_iterable(&params.sequence, vm)?;
 
     // Reverse in place
     items.reverse();

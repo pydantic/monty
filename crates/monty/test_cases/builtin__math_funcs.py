@@ -2,6 +2,11 @@ import sys
 
 is_monty = sys.platform == 'monty'
 
+
+def expected_error(*, monty, cpython):
+    return monty if is_monty else cpython
+
+
 # === abs() ===
 # Basic abs operations
 assert abs(5) == 5
@@ -412,12 +417,33 @@ for compute, message in [
     (lambda: pow('a', 2, 3), "unsupported operand type(s) for ** or pow(): 'str', 'int', 'int'"),
     (lambda: pow(2, 3, 'a'), "unsupported operand type(s) for ** or pow(): 'int', 'int', 'str'"),
     (lambda: pow(True, 2, 'a'), "unsupported operand type(s) for ** or pow(): 'bool', 'int', 'str'"),
-    (lambda: pow(2), "pow() missing required argument 'exp' (pos 2)"),
-    (lambda: pow(), "pow() missing required argument 'base' (pos 1)"),
-    (lambda: pow(2, 3, 4, 5), 'pow() takes at most 3 arguments (4 given)'),
 ]:
     try:
         compute()
         assert False, 'expected TypeError'
     except TypeError as e:
         assert str(e) == message
+
+for args, message in [
+    (
+        (2,),
+        expected_error(
+            monty="pow() missing 1 required positional argument: 'exp'",
+            cpython="pow() missing required argument 'exp' (pos 2)",
+        ),
+    ),
+    (
+        (),
+        expected_error(
+            monty="pow() missing 2 required positional arguments: 'base' and 'exp'",
+            cpython="pow() missing required argument 'base' (pos 1)",
+        ),
+    ),
+    ((2, 3, 4, 5), 'pow() takes at most 3 arguments (4 given)'),
+]:
+    try:
+        pow(*args)
+    except TypeError as exc:
+        assert str(exc) == message
+    else:
+        assert False, 'expected invalid pow arity to raise TypeError'

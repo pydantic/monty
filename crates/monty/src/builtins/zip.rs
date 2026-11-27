@@ -1,9 +1,10 @@
 //! Implementation of the zip() builtin function.
 
+use monty_macros::py_signature;
+
 use crate::{
-    args::{ArgValues, FromArgs},
     bytecode::VM,
-    defer_drop, defer_drop_mut,
+    defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::DropGuard,
     types::{List, PyTrait, allocate_tuple, tuple::TupleVec},
@@ -16,24 +17,27 @@ use crate::{
 /// from each of the argument iterables. Stops when the shortest iterable is exhausted.
 /// When `strict=True`, raises `ValueError` if any iterable has a different length.
 /// Note: In Python this returns an iterator, but we return a list for simplicity.
-pub fn builtin_zip(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let ZipArgs { iterables, strict } = ZipArgs::from_args(args, vm)?;
-    defer_drop_mut!(iterables, vm);
+///
+/// Argument shape for `zip(*iterables, strict=False)`.
+///
+/// `strict` is held as a `Value` because CPython evaluates it via truthiness
+/// (`py_bool`), not strict-type equality, so accepting any value is correct.
+#[py_signature("zip(*iterables, strict=False)")]
+pub fn builtin_zip(vm: &mut VM<'_>, params: &ZipArgs) -> RunResult<Value> {
     // CPython's `strict` is truthy-checked (not strict typed), so test the raw
     // value rather than asking the macro to coerce to a strict `bool`.
-    defer_drop!(strict, vm);
-    let strict = strict.py_bool(vm)?;
+    let strict = params.strict.py_bool(vm)?;
 
-    if iterables.is_empty() {
+    if params.iterables.is_empty() {
         // zip() with no arguments returns empty list
         return Ok(Value::allocate(List::new(Vec::new()), vm.heap));
     }
 
     // Create iterators for each iterable
-    let iterators: Vec<Value> = Vec::with_capacity(iterables.len());
+    let iterators: Vec<Value> = Vec::with_capacity(params.iterables.len());
     defer_drop_mut!(iterators, vm);
-    for iterable in iterables.drain(..) {
-        iterators.push(iterable.into_py_iter(vm)?.require_synchronous(vm)?);
+    for iterable in &params.iterables {
+        iterators.push(iterable.py_iter(vm)?.require_synchronous(vm)?);
     }
     let mut iterators = iterators.iter().map(|iter| iter.read(vm)).collect::<Vec<_>>();
 
@@ -82,19 +86,6 @@ pub fn builtin_zip(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     let (result, vm) = result_guard.into_parts();
     Ok(Value::allocate(List::new(result), vm.heap))
-}
-
-/// Argument shape for `zip(*iterables, strict=False)`.
-///
-/// `strict` is held as a `Value` because CPython evaluates it via truthiness
-/// (`py_bool`), not strict-type equality, so accepting any value is correct.
-#[derive(FromArgs)]
-#[from_args(name = "zip")]
-struct ZipArgs {
-    #[from_args(varargs)]
-    iterables: Vec<Value>,
-    #[from_args(default = Value::Bool(false))]
-    strict: Value,
 }
 
 /// Builds the `ValueError` for `zip(strict=True)` when iterables have different lengths.

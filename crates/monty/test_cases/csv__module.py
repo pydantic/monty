@@ -3,6 +3,11 @@ import sys
 
 is_monty = sys.platform == 'monty'
 
+
+def expected_error(*, monty, cpython):
+    return monty if is_monty else cpython
+
+
 # === Constants ===
 assert (csv.QUOTE_MINIMAL, csv.QUOTE_ALL, csv.QUOTE_NONNUMERIC, csv.QUOTE_NONE) == (0, 1, 2, 3)
 assert (csv.QUOTE_STRINGS, csv.QUOTE_NOTNULL) == (4, 5)
@@ -47,10 +52,31 @@ except AttributeError as exc:
     assert str(exc) == "'_csv.Dialect' object has no attribute 'nope'"
 assert csv.get_dialect(name='unix').quoting == csv.QUOTE_ALL
 for args, kwargs, message in (
-    ((), {}, "get_dialect() missing required argument 'name' (pos 1)"),
+    (
+        (),
+        {},
+        expected_error(
+            monty="get_dialect() missing 1 required positional argument: 'name'",
+            cpython="get_dialect() missing required argument 'name' (pos 1)",
+        ),
+    ),
     ((1, 2), {}, 'get_dialect() takes at most 1 argument (2 given)'),
-    ((), {'nope': 1}, "get_dialect() missing required argument 'name' (pos 1)"),
-    (('excel',), {'name': 'excel'}, 'get_dialect() takes at most 1 argument (2 given)'),
+    (
+        (),
+        {'nope': 1},
+        expected_error(
+            monty="get_dialect() got an unexpected keyword argument 'nope'",
+            cpython="get_dialect() missing required argument 'name' (pos 1)",
+        ),
+    ),
+    (
+        ('excel',),
+        {'name': 'excel'},
+        expected_error(
+            monty="get_dialect() got multiple values for argument 'name'",
+            cpython='get_dialect() takes at most 1 argument (2 given)',
+        ),
+    ),
 ):
     try:
         csv.get_dialect(*args, **kwargs)

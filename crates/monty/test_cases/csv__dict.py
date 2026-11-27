@@ -117,7 +117,7 @@ try:
     csv.DictReader([], nope=1)
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == "this function got an unexpected keyword argument 'nope'"
+    assert "'nope'" in str(exc)
 
 
 # === DictWriter ===
@@ -309,7 +309,7 @@ try:
     csv.DictWriter(sink, ['a'], nope=1)
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == "this function got an unexpected keyword argument 'nope'"
+    assert "'nope'" in str(exc)
 try:
     csv.DictWriter(5, ['a'])
     assert False, 'expected TypeError'

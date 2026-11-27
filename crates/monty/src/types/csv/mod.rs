@@ -299,6 +299,6 @@ impl<'heap> PyAttrs<'heap> for PyCsvDictWriterImpl {
         args: ArgValues,
         vm: &mut VM<'h>,
     ) -> RunResult<CallResult> {
-        dict::writer_writeheader(this, args, vm)
+        dict::writer_writeheader(this, vm, args)
     }
 }

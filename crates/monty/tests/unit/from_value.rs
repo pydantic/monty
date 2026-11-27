@@ -3,7 +3,7 @@ use num_bigint::BigInt;
 
 use super::*;
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::{ArgValues, FromArgs, KwargsValues},
     bytecode::VM,
     heap::{Heap, HeapData, HeapReader},
     intern::{CompileInterns, Interns},
@@ -399,5 +399,145 @@ fn from_args_vm_field_and_block_default() {
         assert_eq!(parsed.vm, 10);
         assert_eq!(parsed.other, 20);
         assert_eq!(parsed.extra, 7);
+    });
+}
+
+#[monty_macros::py_signature("f(*, _replace=None)")]
+fn underscored_keyword(vm: &mut VM<'_>, params: &FArgs) -> RunResult<i64> {
+    params._replace.as_int(vm)
+}
+
+#[test]
+fn native_signature_matches_the_exact_keyword() {
+    with_test_vm(|vm| {
+        for (name, expected) in [("_replace", Some(1)), ("replace", None)] {
+            let key = allocate_string(name.to_owned(), vm.heap);
+            let kwargs = KwargsValues::Pairs(vec![(key, Value::Int(1))]);
+            assert_eq!(
+                underscored_keyword(vm, ArgValues::Kwargs(kwargs)).ok(),
+                expected,
+                "{name}"
+            );
+        }
+    });
+}
+
+#[monty_macros::py_signature("scale(value=1.5, /)")]
+fn raw_float_default(vm: &mut VM<'_>, params: &ScaleArgs) -> RunResult<Value> {
+    Ok(params.value.clone_with_heap(vm))
+}
+
+#[test]
+fn unannotated_float_default_keeps_supplied_values_unconverted() {
+    with_test_vm(|vm| {
+        assert!(matches!(
+            raw_float_default(vm, ArgValues::Empty).unwrap(),
+            Value::Float(1.5)
+        ));
+        let value = raw_float_default(vm, ArgValues::One(Value::None)).unwrap();
+        assert!(matches!(value, Value::None));
+    });
+}
+
+#[test]
+fn full_width_signature_defaults_and_omissions() {
+    #[monty_macros::py_signature("wide(x: int=-0x1_0000_0000_0000_0000, index: SupportsIndex=..., /)")]
+    struct WideArgs;
+
+    with_test_vm(|vm| {
+        let wide = -(BigInt::from(1) << 64_u8);
+        let defaults = WideArgs::from_args(ArgValues::Empty, vm).unwrap();
+        assert_eq!(defaults.x.0.as_long_int(vm), Some(&wide));
+        assert!(defaults.index.is_none());
+
+        defaults.drop_with(vm);
+        let input = LongInt::new(wide).into_value(vm.heap);
+        let Value::Ref(id) = input else {
+            panic!("expected heap integer")
+        };
+        let supplied = WideArgs::from_args(ArgValues::Two(Value::Bool(true), input), vm).unwrap();
+        assert!(matches!(supplied.x.0, Value::Int(1)));
+        assert!(matches!(supplied.index.as_ref().unwrap().0, Value::Ref(actual) if actual == id));
+        supplied.drop_with(vm);
+    });
+}
+
+#[test]
+fn optional_bool_distinguishes_omission_from_false() {
+    #[monty_macros::py_signature("flag(enabled: bool=..., /)")]
+    struct FlagArgs;
+    with_test_vm(|vm| {
+        for (arg, expected) in [
+            (None, None),
+            (Some(Value::None), Some(false)),
+            (Some(Value::Int(1)), Some(true)),
+        ] {
+            let args = arg.map_or(ArgValues::Empty, ArgValues::One);
+            let bound = FlagArgs::from_args(args, vm).unwrap();
+            assert_eq!(bound.enabled.map(LaxBool::bool), expected);
+        }
+    });
+}
+
+#[cfg(feature = "ref-count-return")]
+#[test]
+fn borrowed_one_arg_adapter_releases_heap_strings_on_return() {
+    const TEXT: &str = "heap-backed argument that exceeds inline storage";
+    #[monty_macros::py_signature("check(text: str | None, /)")]
+    fn check(vm: &mut VM<'_>, params: &CheckArgs) -> RunResult<bool> {
+        if let Some(text) = &params.text {
+            assert_eq!(text.as_str(vm), TEXT);
+            return Err(ExcType::type_error("body failed"));
+        }
+        Ok(true)
+    }
+
+    with_test_vm(|vm| {
+        assert!(check(vm, ArgValues::One(Value::None)).unwrap());
+        let text = allocate_string(TEXT, vm.heap);
+        let Value::Ref(id) = text else {
+            panic!("expected heap string")
+        };
+        let arg = text.clone_with_heap(vm);
+        assert!(check(vm, ArgValues::One(arg)).is_err());
+        assert_eq!(vm.heap.get_refcount(id), 1);
+        text.drop_with(vm);
+    });
+}
+
+#[cfg(feature = "ref-count-return")]
+#[test]
+fn taking_all_after_one_field_transfers_the_remaining_reference() {
+    #[monty_macros::py_signature("transfer(first, second, /)")]
+    fn transfer(vm: &mut VM<'_>, params: &mut TransferArgs) -> RunResult<Value> {
+        params.first.take().drop_with(vm);
+        let TransferArgsFields { first, second } = params.take_all();
+        assert!(matches!(first, Value::None));
+        Ok(second)
+    }
+
+    with_test_vm(|vm| {
+        let value = Value::allocate(Bytes::new(vec![42]), vm.heap);
+        let Value::Ref(id) = value else {
+            panic!("expected heap bytes")
+        };
+        let args = ArgValues::Two(value.clone_with_heap(vm), value.clone_with_heap(vm));
+        let result = transfer(vm, args).unwrap();
+        assert!(matches!(result, Value::Ref(actual) if actual == id));
+        assert_eq!(vm.heap.get_refcount(id), 2);
+        result.drop_with(vm);
+        assert_eq!(vm.heap.get_refcount(id), 1);
+        value.drop_with(vm);
+    });
+}
+
+#[test]
+fn signed_integer_defaults_include_both_endpoints() {
+    #[monty_macros::py_signature("bounds(low: i64=-9223372036854775808, high: i64=9223372036854775807, /)")]
+    struct Bounds;
+
+    with_test_vm(|vm| {
+        let bounds = Bounds::from_args(ArgValues::Empty, vm).unwrap();
+        assert_eq!((bounds.low, bounds.high), (i64::MIN, i64::MAX));
     });
 }

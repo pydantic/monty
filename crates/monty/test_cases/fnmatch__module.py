@@ -1,5 +1,11 @@
 import fnmatch
 from pathlib import Path
+import sys
+
+
+def expected_error(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
 
 # === fnmatch() and fnmatchcase() ===
 # the sandbox's os.path is posixpath, so both are case-sensitive on both interpreters
@@ -142,7 +148,13 @@ for _call, _msg in [
     (lambda: fnmatch.translate(1), "object of type 'int' has no len()"),
     (lambda: fnmatch.translate(b'*'), 'decoding to str: need a bytes-like object, int found'),
     (lambda: fnmatch.fnmatch('a'), "fnmatch() missing 1 required positional argument: 'pat'"),
-    (lambda: fnmatch.fnmatch('a', '*', 1), 'fnmatch() takes 2 positional arguments but 3 were given'),
+    (
+        lambda: fnmatch.fnmatch('a', '*', 1),
+        expected_error(
+            monty='fnmatch() takes at most 2 arguments (3 given)',
+            cpython='fnmatch() takes 2 positional arguments but 3 were given',
+        ),
+    ),
     (lambda: fnmatch.fnmatch('x', foo='*'), "fnmatch() got an unexpected keyword argument 'foo'"),
 ]:
     try:

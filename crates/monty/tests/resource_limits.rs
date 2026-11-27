@@ -945,6 +945,23 @@ fn memory_preflight_in_sorted_list_and_tuple_copy() {
     assert_eq!(exc.exc_type(), ExcType::MemoryError);
 }
 
+#[test]
+fn enumerate_preflights_wide_indices() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run("start = 1 << 32_768\nitems = [[]]", vec![], PrintWriter::Stdout)
+        .expect("prepare a wide index and a heap-backed item");
+
+    *repl.tracker_mut() = ResourceTracker::new(ResourceLimits::default().max_memory(2_048));
+    let error = repl
+        .feed_run("enumerate(items, start)", vec![], PrintWriter::Stdout)
+        .expect_err("enumerate must preflight the wide index");
+    assert_eq!(error.exc_type(), ExcType::MemoryError);
+
+    *repl.tracker_mut() = ResourceTracker::default();
+    let value = repl.feed_run("items[0] == []", vec![], PrintWriter::Stdout).unwrap();
+    assert_eq!(value, MontyObject::bool(true));
+}
+
 /// Test that `min(range(huge))` respects the time limit.
 ///
 /// `min()` with a single iterable argument iterates via `for_next()`.

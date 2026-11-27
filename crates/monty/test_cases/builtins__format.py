@@ -1,4 +1,8 @@
 # === Basic values ===
+import sys
+
+
+is_monty = sys.platform == 'monty'
 assert format(3) == '3'
 assert format(3, '') == '3'
 assert format(12.5, '>8.1f') == '    12.5'
@@ -28,13 +32,19 @@ try:
     format()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'format expected at least 1 argument, got 0'
+    if is_monty:
+        assert str(e) == "format() missing 1 required positional argument: 'value'"
+    else:
+        assert str(e) == 'format expected at least 1 argument, got 0'
 
 try:
     format(1, '', 3)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'format expected at most 2 arguments, got 3'
+    if is_monty:
+        assert str(e) == 'format() takes at most 2 arguments (3 given)'
+    else:
+        assert str(e) == 'format expected at most 2 arguments, got 3'
 
 try:
     format(1, 2)
@@ -58,7 +68,10 @@ try:
     format(1, format_spec='d')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'format() takes no keyword arguments'
+    if is_monty:
+        assert str(e) == "format() got some positional-only arguments passed as keyword arguments: 'format_spec'"
+    else:
+        assert str(e) == 'format() takes no keyword arguments'
 
 try:
     format('x', 'd')

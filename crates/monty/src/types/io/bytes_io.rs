@@ -6,12 +6,12 @@
 
 use std::{fmt::Write, ops::Range};
 
-use monty_macros::pyattrs;
+use monty_macros::{py_signature, pyattrs};
 use serde::{Deserialize, Serialize};
 
 use super::{buffer_growth, non_negative, optional_size, position_value, seek_args, unsupported_no_args};
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
@@ -40,12 +40,8 @@ pub(crate) struct BytesIo {
 }
 
 /// `BytesIO(initial_bytes=b'')`.
-#[derive(FromArgs)]
-#[from_args(name = "BytesIO", style = c_named, at_most_total)]
-struct BytesIoArgs {
-    #[from_args(default = Value::None)]
-    initial_bytes: Value,
-}
+#[py_signature("BytesIO(initial_bytes=None)")]
+struct BytesIoArgs;
 
 impl BytesIo {
     /// The `io.BytesIO(initial_bytes=b'')` constructor; the position starts at 0.

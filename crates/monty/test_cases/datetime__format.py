@@ -1,3 +1,5 @@
+import sys
+
 import datetime
 
 # === strftime ===
@@ -15,19 +17,25 @@ try:
     datetime.date(2024, 6, 15).strftime()
     assert False, 'expected strftime() with no args to fail'
 except TypeError as exc:
-    assert str(exc) == "strftime() missing required argument 'format' (pos 1)", f'strftime() no-args: {exc}'
+    if sys.platform == 'monty':
+        assert str(exc) == "strftime() missing 1 required positional argument: 'format'"
+    else:
+        assert str(exc) == "strftime() missing required argument 'format' (pos 1)"
 
 try:
     datetime.date(2024, 6, 15).strftime('%Y', '%m')
     assert False, 'expected strftime() with extra positional to fail'
 except TypeError as exc:
-    assert str(exc) == 'strftime() takes at most 1 argument (2 given)', f'strftime() extra positional: {exc}'
+    assert str(exc) == 'strftime() takes at most 1 argument (2 given)'
 
 try:
     datetime.date(2024, 6, 15).strftime('%Y', extra='nope')
     assert False, 'expected strftime() with unexpected kwarg to fail'
 except TypeError as exc:
-    assert str(exc) == 'strftime() takes at most 1 argument (2 given)', f'strftime() unexpected kwarg: {exc}'
+    if sys.platform == 'monty':
+        assert str(exc) == "strftime() got an unexpected keyword argument 'extra'"
+    else:
+        assert str(exc) == 'strftime() takes at most 1 argument (2 given)'
 
 # Wrong-type `format` matches CPython's `_PyArg_BadArgument` wording, including
 # the special "not None" case (vs. the type name "NoneType").

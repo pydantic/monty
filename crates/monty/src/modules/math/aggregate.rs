@@ -6,11 +6,11 @@
 
 use std::mem;
 
+use monty_macros::py_signature;
 use smallvec::SmallVec;
 
 use super::value_to_float;
 use crate::{
-    args::{ArgValues, FromArgs},
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
@@ -19,44 +19,24 @@ use crate::{
     value::Value,
 };
 
-/// Coordinates remain owned until all conversions have succeeded.
-#[derive(FromArgs)]
-#[from_args(name = "hypot")]
-struct HypotArgs {
-    #[from_args(varargs)]
-    coordinates: Vec<Value>,
-}
-
 /// Computes a norm without overflowing intermediate squares.
-pub(super) fn hypot(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let args = args.reject_kwargs("math.hypot", vm.heap)?;
-    let HypotArgs { coordinates } = HypotArgs::from_args(args, vm)?;
-    defer_drop!(coordinates, vm);
-    let mut values = coordinates
+#[py_signature("hypot(*coordinates)", error_name = "math.hypot")]
+pub(super) fn hypot(vm: &mut VM<'_>, params: &HypotArgs) -> RunResult<Value> {
+    let mut values = params
+        .coordinates
+        .as_slice()
         .iter()
         .map(|value| value_to_float(value, vm).map(f64::abs))
         .collect::<RunResult<SmallVec<[f64; 16]>>>()?;
     Ok(Value::Float(vector_norm(&mut values)))
 }
 
-/// Positional-only points; CPython qualifies only the keyword error.
-#[derive(FromArgs)]
-#[from_args(name = "dist", style = unpack, kwarg_error_name = "math.dist")]
-struct DistArgs {
-    #[from_args(pos_only)]
-    p: Value,
-    #[from_args(pos_only)]
-    q: Value,
-}
-
 /// Collects both points before checking dimensions and converting coordinates.
-pub(super) fn dist(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let DistArgs { p, q } = DistArgs::from_args(args, vm)?;
+#[py_signature("dist(p, q, /)", kwarg_error_name = "math.dist")]
+pub(super) fn dist(vm: &mut VM<'_>, params: &DistArgs) -> RunResult<Value> {
+    let p = collect_iterable(&params.p, vm)?;
     defer_drop!(p, vm);
-    defer_drop!(q, vm);
-    let p = collect_iterable(p, vm)?;
-    defer_drop!(p, vm);
-    let q = collect_iterable(q, vm)?;
+    let q = collect_iterable(&params.q, vm)?;
     defer_drop!(q, vm);
     if p.len() != q.len() {
         return Err(SimpleException::new_msg(
@@ -136,10 +116,9 @@ fn two_product(a: f64, b: f64) -> (f64, f64) {
 }
 
 /// Sums non-overlapping partials, preserving cancellation and half-even rounding.
-pub(crate) fn fsum(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let args = args.reject_kwargs("math.fsum", vm.heap)?;
-    let iterable = args.get_one_arg("math.fsum", vm.heap)?;
-    let iterator = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
+#[py_signature("fsum(seq, /)", error_name = "math.fsum", reject_keywords)]
+pub(crate) fn fsum(vm: &mut VM<'_>, params: &MathFsumArgs) -> RunResult<Value> {
+    let iterator = params.seq.py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(iterator, vm);
     let mut iterator = iterator.read(vm);
     let mut partials = SmallVec::<[f64; 32]>::new();
@@ -218,19 +197,10 @@ fn round_partials(partials: &mut SmallVec<[f64; 32]>) -> f64 {
     hi
 }
 
-/// `start` is keyword-only and is returned unchanged for an empty iterable.
-#[derive(FromArgs)]
-#[from_args(name = "prod", style = c_named, at_most_total)]
-struct ProdArgs {
-    #[from_args(pos_only)]
-    iterable: Value,
-    #[from_args(kw_only, default = Value::Int(1))]
-    start: Value,
-}
-
 /// Multiplies through Python's numeric protocol, retaining arbitrary-size integer results.
-pub(super) fn prod(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let ProdArgs { iterable, start } = ProdArgs::from_args(args, vm)?;
+#[py_signature("prod(iterable, /, *, start=1)")]
+pub(super) fn prod(vm: &mut VM<'_>, params: &mut ProdArgs) -> RunResult<Value> {
+    let ProdArgsFields { iterable, start } = params.take_all();
     let mut result = DropGuard::new(start, vm);
     {
         let (total, vm) = result.as_parts_mut();
@@ -278,24 +248,12 @@ impl Triple {
     }
 }
 
-/// Dot-product inputs are advanced in pairs, with strict length checking.
-#[derive(FromArgs)]
-#[from_args(name = "sumprod", style = unpack, kwarg_error_name = "math.sumprod")]
-struct SumprodArgs {
-    #[from_args(pos_only)]
-    p: Value,
-    #[from_args(pos_only)]
-    q: Value,
-}
-
 /// Uses exact integer arithmetic and compensated float products before generic arithmetic.
-pub(crate) fn sumprod(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let SumprodArgs { p, q } = SumprodArgs::from_args(args, vm)?;
+#[py_signature("sumprod(p, q, /)", kwarg_error_name = "math.sumprod")]
+pub(crate) fn sumprod(vm: &mut VM<'_>, params: &SumprodArgs) -> RunResult<Value> {
+    let p = params.p.py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(p, vm);
-    defer_drop!(q, vm);
-    let p = p.py_iter(vm)?.require_synchronous(vm)?;
-    defer_drop!(p, vm);
-    let q = q.py_iter(vm)?.require_synchronous(vm)?;
+    let q = params.q.py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(q, vm);
     let mut p = p.read(vm);
     let mut q = q.read(vm);
@@ -383,31 +341,13 @@ fn add(a: &Value, b: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
     }
 }
 
-/// Three positional real numbers, converted in declaration order.
-#[derive(FromArgs)]
-#[from_args(name = "fma", style = unpack, kwarg_error_name = "math.fma")]
-struct FmaArgs {
-    #[from_args(pos_only)]
-    x: Value,
-    #[from_args(pos_only)]
-    y: Value,
-    #[from_args(pos_only)]
-    z: Value,
-}
-
 /// Performs one rounding and raises CPython's errors for invalid operations and overflow.
-pub(super) fn fma(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let FmaArgs { x, y, z } = FmaArgs::from_args(args, vm)?;
-    defer_drop!(x, vm);
-    defer_drop!(y, vm);
-    defer_drop!(z, vm);
-    let x = value_to_float(x, vm)?;
-    let y = value_to_float(y, vm)?;
-    let z = value_to_float(z, vm)?;
-    let result = x.mul_add(y, z);
-    if result.is_nan() && !x.is_nan() && !y.is_nan() && !z.is_nan() {
+#[py_signature("fma(x: float, y: float, z: float, /)", kwarg_error_name = "math.fma")]
+pub(super) fn fma(vm: &mut VM<'_>, params: &FmaArgs) -> RunResult<Value> {
+    let result = params.x.mul_add(params.y, params.z);
+    if result.is_nan() && !params.x.is_nan() && !params.y.is_nan() && !params.z.is_nan() {
         Err(SimpleException::new_msg(ExcType::ValueError, "invalid operation in fma").into())
-    } else if result.is_infinite() && x.is_finite() && y.is_finite() && z.is_finite() {
+    } else if result.is_infinite() && params.x.is_finite() && params.y.is_finite() && params.z.is_finite() {
         Err(SimpleException::new_msg(ExcType::OverflowError, "overflow in fma").into())
     } else {
         Ok(Value::Float(result))

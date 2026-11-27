@@ -8,8 +8,10 @@
 //! CPython's `FileIO`, `BufferedRWPair`, `IncrementalNewlineDecoder` and the
 //! `_IOBase` classes are absent.
 
+use monty_macros::py_signature;
+
 use crate::{
-    args::{ArgValues, FromArgs, StrArg},
+    args::ArgValues,
     builtins::{Builtins, BuiltinsFunctions, open::builtin_open},
     bytecode::{CallResult, VM},
     defer_drop,
@@ -69,11 +71,8 @@ pub(super) fn call(vm: &mut VM<'_>, function: IoFunctions, args: ArgValues) -> R
 }
 
 /// `open_code(path)`.
-#[derive(FromArgs)]
-#[from_args(name = "open_code", style = c_named, bad_arg_named)]
-struct OpenCodeArgs {
-    path: StrArg,
-}
+#[py_signature("open_code(path: str)", bad_arg_named)]
+struct OpenCodeArgs;
 
 /// `_io.open_code(path)`: `open(path, 'rb')` for a `str` path, as CPython's
 /// default hook does.

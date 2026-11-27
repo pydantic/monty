@@ -20,7 +20,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use smallvec::SmallVec;
 
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
@@ -580,49 +580,19 @@ impl HeapItem for RePattern {
     }
 }
 
-/// Argument shape for `Pattern.sub(repl, string, count=0)`.
-///
-/// `string` uses `static_string = "StringAttr"` because `StringAttr` is the
-/// `StaticStrings` entry that interns `"string"` (the bare `String` variant
-/// is taken by the `re.Pattern.string` attribute name in CPython's class
-/// hierarchy).
-#[derive(FromArgs)]
-#[from_args(name = "sub", style = c_named, at_most_total)]
-struct PatternSubArgs {
-    repl: Value,
-    #[from_args(static_string = "StringAttr")]
-    string: Value,
-    #[from_args(default)]
-    count: Option<Value>,
-}
-
-/// Argument shape for `Pattern.split(string, maxsplit=0)`.
-///
-/// See `PatternSubArgs` for why `string` uses `static_string`.
-#[derive(FromArgs)]
-#[from_args(name = "split", style = c_named, at_most_total)]
-struct PatternSplitArgs {
-    #[from_args(static_string = "StringAttr")]
-    string: Value,
-    #[from_args(default)]
-    maxsplit: Option<Value>,
-}
-
 /// Extracts a `maxsplit` value from an optional `Value` for [`RePattern::split`].
 ///
 /// Returns 0 (split all) if not provided; negatives pass through — the split
 /// loop then runs zero times, matching CPython. Non-ints get CPython's
 /// argument-clinic message. Shared by `Pattern.split` and module-level
 /// `re.split`.
-pub(crate) fn extract_maxsplit(val: Option<Value>, vm: &mut VM<'_>) -> RunResult<i64> {
+pub(crate) fn extract_maxsplit(val: Option<&Value>, vm: &VM<'_>) -> RunResult<i64> {
     match val {
         None => Ok(0),
-        Some(Value::Int(n)) => Ok(n),
-        Some(Value::Bool(b)) => Ok(i64::from(b)),
+        Some(Value::Int(n)) => Ok(*n),
+        Some(Value::Bool(b)) => Ok(i64::from(*b)),
         Some(other) => {
             let t = other.py_type_name(vm);
-            other.drop_with(vm);
-
             Err(ExcType::type_error(format!(
                 "'{t}' object cannot be interpreted as an integer"
             )))
@@ -636,19 +606,17 @@ pub(crate) fn extract_maxsplit(val: Option<Value>, vm: &mut VM<'_>) -> RunResult
 /// the subject unchanged" (CPython's match loop runs zero times there).
 /// Non-ints get CPython's argument-clinic message. Shared by `Pattern.sub`
 /// and module-level `re.sub`.
-pub(crate) fn extract_count(val: Option<Value>, vm: &mut VM<'_>) -> RunResult<Option<usize>> {
+pub(crate) fn extract_count(val: Option<&Value>, vm: &VM<'_>) -> RunResult<Option<usize>> {
     match val {
         None => Ok(Some(0)),
         // Saturate rather than `as`-cast: on 32-bit targets (wasm) a count
         // above usize::MAX would otherwise truncate — e.g. 2**32 to 0, which
         // means "replace all" instead of an unreachably large cap.
-        Some(Value::Int(n)) if n >= 0 => Ok(Some(usize::try_from(n).unwrap_or(usize::MAX))),
-        Some(Value::Bool(b)) => Ok(Some(usize::from(b))),
+        Some(Value::Int(n)) if *n >= 0 => Ok(Some(usize::try_from(*n).unwrap_or(usize::MAX))),
+        Some(Value::Bool(b)) => Ok(Some(usize::from(*b))),
         Some(Value::Int(_)) => Ok(None),
         Some(other) => {
             let t = other.py_type_name(vm);
-            other.drop_with(vm);
-
             Err(ExcType::type_error(format!(
                 "'{t}' object cannot be interpreted as an integer"
             )))
@@ -916,23 +884,15 @@ impl<'heap> PyAttrs<'heap> for PyRePatternImpl {
     /// Handles `pattern.sub(repl, string, count=0)` argument extraction and dispatch.
     ///
     /// Supports `count` as either positional or keyword argument.
-    #[pymethod(Sub)]
-    fn sub<'h>(pattern: &HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let PatternSubArgs {
-            repl: repl_val,
-            string: string_val,
-            count: count_val,
-        } = PatternSubArgs::from_args(args, vm)?;
-        defer_drop!(repl_val, vm);
-        defer_drop!(string_val, vm);
-
-        let count = extract_count(count_val, vm)?;
+    #[pymethod(Sub, "sub(repl, string, count=...)")]
+    fn sub<'h>(pattern: &HeapRead<'h, RePattern>, params: &PatternSubArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+        let count = extract_count(params.count.as_ref(), vm)?;
 
         // Check that repl is a string — callable replacement is not supported.
         // CPython processes the replacement template *before* its match loop, so
         // this check must precede the negative-count early return below: a bad
         // repl raises even when zero substitutions will run.
-        let Ok(repl) = repl_val.try_as_str(vm) else {
+        let Ok(repl) = params.repl.try_as_str(vm) else {
             return Err(ExcType::type_error(
                 "callable replacement is not yet supported in re.sub()",
             ));
@@ -941,30 +901,24 @@ impl<'heap> PyAttrs<'heap> for PyRePatternImpl {
             // Validate octal escapes even when the negative count skips matching.
             translate_replacement(repl)?;
             // Negative count — Pattern.sub returns the input string unchanged.
-            // The subject is still type-checked (`to_str` raises this method's
+            // The subject is still type-checked (`try_as_str` raises this method's
             // `expected string, not {t}` wording) before the refcount bump; no
             // need to re-allocate.
-            let _ = string_val.try_as_str(vm)?;
-            return Ok(string_val.clone_with_heap(vm.heap));
+            let _ = params.string.try_as_str(vm)?;
+            return Ok(params.string.clone_with_heap(vm.heap));
         };
 
-        let text = string_val.try_as_str(vm)?;
+        let text = params.string.try_as_str(vm)?;
         pattern.get(vm.heap).sub(repl, text, count, vm.heap)
     }
 
     /// Handles `pattern.split(string, maxsplit=0)` argument extraction and dispatch.
     ///
     /// Supports `maxsplit` as either positional or keyword argument.
-    #[pymethod(Split)]
-    fn split<'h>(pattern: &HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let PatternSplitArgs {
-            string: string_val,
-            maxsplit: maxsplit_val,
-        } = PatternSplitArgs::from_args(args, vm)?;
-        defer_drop!(string_val, vm);
-
-        let maxsplit = extract_maxsplit(maxsplit_val, vm)?;
-        let text = string_val.try_as_str(vm)?.to_owned();
+    #[pymethod(Split, "split(string, maxsplit=...)")]
+    fn split<'h>(pattern: &HeapRead<'h, RePattern>, params: &PatternSplitArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+        let maxsplit = extract_maxsplit(params.maxsplit.as_ref(), vm)?;
+        let text = params.string.try_as_str(vm)?.to_owned();
         pattern.get(vm.heap).split(&text, maxsplit, vm.heap)
     }
 

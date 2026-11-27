@@ -9,12 +9,11 @@ use std::{
     hash::{Hash, Hasher},
 };
 
+use monty_macros::py_signature;
 use num_integer::div_ceil;
 
 use crate::{
-    args::ArgValues,
     bytecode::{CallResult, VM},
-    defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
     heap::{Heap, HeapId, HeapItem, HeapObjectRead},
@@ -116,31 +115,22 @@ impl Range {
     /// - `range(stop)` - range from 0 to stop
     /// - `range(start, stop)` - range from start to stop
     /// - `range(start, stop, step)` - range with custom step
-    pub fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-        let pos_args = args.into_pos_only("range", vm.heap)?;
-        defer_drop!(pos_args, vm);
-
-        let range = match pos_args.as_slice() {
-            [] => return Err(ExcType::type_error_at_least("range", 1, 0)),
-            [first_arg] => {
-                let stop = first_arg.as_int(vm)?;
-                Self::from_stop(stop)
-            }
-            [first_arg, second_arg] => {
-                let start = first_arg.as_int(vm)?;
-                let stop = second_arg.as_int(vm)?;
-                Self::from_start_stop(start, stop)
-            }
-            [first_arg, second_arg, third_arg] => {
-                let start = first_arg.as_int(vm)?;
-                let stop = second_arg.as_int(vm)?;
-                let step = third_arg.as_int(vm)?;
+    #[py_signature("range(start, stop=..., step=..., /)")]
+    pub fn init(vm: &mut VM<'_>, params: &RangeArgs) -> RunResult<Value> {
+        let first = params.start.as_int(vm)?;
+        let range = if let Some(stop) = &params.stop {
+            let stop = stop.as_int(vm)?;
+            if let Some(step) = &params.step {
+                let step = step.as_int(vm)?;
                 if step == 0 {
                     return Err(ExcType::value_error_range_step_zero());
                 }
-                Self::new(start, stop, step)
+                Self::new(first, stop, step)
+            } else {
+                Self::from_start_stop(first, stop)
             }
-            _ => return Err(ExcType::type_error_at_most("range", 3, pos_args.len())),
+        } else {
+            Self::from_stop(first)
         };
 
         Ok(Value::allocate(range, vm.heap))

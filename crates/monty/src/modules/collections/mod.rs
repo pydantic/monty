@@ -22,11 +22,12 @@ pub(crate) mod defaultdict;
 
 use std::iter::once;
 
+use monty_macros::py_signature;
 use ruff_python_stdlib::keyword::is_keyword;
 
 use self::counter::counter_update;
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     builtins::Builtins,
     bytecode::VM,
     defer_drop, defer_drop_mut,
@@ -89,25 +90,12 @@ pub(super) fn call(vm: &mut VM<'_>, function: CollectionsFunctions, args: ArgVal
 ///
 /// Reached via [`Type::call`](crate::types::Type::call) — `collections.Counter`
 /// is exposed as the type object, so `type(c) is Counter` holds.
-pub(crate) fn counter_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let (mut pos, kwargs) = args.into_parts();
-    let total = pos.len();
-    let source = (total > 0).then(|| pos.next().expect("len checked"));
-
-    // Counter accepts at most one positional (the iterable/mapping).
-    if total > 1 {
-        source.drop_with(vm);
-        pos.drop_with(vm);
-        kwargs.drop_with(vm);
-        return Err(ExcType::type_error_too_many_positional_range(
-            "Counter.__init__",
-            1,
-            2,
-            total + 1,
-            0,
-        ));
-    }
-
+#[py_signature("__init__(self, iterable=..., /, **kwargs)", owner = "Counter")]
+pub(crate) fn counter_init(vm: &mut VM<'_>, params: &mut CounterInitArgs) -> RunResult<Value> {
+    let CounterInitArgsFields {
+        iterable: source,
+        kwargs,
+    } = params.take_all();
     let mut dict = Dict::new();
     dict.make_counter();
     let mut counter = DropGuard::new(vm.heap.allocate_as(dict), vm);
@@ -123,16 +111,19 @@ pub(crate) fn counter_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>
 ///
 /// Reached via [`Type::call`](crate::types::Type::call) — `collections.defaultdict`
 /// is exposed as the type object, so `type(d) is defaultdict` holds.
-pub(crate) fn defaultdict_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let (mut pos, kwargs) = args.into_parts();
-    let factory_arg = (pos.len() > 0).then(|| pos.next().expect("len checked"));
-
+#[py_signature("defaultdict(default_factory=..., /, *args, **kwargs)")]
+pub(crate) fn defaultdict_init(vm: &mut VM<'_>, params: &mut DefaultdictArgs) -> RunResult<Value> {
+    let DefaultdictArgsFields {
+        default_factory: factory_arg,
+        args,
+        kwargs,
+    } = params.take_all();
     let factory = match factory_arg {
         None | Some(Value::None) => None,
         Some(value) if value.is_callable(vm) => Some(value),
         Some(value) => {
             value.drop_with(vm);
-            pos.drop_with(vm);
+            args.drop_with(vm);
             kwargs.drop_with(vm);
             return Err(ExcType::defaultdict_factory_not_callable());
         }
@@ -140,12 +131,7 @@ pub(crate) fn defaultdict_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Va
 
     // Everything after the factory initialises the dict via the normal `dict`
     // constructor, so `defaultdict`'s init errors match `dict`'s.
-    let rest: Vec<Value> = pos.collect();
-    let rest_args = if rest.is_empty() && kwargs.is_empty() {
-        ArgValues::Empty
-    } else {
-        ArgValues::ArgsKargs { args: rest, kwargs }
-    };
+    let rest_args = ArgValues::from_parts(args, kwargs);
     let dict_value = match Dict::init(vm, rest_args) {
         Ok(value) => value,
         Err(e) => {
@@ -163,67 +149,41 @@ pub(crate) fn defaultdict_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Va
     Ok(dict_value)
 }
 
-/// Arguments for `collections.namedtuple`.
-///
-/// CPython's `namedtuple` is a pure-Python `def`, so fields stay raw `Value`
-/// (`def` binding never type-checks) and coercion happens in the body.
-#[derive(FromArgs)]
-#[from_args(name = "namedtuple", style = def)]
-struct NamedtupleArgs {
-    #[from_args(static_string = "Typename")]
-    typename: Value,
-    #[from_args(static_string = "FieldNames")]
-    field_names: Value,
-    #[from_args(kw_only, default = Value::Bool(false), static_string = "Rename")]
-    rename: Value,
-    #[from_args(kw_only, default = Value::None, static_string = "Defaults")]
-    defaults: Value,
-    #[from_args(kw_only, default = Value::None, static_string = "ModuleKwarg")]
-    module: Value,
-}
-
 /// The `collections.namedtuple(typename, field_names, *, rename, defaults,
 /// module)` factory. Validates the type/field names against CPython's rules
 /// and allocates a [`NamedTupleClass`].
 ///
 /// Divergence from CPython: non-string `typename`/`field_names` elements are not
 /// `str()`-coerced beyond what the checks below require.
-fn namedtuple(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let NamedtupleArgs {
-        typename,
-        field_names,
-        rename,
-        defaults,
-        module,
-    } = NamedtupleArgs::from_args(args, vm)?;
-    defer_drop!(typename, vm);
-    defer_drop!(field_names, vm);
-    defer_drop!(rename, vm);
-    defer_drop!(defaults, vm);
-    defer_drop!(module, vm);
-
+///
+/// Arguments for `collections.namedtuple`.
+///
+/// CPython's `namedtuple` is a pure-Python `def`, so fields stay raw `Value`
+/// (`def` binding never type-checks) and coercion happens in the body.
+#[py_signature("namedtuple(typename, field_names, *, rename=False, defaults=None, module=None)")]
+fn namedtuple(vm: &mut VM<'_>, params: &NamedtupleArgs) -> RunResult<Value> {
     // CPython applies `str(typename)` before validating, so any object whose
     // `__str__` yields a valid identifier is accepted. `validate_names` below
     // then rejects the non-identifier cases with CPython's own message.
-    let type_name = if let Some(name) = typename.as_either_str(vm.heap) {
+    let type_name = if let Some(name) = params.typename.as_either_str(vm.heap) {
         name
     } else {
-        let as_str = typename.py_str(vm)?;
+        let as_str = params.typename.py_str(vm)?;
         let owned = as_str.try_as_str(vm).map(str::to_owned);
         as_str.drop_with(vm);
         EitherStr::from(owned?)
     };
 
     // CPython tests `if rename:`, so any truthy value enables it — not just `True`.
-    let rename = rename.py_bool(vm)?;
-    let mut names = parse_field_names(field_names, vm)?;
+    let rename = params.rename.py_bool(vm)?;
+    let mut names = parse_field_names(&params.field_names, vm)?;
     if rename {
         apply_rename(&mut names);
     }
     validate_names(type_name.as_str(vm.interns), &names, rename)?;
 
     // Collect defaults (rightmost fields), then validate the count.
-    let default_values = collect_defaults(defaults, vm)?;
+    let default_values = collect_defaults(&params.defaults, vm)?;
     if default_values.len() > names.len() {
         default_values.drop_with(vm);
         return Err(ExcType::type_error("Got more default values than field names"));
@@ -231,7 +191,7 @@ fn namedtuple(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     // CPython substitutes the calling module's `__name__` for a `None` module, and
     // otherwise stores the argument unvalidated (it need not be a string).
-    let module = match module {
+    let module = match &params.module {
         Value::None => Value::InternString(vm.interns.intern_static(StaticStrings::DunderMain)),
         other => other.clone_with_heap(vm.heap),
     };

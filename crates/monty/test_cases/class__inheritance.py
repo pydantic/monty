@@ -1,4 +1,11 @@
 # Test deep inheritance
+import sys
+
+
+def expected_error(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
+
 class Grandparent:
     x = 1
 
@@ -932,10 +939,34 @@ check_error(
 check_error(lambda: issubclass(int, list[int]), 'issubclass() argument 2 cannot be a parameterized generic')
 check_error(lambda: issubclass(int, str | list[int]), 'issubclass() argument 2 cannot be a parameterized generic')
 assert issubclass(int, int | list[int])
-check_error(lambda: issubclass(), 'issubclass expected 2 arguments, got 0')
-check_error(lambda: issubclass(int), 'issubclass expected 2 arguments, got 1')
-check_error(lambda: issubclass(int, str, object), 'issubclass expected 2 arguments, got 3')
-check_error(lambda: issubclass(int, classinfo=int), 'issubclass() takes no keyword arguments')
+check_error(
+    lambda: issubclass(),
+    expected_error(
+        monty="issubclass() missing 2 required positional arguments: 'cls' and 'classinfo'",
+        cpython='issubclass expected 2 arguments, got 0',
+    ),
+)
+check_error(
+    lambda: issubclass(int),
+    expected_error(
+        monty="issubclass() missing 1 required positional argument: 'classinfo'",
+        cpython='issubclass expected 2 arguments, got 1',
+    ),
+)
+check_error(
+    lambda: issubclass(int, str, object),
+    expected_error(
+        monty='issubclass() takes at most 2 arguments (3 given)',
+        cpython='issubclass expected 2 arguments, got 3',
+    ),
+)
+check_error(
+    lambda: issubclass(int, classinfo=int),
+    expected_error(
+        monty="issubclass() got some positional-only arguments passed as keyword arguments: 'classinfo'",
+        cpython='issubclass() takes no keyword arguments',
+    ),
+)
 
 # === Stage 1.3: inherited __init_subclass__, __mro__ write guard, dynamic __annotations__, frozen dataclass ===
 hook_log = []

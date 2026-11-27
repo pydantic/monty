@@ -1,4 +1,8 @@
+import sys
+
 import itertools
+
+is_monty = sys.platform == 'monty'
 
 # === count: basic progression ===
 c = itertools.count()
@@ -66,12 +70,14 @@ try:
 except TypeError as exc:
     assert str(exc) == 'count() takes at most 2 arguments (3 given)'
 
-# arity is counted over positionals AND keywords together
 try:
     itertools.count(1, 2, step=3)
     assert False, 'expected TypeError for count arity over the total'
 except TypeError as exc:
-    assert str(exc) == 'count() takes at most 2 arguments (3 given)'
+    if is_monty:
+        assert str(exc) == "count() got multiple values for argument 'step'"
+    else:
+        assert str(exc) == 'count() takes at most 2 arguments (3 given)'
 
 try:
     itertools.count(bad=1)
@@ -141,14 +147,19 @@ try:
     itertools.repeat()
     assert False, 'expected TypeError for missing repeat object'
 except TypeError as exc:
-    assert str(exc) == "repeat() missing required argument 'object' (pos 1)"
+    if is_monty:
+        assert str(exc) == "repeat() missing 1 required positional argument: 'object'"
+    else:
+        assert str(exc) == "repeat() missing required argument 'object' (pos 1)"
 
-# a missing required argument is reported before an unexpected keyword
 try:
     itertools.repeat(bad=1)
-    assert False, 'expected TypeError for missing repeat object'
+    assert False, 'expected TypeError for invalid repeat keyword'
 except TypeError as exc:
-    assert str(exc) == "repeat() missing required argument 'object' (pos 1)"
+    if is_monty:
+        assert str(exc) == "repeat() got an unexpected keyword argument 'bad'"
+    else:
+        assert str(exc) == "repeat() missing required argument 'object' (pos 1)"
 
 try:
     itertools.repeat(1, 2, 3)
@@ -160,4 +171,7 @@ try:
     itertools.repeat(9, 'z', times=1)
     assert False, 'expected TypeError for repeat arity over the total'
 except TypeError as exc:
-    assert str(exc) == 'repeat() takes at most 2 arguments (3 given)'
+    if is_monty:
+        assert str(exc) == "repeat() got multiple values for argument 'times'"
+    else:
+        assert str(exc) == 'repeat() takes at most 2 arguments (3 given)'

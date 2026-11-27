@@ -1,10 +1,10 @@
 use std::{cmp::Ordering, collections::VecDeque, fmt::Write, mem};
 
-use monty_macros::pyattrs;
+use monty_macros::{py_signature, pyattrs};
 
 use super::{CmpOrder, PyTrait, iter::collect_owned_iterable};
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
@@ -29,52 +29,8 @@ use crate::{
 
 /// `deque([iterable[, maxlen]])` — both positional-or-keyword, both defaulted.
 /// See [`Deque::init`] for why the over-arity case is pre-checked instead.
-#[derive(FromArgs)]
-#[from_args(name = "deque")]
-struct DequeArgs {
-    // `Option` rather than a `Value::None` default: an explicit `None` iterable is
-    // a `TypeError` in CPython (`'NoneType' object is not iterable`), so "omitted"
-    // has to be distinguishable from a real `None`.
-    #[from_args(static_string = "IterableArg", default)]
-    iterable: Option<Value>,
-    #[from_args(default = Value::None)]
-    maxlen: Value,
-}
-
-/// `deque.rotate([n])` — `PyArg_UnpackTuple`, so the arity error is
-/// `rotate expected at most 1 argument, got 2` (no type name).
-#[derive(FromArgs)]
-#[from_args(name = "rotate", style = unpack)]
-struct RotateArgs {
-    #[from_args(pos_only, default = Value::Int(1))]
-    n: Value,
-}
-
-/// `deque.insert(i, x)` — `PyArg_UnpackTuple` with a fixed arity, so the error is
-/// `insert expected 2 arguments, got 1`.
-#[derive(FromArgs)]
-#[from_args(name = "insert", style = unpack)]
-struct InsertArgs {
-    #[from_args(pos_only)]
-    index: Value,
-    #[from_args(pos_only)]
-    item: Value,
-}
-
-/// `deque.index(x[, start[, stop]])` — `PyArg_UnpackTuple` with `min < max`, so a
-/// missing `x` reports `index expected at least 1 argument, got 0`.
-#[derive(FromArgs)]
-#[from_args(name = "index", style = unpack)]
-struct IndexArgs {
-    #[from_args(pos_only)]
-    value: Value,
-    // `Option` rather than a `Value::None` default: an explicit `None` bound is an
-    // error in CPython, so "omitted" has to be distinguishable from a real `None`.
-    #[from_args(pos_only, default)]
-    start: Option<Value>,
-    #[from_args(pos_only, default)]
-    stop: Option<Value>,
-}
+#[py_signature("deque(iterable=..., maxlen=None)")]
+struct DequeArgs;
 
 /// Python's `collections.deque`: a double-ended queue backed by a [`VecDeque`].
 ///
@@ -1062,16 +1018,14 @@ impl<'heap> PyAttrs<'heap> for PyDequeImpl {
         }
     }
 
-    #[pymethod(Rotate)]
     /// `deque.rotate([n=1])` — rotates right by `n` (left if negative), wrapping.
-    fn rotate<'h>(deque: &HeapReadMut<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let RotateArgs { n } = RotateArgs::from_args(args, vm)?;
-        defer_drop!(n, vm);
+    #[pymethod(Rotate, "rotate(n=1, /)")]
+    fn rotate<'h>(deque: &HeapReadMut<'h, Deque>, params: &RotateArgs, vm: &mut VM<'h>) -> RunResult<Value> {
         // A big int is a valid rotation count; only one out of `i64` range is an
         // `OverflowError`, matching CPython's `PyNumber_AsSsize_t`.
-        let n = match read_ssize(n, vm, ExcType::overflow_c_ssize_t) {
+        let n = match read_ssize(&params.n, vm, ExcType::overflow_c_ssize_t) {
             Some(res) => res?,
-            None => return Err(ExcType::type_error_not_an_integer(&n.py_type_name(vm))),
+            None => return Err(ExcType::type_error_not_an_integer(&params.n.py_type_name(vm))),
         };
         let this = deque.get_mut(vm.heap);
         let len = this.items.len();
@@ -1089,13 +1043,13 @@ impl<'heap> PyAttrs<'heap> for PyDequeImpl {
         Ok(Value::None)
     }
 
-    #[pymethod(Insert)]
     /// `deque.insert(i, x)` — raises if the deque is already at `maxlen`.
-    fn insert<'h>(deque: &HeapReadMut<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let InsertArgs {
+    #[pymethod(Insert, "insert(index, item, /)")]
+    fn insert<'h>(deque: &HeapReadMut<'h, Deque>, params: &mut InsertArgs, vm: &mut VM<'h>) -> RunResult<Value> {
+        let InsertArgsFields {
             index: index_value,
             item,
-        } = InsertArgs::from_args(args, vm)?;
+        } = params.take_all();
         defer_drop!(index_value, vm);
         // Every failing branch below releases `item` through the guard. The insert
         // at the end takes it back out.
@@ -1133,12 +1087,9 @@ impl<'heap> PyAttrs<'heap> for PyDequeImpl {
         Ok(Value::None)
     }
 
-    #[pymethod(Remove)]
     /// `deque.remove(x)` — removes the first item equal to `x`.
-    fn remove<'h>(deque: &HeapReadMut<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let target = args.get_one_arg("deque.remove", vm.heap)?;
-        defer_drop!(target, vm);
-
+    #[pymethod(Remove, "remove(self, value, /)", owner = "deque")]
+    fn remove<'h>(deque: &HeapReadMut<'h, Deque>, params: &DequeRemoveArgs, vm: &mut VM<'h>) -> RunResult<Value> {
         let (len, start_state) = {
             let this = deque.get(vm.heap);
             (this.len(), this.state())
@@ -1146,7 +1097,7 @@ impl<'heap> PyAttrs<'heap> for PyDequeImpl {
         for i in 0..len {
             let item = deque.get(vm.heap).items[i].clone_with_heap(vm.heap);
             defer_drop!(item, vm);
-            let eq = item.py_eq(target, vm)?;
+            let eq = item.py_eq(&params.value, vm)?;
             // CPython checks for mutation by the user `__eq__` before acting on the
             // comparison — even a matching one — and quirkily raises IndexError here.
             if deque.get(vm.heap).state() != start_state {
@@ -1165,24 +1116,15 @@ impl<'heap> PyAttrs<'heap> for PyDequeImpl {
         Err(ExcType::value_error_deque_remove())
     }
 
-    #[pymethod(Index)]
     /// `deque.index(x[, start[, stop]])` — index of the first item equal to `x`.
-    fn index<'h>(deque: &HeapRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let IndexArgs {
-            value: target,
-            start,
-            stop,
-        } = IndexArgs::from_args(args, vm)?;
-        defer_drop!(target, vm);
-        defer_drop!(start, vm);
-        defer_drop!(stop, vm);
-
+    #[pymethod(Index, "index(value, start=..., stop=..., /)")]
+    fn index<'h>(deque: &HeapRead<'h, Deque>, params: &IndexArgs, vm: &mut VM<'h>) -> RunResult<Value> {
         // Both bounds are coerced before the length is read, because coercion can run a
         // user `__index__` that mutates this deque. Reading the length first would
         // resolve a negative bound against a stale size and let the walk below index
         // past the end of a shortened deque, which panics.
-        let start_arg = coerce_bound(start.as_ref(), vm)?;
-        let stop_arg = coerce_bound(stop.as_ref(), vm)?;
+        let start_arg = coerce_bound(params.start.as_ref(), vm)?;
+        let stop_arg = coerce_bound(params.stop.as_ref(), vm)?;
 
         let len = deque.get(vm.heap).len();
         let start = start_arg.map_or(0, |i| normalize_sequence_index(i, len));
@@ -1192,7 +1134,7 @@ impl<'heap> PyAttrs<'heap> for PyDequeImpl {
         for i in start..stop {
             let item = deque.get(vm.heap).items[i].clone_with_heap(vm.heap);
             defer_drop!(item, vm);
-            if item.py_eq(target, vm)? {
+            if item.py_eq(&params.value, vm)? {
                 return Ok(Value::Int(i64::try_from(i).expect("index fits in i64")));
             }
             // A user `__eq__` mutating the deque invalidates the walk; CPython
@@ -1204,12 +1146,9 @@ impl<'heap> PyAttrs<'heap> for PyDequeImpl {
         Err(ExcType::value_error_deque_index())
     }
 
-    #[pymethod(Count)]
     /// `deque.count(x)` — number of items equal to `x`.
-    fn count<'h>(deque: &HeapRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let target = args.get_one_arg("deque.count", vm.heap)?;
-        defer_drop!(target, vm);
-
+    #[pymethod(Count, "count(self, value, /)", owner = "deque")]
+    fn count<'h>(deque: &HeapRead<'h, Deque>, params: &DequeCountArgs, vm: &mut VM<'h>) -> RunResult<Value> {
         let (len, start_state) = {
             let this = deque.get(vm.heap);
             (this.len(), this.state())
@@ -1218,7 +1157,7 @@ impl<'heap> PyAttrs<'heap> for PyDequeImpl {
         for i in 0..len {
             let item = deque.get(vm.heap).items[i].clone_with_heap(vm.heap);
             defer_drop!(item, vm);
-            if item.py_eq(target, vm)? {
+            if item.py_eq(&params.value, vm)? {
                 total += 1;
             }
             // A user `__eq__` mutating the deque invalidates the walk; CPython

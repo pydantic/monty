@@ -9,10 +9,11 @@
 //! The sandbox's `os.path` is `posixpath`, whose `normcase` is the identity, so
 //! `fnmatch()` and `fnmatchcase()` differ only in how they convert their arguments.
 
+use monty_macros::py_signature;
 use monty_types::{ResourceError, ResourceTracker};
 
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
@@ -84,35 +85,20 @@ pub(super) fn call(vm: &mut VM<'_>, function: FnmatchFunctions, args: ArgValues)
 }
 
 /// Argument shape for `fnmatch(name, pat)`.
-#[derive(FromArgs)]
-#[from_args(name = "fnmatch", style = def)]
-struct FnmatchArgs {
-    name: Value,
-    pat: Value,
-}
+#[py_signature("fnmatch(name, pat)")]
+struct FnmatchArgs;
 
 /// Argument shape for `fnmatchcase(name, pat)`.
-#[derive(FromArgs)]
-#[from_args(name = "fnmatchcase", style = def)]
-struct FnmatchcaseArgs {
-    name: Value,
-    pat: Value,
-}
+#[py_signature("fnmatchcase(name, pat)")]
+struct FnmatchcaseArgs;
 
 /// Argument shape for `filter(names, pat)`.
-#[derive(FromArgs)]
-#[from_args(name = "filter", style = def)]
-struct FilterArgs {
-    names: Value,
-    pat: Value,
-}
+#[py_signature("filter(names, pat)")]
+struct FilterArgs;
 
 /// Argument shape for `translate(pat)`.
-#[derive(FromArgs)]
-#[from_args(name = "translate", style = def)]
-struct TranslateArgs {
-    pat: Value,
-}
+#[py_signature("translate(pat)")]
+struct TranslateArgs;
 
 /// `filter(names, pat)`: the members of `names` that match, in order and unchanged.
 fn filter(names: Value, pat: Value, vm: &mut VM<'_>) -> RunResult<Value> {

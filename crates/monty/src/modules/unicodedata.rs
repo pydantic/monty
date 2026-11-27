@@ -24,11 +24,12 @@
 //! they return `Value` directly (wrapped in `CallResult::Value` by the dispatch
 //! in [`super`]).
 
+use monty_macros::py_signature;
 use unicode_general_category::{GeneralCategory, get_general_category};
 use unicode_normalization::{UnicodeNormalization, char::canonical_combining_class};
 
 use crate::{
-    args::{ArgValues, FromArgs, StrArg},
+    args::ArgValues,
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
@@ -103,10 +104,9 @@ pub(super) fn call(vm: &mut VM<'_>, function: UnicodedataFunctions, args: ArgVal
 ///
 /// Returns e.g. `"Lu"` (uppercase letter), `"Nd"` (decimal digit), or `"Cn"`
 /// for unassigned code points.
-fn uni_category(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("category", vm.heap)?;
-    defer_drop!(value, vm);
-    let c = single_char(value, "category", None, vm)?;
+#[py_signature("category(chr, /)")]
+fn uni_category(vm: &mut VM<'_>, params: &CategoryArgs) -> RunResult<Value> {
+    let c = single_char(&params.chr, "category", None, vm)?;
     Ok(allocate_string(category_abbrev(get_general_category(c)), vm.heap))
 }
 
@@ -114,11 +114,20 @@ fn uni_category(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 ///
 /// Raises `ValueError("no such name")` when the character has no name and no
 /// `default` is supplied; otherwise returns `default`.
-fn uni_name(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let NameArgs {
+///
+/// Argument shape for `name(chr, default=..., /)`.
+///
+/// Both arguments are positional-only (matching CPython's C signature). `chr`
+/// stays a raw `Value` because it needs the bespoke single-character coercion
+/// in [`single_char`] (CPython's "must be a unicode character" wording has no
+/// `FromArgs` equivalent); `default` is any object returned verbatim when the
+/// character has no name.
+#[py_signature("name(chr, default=..., /)", kwarg_error_name = "unicodedata.name")]
+fn uni_name(vm: &mut VM<'_>, params: &mut NameArgs) -> RunResult<Value> {
+    let NameArgsFields {
         chr: chr_val,
         default: default_val,
-    } = NameArgs::from_args(args, vm)?;
+    } = params.take_all();
     defer_drop!(chr_val, vm);
     let mut default_guard = DropGuard::new(default_val, vm);
     let vm = default_guard.ctx();
@@ -137,10 +146,9 @@ fn uni_name(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 ///
 /// Raises `KeyError("undefined character name '<name>'")` when no character has
 /// that name. Unlike CPython, named sequences are not resolved.
-fn uni_lookup(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("lookup", vm.heap)?;
-    defer_drop!(value, vm);
-    let name = value.try_as_str(vm)?;
+#[py_signature("lookup(name, /)")]
+fn uni_lookup(vm: &mut VM<'_>, params: &LookupArgs) -> RunResult<Value> {
+    let name = params.name.try_as_str(vm)?;
     match unicode_names2::character(name) {
         Some(c) => Ok(allocate_string(c.to_string(), vm.heap)),
         None => Err(SimpleException::new_msg(ExcType::KeyError, format!("undefined character name '{name}'")).into()),
@@ -150,79 +158,46 @@ fn uni_lookup(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `unicodedata.combining(chr)` — the canonical combining class as an int.
 ///
 /// Returns `0` for characters with no combining class (the common case).
-fn uni_combining(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("combining", vm.heap)?;
-    defer_drop!(value, vm);
-    let c = single_char(value, "combining", None, vm)?;
+#[py_signature("combining(chr, /)")]
+fn uni_combining(vm: &mut VM<'_>, params: &CombiningArgs) -> RunResult<Value> {
+    let c = single_char(&params.chr, "combining", None, vm)?;
     Ok(Value::Int(i64::from(canonical_combining_class(c))))
 }
 
 /// `unicodedata.normalize(form, unistr)` — normalize a string to NFC/NFD/NFKC/NFKD.
-fn uni_normalize(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let NormalizeArgs { form, unistr } = NormalizeArgs::from_args(args, vm)?;
-    defer_drop!(form, vm);
-    defer_drop!(unistr, vm);
-    let form = NormForm::parse(form.as_str(vm))?;
-    normalize_with(form, unistr.as_str(vm), vm.heap)
-}
-
-/// `unicodedata.is_normalized(form, unistr)` — whether a string is already normalized.
-fn uni_is_normalized(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let IsNormalizedArgs { form, unistr } = IsNormalizedArgs::from_args(args, vm)?;
-    defer_drop!(form, vm);
-    defer_drop!(unistr, vm);
-    let normalized = match NormForm::parse(form.as_str(vm))? {
-        NormForm::Nfc => unicode_normalization::is_nfc(unistr.as_str(vm)),
-        NormForm::Nfd => unicode_normalization::is_nfd(unistr.as_str(vm)),
-        NormForm::Nfkc => unicode_normalization::is_nfkc(unistr.as_str(vm)),
-        NormForm::Nfkd => unicode_normalization::is_nfkd(unistr.as_str(vm)),
-    };
-    Ok(Value::Bool(normalized))
-}
-
-/// Argument shape for `name(chr, default=..., /)`.
 ///
-/// Both arguments are positional-only (matching CPython's C signature). `chr`
-/// stays a raw `Value` because it needs the bespoke single-character coercion
-/// in [`single_char`] (CPython's "must be a unicode character" wording has no
-/// `FromArgs` equivalent); `default` is any object returned verbatim when the
-/// character has no name. `style = unpack` gives the `PyArg_UnpackTuple` arity
-/// wording CPython uses here (`name expected at most 2 arguments, got 3`).
-#[derive(FromArgs)]
-#[from_args(name = "name", style = unpack, kwarg_error_name = "unicodedata.name")]
-struct NameArgs {
-    #[from_args(pos_only)]
-    chr: Value,
-    #[from_args(pos_only, default)]
-    default: Option<Value>,
-}
-
 /// Argument shape for `normalize(form, unistr, /)`.
 ///
-/// Both arguments are positional-only, zero-copy [`StrArg`]s: `bad_arg` gives
+/// Both positional-only arguments use [`StrArg`](crate::args::StrArg). `bad_arg` gives
 /// the exact `normalize() argument N must be str, not <type>` type error for
 /// both. The form's *value* is validated by [`NormForm::parse`] in the body —
 /// CPython type-checks every argument before rejecting an unknown form name,
 /// so `normalize('XYZ', 123)` must raise the arg-2 `TypeError`, not the
-/// `ValueError`. `style = unpack` (with min == max here) reproduces CPython's
-/// `normalize expected 2 arguments, got N` arity error.
-#[derive(FromArgs)]
-#[from_args(name = "normalize", style = unpack, bad_arg, kwarg_error_name = "unicodedata.normalize")]
-struct NormalizeArgs {
-    #[from_args(pos_only)]
-    form: StrArg,
-    #[from_args(pos_only)]
-    unistr: StrArg,
+/// `ValueError`.
+#[py_signature(
+    "normalize(form: str, unistr: str, /)",
+    bad_arg,
+    kwarg_error_name = "unicodedata.normalize"
+)]
+fn uni_normalize(vm: &mut VM<'_>, params: &NormalizeArgs) -> RunResult<Value> {
+    let form = NormForm::parse(params.form.as_str(vm))?;
+    normalize_with(form, params.unistr.as_str(vm), vm.heap)
 }
 
-/// Argument shape for `is_normalized(form, unistr, /)` — see [`NormalizeArgs`].
-#[derive(FromArgs)]
-#[from_args(name = "is_normalized", style = unpack, bad_arg, kwarg_error_name = "unicodedata.is_normalized")]
-struct IsNormalizedArgs {
-    #[from_args(pos_only)]
-    form: StrArg,
-    #[from_args(pos_only)]
-    unistr: StrArg,
+/// `unicodedata.is_normalized(form, unistr)` — whether a string is already normalized.
+#[py_signature(
+    "is_normalized(form: str, unistr: str, /)",
+    bad_arg,
+    kwarg_error_name = "unicodedata.is_normalized"
+)]
+fn uni_is_normalized(vm: &mut VM<'_>, params: &IsNormalizedArgs) -> RunResult<Value> {
+    let normalized = match NormForm::parse(params.form.as_str(vm))? {
+        NormForm::Nfc => unicode_normalization::is_nfc(params.unistr.as_str(vm)),
+        NormForm::Nfd => unicode_normalization::is_nfd(params.unistr.as_str(vm)),
+        NormForm::Nfkc => unicode_normalization::is_nfkc(params.unistr.as_str(vm)),
+        NormForm::Nfkd => unicode_normalization::is_nfkd(params.unistr.as_str(vm)),
+    };
+    Ok(Value::Bool(normalized))
 }
 
 /// The four Unicode normalization forms accepted by `normalize`/`is_normalized`.

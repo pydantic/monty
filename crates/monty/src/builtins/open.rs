@@ -10,18 +10,17 @@
 
 use std::str;
 
+use monty_macros::py_signature;
 use monty_types::{MontyPath, OpenCallArgs, OsFunctionCall};
 
 use crate::{
-    args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
-    defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     os_dispatch::{PostConversionEffect, value_as_path_str},
     py_value::PyValue,
     types::{
         PyTrait, Type,
-        file::{FileMode, FileName, extract_str_payload},
+        file::{FileMode, FileName},
     },
     value::Value,
 };
@@ -31,56 +30,49 @@ use crate::{
 /// The host performs open-time validation and creation, then returns a file handle.
 /// The resume effect preserves the supplied filename for `.name` and `repr()`;
 /// subsequent I/O uses the handle's path, independent of later directory changes.
-pub(crate) fn builtin_open(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    let OpenArgs {
-        file,
-        mode,
-        buffering,
-        encoding,
-        errors,
-        newline,
-        closefd,
-        opener,
-    } = OpenArgs::from_args(args, vm)?;
+#[py_signature(
+    "open(file, mode: str=..., buffering=-1, encoding: str | None=None, errors: str | None=None, newline: str | None=None, closefd=True, opener=None)",
+    bad_arg_named
+)]
+pub(crate) fn builtin_open(vm: &mut VM<'_>, params: &OpenArgs) -> RunResult<CallResult> {
+    if !matches!(&params.buffering, Value::Int(-1)) {
+        return Err(unsupported_kwarg("buffering"));
+    }
+    if let Some(encoding) = &params.encoding {
+        let text = encoding.as_str(vm);
+        if !text.eq_ignore_ascii_case("utf-8") && !text.eq_ignore_ascii_case("utf8") && text != "locale" {
+            return Err(unsupported_kwarg("encoding"));
+        }
+    }
+    if params.errors.is_some() {
+        return Err(unsupported_kwarg("errors"));
+    }
+    if !matches!(&params.closefd, Value::Bool(true)) {
+        return Err(unsupported_kwarg("closefd"));
+    }
+    if !matches!(&params.opener, Value::None) {
+        return Err(unsupported_kwarg("opener"));
+    }
 
-    // `file` and the unsupported kwargs are raw `Value`s; `mode` holds a
-    // borrowed str — all need cleanup on every path.
-    defer_drop!(file, vm);
-    defer_drop!(mode, vm);
-    defer_drop!(buffering, vm);
-    defer_drop!(encoding, vm);
-    defer_drop!(errors, vm);
-    defer_drop!(newline, vm);
-    defer_drop!(closefd, vm);
-    defer_drop!(opener, vm);
-
-    // Reject non-default values for ignored kwargs so caller code can't
-    // silently rely on (e.g.) `buffering=0` semantics Monty doesn't model.
-    validate_ignored_open_kwarg("buffering", buffering, vm)?;
-    validate_ignored_open_kwarg("encoding", encoding, vm)?;
-    validate_ignored_open_kwarg("errors", errors, vm)?;
-    let newline = newline_argument(newline, vm)?;
-    validate_ignored_open_kwarg("closefd", closefd, vm)?;
-    validate_ignored_open_kwarg("opener", opener, vm)?;
-
-    let path = extract_path_string(file, vm)?;
+    let path = extract_path_string(&params.file, vm)?;
     // Parse here purely to reject malformed modes before the OS round-trip;
     // the file wrapper itself is built from the host's returned FileHandle.
-    let file_mode = mode
+    let file_mode = params
+        .mode
         .as_ref()
         .map_or("r", |m| m.as_str(vm))
         .parse::<FileMode>()
         .map_err(|e| RunError::from(SimpleException::new_msg(ExcType::ValueError, e)))?;
     // CPython rejects this pairing before opening; the value itself it checks
     // only after (see `apply_open_name`).
-    if file_mode.is_binary() && newline.is_some() {
+    if file_mode.is_binary() && params.newline.is_some() {
         return Err(ExcType::value_error("binary mode doesn't take a newline argument"));
     }
     if vm.env.legacy_binary_writes && matches!(file_mode, FileMode::WriteUpdate(true)) {
         return Err(ExcType::not_implemented("binary update mode requires positional filesystem writes").into());
     }
 
-    let name = if file.py_type(vm) == Type::Bytes {
+    let name = if params.file.py_type(vm) == Type::Bytes {
         FileName::Bytes(path.as_bytes().to_vec())
     } else {
         FileName::Str(path.clone())
@@ -90,42 +82,12 @@ pub(crate) fn builtin_open(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallRe
             path: MontyPath::new(path),
             mode: file_mode,
         }),
-        effect: PostConversionEffect::OpenName { name, newline }.into(),
+        effect: PostConversionEffect::OpenName {
+            name,
+            newline: params.newline.as_ref().map(|s| s.as_str(vm).to_owned()),
+        }
+        .into(),
     })
-}
-
-/// Argument shape for `open(file, mode='r', buffering=-1, encoding=None,
-/// errors=None, newline=None, closefd=True, opener=None)`.
-///
-/// `mode` is a zero-copy [`StrArg`] (absent → `"r"`) so wrong-type errors
-/// flow through the macro's `bad_arg_named` path and match CPython's
-/// `open() argument 'mode' must be str, not …` wording verbatim, without
-/// copying the mode string. The other kwargs stay as raw `Value`
-/// because they have monty-specific validation (`validate_ignored_open_kwarg`)
-/// that the macro doesn't model — Monty rejects any *non-default* value to
-/// avoid silently dropping semantics it doesn't honour (e.g. `buffering=0`,
-/// `opener=my_opener`); `newline` is honoured and extracted by
-/// `newline_argument`. `file` is also raw because `open()`'s file-path
-/// error wording (`expected str, bytes or os.PathLike object, not …`) doesn't
-/// follow the `_PyArg_BadArgument` shape that `bad_arg_named` emits.
-#[derive(FromArgs)]
-#[from_args(name = "open", bad_arg_named)]
-struct OpenArgs {
-    file: Value,
-    #[from_args(default)]
-    mode: Option<StrArg>,
-    #[from_args(default = Value::Int(-1))]
-    buffering: Value,
-    #[from_args(default = Value::None)]
-    encoding: Value,
-    #[from_args(default = Value::None)]
-    errors: Value,
-    #[from_args(default = Value::None)]
-    newline: Value,
-    #[from_args(default = Value::Bool(true))]
-    closefd: Value,
-    #[from_args(default = Value::None)]
-    opener: Value,
 }
 
 /// Extracts a path string accepted by `open()`.
@@ -177,84 +139,11 @@ fn decode_utf8_path(bytes: &[u8]) -> RunResult<Option<&str>> {
     }
 }
 
-/// Extracts `newline` as the raw string CPython sees: `None` stays `None` and
-/// a non-str raises the clinic `TypeError`. The value itself is validated
-/// after the open, in `apply_open_name`, where CPython validates it.
-fn newline_argument(value: &Value, vm: &VM<'_>) -> RunResult<Option<String>> {
-    if matches!(value, Value::None) {
-        Ok(None)
-    } else {
-        extract_str_payload(value, vm)
-            .map(Some)
-            .ok_or_else(|| kwarg_type_error("newline", value, vm))
-    }
-}
-
-/// Validates `open()` kwargs that Monty does not actually honor.
-///
-/// Monty only models the `file`, `mode` and `newline` arguments. Any other argument set
-/// to a non-default value would silently be ignored if accepted, hiding bugs
-/// in user code that passes (for example) `buffering=0` expecting an
-/// unbuffered file or `opener=my_opener` expecting a custom open hook. To
-/// avoid that, the only accepted values are the CPython defaults plus, for
-/// `encoding`, `"utf-8"` — which is what Monty already uses — and `"locale"`,
-/// the sandbox's locale encoding being UTF-8 (what `io.text_encoding(None)` returns).
-///
-/// Non-default values raise `TypeError` ("'<name>' argument is not yet
-/// supported"). A wrong *type* (e.g. `encoding=123`) is reported as a
-/// dedicated type error so it remains diagnosable.
-fn validate_ignored_open_kwarg(name: &str, value: &Value, vm: &VM<'_>) -> Result<(), RunError> {
-    let is_default = match name {
-        // CPython default is -1 (sentinel for "interpreter picks the
-        // buffer size"). Monty has no buffering layer to tune.
-        "buffering" => matches!(value, Value::Int(-1)),
-        // None is the CPython default; "utf-8" is the encoding Monty
-        // already uses and "locale" names it, so accept both as documented no-ops.
-        "encoding" => {
-            if matches!(value, Value::None) {
-                true
-            } else {
-                let Some(s) = value.as_str(vm) else {
-                    return Err(kwarg_type_error(name, value, vm));
-                };
-                s.eq_ignore_ascii_case("utf-8") || s.eq_ignore_ascii_case("utf8") || s == "locale"
-            }
-        }
-        // `errors` accepts str or None in CPython; only the default (None)
-        // is honored by Monty.
-        "errors" => {
-            if matches!(value, Value::None) {
-                true
-            } else if value.is_str(vm.heap) {
-                false
-            } else {
-                return Err(kwarg_type_error(name, value, vm));
-            }
-        }
-        // CPython default is True; False requires int-fd open semantics
-        // Monty does not model.
-        "closefd" => matches!(value, Value::Bool(true)),
-        // CPython default is None; a custom opener would run host-side code
-        // outside the sandbox boundary, which Monty does not support.
-        "opener" => matches!(value, Value::None),
-        _ => unreachable!("validated open keyword name"),
-    };
-    if is_default {
-        Ok(())
-    } else {
-        Err(ExcType::type_error(format!("'{name}' argument is not yet supported")))
-    }
-}
-
 /// Creates the path type error used by `open()`.
 fn path_type_error(value: &Value, vm: &VM<'_>) -> RunError {
     ExcType::type_error_fspath(&value.py_type_name(vm))
 }
 
-/// The argument-clinic `TypeError` for a str-or-None `open()` kwarg of the wrong type.
-fn kwarg_type_error(name: &str, value: &Value, vm: &VM<'_>) -> RunError {
-    ExcType::type_error(format!(
-        "open() argument '{name}' must be str or None, not {}",
-        value.py_type(vm).cpython_arg_name(vm.heap, vm.interns)
-    ))
+fn unsupported_kwarg(name: &str) -> RunError {
+    ExcType::type_error(format!("'{name}' argument is not yet supported"))
 }

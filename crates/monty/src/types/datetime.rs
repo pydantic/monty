@@ -13,13 +13,13 @@ use jiff::{
     SignedDuration,
     civil::{self, Date as CivilDate, DateTime as CivilDateTime, Time as CivilTime},
 };
-use monty_macros::pyattrs;
+use monty_macros::{py_signature, pyattrs};
 use monty_types::{
     DateTimeSource, MontyDateTime, MontyTimeZone, OsFunctionCall, ResourceTracker, SandboxTimeZone, local_wall_clock,
 };
 
 use crate::{
-    args::{ArgValues, FromArgs, StrArg},
+    args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -276,25 +276,10 @@ pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 ///
 /// `fold` itself is accepted for CPython parity but currently has no effect
 /// on the stored datetime — Monty does not track DST-fold disambiguation.
-#[derive(FromArgs)]
-#[from_args(name = "function", style = c)]
-struct DatetimeInitArgs {
-    year: i32,
-    month: i32,
-    day: i32,
-    #[from_args(default = 0)]
-    hour: i32,
-    #[from_args(default = 0)]
-    minute: i32,
-    #[from_args(default = 0)]
-    second: i32,
-    #[from_args(default = 0)]
-    microsecond: i32,
-    #[from_args(default = Value::None)]
-    tzinfo: Value,
-    #[from_args(kw_only, default = 0)]
-    fold: i32,
-}
+#[py_signature(
+    "datetime(year: c_int, month: c_int, day: c_int, hour: c_int=0, minute: c_int=0, second: c_int=0, microsecond: c_int=0, tzinfo=None, *, fold: c_int=0)"
+)]
+struct DatetimeInitArgs;
 
 /// Classmethod `datetime.fromordinal(ordinal)`: construct a `datetime` at midnight from an ordinal.
 pub(crate) fn class_fromordinal(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
@@ -375,13 +360,8 @@ pub(crate) fn class_fromtimestamp(vm: &mut VM<'_>, args: ArgValues) -> RunResult
 /// Argument shape for `datetime.fromtimestamp(timestamp, tz=None)`, a
 /// `PyArg_ParseTupleAndKeywords` parser: `at_most_total` gives CPython's
 /// `fromtimestamp() takes at most 2 arguments (3 given)` for a duplicated `tz`.
-#[derive(FromArgs)]
-#[from_args(name = "fromtimestamp", style = c_named, at_most_total)]
-struct FromtimestampArgs {
-    timestamp: Value,
-    #[from_args(default = Value::None)]
-    tz: Value,
-}
+#[py_signature("fromtimestamp(timestamp, tz=None)")]
+struct FromtimestampArgs;
 
 /// How a float `fromtimestamp()` argument is cut to the result's precision:
 /// `datetime` rounds half-even to microseconds, `date` floors to whole seconds.
@@ -564,12 +544,8 @@ fn probe_neighbouring_days(date: CivilDate) -> RunResult<()> {
 
 /// Argument shape for `datetime.astimezone(tz=None)`, checked like [`NowArgs`]:
 /// `at_most_total` gives CPython's `astimezone() takes at most 1 argument (2 given)`.
-#[derive(FromArgs)]
-#[from_args(name = "astimezone", at_most_total)]
-struct AstimezoneArgs {
-    #[from_args(default = Value::None)]
-    tz: Value,
-}
+#[py_signature("astimezone(tz=None)")]
+struct AstimezoneArgs;
 
 /// Reads the session clock in UTC; `None` means `CallHost` and requires suspension.
 /// Unrepresentable fixed instants raise `OverflowError` for all three clock calls.
@@ -597,12 +573,8 @@ fn date_out_of_range() -> RunError {
 /// (`tzinfo_from_value`) with CPython's tzinfo wording. `at_most_total`
 /// matches CPython's `PyArg_ParseTupleAndKeywords` pre-count: a duplicate tz
 /// (`now(utc, tz=utc)`) reports "takes at most 1 argument (2 given)".
-#[derive(FromArgs)]
-#[from_args(name = "now", at_most_total)]
-struct NowArgs {
-    #[from_args(default = Value::None)]
-    tz: Value,
-}
+#[py_signature("now(tz=None)")]
+struct NowArgs;
 
 /// Classmethod `datetime.strptime(date_string, format)`.
 ///
@@ -716,16 +688,8 @@ fn combine_allocate(
 /// Every field stays a raw [`Value`] so the type checks run in the body with
 /// CPython's own wording (`combine() argument 1 must be datetime.date, not
 /// str`, and the shared `tzinfo argument must be ...` message).
-#[derive(FromArgs)]
-#[from_args(name = "combine", style = c_named, at_most_total)]
-struct CombineArgs {
-    date: Value,
-    time: Value,
-    // `Option<Value>` keeps "omitted" (inherit the time's zone) distinct from an
-    // explicit `tzinfo=None` (make the result naive).
-    #[from_args(default)]
-    tzinfo: Option<Value>,
-}
+#[py_signature("combine(date, time, tzinfo=...)")]
+struct CombineArgs;
 
 /// Extracts `(year, month, day)` from `combine`'s first argument.
 fn combine_date_part(date: &Value, vm: &mut VM<'_>) -> RunResult<(i32, i32, i32)> {
@@ -1032,14 +996,8 @@ fn format_isoformat(dt: &DateTime, sep: char, spec: TimeSpec) -> String {
 /// `FromValue` impl produces — it reports the *length* of a rejected string
 /// (`not a string of length 2`) — so [`isoformat_separator`] checks it in the
 /// body. `bad_arg` still covers `timespec`.
-#[derive(FromArgs)]
-#[from_args(name = "isoformat", style = c_named, at_most_total, bad_arg)]
-struct IsoformatArgs {
-    #[from_args(default)]
-    sep: Option<Value>,
-    #[from_args(default)]
-    timespec: Option<StrArg>,
-}
+#[py_signature("isoformat(sep=..., timespec: str=...)", bad_arg)]
+struct IsoformatArgs;
 
 /// Validates `isoformat`'s `sep` argument: any single character, `'T'` by default.
 ///
@@ -1335,26 +1293,10 @@ impl<'h> HeapObjectRead<'h, DateTime> {
 /// inherit the existing datetime component via `unwrap_or_else` at the call
 /// site. `tzinfo` uses `Option<Value>` to distinguish "kwarg absent" (preserve
 /// existing) from "tzinfo=None" (clear).
-#[derive(FromArgs)]
-#[from_args(name = "replace")]
-struct DatetimeReplaceArgs {
-    #[from_args(kw_only, default)]
-    year: Option<i32>,
-    #[from_args(kw_only, default)]
-    month: Option<i32>,
-    #[from_args(kw_only, default)]
-    day: Option<i32>,
-    #[from_args(kw_only, default)]
-    hour: Option<i32>,
-    #[from_args(kw_only, default)]
-    minute: Option<i32>,
-    #[from_args(kw_only, default)]
-    second: Option<i32>,
-    #[from_args(kw_only, default)]
-    microsecond: Option<i32>,
-    #[from_args(kw_only, default)]
-    tzinfo: Option<Value>,
-}
+#[py_signature(
+    "replace(*, year: c_int=..., month: c_int=..., day: c_int=..., hour: c_int=..., minute: c_int=..., second: c_int=..., microsecond: c_int=..., tzinfo=...)"
+)]
+struct DatetimeReplaceArgs;
 
 pub(crate) struct PyDateTimeImpl;
 

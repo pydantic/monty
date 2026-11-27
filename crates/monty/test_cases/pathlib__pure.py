@@ -4,6 +4,13 @@
 # === Path constructor ===
 from pathlib import Path
 
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
+
 p = Path('/usr/local/bin/python')
 assert str(p) == '/usr/local/bin/python'
 
@@ -314,7 +321,10 @@ try:
     Path('a').match('*.py', 'extra')
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert 'positional argument' in str(e) and 'were given' in str(e)
+    assert str(e) == _error_message(
+        monty='Path.match() takes at most 1 positional argument (2 given)',
+        cpython='PurePath.match() takes 2 positional arguments but 3 were given',
+    )
 
 try:
     Path('a').match('*.py', extra=1)

@@ -1,3 +1,5 @@
+import sys
+
 import unicodedata as u
 
 # Precomposed vs decomposed forms are visually identical, so use explicit
@@ -112,9 +114,15 @@ try:
     u.name()
     assert False, 'expected name() with no args to raise'
 except TypeError as exc:
-    assert str(exc) == 'name expected at least 1 argument, got 0'
+    if sys.platform == 'monty':
+        assert str(exc) == "name() missing 1 required positional argument: 'chr'"
+    else:
+        assert str(exc) == 'name expected at least 1 argument, got 0'
 try:
     u.name('a', 'b', 'c')
     assert False, 'expected name() with 3 args to raise'
 except TypeError as exc:
-    assert str(exc) == 'name expected at most 2 arguments, got 3'
+    if sys.platform == 'monty':
+        assert str(exc) == 'name() takes at most 2 arguments (3 given)'
+    else:
+        assert str(exc) == 'name expected at most 2 arguments, got 3'

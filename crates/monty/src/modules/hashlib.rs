@@ -13,12 +13,13 @@
 
 use std::fmt::Display;
 
+use monty_macros::py_signature;
 use monty_types::ResourceTracker;
 use num_bigint::Sign;
 use num_traits::ToPrimitive;
 
 use crate::{
-    args::{ArgValues, FromArgs, KwargsValues, LaxBool, StrArg},
+    args::ArgValues,
     builtins::Builtins,
     bytecode::VM,
     defer_drop,
@@ -162,16 +163,8 @@ impl<C: ContainsHeap> DropWithContext<C> for ConstructorArgs {
 /// the function name (`openssl_sha256() takes at most …`) into the spec.
 macro_rules! openssl_constructor_args {
     ($($args:ident => $name:literal),* $(,)?) => {$(
-        #[derive(FromArgs)]
-        #[from_args(name = $name, style = c_named, at_most_total)]
-        struct $args {
-            #[from_args(default)]
-            data: Option<Value>,
-            #[from_args(kw_only, default = Value::Bool(true))]
-            usedforsecurity: Value,
-            #[from_args(kw_only, default, static_string = "StringAttr")]
-            string: Option<Value>,
-        }
+        #[py_signature("(data=..., *, usedforsecurity=True, string=...)", error_name = $name)]
+        struct $args;
 
         impl From<$args> for ConstructorArgs {
             fn from(args: $args) -> Self {
@@ -234,28 +227,12 @@ fn initial_data<'a>(data: Option<&'a Value>, string: Option<&'a Value>) -> RunRe
 
 /// `hashlib.new(name, *args, **kwargs)`, a pure-Python `def` that routes
 /// BLAKE2 names to the `_blake2` types and everything else to `_hashlib.new`.
-#[derive(FromArgs)]
-#[from_args(name = "__hash_new", style = def)]
-struct HashNewArgs {
-    name: Value,
-    #[from_args(varargs)]
-    args: Vec<Value>,
-    #[from_args(varkwargs)]
-    kwargs: KwargsValues,
-}
+#[py_signature("__hash_new(name, *args, **kwargs)")]
+struct HashNewArgs;
 
 /// `_hashlib.new(name, data=b'', *, usedforsecurity=True, string=None)`.
-#[derive(FromArgs)]
-#[from_args(name = "new", style = c_named, bad_arg_named, at_most_total)]
-struct OpensslNewArgs {
-    name: StrArg,
-    #[from_args(default)]
-    data: Option<Value>,
-    #[from_args(kw_only, default = Value::Bool(true))]
-    usedforsecurity: Value,
-    #[from_args(kw_only, default, static_string = "StringAttr")]
-    string: Option<Value>,
-}
+#[py_signature("new(name: str, data=..., *, usedforsecurity=True, string=...)", bad_arg_named)]
+struct OpensslNewArgs;
 
 /// `hashlib.new()`: the name is checked for a BLAKE2 constructor first, so
 /// `new('blake2b', digest_size=16)` reaches `blake2b()`'s own parser; an
@@ -396,38 +373,8 @@ impl<C: ContainsHeap> DropWithContext<C> for Blake2RawArgs {
 /// the name their errors carry.
 macro_rules! blake2_constructor_args {
     ($($args:ident => $name:literal),* $(,)?) => {$(
-        #[derive(FromArgs)]
-        #[from_args(name = $name, style = c_named, at_most_total)]
-        struct $args {
-            #[from_args(default)]
-            data: Option<Value>,
-            #[from_args(kw_only, default)]
-            digest_size: Option<Value>,
-            #[from_args(kw_only, default)]
-            key: Option<Value>,
-            #[from_args(kw_only, default)]
-            salt: Option<Value>,
-            #[from_args(kw_only, default)]
-            person: Option<Value>,
-            #[from_args(kw_only, default)]
-            fanout: Option<Value>,
-            #[from_args(kw_only, default)]
-            depth: Option<Value>,
-            #[from_args(kw_only, default)]
-            leaf_size: Option<Value>,
-            #[from_args(kw_only, default)]
-            node_offset: Option<Value>,
-            #[from_args(kw_only, default)]
-            node_depth: Option<Value>,
-            #[from_args(kw_only, default)]
-            inner_size: Option<Value>,
-            #[from_args(kw_only, default = LaxBool::new(false))]
-            last_node: LaxBool,
-            #[from_args(kw_only, default = Value::Bool(true))]
-            usedforsecurity: Value,
-            #[from_args(kw_only, default, static_string = "StringAttr")]
-            string: Option<Value>,
-        }
+        #[py_signature("(data=..., *, digest_size=..., key=..., salt=..., person=..., fanout=..., depth=..., leaf_size=..., node_offset=..., node_depth=..., inner_size=..., last_node: bool=False, usedforsecurity=True, string=...)", error_name = $name)]
+        struct $args;
 
         impl From<$args> for Blake2RawArgs {
             fn from(args: $args) -> Self {
@@ -628,16 +575,8 @@ fn overflow_error(msg: impl Display) -> RunError {
 /// `pbkdf2_hmac(hash_name, password, salt, iterations, dklen=None)`, a clinic
 /// function whose `password`, `salt` and `iterations` convert in the body so
 /// their errors come out in signature order.
-#[derive(FromArgs)]
-#[from_args(name = "pbkdf2_hmac", style = c_named, bad_arg_named, at_most_total)]
-struct Pbkdf2HmacArgs {
-    hash_name: StrArg,
-    password: Value,
-    salt: Value,
-    iterations: Value,
-    #[from_args(default = Value::None)]
-    dklen: Value,
-}
+#[py_signature("pbkdf2_hmac(hash_name: str, password, salt, iterations, dklen=None)", bad_arg_named)]
+struct Pbkdf2HmacArgs;
 
 /// `hashlib.pbkdf2_hmac()`: PBKDF2 (RFC 8018) over HMAC of the named
 /// algorithm, checked in CPython's order — the algorithm, then `iterations`,

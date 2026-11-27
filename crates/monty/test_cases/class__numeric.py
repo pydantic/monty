@@ -171,6 +171,21 @@ for integer in [0, 65, -1, 2**100, -(2**100), True]:
     assert math.floor(index) == math.floor(float(integer))
     assert math.ceil(index) == math.ceil(float(integer))
 
+
+class CountedIndex:
+    def __init__(self):
+        self.calls = 0
+
+    def __index__(self):
+        self.calls += 1
+        return -(1 << 120)
+
+
+for format_integer in (bin, oct, hex):
+    counted = CountedIndex()
+    assert format_integer(counted) == format_integer(-(1 << 120))
+    assert counted.calls == 1
+
 assert chr(Index(65)) == 'A'
 assert chr(Index(True)) == '\x01'
 assert int('101', Index(2)) == 5

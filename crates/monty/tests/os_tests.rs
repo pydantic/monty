@@ -2233,18 +2233,21 @@ fn path_stat_accepts_explicit_follow_symlinks() {
 #[test]
 fn path_mutation_and_stat_arity_errors_count_self() {
     for (call, message) in [
-        ("stat(True)", "Path.stat() takes 1 positional argument but 2 were given"),
+        (
+            "stat(True)",
+            "Path.stat() takes at most 1 positional argument (2 given)",
+        ),
         (
             "rename('target', 'extra')",
-            "Path.rename() takes 2 positional arguments but 3 were given",
+            "Path.rename() takes at most 2 arguments (3 given)",
         ),
         (
             "replace('target', 'extra')",
-            "Path.replace() takes 2 positional arguments but 3 were given",
+            "Path.replace() takes at most 2 arguments (3 given)",
         ),
         (
             "unlink(True, False)",
-            "Path.unlink() takes from 1 to 2 positional arguments but 3 were given",
+            "Path.unlink() takes at most 2 arguments (3 given)",
         ),
     ] {
         let error = host_runner(&format!("from pathlib import Path\nPath('/file').{call}"))
@@ -2273,7 +2276,7 @@ fn path_mkdir_validates_c_int_modes_and_counts_self() {
         .unwrap_err();
     assert_eq!(
         error.message(),
-        Some("Path.mkdir() takes from 1 to 4 positional arguments but 5 were given")
+        Some("Path.mkdir() takes at most 4 arguments (5 given)")
     );
 }
 

@@ -10,6 +10,7 @@ use std::{
     hash::{Hash, Hasher},
 };
 
+use monty_macros::py_signature;
 use smallvec::smallvec;
 
 use super::{LazyHeapSet, allocate_tuple};
@@ -58,28 +59,20 @@ impl Slice {
     /// - `slice(start, stop, step)` - slice with all three components
     ///
     /// Each argument can be None to indicate "use default".
-    pub fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-        let pos_args = args.into_pos_only("slice", vm.heap)?;
-        defer_drop!(pos_args, vm);
-
-        let slice = match pos_args.as_slice() {
-            [] => return Err(ExcType::type_error_at_least("slice", 1, 0)),
-            [first_arg] => {
-                let stop = value_to_option_i64(first_arg, vm)?;
-                Self::new(None, stop, None)
-            }
-            [first_arg, second_arg] => {
-                let start = value_to_option_i64(first_arg, vm)?;
-                let stop = value_to_option_i64(second_arg, vm)?;
-                Self::new(start, stop, None)
-            }
-            [first_arg, second_arg, third_arg] => {
-                let start = value_to_option_i64(first_arg, vm)?;
-                let stop = value_to_option_i64(second_arg, vm)?;
-                let step = value_to_option_i64(third_arg, vm)?;
-                Self::new(start, stop, step)
-            }
-            _ => return Err(ExcType::type_error_at_most("slice", 3, pos_args.len())),
+    #[py_signature("slice(start, stop=..., step=..., /)")]
+    pub fn init(vm: &mut VM<'_>, params: &SliceArgs) -> RunResult<Value> {
+        let first = value_to_option_i64(&params.start, vm)?;
+        let slice = if let Some(stop) = &params.stop {
+            let stop = value_to_option_i64(stop, vm)?;
+            let step = params
+                .step
+                .as_ref()
+                .map(|step| value_to_option_i64(step, vm))
+                .transpose()?
+                .flatten();
+            Self::new(first, stop, step)
+        } else {
+            Self::new(None, first, None)
         };
 
         Ok(Value::allocate(slice, vm.heap))
@@ -288,8 +281,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Slice> {
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         match attr.static_string(vm.interns) {
             Some(StaticStrings::Indices) => {
-                let args = args.reject_kwargs("slice.indices", vm.heap)?;
-                let len_val = args.get_one_arg("slice.indices", vm.heap)?;
+                let len_val = args
+                    .reject_kwargs("slice.indices", vm.heap)?
+                    .get_one_arg("slice.indices", vm.heap)?;
                 defer_drop!(len_val, vm);
                 let index = len_val.saturating_index(vm)?;
                 if index < 0 {

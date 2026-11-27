@@ -1,4 +1,11 @@
 # === bytes.maketrans() ===
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
+
 ident = bytes.maketrans(b'', b'')
 assert len(ident) == 256
 assert ident == bytes(range(256))
@@ -83,13 +90,19 @@ try:
     b'abc'.translate()
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'translate() takes at least 1 positional argument (0 given)'
+    assert str(e) == _error_message(
+        monty="translate() missing 1 required positional argument: 'table'",
+        cpython='translate() takes at least 1 positional argument (0 given)',
+    )
 
 try:
     b'abc'.translate(table=None)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'translate() takes at least 1 positional argument (0 given)'
+    assert str(e) == _error_message(
+        monty="translate() got some positional-only arguments passed as keyword arguments: 'table'",
+        cpython='translate() takes at least 1 positional argument (0 given)',
+    )
 
 try:
     b'abc'.translate(None, b'a', b'b')

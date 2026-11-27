@@ -227,4 +227,7 @@ try:
     csv.reader([], foo=1)
     assert False, 'expected TypeError'
 except TypeError as exc:
-    assert str(exc) == "this function got an unexpected keyword argument 'foo'"
+    if is_monty:
+        assert str(exc) == "reader() got an unexpected keyword argument 'foo'"
+    else:
+        assert str(exc) == "this function got an unexpected keyword argument 'foo'"

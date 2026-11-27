@@ -7,12 +7,13 @@
 use std::{borrow::Cow, mem};
 
 use jiter::{Jiter, JiterError, JiterErrorType, JsonErrorType, NumberAny, NumberInt, Peek};
+use monty_macros::py_signature;
 
 use super::{JsonStringCache, fp::FileTarget};
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     bytecode::{CallResult, VM},
-    defer_drop, defer_drop_mut,
+    defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{ContainsHeap, DropGuard, HeapData, HeapId, HeapReadOutput, HeapReader},
     intern::StaticStrings,
@@ -65,23 +66,19 @@ const JSON_RECURSION_LIMIT: usize = 200;
 /// (there is no `parse_constant` parameter).
 ///
 /// `parse_float` and `parse_int` are called with each number's source text, as in
-/// CPython (`json.loads(s, parse_float=Decimal)`). The kwargs `cls`, `object_hook`,
-/// `parse_constant`, and `object_pairs_hook` are unsupported and raise `TypeError`.
-pub(super) fn call_loads(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let JsonLoadsArgs {
-        s,
-        parse_float,
-        parse_int,
-    } = JsonLoadsArgs::from_args(args, vm)?;
-    let hooks = [parse_float, parse_int];
-    defer_drop!(hooks, vm);
-    defer_drop_mut!(s, vm);
-    let [parse_float, parse_int] = hooks;
+/// CPython (`json.loads(s, parse_float=Decimal)`). CPython also accepts `cls`,
+/// `object_hook`, `parse_constant` and `object_pairs_hook`. Monty rejects these
+/// options with `TypeError` and names `JSONDecoder.__init__` in unknown-keyword errors.
+#[py_signature(
+    "loads(s, *, parse_float=None, parse_int=None)",
+    kwarg_error_name = "JSONDecoder.__init__"
+)]
+pub(super) fn call_loads(vm: &mut VM<'_>, params: &JsonLoadsArgs) -> RunResult<Value> {
     let hooks = NumberHooks {
-        parse_float: (!matches!(parse_float, Value::None)).then_some(parse_float),
-        parse_int: (!matches!(parse_int, Value::None)).then_some(parse_int),
+        parse_float: (!matches!(params.parse_float, Value::None)).then_some(&params.parse_float),
+        parse_int: (!matches!(params.parse_int, Value::None)).then_some(&params.parse_int),
     };
-    parse_json_input(s, &hooks, vm)
+    parse_json_input(&params.s, &hooks, vm)
 }
 
 /// The `parse_float` / `parse_int` callables `json.loads` converts number tokens with,
@@ -92,34 +89,18 @@ struct NumberHooks<'a> {
     parse_int: Option<&'a Value>,
 }
 
-/// Argument shape for `json.loads(s)`.
-///
-/// CPython's `loads` is a pure-Python `def loads(s, *, cls=None, …)`, so `s`
-/// is positional-or-keyword (`json.loads(s='1')` works) and signature errors
-/// use `style = def` wording. The additional CPython kwargs (`cls`, `object_hook`,
-/// …) are intentionally not implemented; leaving them off this struct means
-/// the macro emits the "unexpected keyword" error for them, naming
-/// `JSONDecoder.__init__` as CPython does for a keyword the decoder rejects.
-#[derive(FromArgs)]
-#[from_args(name = "loads", style = def, kwarg_error_name = "JSONDecoder.__init__")]
-struct JsonLoadsArgs {
-    s: Value,
-    #[from_args(kw_only, default = Value::None)]
-    parse_float: Value,
-    #[from_args(kw_only, default = Value::None)]
-    parse_int: Value,
-}
-
 /// Implements `json.load(fp)`: `fp.read()`, then [`call_loads`] on the result.
 ///
 /// An unread `open()` handle suspends for the host's full-file read with
 /// [`PostConversionEffect::JsonLoad`] armed, so the parse runs on resume; a
 /// loaded one parses the rest of its buffer at once. Any other object has
 /// its `read` attribute called synchronously.
-pub(super) fn call_load(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    let JsonLoadArgs { fp } = JsonLoadArgs::from_args(args, vm)?;
-    defer_drop!(fp, vm);
-    match FileTarget::reader(fp, vm)? {
+///
+/// Argument shape for `json.load(fp)`, a pure-Python `def` like [`JsonLoadsArgs`]
+/// with the same keyword policy.
+#[py_signature("load(fp)", kwarg_error_name = "JSONDecoder.__init__")]
+pub(super) fn call_load(vm: &mut VM<'_>, params: &JsonLoadArgs) -> RunResult<CallResult> {
+    match FileTarget::reader(&params.fp, vm)? {
         FileTarget::OpenFile(file_id) => {
             let HeapReadOutput::OpenFile(mut file) = vm.heap.read(file_id) else {
                 unreachable!("FileTarget::OpenFile points to an OpenFile")
@@ -152,14 +133,6 @@ pub(crate) fn apply_json_load(file_id: HeapId, result: Value, vm: &mut VM<'_>) -
 fn parse_owned(text: Value, vm: &mut VM<'_>) -> RunResult<Value> {
     defer_drop!(text, vm);
     parse_json_input(text, &NumberHooks::default(), vm)
-}
-
-/// Argument shape for `json.load(fp)`, a pure-Python `def` like [`JsonLoadsArgs`]
-/// with the same keyword policy.
-#[derive(FromArgs)]
-#[from_args(name = "load", style = def, kwarg_error_name = "JSONDecoder.__init__")]
-struct JsonLoadArgs {
-    fp: Value,
 }
 
 /// Parses a `json.loads()` input value and converts it into a Monty value.

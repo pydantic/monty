@@ -653,35 +653,17 @@ Wherever you see an Exception with a repeated message, create a dedicated method
 
 When writing exception messages, always check `crates/monty/src/exception_private.rs` for existing methods to generate that message.
 
-## Argument extraction — ALWAYS use `#[derive(FromArgs)]`
+## Native argument extraction
 
-**Whenever you add or modify a Rust-side function, method, type
-constructor, or `OsFunction` handler that takes anything beyond the
-trivial 0/1/2-positional shapes already covered by
-`ArgValues::check_zero_args` / `get_one_arg` / `get_two_args` /
-`get_zero_one_arg` / `into_pos_only`, you MUST use
-`#[derive(FromArgs)]` (re-exported as `monty::args::FromArgs`).**
+Declare native Python functions, methods and constructors with `#[py_signature]`.
+The binder handles positional and keyword dispatch, defaults, error ordering and cleanup.
+In a shared dispatcher, bind inside the selected arm with a named `#[py_signature]` struct and `Args::from_args(args, vm)?`.
+The `ArgValues` helpers are for trivial fixed-arity positional calls.
+Move the signature onto the handler when extracting the method into its own Rust function.
 
-Hand-written `args.into_parts()` loops are not acceptable for any
-signature that has multiple positionals with defaults, keyword
-arguments, `*args`, or `**kwargs` — they are a known source of
-reference-count leaks, divergent error messages, and duplicated
-boilerplate. `FromArgs` emits a static param spec driven by the runtime
-binder (`crates/monty/src/args/bind_native.rs`), which handles dispatch,
-conflict detection, default handling, and refcount cleanup mechanically.
-Pick `style = def | clinic | c | c_named | unpack` by the CPython parser
-family the target function uses — see
-[`crates/monty-macros/README.md`](crates/monty-macros/README.md) for the
-family table and the full attribute surface (`style`, `at_most_total`,
-`bad_arg[_named]`, `pos_only`, `kw_only`, `varargs`, `varkwargs`,
-`default`, `static_string`, …) and how to extend the macro or add new
-`FromValue` impls.
-
-If a callsite needs custom per-argument coercion (e.g. `value_to_float`
-for math, a `TimeDelta` type check, a `bytes`-or-`str` union), declare
-the field as `Value` and run the coercion in the function body *after*
-the `from_args` call — the macro still handles the parsing, your code
-just adds the final validation step.
+Declare accepted calls with the Python signature. Annotations or `convert(parameter = RustType)`
+select conversions that run after binding. Use the handler body for conversions that belong to the operation itself.
+See the [macro reference](crates/monty-macros/README.md) for supported signatures and diagnostics.
 
 ## Code style
 

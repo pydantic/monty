@@ -1,7 +1,9 @@
 //! Implementation of the next() builtin function.
 
+use monty_macros::py_signature;
+
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     builtins::{Builtins, BuiltinsFunctions},
     bytecode::{CallResult, VM},
     defer_drop_mut,
@@ -23,14 +25,8 @@ def __monty_next_default(iterator, default, next_, stop_iteration):
 ";
 
 /// Positional-only `next(iterator[, default])`, preserving an explicitly supplied `None`.
-#[derive(FromArgs)]
-#[from_args(name = "next", style = unpack)]
-struct NextArgs {
-    #[from_args(pos_only)]
-    iterator: Value,
-    #[from_args(pos_only, default)]
-    default: Option<Value>,
-}
+#[py_signature("next(iterator, default=..., /)")]
+struct NextArgs;
 
 /// Advances an iterator, optionally replacing exhaustion with a default after resumption.
 pub fn builtin_next(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {

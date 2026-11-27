@@ -2,8 +2,10 @@
 
 use std::{cmp::Ordering, mem};
 
+use monty_macros::py_signature;
+
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -18,8 +20,17 @@ use crate::{
 /// Supports two forms:
 /// - `min(iterable)` - returns smallest item from iterable
 /// - `min(arg1, arg2, ...)` - returns smallest of the arguments
-pub fn builtin_min(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let MinArgs { args, key, default } = MinArgs::from_args(args, vm)?;
+///
+/// Argument shape for `min(*args, key=None, default=...)`.
+///
+/// `key` is held as `Value` so `key=None` can be normalised to "no key
+/// function". `default` is `Option<Value>` (with `default` attr) so the
+/// implementation can distinguish "not provided" from "provided with any
+/// value" — that distinction matters because `default=` is only valid with a
+/// single iterable argument.
+#[py_signature("min(*args, key=None, default=...)")]
+pub fn builtin_min(vm: &mut VM<'_>, params: &mut MinArgs) -> RunResult<Value> {
+    let MinArgsFields { args, key, default } = params.take_all();
     run_min_max(vm, args, key, default, true)
 }
 
@@ -29,8 +40,14 @@ pub fn builtin_min(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// Supports two forms:
 /// - `max(iterable)` - returns largest item from iterable
 /// - `max(arg1, arg2, ...)` - returns largest of the arguments
-pub fn builtin_max(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let MaxArgs { args, key, default } = MaxArgs::from_args(args, vm)?;
+///
+/// Argument shape for `max(*args, key=None, default=...)`.
+///
+/// See [`MinArgs`] for field semantics; the only difference is the function
+/// name used in error messages.
+#[py_signature("max(*args, key=None, default=...)")]
+pub fn builtin_max(vm: &mut VM<'_>, params: &mut MaxArgs) -> RunResult<Value> {
+    let MaxArgsFields { args, key, default } = params.take_all();
     run_min_max(vm, args, key, default, false)
 }
 
@@ -162,39 +179,6 @@ fn run_min_max(
             Ok(result_guard.into_inner())
         }
     }
-}
-
-/// Argument shape for `min(*args, key=None, default=...)`.
-///
-/// `key` is held as `Value` so `key=None` can be normalised to "no key
-/// function". `default` is `Option<Value>` (with `default` attr) so the
-/// implementation can distinguish "not provided" from "provided with any
-/// value" — that distinction matters because `default=` is only valid with a
-/// single iterable argument.
-#[derive(FromArgs)]
-#[from_args(name = "min")]
-struct MinArgs {
-    #[from_args(varargs)]
-    args: Vec<Value>,
-    #[from_args(default = Value::None)]
-    key: Value,
-    #[from_args(default)]
-    default: Option<Value>,
-}
-
-/// Argument shape for `max(*args, key=None, default=...)`.
-///
-/// See [`MinArgs`] for field semantics; the only difference is the function
-/// name used in error messages.
-#[derive(FromArgs)]
-#[from_args(name = "max")]
-struct MaxArgs {
-    #[from_args(varargs)]
-    args: Vec<Value>,
-    #[from_args(default = Value::None)]
-    key: Value,
-    #[from_args(default)]
-    default: Option<Value>,
 }
 
 /// Calls the user-provided key function for a single candidate value.

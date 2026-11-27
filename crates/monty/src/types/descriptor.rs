@@ -4,6 +4,8 @@
 //! Hooks belong to the descriptor's type, so changing that type can alter precedence without
 //! writing to the owning class. Class hints must therefore account for possible future hooks.
 
+use monty_macros::py_signature;
+
 use super::{
     Dict, Type,
     builtin_descriptor::{self, DescriptorMethod},
@@ -11,7 +13,7 @@ use super::{
     tuple::allocate_tuple,
 };
 use crate::{
-    args::{ArgValues, FromArgs, KwargsValues},
+    args::{ArgValues, KwargsValues},
     builtins::{Builtins, BuiltinsFunctions, object::object_method, type_::run_init_subclass},
     bytecode::{CallResult, VM},
     defer_drop,
@@ -285,14 +287,8 @@ pub(crate) fn get(value: &Value, instance: Option<HeapId>, owner: HeapId, vm: &m
 }
 
 /// Arguments passed by frozen attribute wrappers; validate them like any callable boundary.
-#[derive(FromArgs)]
-#[from_args(name = "attribute lookup", style = unpack)]
-struct LookupArgs {
-    #[from_args(pos_only)]
-    object: Value,
-    #[from_args(pos_only)]
-    name: Value,
-}
+#[py_signature("lookup(object, name, /)", error_name = "attribute lookup")]
+struct LookupArgs;
 
 /// Resolve an attribute for a frozen continuation, rejecting malformed helper arguments.
 pub(crate) fn get_attribute(args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
@@ -359,16 +355,8 @@ pub(crate) fn bind_descriptor(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Cal
 }
 
 /// Explicit frozen-helper arguments, with no references supplied through user globals.
-#[derive(FromArgs)]
-#[from_args(name = "descriptor binding", style = unpack)]
-struct BindingArgs {
-    #[from_args(pos_only)]
-    member: Value,
-    #[from_args(pos_only)]
-    instance: Value,
-    #[from_args(pos_only)]
-    owner: Value,
-}
+#[py_signature("bind(member, instance, owner, /)", error_name = "descriptor binding")]
+struct BindingArgs;
 
 /// Call a class-only special method, binding native functions directly and suspending getters.
 pub(crate) fn call_member(member: &Value, instance: HeapId, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
@@ -543,14 +531,8 @@ pub(crate) fn lookup_set_name(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Cal
 }
 
 /// The next namespace descriptor and the caller's unique missing sentinel.
-#[derive(FromArgs)]
-#[from_args(name = "descriptor name hook", style = unpack)]
-struct NameHookArgs {
-    #[from_args(pos_only)]
-    descriptor: Value,
-    #[from_args(pos_only)]
-    missing: Value,
-}
+#[py_signature("name_hook(descriptor, missing, /)", error_name = "descriptor name hook")]
+struct NameHookArgs;
 
 /// Include user instances whose type may gain a hook during an earlier notification.
 fn may_have_name_hook(value: &Value, vm: &VM<'_>) -> bool {

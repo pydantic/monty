@@ -20,21 +20,22 @@ use std::{
 };
 
 use ahash::AHashSet;
-use monty_types::{OsFunctionCall, ResourceTracker, UrandomArgs};
+use monty_macros::py_signature;
+use monty_types::ResourceTracker;
 use num_bigint::{BigInt, BigUint};
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     builtins::Builtins,
     bytecode::{CallResult, VM, unpack_exact},
-    defer_drop, defer_drop_mut,
+    defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{ContainsHeap, DropGuard, DropWithContext},
+    heap::{ContainsHeap, DropGuard, DropWithContext, HeapReadOutput},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    os_dispatch::{PostConversionEffect, urandom_reply_error},
+    os_dispatch::{PostConversionEffect, urandom_call, urandom_reply_error},
     types::{
         List, LongInt, Module, PyTrait, Tuple, Type,
         bytes::allocate_bytes,
@@ -176,9 +177,7 @@ fn request_entropy(target: RandomTarget, retry: Option<RandomRetry>, vm: &mut VM
         vm.heap.inc_ref(id);
     }
     CallResult::OsCallWithEffect {
-        call: OsFunctionCall::Urandom(UrandomArgs {
-            size: SEED_BYTES as u64,
-        }),
+        call: urandom_call(SEED_BYTES),
         effect: PostConversionEffect::SeedRandom { target, retry }.into(),
     }
 }
@@ -236,8 +235,8 @@ fn seed_from_reply(
 /// Dispatch for a generator known to be seeded.
 fn call_seeded(target: RandomTarget, function: RandomFunctions, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
     match function {
-        RandomFunctions::Random => random(target, args, vm),
-        RandomFunctions::Getstate => getstate(target, args, vm),
+        RandomFunctions::Random => random(target, vm, args),
+        RandomFunctions::Getstate => getstate(target, vm, args),
         RandomFunctions::Getrandbits => getrandbits(target, args, vm),
         RandomFunctions::Randbytes => randbytes(target, args, vm),
         RandomFunctions::Randrange => randrange(target, args, vm),
@@ -268,29 +267,17 @@ fn call_seeded(target: RandomTarget, function: RandomFunctions, args: ArgValues,
 // Seeding and state
 // ============================================================================
 
-/// `seed(a=None, version=2)` — a Python `def` in CPython.
-#[derive(FromArgs)]
-#[from_args(name = "Random.seed", style = def)]
-struct SeedArgs {
-    #[from_args(default = Value::None)]
-    a: Value,
-    #[from_args(default = Value::Int(2))]
-    version: Value,
-}
-
 /// `seed(a=None, version=2)`: `None` takes a fresh state according to `RandomStart`;
 /// explicit seeds follow `random.py`.
-fn seed(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
-    let SeedArgs { a, version } = SeedArgs::from_args(args, vm)?;
-    defer_drop!(a, vm);
-    defer_drop!(version, vm);
-    let state = if matches!(a, Value::None) {
+#[py_signature("seed(a=None, version=2)", error_name = "Random.seed")]
+fn seed(target: RandomTarget, params: &SeedArgs, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    let state = if matches!(&params.a, Value::None) {
         match vm.random.fresh_state(&vm.env.os_policy.random_start)? {
             Some(state) => state,
             None => return Ok(request_entropy(target, None, vm)),
         }
     } else {
-        Mt19937::from_key(&seed_key_from_value(a, version_number(version), vm)?)
+        Mt19937::from_key(&seed_key_from_value(&params.a, version_number(&params.version), vm)?)
     };
     target.reseed(vm, state);
     Ok(CallResult::Value(Value::None))
@@ -309,8 +296,8 @@ fn version_number(version: &Value) -> i64 {
 }
 
 /// `getstate()`: `(3, (624 words..., index), gauss_next)`.
-fn getstate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    args.check_zero_args("Random.getstate", vm.heap)?;
+#[py_signature("getstate(self, /)", owner = "Random")]
+fn getstate(target: RandomTarget, vm: &mut VM<'_>) -> RunResult<Value> {
     let (words, index, gauss_next) = target.with_generator(vm, |random, _| {
         let (words, index) = random.rng().state();
         (words.to_vec(), index, random.gauss_next())
@@ -328,22 +315,13 @@ fn getstate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult
     ))
 }
 
-/// `setstate(state)` — a Python `def` wrapping the C `setstate`.
-#[derive(FromArgs)]
-#[from_args(name = "Random.setstate", style = def)]
-struct SetstateArgs {
-    state: Value,
-}
-
 /// `setstate(state)`: restores a `getstate()` tuple, accepting version 2
 /// states (signed words) as CPython does.
-fn setstate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let SetstateArgs { state } = SetstateArgs::from_args(args, vm)?;
-    defer_drop!(state, vm);
-
+#[py_signature("setstate(state)", error_name = "Random.setstate")]
+fn setstate(target: RandomTarget, params: &SetstateArgs, vm: &mut VM<'_>) -> RunResult<Value> {
     // `version = state[0]` runs before the unpack, so a non-subscriptable
     // state reports that rather than an unpack failure.
-    let version = state.py_getitem(&Value::Int(0), vm)?;
+    let version = params.state.py_getitem(&Value::Int(0), vm)?;
     defer_drop!(version, vm);
     let version = match version {
         Value::Int(v @ (2 | 3)) => *v,
@@ -364,7 +342,7 @@ fn setstate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult
     };
 
     // `version, internalstate, self.gauss_next = state`
-    let items = unpack_exact(state, 3, vm)?;
+    let items = unpack_exact(&params.state, 3, vm)?;
     defer_drop!(items, vm);
     let internal = &items[1];
     let gauss_next = match &items[2] {
@@ -489,21 +467,18 @@ fn state_word(entry: &Value, vm: &VM<'_>) -> RunResult<u32> {
 // ============================================================================
 
 /// `random()`: the next float in `[0, 1)`.
-fn random(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    args.check_zero_args("Random.random", vm.heap)?;
+#[py_signature("random(self, /)", owner = "Random")]
+fn random(target: RandomTarget, vm: &mut VM<'_>) -> RunResult<Value> {
     Ok(Value::Float(
         target.with_generator(vm, |random, _| random.rng().random()),
     ))
 }
 
 /// `getrandbits(k)`: `k` random bits as a non-negative int.
-fn getrandbits(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
+#[py_signature("getrandbits(self, k, /)", owner = "Random", reject_keywords)]
+fn getrandbits(target: RandomTarget, params: &RandomGetrandbitsArgs, vm: &mut VM<'_>) -> RunResult<Value> {
     // A clinic `uint64_t` parameter: keywords are refused before the count.
-    let k = args
-        .reject_kwargs("Random.getrandbits", vm.heap)?
-        .get_one_arg("Random.getrandbits", vm.heap)?;
-    defer_drop!(k, vm);
-    let k = k.as_int_with_overflow(vm, ExcType::overflow_c_uint64)?;
+    let k = params.k.as_int_with_overflow(vm, ExcType::overflow_c_uint64)?;
     let k = u64::try_from(k).map_err(|_| ExcType::value_error_negative_int())?;
     if k == 0 {
         return Ok(Value::Int(0));
@@ -522,19 +497,11 @@ fn getrandbits(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunRes
     Ok(LongInt::new(BigInt::from(BigUint::from_slice(&words))).into_value(vm.heap))
 }
 
-/// `randbytes(n)` — a Python `def`: `getrandbits(n * 8).to_bytes(n, 'little')`.
-#[derive(FromArgs)]
-#[from_args(name = "Random.randbytes", style = def)]
-struct RandbytesArgs {
-    n: Value,
-}
-
 /// `randbytes(n)`: `n` random bytes, the little-endian bytes of `getrandbits(8n)`.
-fn randbytes(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let RandbytesArgs { n } = RandbytesArgs::from_args(args, vm)?;
-    defer_drop!(n, vm);
+#[py_signature("randbytes(n)", error_name = "Random.randbytes")]
+fn randbytes(target: RandomTarget, params: &RandbytesArgs, vm: &mut VM<'_>) -> RunResult<Value> {
     // `getrandbits(n * 8)` is what rejects a negative or oversized count.
-    let n = n.as_int_with_overflow(vm, ExcType::overflow_c_uint64)?;
+    let n = params.n.as_int_with_overflow(vm, ExcType::overflow_c_uint64)?;
     let n = usize::try_from(n).map_err(|_| ExcType::value_error_negative_int())?;
     if n == 0 {
         return Ok(allocate_bytes(Vec::new(), vm.heap));
@@ -559,30 +526,17 @@ fn randbytes(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResul
     Ok(allocate_bytes(bytes, vm.heap))
 }
 
+/// `randrange(start, stop=None, step=1)`: a random member of the range.
+///
 /// `randrange(start, stop=None, step=1)` — a Python `def`. `step` is optional
 /// rather than defaulted so the `step is not _ONE` check can tell an explicit
 /// step from the default.
-#[derive(FromArgs)]
-#[from_args(name = "Random.randrange", style = def)]
-struct RandrangeArgs {
-    start: Value,
-    #[from_args(default = Value::None)]
-    stop: Value,
-    #[from_args(default)]
-    step: Option<Value>,
-}
-
-/// `randrange(start, stop=None, step=1)`: a random member of the range.
-fn randrange(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let RandrangeArgs { start, stop, step } = RandrangeArgs::from_args(args, vm)?;
-    defer_drop!(start, vm);
-    defer_drop!(stop, vm);
-    defer_drop!(step, vm);
-
-    let istart = i128::from(start.as_int(vm)?);
-    if matches!(stop, Value::None) {
+#[py_signature("randrange(start, stop=None, step=...)", error_name = "Random.randrange")]
+fn randrange(target: RandomTarget, params: &RandrangeArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let istart = i128::from(params.start.as_int(vm)?);
+    if matches!(&params.stop, Value::None) {
         // CPython tests `step is not _ONE`, and `1` is that very object.
-        if step.as_ref().is_some_and(|step| !matches!(step, Value::Int(1))) {
+        if params.step.as_ref().is_some_and(|step| !matches!(step, Value::Int(1))) {
             return Err(ExcType::type_error("Missing a non-None stop argument"));
         }
         return if istart > 0 {
@@ -597,9 +551,9 @@ fn randrange(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResul
         };
     }
 
-    let istop = i128::from(stop.as_int(vm)?);
+    let istop = i128::from(params.stop.as_int(vm)?);
     let width = istop - istart;
-    let istep = match step {
+    let istep = match &params.step {
         Some(step) => i128::from(step.as_int(vm)?),
         None => 1,
     };
@@ -612,8 +566,8 @@ fn randrange(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResul
         } else {
             Err(ExcType::value_error(format!(
                 "empty range in randrange({}, {})",
-                int_arg_str(start),
-                int_arg_str(stop)
+                int_arg_str(&params.start),
+                int_arg_str(&params.stop)
             )))
         };
     }
@@ -624,11 +578,11 @@ fn randrange(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResul
         Ordering::Equal => return Err(ExcType::value_error("zero step for randrange()")),
     };
     if n <= 0 {
-        let step = step.as_ref().expect("a unit step returned above");
+        let step = params.step.as_ref().expect("a unit step returned above");
         return Err(ExcType::value_error(format!(
             "empty range in randrange({}, {}, {})",
-            int_arg_str(start),
-            int_arg_str(stop),
+            int_arg_str(&params.start),
+            int_arg_str(&params.stop),
             int_arg_str(step)
         )));
     }
@@ -638,21 +592,11 @@ fn randrange(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResul
     ))
 }
 
-/// `randint(a, b)` — a Python `def`.
-#[derive(FromArgs)]
-#[from_args(name = "Random.randint", style = def)]
-struct RandintArgs {
-    a: Value,
-    b: Value,
-}
-
 /// `randint(a, b)`: a random int in `[a, b]`.
-fn randint(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let RandintArgs { a, b } = RandintArgs::from_args(args, vm)?;
-    defer_drop!(a, vm);
-    defer_drop!(b, vm);
-    let a = i128::from(a.as_int(vm)?);
-    let b = i128::from(b.as_int(vm)?);
+#[py_signature("randint(a, b)", error_name = "Random.randint")]
+fn randint(target: RandomTarget, params: &RandintArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let a = i128::from(params.a.as_int(vm)?);
+    let b = i128::from(params.b.as_int(vm)?);
     if b < a {
         return Err(ExcType::value_error(format!("empty range in randint({a}, {b})")));
     }
@@ -697,30 +641,15 @@ fn int_arg_str(value: &Value) -> String {
 // Sequences
 // ============================================================================
 
-/// `choice(seq)` — a Python `def`.
-#[derive(FromArgs)]
-#[from_args(name = "Random.choice", style = def)]
-struct ChoiceArgs {
-    seq: Value,
-}
-
 /// `choice(seq)`: `seq[randbelow(len(seq))]`.
-fn choice(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let ChoiceArgs { seq } = ChoiceArgs::from_args(args, vm)?;
-    defer_drop!(seq, vm);
-    let len = len_of(seq, vm)?;
+#[py_signature("choice(seq)", error_name = "Random.choice")]
+fn choice(target: RandomTarget, params: &ChoiceArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let len = len_of(&params.seq, vm)?;
     if len == 0 {
         return Err(ExcType::index_error("Cannot choose from an empty sequence"));
     }
     let index = target.with_generator(vm, |random, vm| random.rng().randbelow(len as u128, &vm.heap.tracker))?;
-    seq.py_getitem(&Value::Int(index_value(index)), vm)
-}
-
-/// `shuffle(x)` — a Python `def`.
-#[derive(FromArgs)]
-#[from_args(name = "Random.shuffle", style = def)]
-struct ShuffleArgs {
-    x: Value,
+    params.seq.py_getitem(&Value::Int(index_value(index)), vm)
 }
 
 /// `shuffle(x)`: Fisher–Yates in place, from the end.
@@ -728,11 +657,12 @@ struct ShuffleArgs {
 /// Lists are swapped directly. Anything else goes through `x[i], x[j] = x[j],
 /// x[i]` per swap, as `random.py` does, so a tuple, `str`, set or dict fails
 /// (or, for a dict keyed `0..n`, succeeds) exactly where CPython does.
-fn shuffle(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let ShuffleArgs { x } = ShuffleArgs::from_args(args, vm)?;
-    defer_drop_mut!(x, vm);
-    let len = len_of(x, vm)?;
-    if let Some(list) = x.read_as::<List>(vm.heap) {
+#[py_signature("shuffle(x)", error_name = "Random.shuffle")]
+fn shuffle(target: RandomTarget, params: &mut ShuffleArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let len = len_of(&params.x, vm)?;
+    if let Value::Ref(id) = &params.x
+        && let HeapReadOutput::List(list) = vm.heap.read(*id)
+    {
         return target.with_generator(vm, |random, vm| {
             for i in (1..len).rev() {
                 vm.heap.tracker.check_time_every(i)?;
@@ -745,7 +675,12 @@ fn shuffle(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<
     for i in (1..len).rev() {
         vm.heap.tracker.check_time_every(i)?;
         let j = target.with_generator(vm, |random, vm| random.rng().randbelow(i as u128 + 1, &vm.heap.tracker))?;
-        swap_items(x, i64::try_from(i).expect("index fits i64"), index_value(j), vm)?;
+        swap_items(
+            &mut params.x,
+            i64::try_from(i).expect("index fits i64"),
+            index_value(j),
+            vm,
+        )?;
     }
     Ok(Value::None)
 }
@@ -767,38 +702,29 @@ fn swap_items(x: &mut Value, i: i64, j: i64, vm: &mut VM<'_>) -> RunResult<()> {
     x.py_setitem(j, xi, vm)
 }
 
-/// `sample(population, k, *, counts=None)` — a Python `def`.
-#[derive(FromArgs)]
-#[from_args(name = "Random.sample", style = def)]
-struct SampleArgs {
-    population: Value,
-    k: Value,
-    #[from_args(kw_only, default = Value::None)]
-    counts: Value,
-}
-
 /// `sample(population, k, *, counts=None)`: `k` distinct picks, in selection
 /// order, drawn exactly as CPython does (pool below its set-size threshold,
 /// rejection into a set above it).
-fn sample(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let SampleArgs { population, k, counts } = SampleArgs::from_args(args, vm)?;
-    defer_drop!(population, vm);
-    defer_drop!(k, vm);
-    defer_drop!(counts, vm);
-
-    if !population.py_type_heap(vm.heap).native().is_some_and(is_sequence) {
+#[py_signature("sample(population, k, *, counts=None)", error_name = "Random.sample")]
+fn sample(target: RandomTarget, params: &SampleArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    if !params
+        .population
+        .py_type_heap(vm.heap)
+        .native()
+        .is_some_and(is_sequence)
+    {
         return Err(ExcType::type_error(
             "Population must be a sequence.  For dicts or sets, use sorted(d).",
         ));
     }
-    let n = len_of(population, vm)?;
-    let k = k.as_int(vm)?;
+    let n = len_of(&params.population, vm)?;
+    let k = params.k.as_int(vm)?;
 
-    let picks = if matches!(counts, Value::None) {
+    let picks = if matches!(&params.counts, Value::None) {
         let indices = sample_indices(target, n, k, vm)?;
-        collect_items(population, indices.into_iter(), vm)?
+        collect_items(&params.population, indices.into_iter(), vm)?
     } else {
-        let cum_counts = cumulative_counts(counts, vm)?;
+        let cum_counts = cumulative_counts(&params.counts, vm)?;
         if cum_counts.len() != n {
             return Err(ExcType::value_error(
                 "The number of counts does not match the population",
@@ -814,7 +740,7 @@ fn sample(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<V
         let indices = selections
             .into_iter()
             .map(|s| bisect_right(&cum_counts, i128::try_from(s).expect("selection below total")));
-        collect_items(population, indices, vm)?
+        collect_items(&params.population, indices, vm)?
     };
     Ok(Value::allocate(List::new(picks), vm.heap))
 }
@@ -902,51 +828,32 @@ fn cumulative_counts(counts: &Value, vm: &mut VM<'_>) -> RunResult<Vec<i128>> {
     Ok(cumulative)
 }
 
-/// `choices(population, weights=None, *, cum_weights=None, k=1)` — a Python `def`.
-#[derive(FromArgs)]
-#[from_args(name = "Random.choices", style = def)]
-struct ChoicesArgs {
-    population: Value,
-    #[from_args(default = Value::None)]
-    weights: Value,
-    #[from_args(kw_only, default = Value::None)]
-    cum_weights: Value,
-    #[from_args(kw_only, default = Value::Int(1))]
-    k: Value,
-}
-
 /// `choices(population, weights=None, *, cum_weights=None, k=1)`: `k` picks
 /// with replacement, uniform or by (cumulative) weight.
-fn choices(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let ChoicesArgs {
-        population,
-        weights,
-        cum_weights,
-        k,
-    } = ChoicesArgs::from_args(args, vm)?;
-    defer_drop!(population, vm);
-    defer_drop!(weights, vm);
-    defer_drop!(cum_weights, vm);
-    defer_drop!(k, vm);
-
-    let n = len_of(population, vm)?;
-    let cumulative = if matches!(cum_weights, Value::None) {
-        if matches!(weights, Value::None) {
+#[py_signature(
+    "choices(population, weights=None, *, cum_weights=None, k=1)",
+    error_name = "Random.choices"
+)]
+fn choices(target: RandomTarget, params: &ChoicesArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let n = len_of(&params.population, vm)?;
+    let cumulative = if matches!(&params.cum_weights, Value::None) {
+        if matches!(&params.weights, Value::None) {
             None
-        } else if matches!(weights, Value::Int(_) | Value::Bool(_)) || weights.as_long_int(vm).is_some() {
+        } else if matches!(&params.weights, Value::Int(_) | Value::Bool(_)) || params.weights.as_long_int(vm).is_some()
+        {
             // The common mistake `choices(pop, 5)`, which CPython names too,
             // for any int (`k=True` for a bool, as CPython's f-string prints).
-            let k = weights.py_str(vm)?;
+            let k = params.weights.py_str(vm)?;
             defer_drop!(k, vm);
             return Err(ExcType::type_error(format!(
                 "The number of choices must be a keyword argument: k={}",
                 k.as_str_heap(vm.heap, vm.interns).expect("py_str returns str")
             )));
         } else {
-            Some(cumulative_weights(weights, vm)?)
+            Some(cumulative_weights(&params.weights, vm)?)
         }
-    } else if matches!(weights, Value::None) {
-        let items: Vec<Value> = collect_owned_iterable(cum_weights.clone_with_heap(vm), vm)?;
+    } else if matches!(&params.weights, Value::None) {
+        let items: Vec<Value> = collect_owned_iterable(params.cum_weights.clone_with_heap(vm), vm)?;
         defer_drop!(items, vm);
         let mut cumulative = Vec::with_capacity(items.len());
         for item in items {
@@ -958,7 +865,7 @@ fn choices(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<
             "Cannot specify both weights and cumulative weights",
         ));
     };
-    let k = k.as_int(vm)?;
+    let k = params.k.as_int(vm)?;
     let k = usize::try_from(k).unwrap_or(0);
     // The index buffer and the result list built from it.
     vm.heap
@@ -1008,7 +915,7 @@ fn choices(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<
             })?
         }
     };
-    let picks = collect_items(population, indices.into_iter(), vm)?;
+    let picks = collect_items(&params.population, indices.into_iter(), vm)?;
     Ok(Value::allocate(List::new(picks), vm.heap))
 }
 
@@ -1090,50 +997,25 @@ fn index_value(index: u128) -> i64 {
 // Real-valued distributions
 // ============================================================================
 
-/// `uniform(a, b)` — a Python `def`.
-#[derive(FromArgs)]
-#[from_args(name = "Random.uniform", style = def)]
-struct UniformArgs {
-    a: Value,
-    b: Value,
-}
-
 /// `uniform(a, b)`: `a + (b - a) * random()`.
-fn uniform(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let UniformArgs { a, b } = UniformArgs::from_args(args, vm)?;
-    defer_drop!(a, vm);
-    defer_drop!(b, vm);
-    let (a, b) = (to_float(a, vm)?, to_float(b, vm)?);
+#[py_signature("uniform(a, b)", error_name = "Random.uniform")]
+fn uniform(target: RandomTarget, params: &UniformArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let (a, b) = (to_float(&params.a, vm)?, to_float(&params.b, vm)?);
     let r = target.with_generator(vm, |random, _| random.rng().random());
     Ok(Value::Float(a + (b - a) * r))
-}
-
-/// `triangular(low=0.0, high=1.0, mode=None)` — a Python `def`.
-#[derive(FromArgs)]
-#[from_args(name = "Random.triangular", style = def)]
-struct TriangularArgs {
-    #[from_args(default = Value::Float(0.0))]
-    low: Value,
-    #[from_args(default = Value::Float(1.0))]
-    high: Value,
-    #[from_args(default = Value::None)]
-    mode: Value,
 }
 
 /// `triangular(low=0.0, high=1.0, mode=None)`: the triangular distribution.
 /// With `mode` given and `low == high`, CPython catches the `ZeroDivisionError`
 /// and returns `low` itself, so an int `low` comes back as an int.
-fn triangular(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let TriangularArgs { low, high, mode } = TriangularArgs::from_args(args, vm)?;
-    defer_drop!(low, vm);
-    defer_drop!(high, vm);
-    defer_drop!(mode, vm);
-    let (low_value, high_value) = (low, high);
+#[py_signature("triangular(low=0.0, high=1.0, mode=None)", error_name = "Random.triangular")]
+fn triangular(target: RandomTarget, params: &TriangularArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let (low_value, high_value) = (&params.low, &params.high);
     let (mut low, mut high) = (to_float(low_value, vm)?, to_float(high_value, vm)?);
-    let mode = if matches!(mode, Value::None) {
+    let mode = if matches!(&params.mode, Value::None) {
         None
     } else {
-        Some(to_float(mode, vm)?)
+        Some(to_float(&params.mode, vm)?)
     };
 
     let mut u = target.with_generator(vm, |random, _| random.rng().random());
@@ -1150,22 +1032,10 @@ fn triangular(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResu
     Ok(Value::Float(low + (high - low) * (u * c).sqrt()))
 }
 
-/// `normalvariate(mu=0.0, sigma=1.0)` — a Python `def`.
-#[derive(FromArgs)]
-#[from_args(name = "Random.normalvariate", style = def)]
-struct NormalArgs {
-    #[from_args(default = Value::Float(0.0))]
-    mu: Value,
-    #[from_args(default = Value::Float(1.0))]
-    sigma: Value,
-}
-
 /// `normalvariate(mu=0.0, sigma=1.0)`: Kinderman–Monahan ratio of uniforms.
-fn normalvariate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let NormalArgs { mu, sigma } = NormalArgs::from_args(args, vm)?;
-    defer_drop!(mu, vm);
-    defer_drop!(sigma, vm);
-    let (mu, sigma) = (to_float(mu, vm)?, to_float(sigma, vm)?);
+#[py_signature("normalvariate(mu=0.0, sigma=1.0)", error_name = "Random.normalvariate")]
+fn normalvariate(target: RandomTarget, params: &NormalArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let (mu, sigma) = (to_float(&params.mu, vm)?, to_float(&params.sigma, vm)?);
     let z = target.with_generator(vm, |random, vm| normal_deviate(random.rng(), &vm.heap.tracker))?;
     Ok(Value::Float(mu + z * sigma))
 }
@@ -1188,23 +1058,11 @@ fn normal_deviate(rng: &mut Mt19937, tracker: &ResourceTracker) -> RunResult<f64
     }
 }
 
-/// `gauss(mu=0.0, sigma=1.0)` — parsed separately to preserve its error messages.
-#[derive(FromArgs)]
-#[from_args(name = "Random.gauss", style = def)]
-struct GaussArgs {
-    #[from_args(default = Value::Float(0.0))]
-    mu: Value,
-    #[from_args(default = Value::Float(1.0))]
-    sigma: Value,
-}
-
 /// `gauss(mu=0.0, sigma=1.0)`: Box–Muller, keeping the second deviate for
 /// the next call.
-fn gauss(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let GaussArgs { mu, sigma } = GaussArgs::from_args(args, vm)?;
-    defer_drop!(mu, vm);
-    defer_drop!(sigma, vm);
-    let (mu, sigma) = (to_float(mu, vm)?, to_float(sigma, vm)?);
+#[py_signature("gauss(mu=0.0, sigma=1.0)", error_name = "Random.gauss")]
+fn gauss(target: RandomTarget, params: &GaussArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let (mu, sigma) = (to_float(&params.mu, vm)?, to_float(&params.sigma, vm)?);
     Ok(Value::Float(target.with_generator(vm, |random, _| {
         let z = if let Some(z) = random.take_gauss_next() {
             z
@@ -1219,20 +1077,10 @@ fn gauss(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Va
     })))
 }
 
-/// `lognormvariate(mu, sigma)` — a Python `def`.
-#[derive(FromArgs)]
-#[from_args(name = "Random.lognormvariate", style = def)]
-struct LognormArgs {
-    mu: Value,
-    sigma: Value,
-}
-
 /// `lognormvariate(mu, sigma)`: `exp(normalvariate(mu, sigma))`.
-fn lognormvariate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let LognormArgs { mu, sigma } = LognormArgs::from_args(args, vm)?;
-    defer_drop!(mu, vm);
-    defer_drop!(sigma, vm);
-    let (mu, sigma) = (to_float(mu, vm)?, to_float(sigma, vm)?);
+#[py_signature("lognormvariate(mu, sigma)", error_name = "Random.lognormvariate")]
+fn lognormvariate(target: RandomTarget, params: &LognormArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let (mu, sigma) = (to_float(&params.mu, vm)?, to_float(&params.sigma, vm)?);
     let z = target.with_generator(vm, |random, vm| normal_deviate(random.rng(), &vm.heap.tracker))?;
     let exponent = mu + z * sigma;
     let result = exponent.exp();
@@ -1243,42 +1091,19 @@ fn lognormvariate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> Run
     }
 }
 
-/// `expovariate(lambd=1.0)` — a Python `def`.
-#[derive(FromArgs)]
-#[from_args(name = "Random.expovariate", style = def)]
-struct ExpovariateArgs {
-    #[from_args(default = Value::Float(1.0))]
-    lambd: Value,
-}
-
 /// `expovariate(lambd=1.0)`: `-log(1 - random()) / lambd`.
-fn expovariate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let ExpovariateArgs { lambd } = ExpovariateArgs::from_args(args, vm)?;
-    defer_drop!(lambd, vm);
-    let lambd = to_float(lambd, vm)?;
+#[py_signature("expovariate(lambd=1.0)", error_name = "Random.expovariate")]
+fn expovariate(target: RandomTarget, params: &ExpovariateArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let lambd = to_float(&params.lambd, vm)?;
     let r = target.with_generator(vm, |random, _| random.rng().random());
     let numerator = -(1.0 - r).ln();
     Ok(Value::Float(float_div(numerator, lambd)?))
 }
 
-/// `vonmisesvariate(mu, kappa)` — a Python `def`.
-#[derive(FromArgs)]
-#[from_args(name = "Random.vonmisesvariate", style = def)]
-struct VonmisesArgs {
-    mu: Value,
-    kappa: Value,
-}
-
 /// `vonmisesvariate(mu, kappa)`: Fisher's circular distribution algorithm.
-#[expect(
-    clippy::many_single_char_names,
-    reason = "the paper's names, as random.py keeps them"
-)]
-fn vonmisesvariate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let VonmisesArgs { mu, kappa } = VonmisesArgs::from_args(args, vm)?;
-    defer_drop!(mu, vm);
-    defer_drop!(kappa, vm);
-    let (mu, kappa) = (to_float(mu, vm)?, to_float(kappa, vm)?);
+#[py_signature("vonmisesvariate(mu, kappa)", error_name = "Random.vonmisesvariate")]
+fn vonmisesvariate(target: RandomTarget, params: &VonmisesArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let (mu, kappa) = (to_float(&params.mu, vm)?, to_float(&params.kappa, vm)?);
     target.with_generator(vm, |random, vm| {
         let rng = random.rng();
         if kappa <= 1e-6 {
@@ -1310,21 +1135,11 @@ fn vonmisesvariate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> Ru
     })
 }
 
-/// `gammavariate(alpha, beta)` — a Python `def`.
-#[derive(FromArgs)]
-#[from_args(name = "Random.gammavariate", style = def)]
-struct GammaArgs {
-    alpha: Value,
-    beta: Value,
-}
-
 /// `gammavariate(alpha, beta)`: the gamma distribution, by Cheng's method
 /// above `alpha == 1`, exponential at it, and Kennedy & Gentle's below.
-fn gammavariate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let GammaArgs { alpha, beta } = GammaArgs::from_args(args, vm)?;
-    defer_drop!(alpha, vm);
-    defer_drop!(beta, vm);
-    let (alpha, beta) = (to_float(alpha, vm)?, to_float(beta, vm)?);
+#[py_signature("gammavariate(alpha, beta)", error_name = "Random.gammavariate")]
+fn gammavariate(target: RandomTarget, params: &GammaArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let (alpha, beta) = (to_float(&params.alpha, vm)?, to_float(&params.beta, vm)?);
     if alpha <= 0.0 || beta <= 0.0 {
         return Err(ExcType::value_error("gammavariate: alpha and beta must be > 0.0"));
     }
@@ -1391,20 +1206,10 @@ fn gamma_deviate(rng: &mut Mt19937, alpha: f64, beta: f64, tracker: &ResourceTra
     }
 }
 
-/// `betavariate(alpha, beta)` — parsed separately to preserve its error messages.
-#[derive(FromArgs)]
-#[from_args(name = "Random.betavariate", style = def)]
-struct BetaArgs {
-    alpha: Value,
-    beta: Value,
-}
-
 /// `betavariate(alpha, beta)`: a ratio of two gamma deviates.
-fn betavariate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let BetaArgs { alpha, beta } = BetaArgs::from_args(args, vm)?;
-    defer_drop!(alpha, vm);
-    defer_drop!(beta, vm);
-    let (alpha, beta) = (to_float(alpha, vm)?, to_float(beta, vm)?);
+#[py_signature("betavariate(alpha, beta)", error_name = "Random.betavariate")]
+fn betavariate(target: RandomTarget, params: &BetaArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let (alpha, beta) = (to_float(&params.alpha, vm)?, to_float(&params.beta, vm)?);
     // Both inner `gammavariate` calls validate; the first rejects `alpha`,
     // and `beta` only gets checked once `y` is non-zero, as in CPython.
     if alpha <= 0.0 {
@@ -1425,48 +1230,20 @@ fn betavariate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunRes
     Ok(Value::Float(y / (y + z)))
 }
 
-/// `paretovariate(alpha)` — a Python `def`.
-#[derive(FromArgs)]
-#[from_args(name = "Random.paretovariate", style = def)]
-struct ParetoArgs {
-    alpha: Value,
-}
-
 /// `paretovariate(alpha)`: `(1 - random()) ** (-1 / alpha)`.
-fn paretovariate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let ParetoArgs { alpha } = ParetoArgs::from_args(args, vm)?;
-    defer_drop!(alpha, vm);
-    let alpha = to_float(alpha, vm)?;
+#[py_signature("paretovariate(alpha)", error_name = "Random.paretovariate")]
+fn paretovariate(target: RandomTarget, params: &ParetoArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let alpha = to_float(&params.alpha, vm)?;
     let u = 1.0 - target.with_generator(vm, |random, _| random.rng().random());
     float_pow(u, float_div(-1.0, alpha)?).map(Value::Float)
 }
 
-/// `weibullvariate(alpha, beta)` — parsed separately to preserve its error messages.
-#[derive(FromArgs)]
-#[from_args(name = "Random.weibullvariate", style = def)]
-struct WeibullArgs {
-    alpha: Value,
-    beta: Value,
-}
-
 /// `weibullvariate(alpha, beta)`: `alpha * (-log(1 - random())) ** (1 / beta)`.
-fn weibullvariate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let WeibullArgs { alpha, beta } = WeibullArgs::from_args(args, vm)?;
-    defer_drop!(alpha, vm);
-    defer_drop!(beta, vm);
-    let (alpha, beta) = (to_float(alpha, vm)?, to_float(beta, vm)?);
+#[py_signature("weibullvariate(alpha, beta)", error_name = "Random.weibullvariate")]
+fn weibullvariate(target: RandomTarget, params: &WeibullArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let (alpha, beta) = (to_float(&params.alpha, vm)?, to_float(&params.beta, vm)?);
     let u = 1.0 - target.with_generator(vm, |random, _| random.rng().random());
     Ok(Value::Float(alpha * float_pow(-u.ln(), float_div(1.0, beta)?)?))
-}
-
-/// `binomialvariate(n=1, p=0.5)` — a Python `def`.
-#[derive(FromArgs)]
-#[from_args(name = "Random.binomialvariate", style = def)]
-struct BinomialArgs {
-    #[from_args(default = Value::Int(1))]
-    n: Value,
-    #[from_args(default = Value::Float(0.5))]
-    p: Value,
 }
 
 /// `binomialvariate(n=1, p=0.5)`: successes in `n` trials — Devroye's
@@ -1475,12 +1252,10 @@ struct BinomialArgs {
     clippy::float_cmp,
     reason = "`p == 0.0` / `p == 1.0` are exact edge cases in random.py"
 )]
-fn binomialvariate(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let BinomialArgs { n, p } = BinomialArgs::from_args(args, vm)?;
-    defer_drop!(n, vm);
-    defer_drop!(p, vm);
-    let n = n.as_int(vm)?;
-    let p = to_float(p, vm)?;
+#[py_signature("binomialvariate(n=1, p=0.5)", error_name = "Random.binomialvariate")]
+fn binomialvariate(target: RandomTarget, params: &BinomialArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let n = params.n.as_int(vm)?;
+    let p = to_float(&params.p, vm)?;
     if n < 0 {
         return Err(ExcType::value_error("n must be non-negative"));
     }

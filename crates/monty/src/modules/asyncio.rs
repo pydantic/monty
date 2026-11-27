@@ -12,19 +12,20 @@
 mod task;
 mod wait;
 
+use monty_macros::py_signature;
 use monty_types::{OsFunctionCall, sleep_duration_saturating};
 use num_traits::ToPrimitive;
 pub(crate) use task::{create_task, task_call_method};
 pub(crate) use wait::wait;
 
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     asyncio::GatherFuture,
     builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{Heap, HeapData},
+    heap::HeapData,
     heap_traits::DropGuard,
     intern::StaticStrings,
     modules::{
@@ -109,7 +110,7 @@ pub(super) fn call(vm: &mut VM<'_>, functions: AsyncioFunctions, args: ArgValues
     match functions {
         AsyncioFunctions::CreateTask => create_task(vm, args).map(CallResult::Value),
         AsyncioFunctions::Gather => gather(vm, args).map(CallResult::Value),
-        AsyncioFunctions::Run => run(vm.heap, args),
+        AsyncioFunctions::Run => run(vm, args),
         AsyncioFunctions::Sleep => sleep(vm, args),
         AsyncioFunctions::Wait => wait(vm, args),
     }
@@ -119,8 +120,12 @@ pub(super) fn call(vm: &mut VM<'_>, functions: AsyncioFunctions, args: ArgValues
 /// Unlike CPython, waiting starts at the call. The host answers with a future
 /// or inline; [`host_sleep`] determines the destination and delay.
 /// `Zero` and zero-length system sleeps settle immediately. See `limitations/asyncio.md`.
-fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-    let SleepArgs { delay, result } = SleepArgs::from_args(args, vm)?;
+///
+/// `asyncio.sleep(delay, result=None)` — a pure-Python `def` in CPython, so
+/// both parameters bind by keyword and neither is type-checked while binding.
+#[py_signature("sleep(delay, result=None)")]
+fn sleep(vm: &mut VM<'_>, params: &mut SleepArgs) -> RunResult<CallResult> {
+    let SleepArgsFields { delay, result } = params.take_all();
     // `result` outlives `delay`: it moves into the awaitable once the delay is valid.
     let mut result_guard = DropGuard::new(result, vm);
     let delay = {
@@ -149,17 +154,6 @@ fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     })
 }
 
-/// `asyncio.sleep(delay, result=None)` — a pure-Python `def` in CPython, so
-/// both parameters bind by keyword and neither is type-checked while binding.
-#[derive(FromArgs)]
-#[from_args(name = "sleep", style = def)]
-struct SleepArgs {
-    #[from_args(static_string = "Delay")]
-    delay: Value,
-    #[from_args(static_string = "Result", default = Value::None)]
-    result: Value,
-}
-
 /// Reads `delay` as float seconds.
 ///
 /// CPython never converts it: it compares `delay <= 0` and hands whatever is
@@ -185,8 +179,9 @@ fn delay_seconds(delay: &Value, vm: &VM<'_>) -> RunResult<f64> {
 ///
 /// Returns `CallResult::AwaitValue` so the VM executes `exec_get_awaitable` on
 /// the value, which handles validation that it's actually a coroutine/awaitable.
-fn run(heap: &mut Heap, args: ArgValues) -> RunResult<CallResult> {
-    let coroutine = args.get_one_arg("asyncio.run", heap)?;
+#[py_signature("run(main, /)", error_name = "asyncio.run")]
+fn run(vm: &mut VM<'_>, params: &mut AsyncioRunArgs) -> RunResult<CallResult> {
+    let AsyncioRunArgsFields { main: coroutine } = params.take_all();
     Ok(CallResult::AwaitValue(coroutine))
 }
 
@@ -256,9 +251,5 @@ pub(crate) fn gather(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// `TypeError: gather() takes no keyword arguments` from `into_pos_only`.
 /// When CPython's `return_exceptions=False` is wired up this becomes a
 /// regular `kw_only` slot and the flag goes away.
-#[derive(FromArgs)]
-#[from_args(name = "gather", kwargs_not_supported_yet)]
-struct GatherArgs {
-    #[from_args(varargs)]
-    awaitables: Vec<Value>,
-}
+#[py_signature("gather(*awaitables)", kwargs_not_supported_yet)]
+struct GatherArgs;

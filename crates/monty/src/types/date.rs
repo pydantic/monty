@@ -18,11 +18,11 @@ use jiff::{
         strtime::{BrokenDownTime, Config, PosixCustom},
     },
 };
-use monty_macros::pyattrs;
+use monty_macros::{py_signature, pyattrs};
 use monty_types::{OsFunctionCall, ResourceTracker};
 
 use crate::{
-    args::{ArgValues, FromArgs, StrArg},
+    args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -191,13 +191,8 @@ pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// required argument 'X' (pos N)", etc. Unlike `datetime()` it has no
 /// keyword-only fields, so the derive keeps the plain (non-"positional")
 /// at-most wording automatically.
-#[derive(FromArgs)]
-#[from_args(name = "function", style = c, at_most_total)]
-struct DateInitArgs {
-    year: i32,
-    month: i32,
-    day: i32,
-}
+#[py_signature("date(year: c_int, month: c_int, day: c_int)")]
+struct DateInitArgs;
 
 /// Reads `date.today()` from the session's clock in the session zone. A `CallHost`
 /// clock requests a `DateToday` answer constructed with `MontyObject::date`.
@@ -554,23 +549,12 @@ pub(crate) fn invalid_strftime_error() -> RunError {
 /// form (`strftime() argument 1 must be str, not <type>`), including the
 /// `None`-vs-`NoneType` special case — so the type-check logic lives in
 /// the derive rather than a hand-written extract helper.
-#[derive(FromArgs)]
-#[from_args(name = "strftime", style = c_named, at_most_total, bad_arg)]
-pub(crate) struct StrftimeArgs {
-    pub(crate) format: StrArg,
-}
+#[py_signature("strftime(format: str)", bad_arg)]
+pub(crate) struct StrftimeArgs;
 
 /// Optional positional-or-keyword date components; omitted fields keep their original values.
-#[derive(FromArgs)]
-#[from_args(name = "replace", style = c_named, at_most_total)]
-struct DateReplaceArgs {
-    #[from_args(default)]
-    year: Option<i32>,
-    #[from_args(default)]
-    month: Option<i32>,
-    #[from_args(default)]
-    day: Option<i32>,
-}
+#[py_signature("replace(year: c_int=..., month: c_int=..., day: c_int=...)")]
+struct DateReplaceArgs;
 
 /// Adapts date descriptors to the datetime payload while preserving method-specific results.
 pub(crate) fn call_subtype_descriptor<'h>(
@@ -741,9 +725,5 @@ impl<'heap> PyAttrs<'heap> for PyDateImpl {
 }
 
 /// Argument shape for `date.fromordinal(ordinal)` and `datetime.fromordinal(ordinal)`.
-#[derive(FromArgs)]
-#[from_args(name = "fromordinal", style = parse_tuple)]
-pub(crate) struct FromOrdinalArgs {
-    #[from_args(pos_only)]
-    pub(crate) ordinal: i32,
-}
+#[py_signature("fromordinal(ordinal: c_int, /)")]
+pub(crate) struct FromOrdinalArgs;

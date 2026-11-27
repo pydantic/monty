@@ -7,7 +7,7 @@ use std::{
     mem,
 };
 
-use monty_macros::pyattrs;
+use monty_macros::{py_signature, pyattrs};
 /// Python tuple type using `SmallVec` for inline storage of small tuples.
 ///
 /// This type provides Python tuple semantics. Tuples are immutable sequences
@@ -28,7 +28,6 @@ use smallvec::SmallVec;
 
 use super::{CmpOrder, PyTrait, iter::collect_owned_iterable};
 use crate::{
-    args::ArgValues,
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
@@ -123,8 +122,9 @@ impl Tuple {
     ///
     /// - `tuple()` with no args returns an empty tuple (singleton)
     /// - `tuple(iterable)` creates a tuple from any iterable (list, tuple, range, str, bytes, dict)
-    pub fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-        let value = args.get_zero_one_arg("tuple", vm.heap)?;
+    #[py_signature("tuple(iterable=..., /)")]
+    pub fn init(vm: &mut VM<'_>, params: &mut TupleArgs) -> RunResult<Value> {
+        let TupleArgsFields { iterable: value } = params.take_all();
         match value {
             None => {
                 // Use empty tuple singleton
@@ -686,26 +686,21 @@ impl<'heap> PyAttrs<'heap> for PyTupleImpl {
     ///
     /// Returns the index of the first occurrence of value.
     /// Raises ValueError if the value is not found.
-    #[pymethod(Index)]
-    fn index<'h>(tuple: &HeapRead<'h, Tuple>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let pos_args = args.into_pos_only("tuple.index", vm.heap)?;
-        defer_drop!(pos_args, vm);
-
+    #[pymethod(Index, "index(self, value, start=..., stop=..., /)", owner = "tuple")]
+    fn index<'h>(tuple: &HeapRead<'h, Tuple>, params: &IndexArgs, vm: &mut VM<'h>) -> RunResult<Value> {
         let len = tuple.get(vm.heap).as_slice().len();
-        let (value, start, end) = match pos_args.as_slice() {
-            [] => return Err(ExcType::type_error_at_least("tuple.index", 1, 0)),
-            [value] => (value, 0, len),
-            [value, start_arg] => {
-                let start = normalize_sequence_index(value_to_i64_bound(start_arg, vm)?, len);
-                (value, start, len)
-            }
-            [value, start_arg, end_arg] => {
-                let start = normalize_sequence_index(value_to_i64_bound(start_arg, vm)?, len);
-                let end = normalize_sequence_index(value_to_i64_bound(end_arg, vm)?, len).max(start);
-                (value, start, end)
-            }
-            other => return Err(ExcType::type_error_at_most("tuple.index", 3, other.len())),
-        };
+        let start_arg = params
+            .start
+            .as_ref()
+            .map(|start| value_to_i64_bound(start, vm))
+            .transpose()?;
+        let end_arg = params
+            .stop
+            .as_ref()
+            .map(|stop| value_to_i64_bound(stop, vm))
+            .transpose()?;
+        let start = start_arg.map_or(0, |start| normalize_sequence_index(start, len));
+        let end = end_arg.map_or(len, |end| normalize_sequence_index(end, len)).max(start);
 
         // Nested short offset searches may never reach an iterator checkpoint.
         vm.heap.tracker.check_time()?;
@@ -719,7 +714,7 @@ impl<'heap> PyAttrs<'heap> for PyTupleImpl {
                 // No further matches possible inside [start, end).
                 break;
             }
-            if value.py_eq(item, vm)? {
+            if params.value.py_eq(item, vm)? {
                 let idx_i64 = i64::try_from(idx).expect("index exceeds i64::MAX");
                 return Ok(Value::Int(idx_i64));
             }
@@ -731,16 +726,13 @@ impl<'heap> PyAttrs<'heap> for PyTupleImpl {
     /// Implements Python's `tuple.count(value)` method.
     ///
     /// Returns the number of occurrences of value in the tuple.
-    #[pymethod(Count)]
-    fn count<'h>(tuple: &HeapRead<'h, Tuple>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let value = args.get_one_arg("tuple.count", vm.heap)?;
-        defer_drop!(value, vm);
-
+    #[pymethod(Count, "count(self, value, /)", owner = "tuple")]
+    fn count<'h>(tuple: &HeapRead<'h, Tuple>, params: &TupleCountArgs, vm: &mut VM<'h>) -> RunResult<Value> {
         let mut count = 0usize;
         let iter = tuple.iter(vm)?;
         defer_drop_mut!(iter, vm);
         while let Some(item) = iter.next(vm)? {
-            if value.py_eq(item, vm)? {
+            if params.value.py_eq(item, vm)? {
                 count += 1;
             }
         }

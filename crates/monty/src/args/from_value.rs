@@ -21,8 +21,9 @@ use num_traits::ToPrimitive;
 use crate::{
     bytecode::VM,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{ContainsHeap, DropWithContext},
-    types::PyTrait,
+    heap::{ContainsHeap, DropWithContext, HeapData},
+    py_value::PyValue,
+    types::{PyTrait, long_int::PyInt},
     value::Value,
 };
 
@@ -40,6 +41,38 @@ pub(crate) enum ArgErrCtx {
         func_name: &'static str,
         arg_name: &'static str,
     },
+}
+
+impl ArgErrCtx {
+    fn wrong_type(
+        self,
+        rejected: &Value,
+        vm: &VM<'_>,
+        expected: Option<&str>,
+        plain: impl FnOnce(&str) -> RunError,
+    ) -> RunError {
+        let got_type = rejected.py_type_heap(vm.heap);
+        match (self, expected) {
+            (Self::BadArgPos { func_name, pos }, Some(expected)) => {
+                let arg_name = got_type.cpython_arg_name(vm.heap, vm.interns);
+                ExcType::type_error_bad_arg_pos(func_name, pos, expected, arg_name)
+            }
+            (
+                Self::BadArgNamed {
+                    func_name,
+                    arg_name: name,
+                },
+                Some(expected),
+            ) => {
+                let arg_name = got_type.cpython_arg_name(vm.heap, vm.interns);
+                ExcType::type_error_bad_arg_named(func_name, name, expected, arg_name)
+            }
+            _ => {
+                let got = got_type.name(vm.heap, vm.interns);
+                plain(&got)
+            }
+        }
+    }
 }
 
 /// A failed [`FromValue`] coercion, split by *why* it failed so extraction
@@ -61,14 +94,7 @@ pub(crate) enum FromValueFail {
 /// extraction, consuming the value and handling refcount cleanup on both
 /// success and failure paths.
 ///
-/// **Only use `FromValue`-typed fields for functions that are implemented in
-/// C in CPython** (builtins and extension modules, where CPython's argument
-/// clinic type-checks each argument *while binding* it). Functions that are
-/// pure-Python `def`s in CPython (`style = def` structs — the `re` module,
-/// `json.dumps`/`loads`, …) must declare fields as raw `Value` and coerce in
-/// the function body instead: CPython `def` binding never type-checks, so a
-/// coercion failure at extraction time would wrongly preempt later binding
-/// errors such as missing arguments or unexpected kwargs.
+/// Generated adapters convert fields in declaration order after validating the call shape.
 ///
 /// Implementations *must* consume the input on every path: either drop it
 /// (`drop_with`) once any needed data has been read out, or transfer
@@ -143,27 +169,7 @@ pub(crate) trait FromValue: Sized {
             FromValueFail::WrongType(rejected) => {
                 // Capture the offending type name *before* dropping `rejected`,
                 // as dropping the last reference to an instance can free its class.
-                let got_type = rejected.py_type_heap(vm.heap);
-                let err = match (ctx, Self::EXPECTED_TYPE_NAME) {
-                    (ArgErrCtx::BadArgPos { func_name, pos }, Some(expected)) => {
-                        let arg_name = got_type.cpython_arg_name(vm.heap, vm.interns);
-                        ExcType::type_error_bad_arg_pos(func_name, pos, expected, arg_name)
-                    }
-                    (
-                        ArgErrCtx::BadArgNamed {
-                            func_name,
-                            arg_name: name,
-                        },
-                        Some(expected),
-                    ) => {
-                        let arg_name = got_type.cpython_arg_name(vm.heap, vm.interns);
-                        ExcType::type_error_bad_arg_named(func_name, name, expected, arg_name)
-                    }
-                    _ => {
-                        let got = got_type.name(vm.heap, vm.interns);
-                        Self::type_error(&got)
-                    }
-                };
+                let err = ctx.wrong_type(&rejected, vm, Self::EXPECTED_TYPE_NAME, Self::type_error);
                 rejected.drop_with(vm);
                 err
             }
@@ -192,6 +198,22 @@ impl FromValue for Value {
     }
 }
 
+impl FromValue for f64 {
+    fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
+        let result = match value.py_float(vm) {
+            Ok(Some(number)) => Ok(number),
+            Ok(None) => return Err(FromValueFail::WrongType(value)),
+            Err(err) => Err(FromValueFail::Raise(err)),
+        };
+        value.drop_with(vm);
+        result
+    }
+
+    fn type_error(got: &str) -> RunError {
+        ExcType::type_error_not_real_number(got)
+    }
+}
+
 impl FromValue for i32 {
     const EXPECTED_TYPE_NAME: Option<&'static str> = Some("int");
 
@@ -215,6 +237,99 @@ impl FromValue for i32 {
     fn type_error(got: &str) -> RunError {
         ExcType::type_error_not_integer(got)
     }
+}
+
+/// Preserves whether the caller supplied a value when binding a string default.
+pub(crate) enum DefaultedStringArg {
+    Omitted(&'static str),
+    Supplied(Value),
+}
+
+impl FromValue for DefaultedStringArg {
+    fn from_value(value: Value, _vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
+        Ok(Self::Supplied(value))
+    }
+
+    fn drop_extracted(self, heap: &mut impl ContainsHeap) {
+        if let Self::Supplied(value) = self {
+            value.drop_with(heap);
+        }
+    }
+}
+
+/// An owned Python integer in its original inline, interned or heap storage.
+#[derive(Debug)]
+pub(crate) struct IntArg(Value);
+
+impl IntArg {
+    #[inline]
+    fn from_integer(value: Value, vm: &VM<'_>) -> Result<Self, Value> {
+        match value {
+            Value::Int(_) | Value::InternLongInt(_) => Ok(Self(value)),
+            Value::Bool(b) => Ok(Self::from(i64::from(b))),
+            Value::Ref(id) if matches!(vm.heap.get(id), HeapData::LongInt(_)) => Ok(Self(value)),
+            other => Err(other),
+        }
+    }
+
+    pub(crate) fn view<'h>(&self, vm: &VM<'h>) -> PyInt<'h> {
+        let PyValue::Int(integer) = self.0.py_value(vm) else {
+            unreachable!("IntArg holds a normalized integer");
+        };
+        integer
+    }
+
+    /// Takes ownership of the integer produced by a literal or the index protocol.
+    pub(crate) fn from_index(value: Value, vm: &VM<'_>) -> Self {
+        Self::from_integer(value, vm).expect("expected a Python integer")
+    }
+}
+
+impl From<i64> for IntArg {
+    fn from(n: i64) -> Self {
+        Self(Value::Int(n))
+    }
+}
+
+impl FromValue for IntArg {
+    const EXPECTED_TYPE_NAME: Option<&'static str> = Some("int");
+
+    #[inline]
+    fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
+        Self::from_integer(value, vm).map_err(FromValueFail::WrongType)
+    }
+
+    fn type_error(got: &str) -> RunError {
+        ExcType::type_error_not_integer(got)
+    }
+
+    fn drop_extracted(self, heap: &mut impl ContainsHeap) {
+        self.drop_with(heap);
+    }
+}
+
+impl<C: ContainsHeap> DropWithContext<C> for IntArg {
+    fn drop_with(self, ctx: &mut C) {
+        self.0.drop_with(ctx);
+    }
+}
+
+pub(crate) fn extract_index<T: From<IntArg>>(value: Value, vm: &mut VM<'_>, _: ArgErrCtx) -> RunResult<T> {
+    let index = match IntArg::from_integer(value, vm) {
+        Ok(integer) => integer,
+        Err(other) => {
+            let result = other.py_index(vm);
+            other.drop_with(vm);
+            IntArg::from_index(result?, vm)
+        }
+    };
+    Ok(T::from(index))
+}
+
+pub(crate) fn extract_i64_index<T: From<i64>>(value: Value, vm: &mut VM<'_>, _: ArgErrCtx) -> RunResult<T> {
+    let result = value.as_int(vm);
+    value.drop_with(vm);
+    result.map(T::from)
 }
 
 impl FromValue for i64 {
@@ -352,6 +467,20 @@ impl FromValue for bool {
 /// (the macro's error paths use [`FromValue::drop_extracted`]).
 #[derive(Debug)]
 pub(crate) struct StrArg(Value);
+
+pub(crate) fn extract_nullable_str(value: Value, vm: &mut VM<'_>, ctx: ArgErrCtx) -> RunResult<Option<StrArg>> {
+    if matches!(value, Value::None) {
+        Ok(None)
+    } else if value.is_str(vm.heap) {
+        Ok(Some(StrArg(value)))
+    } else {
+        let err = ctx.wrong_type(&value, vm, Some("str or None"), |got| {
+            ExcType::type_error(format!("must be str or None, not {got}"))
+        });
+        value.drop_with(vm);
+        Err(err)
+    }
+}
 
 impl FromValue for StrArg {
     const EXPECTED_TYPE_NAME: Option<&'static str> = Some("str");

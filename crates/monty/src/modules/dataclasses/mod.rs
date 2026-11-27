@@ -13,6 +13,8 @@ mod legacy;
 mod method;
 mod options;
 
+use monty_macros::py_signature;
+
 pub(crate) use self::{
     field::DataclassField,
     legacy::{LEGACY_DUMP_VERSION, upgrade_legacy_classes},
@@ -27,7 +29,7 @@ use self::{
     method::{FieldInit, MethodKind},
 };
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     builtins::Builtins,
     bytecode::VM,
     defer_drop,
@@ -115,8 +117,17 @@ pub(super) fn call(vm: &mut VM<'_>, func: DataclassesFunctions, args: ArgValues)
 /// The `@dataclass` decorator, in both spellings: applied bare the class
 /// arrives here directly, while `@dataclass(...)` has none yet and gets back a
 /// [`DataclassesFunctions::Configured`] that receives it on the next call.
-fn dataclass_decorator(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let DataclassArgs {
+///
+/// `@dataclass` arguments, mirroring CPython's
+/// `dataclass(cls=None, /, *, init=True, repr=True, ...)`.
+///
+/// Raw `Value` fields because CPython's `def` type-checks nothing; the body
+/// takes each option's truthiness instead.
+#[py_signature(
+    "dataclass(cls=None, /, *, init=True, repr=True, eq=True, order=False, unsafe_hash=False, frozen=False, match_args=True, kw_only=False, slots=False, weakref_slot=False)"
+)]
+fn dataclass_decorator(vm: &mut VM<'_>, params: &mut DataclassArgs) -> RunResult<Value> {
+    let DataclassArgsFields {
         cls,
         init,
         repr,
@@ -128,7 +139,7 @@ fn dataclass_decorator(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         kw_only,
         slots,
         weakref_slot,
-    } = DataclassArgs::from_args(args, vm)?;
+    } = params.take_all();
     // CPython's `dataclass` is a `def`, so it type-checks nothing and takes each
     // option's truthiness. That runs user code — a `__bool__` may raise — so
     // `cls` and all ten flags are guarded before the first read.
@@ -198,38 +209,6 @@ fn dataclass_decorator(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     }
 }
 
-/// `@dataclass` arguments, mirroring CPython's
-/// `dataclass(cls=None, /, *, init=True, repr=True, ...)`.
-///
-/// Raw `Value` fields because CPython's `def` type-checks nothing; the body
-/// takes each option's truthiness instead.
-#[derive(FromArgs)]
-#[from_args(name = "dataclass", style = def)]
-struct DataclassArgs {
-    #[from_args(pos_only, default = Value::None)]
-    cls: Value,
-    #[from_args(kw_only, default = Value::Bool(true))]
-    init: Value,
-    #[from_args(kw_only, default = Value::Bool(true))]
-    repr: Value,
-    #[from_args(kw_only, default = Value::Bool(true))]
-    eq: Value,
-    #[from_args(kw_only, default = Value::Bool(false))]
-    order: Value,
-    #[from_args(kw_only, default = Value::Bool(false))]
-    unsafe_hash: Value,
-    #[from_args(kw_only, default = Value::Bool(false))]
-    frozen: Value,
-    #[from_args(kw_only, default = Value::Bool(true))]
-    match_args: Value,
-    #[from_args(kw_only, default = Value::Bool(false))]
-    kw_only: Value,
-    #[from_args(kw_only, default = Value::Bool(false))]
-    slots: Value,
-    #[from_args(kw_only, default = Value::Bool(false))]
-    weakref_slot: Value,
-}
-
 /// The class a [`DataclassesFunctions::Configured`] decorator is waiting for.
 ///
 /// CPython's `dataclass` closes over a plain `def wrap(cls)`, so the class binds
@@ -237,11 +216,8 @@ struct DataclassArgs {
 /// than `dataclass` itself. Raw `Value` for [`DataclassArgs`]' reason: a `def`
 /// type-checks nothing, and `apply_dataclass` makes the class check the body
 /// would.
-#[derive(FromArgs)]
-#[from_args(name = "dataclass.<locals>.wrap", style = def)]
-struct ConfiguredArgs {
-    cls: Value,
-}
+#[py_signature("wrap(cls)", error_name = "dataclass.<locals>.wrap")]
+struct ConfiguredArgs;
 
 /// Writes `__dataclass_fields__`, `__dataclass_params__` and the generated
 /// dunders into the class namespace, and returns the class itself.
@@ -841,9 +817,9 @@ pub(crate) fn is_dataclass_class(class_id: HeapId, vm: &VM<'_>) -> bool {
 
 /// `is_dataclass(obj)` — true when `obj` is a dataclass **class** or an
 /// **instance** of one (matching CPython, which accepts both).
-fn is_dataclass(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let arg = args.get_one_arg("is_dataclass", vm.heap)?;
-    let result = match &arg {
+#[py_signature("is_dataclass(obj)")]
+fn is_dataclass(vm: &mut VM<'_>, params: &IsDataclassArgs) -> RunResult<Value> {
+    let result = match &params.obj {
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Class(_) => is_dataclass_class(*id, vm),
             HeapData::Instance(instance) => is_dataclass_class(instance.class(), vm),
@@ -855,6 +831,5 @@ fn is_dataclass(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         },
         _ => false,
     };
-    arg.drop_with(vm);
     Ok(Value::Bool(result))
 }

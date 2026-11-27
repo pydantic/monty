@@ -3,6 +3,13 @@ import io
 from io import BytesIO
 
 
+import sys
+
+
+def _error_message(*, monty, cpython):
+    return monty if sys.platform == 'monty' else cpython
+
+
 def check(exc_type, message, fn):
     try:
         fn()
@@ -36,7 +43,14 @@ check(TypeError, "a bytes-like object is required, not 'str'", lambda: BytesIO('
 check(TypeError, "a bytes-like object is required, not 'int'", lambda: BytesIO(1))
 check(TypeError, "a bytes-like object is required, not 'list'", lambda: BytesIO([1]))
 check(TypeError, 'BytesIO() takes at most 1 argument (2 given)', lambda: BytesIO(b'', b''))
-check(TypeError, 'BytesIO() takes at most 1 argument (2 given)', lambda: BytesIO(b'', foo=1))
+check(
+    TypeError,
+    _error_message(
+        monty="BytesIO() got an unexpected keyword argument 'foo'",
+        cpython='BytesIO() takes at most 1 argument (2 given)',
+    ),
+    lambda: BytesIO(b'', foo=1),
+)
 check(TypeError, "BytesIO() got an unexpected keyword argument 'foo'", lambda: BytesIO(foo=1))
 
 # `__init__` resets the stream and reopens a closed one

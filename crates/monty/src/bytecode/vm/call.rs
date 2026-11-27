@@ -6,6 +6,7 @@
 
 use std::mem;
 
+use monty_macros::py_signature;
 use monty_types::{MontyUuid, OsFunctionCall};
 
 use super::{
@@ -1403,14 +1404,9 @@ fn dispatch_dunder(
 /// `typ` and `tb` are discarded: every implementation we have re-derives the
 /// type from `val` and Monty has no traceback objects (see
 /// `limitations/with.md`).
-fn dispatch_exit(heap_id: HeapId, vm: &mut VM<'_>, args: ArgValues) -> Result<CallResult, RunError> {
-    let positional = args.into_pos_only("__exit__", vm.heap)?;
-    defer_drop!(positional, vm);
-    let [typ, val, tb] = positional.as_slice() else {
-        return Err(ExcType::type_error_arg_count("__exit__", 3, positional.len()));
-    };
-    let _ = (typ, tb);
-    let exc = match val {
+#[py_signature("__exit__(exc_type, exc_value, traceback, /)")]
+fn dispatch_exit(heap_id: HeapId, vm: &mut VM<'_>, params: &ExitArgs) -> Result<CallResult, RunError> {
+    let exc = match &params.exc_value {
         Value::Ref(id) => Some(*id),
         _ => None,
     };

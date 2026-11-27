@@ -2,8 +2,10 @@
 
 use std::{borrow::Cow, fmt};
 
+use monty_macros::py_signature;
+
 use crate::{
-    args::{ArgValues, FromArgs, KwargsValues},
+    args::KwargsValues,
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -17,8 +19,9 @@ use crate::{
 const MAX_FORMAT_RECURSION: u8 = 2;
 
 /// Renders a runtime format string with positional and keyword arguments.
-pub(crate) fn str_format(template: &str, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let FormatCallArgs { positional, keywords } = FormatCallArgs::from_args(args, vm)?;
+#[py_signature("format(*positional, **keywords)")]
+pub(crate) fn str_format(template: &str, params: &mut FormatCallArgs, vm: &mut VM<'_>) -> RunResult<Value> {
+    let FormatCallArgsFields { positional, keywords } = params.take_all();
     let keywords = match keywords {
         KwargsValues::Pairs(keywords) => keywords,
         other => other.into_iter().collect(),
@@ -29,16 +32,6 @@ pub(crate) fn str_format(template: &str, args: ArgValues, vm: &mut VM<'_>) -> Ru
     let mut numbering = Numbering::default();
     let rendered = render(template, arguments, &mut numbering, MAX_FORMAT_RECURSION, vm)?;
     Ok(allocate_string(rendered, vm.heap))
-}
-
-/// Arguments accepted by `str.format()`.
-#[derive(FromArgs)]
-#[from_args(name = "format")]
-struct FormatCallArgs {
-    #[from_args(varargs)]
-    positional: Vec<Value>,
-    #[from_args(varkwargs)]
-    keywords: KwargsValues,
 }
 
 /// Owns call arguments until rendering and error cleanup have finished.

@@ -2,7 +2,7 @@ use std::{collections::HashSet, mem};
 
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
-use syn::{Attribute, GenericArgument, ImplItem, ItemImpl, PathArguments, Type, punctuated::Punctuated};
+use syn::{Attribute, GenericArgument, ImplItem, ItemImpl, PathArguments, Type, parse::ParseStream};
 
 pub(crate) fn expand(mut input: ItemImpl) -> syn::Result<TokenStream> {
     if input.trait_.is_none() {
@@ -46,21 +46,33 @@ pub(crate) fn expand(mut input: ItemImpl) -> syn::Result<TokenStream> {
                                 "use one Python attribute annotation per function",
                             ));
                         }
-                        let args = attr.parse_args_with(Punctuated::<syn::Ident, syn::Token![,]>::parse_terminated)?;
-                        let mut args = args.into_iter();
-                        let name = args
-                            .next()
-                            .ok_or_else(|| syn::Error::new_spanned(&attr, "expected a StaticStrings key"))?;
-                        if args.next().is_some() {
-                            return Err(syn::Error::new_spanned(attr, "expected one StaticStrings key"));
+                        let (name, signature) = attr.parse_args_with(|args: ParseStream<'_>| {
+                            let name: syn::Ident = args
+                                .parse()
+                                .map_err(|_| syn::Error::new_spanned(&attr, "expected a StaticStrings key"))?;
+                            if args.is_empty() {
+                                return Ok((name, None));
+                            }
+                            args.parse::<syn::Token![,]>()?;
+                            if args.is_empty() {
+                                return Ok((name, None));
+                            }
+                            if !matches!(kind, Kind::Method) || !args.peek(syn::LitStr) {
+                                return Err(args.error("expected a Python signature after the method key"));
+                            }
+                            Ok((name, Some(args.parse::<TokenStream>()?)))
+                        })?;
+                        let no_params = signature.is_some() && method.sig.inputs.len() == 2;
+                        if let Some(signature) = signature {
+                            remaining.push(syn::parse_quote!(#[monty_macros::py_signature(#signature)]));
                         }
-                        annotation = Some((kind, name));
+                        annotation = Some((kind, name, no_params));
                     } else {
                         remaining.push(attr);
                     }
                 }
                 method.attrs = remaining;
-                let Some((kind, name)) = annotation else {
+                let Some((kind, name, no_params)) = annotation else {
                     continue;
                 };
                 if method
@@ -80,12 +92,17 @@ pub(crate) fn expand(mut input: ItemImpl) -> syn::Result<TokenStream> {
                 let key = quote!(crate::intern::StaticStrings::#name);
                 let definition = match kind {
                     Kind::Method => {
+                        let arguments = if no_params {
+                            quote!(receiver, vm, args)
+                        } else {
+                            quote!(receiver, args, vm)
+                        };
                         quote! {
                             crate::py_attrs::AttrDef::Method(|this, args, vm| {
                                 let Some(receiver) = (#projection) else {
                                     return crate::py_attrs::invalid_receiver(#key, args, vm);
                                 };
-                                <#owner>::#handler(receiver, args, vm).map(Into::into)
+                                <#owner>::#handler(#arguments).map(Into::into)
                             })
                         }
                     }

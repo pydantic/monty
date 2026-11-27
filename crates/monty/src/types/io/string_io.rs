@@ -12,7 +12,7 @@
 
 use std::{fmt::Write, iter, ops::Range};
 
-use monty_macros::pyattrs;
+use monty_macros::{py_signature, pyattrs};
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -21,7 +21,7 @@ use super::{
     non_negative, optional_size, position_value, seek_args, stream_position, unsupported_no_args,
 };
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
@@ -60,14 +60,8 @@ pub(crate) struct StringIo {
 }
 
 /// `StringIO(initial_value='', newline='\n')`.
-#[derive(FromArgs)]
-#[from_args(name = "StringIO", at_most_total)]
-struct StringIoArgs {
-    #[from_args(default = Value::None)]
-    initial_value: Value,
-    #[from_args(default)]
-    newline: Option<Value>,
-}
+#[py_signature("StringIO(initial_value=None, newline=...)")]
+struct StringIoArgs;
 
 impl StringIo {
     /// The `io.StringIO(initial_value='', newline='\n')` constructor.

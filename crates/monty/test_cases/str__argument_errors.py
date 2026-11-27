@@ -152,3 +152,28 @@ def accept_keywords(**kwargs):
 
 
 raises(TypeError, lambda: accept_keywords(existing=1, **{42: 2}))
+
+for args, expected in [
+    ((123, 'x'), 'replace() argument 1 must be str, not int'),
+    ((long, []), 'replace() argument 2 must be str, not list'),
+    (('x', 'y', 1.5), "'float' object cannot be interpreted as an integer"),
+]:
+    try:
+        long.replace(*args)
+        assert False, 'expected a type error'
+    except TypeError as exc:
+        assert str(exc) == expected
+
+try:
+    long.replace('x', 'y', count=2**80)
+    assert False, 'expected a count overflow'
+except OverflowError as exc:
+    assert str(exc) == 'Python int too large to convert to C ssize_t'
+
+
+class ReplaceCount:
+    def __index__(self):
+        return 1
+
+
+assert 'aaa'.replace('a', 'b', count=ReplaceCount()) == 'baa'

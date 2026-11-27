@@ -10,7 +10,7 @@
 
 use std::{fmt::Write, iter};
 
-use monty_macros::pyattrs;
+use monty_macros::{py_signature, pyattrs};
 use smallvec::smallvec;
 
 use super::{
@@ -18,7 +18,7 @@ use super::{
     py::{self, ContextMethod},
 };
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::ArgValues,
     builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop,
@@ -161,68 +161,42 @@ pub(crate) fn as_context(value: &Value, vm: &VM<'_>) -> Option<HeapId> {
 }
 
 /// `decimal.getcontext()`.
-pub(crate) fn getcontext(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    args.check_zero_args("_decimal.getcontext", vm.heap)?;
+#[py_signature("getcontext()", error_name = "_decimal.getcontext")]
+pub(crate) fn getcontext(vm: &mut VM<'_>) -> RunResult<Value> {
     let id = current_context(vm);
     vm.heap.inc_ref(id);
     Ok(Value::Ref(id))
 }
 
 /// `decimal.setcontext(context)`.
-pub(crate) fn setcontext(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("_decimal.setcontext", vm.heap)?;
-    defer_drop!(value, vm);
-    let id = as_context(value, vm).ok_or_else(|| ExcType::type_error("argument must be a context"))?;
+#[py_signature("setcontext(context, /)", error_name = "_decimal.setcontext")]
+pub(crate) fn setcontext(vm: &mut VM<'_>, params: &SetcontextArgs) -> RunResult<Value> {
+    let id = as_context(&params.context, vm).ok_or_else(|| ExcType::type_error("argument must be a context"))?;
     set_current(vm, id);
     Ok(Value::None)
-}
-
-/// Arguments of `decimal.localcontext(ctx=None, **kwargs)`.
-#[derive(FromArgs)]
-#[from_args(name = "localcontext", style = c)]
-struct LocalContextArgs {
-    #[from_args(default = Value::None)]
-    ctx: Value,
-    #[from_args(kw_only, default = Value::None)]
-    prec: Value,
-    #[from_args(kw_only, default = Value::None)]
-    rounding: Value,
-    #[from_args(kw_only, default = Value::None, static_string = "Emin")]
-    emin: Value,
-    #[from_args(kw_only, default = Value::None, static_string = "Emax")]
-    emax: Value,
-    #[from_args(kw_only, default = Value::None)]
-    capitals: Value,
-    #[from_args(kw_only, default = Value::None)]
-    clamp: Value,
-    #[from_args(kw_only, default = Value::None)]
-    flags: Value,
-    #[from_args(kw_only, default = Value::None)]
-    traps: Value,
 }
 
 /// `decimal.localcontext(ctx=None, **kwargs)`: a manager that installs a copy of
 /// `ctx` (or of the current context), with the given attributes changed, for the
 /// duration of a `with` block.
-pub(crate) fn localcontext(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let LocalContextArgs {
-        ctx,
-        prec,
-        rounding,
-        emin,
-        emax,
-        capitals,
-        clamp,
-        flags,
-        traps,
-    } = LocalContextArgs::from_args(args, vm)?;
-    let fields = [prec, rounding, emin, emax, capitals, clamp, flags, traps];
-    defer_drop!(fields, vm);
-    defer_drop!(ctx, vm);
-    let source = if matches!(ctx, Value::None) {
+#[py_signature(
+    "localcontext(ctx=None, *, prec=None, rounding=None, Emin=None, Emax=None, capitals=None, clamp=None, flags=None, traps=None)"
+)]
+pub(crate) fn localcontext(vm: &mut VM<'_>, params: &LocalContextArgs) -> RunResult<Value> {
+    let fields = [
+        &params.prec,
+        &params.rounding,
+        &params.Emin,
+        &params.Emax,
+        &params.capitals,
+        &params.clamp,
+        &params.flags,
+        &params.traps,
+    ];
+    let source = if matches!(params.ctx, Value::None) {
         current_context(vm)
     } else {
-        as_context(ctx, vm).ok_or_else(|| ExcType::type_error("optional argument must be a context"))?
+        as_context(&params.ctx, vm).ok_or_else(|| ExcType::type_error("optional argument must be a context"))?
     };
     let mut settings = settings_of(vm, source);
     apply_fields(&mut settings, fields, vm)?;
@@ -231,43 +205,22 @@ pub(crate) fn localcontext(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>
     Ok(Value::allocate(manager, vm.heap))
 }
 
-/// Arguments of `decimal.Context(...)`.
-#[derive(FromArgs)]
-#[from_args(name = "Context", style = c)]
-struct ContextArgs {
-    #[from_args(default = Value::None)]
-    prec: Value,
-    #[from_args(default = Value::None)]
-    rounding: Value,
-    #[from_args(default = Value::None, static_string = "Emin")]
-    emin: Value,
-    #[from_args(default = Value::None, static_string = "Emax")]
-    emax: Value,
-    #[from_args(default = Value::None)]
-    capitals: Value,
-    #[from_args(default = Value::None)]
-    clamp: Value,
-    #[from_args(default = Value::None)]
-    flags: Value,
-    #[from_args(default = Value::None)]
-    traps: Value,
-}
-
 /// `decimal.Context(prec=None, rounding=None, Emin=None, Emax=None, capitals=None,
 /// clamp=None, flags=None, traps=None)`: a new context starting from `DefaultContext`.
-pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let ContextArgs {
-        prec,
-        rounding,
-        emin,
-        emax,
-        capitals,
-        clamp,
-        flags,
-        traps,
-    } = ContextArgs::from_args(args, vm)?;
-    let fields = [prec, rounding, emin, emax, capitals, clamp, flags, traps];
-    defer_drop!(fields, vm);
+#[py_signature(
+    "Context(prec=None, rounding=None, Emin=None, Emax=None, capitals=None, clamp=None, flags=None, traps=None)"
+)]
+pub(crate) fn init(vm: &mut VM<'_>, params: &ContextArgs) -> RunResult<Value> {
+    let fields = [
+        &params.prec,
+        &params.rounding,
+        &params.Emin,
+        &params.Emax,
+        &params.capitals,
+        &params.clamp,
+        &params.flags,
+        &params.traps,
+    ];
     let default = template_id(vm, Template::Default);
     let mut settings = settings_of(vm, default);
     settings.flags = Conditions::EMPTY;
@@ -276,10 +229,9 @@ pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 }
 
 /// `decimal.IEEEContext(bits)`: the context of an IEEE 754 decimal interchange format.
-pub(crate) fn ieee_context(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let bits = args.get_one_arg("IEEEContext", vm.heap)?;
-    defer_drop!(bits, vm);
-    let bits = match bits {
+#[py_signature("IEEEContext(bits, /)")]
+pub(crate) fn ieee_context(vm: &mut VM<'_>, params: &IeeeContextArgs) -> RunResult<Value> {
+    let bits = match &params.bits {
         Value::Int(n) => *n,
         Value::Bool(b) => i64::from(*b),
         _ => return Err(ExcType::type_error_integer_required()),
@@ -307,7 +259,7 @@ pub(crate) fn ieee_context(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>
 pub(crate) const IEEE_CONTEXT_MAX_BITS: i64 = 512;
 
 /// Applies the eight `Context(...)` / `localcontext(...)` arguments, skipping `None`.
-fn apply_fields(settings: &mut DecContext, fields: &[Value; 8], vm: &mut VM<'_>) -> RunResult<()> {
+fn apply_fields(settings: &mut DecContext, fields: [&Value; 8], vm: &mut VM<'_>) -> RunResult<()> {
     for (field, value) in ContextField::CONSTRUCTOR_ORDER.into_iter().zip(fields) {
         if !matches!(value, Value::None) {
             match field {
