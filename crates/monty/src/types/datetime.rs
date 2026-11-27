@@ -26,6 +26,7 @@ use crate::{
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
+    modules::time as time_module,
     py_attrs::PyAttrs,
     py_value::PyValue,
     types::{
@@ -1451,6 +1452,14 @@ impl<'heap> PyAttrs<'heap> for PyDateTimeImpl {
         args.check_zero_args("datetime.dst", vm.heap)?;
         // Only fixed-offset zones exist, and none of them observes DST.
         Ok(Value::None)
+    }
+
+    #[pymethod(Timetuple)]
+    fn timetuple<'h>(this: &mut HeapObjectRead<'h, DateTime>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        args.check_zero_args("datetime.timetuple", vm.heap)?;
+        // `dst()` is always `None`, so `tm_isdst` is -1 for aware datetimes too.
+        let wall = this.get(vm.heap).naive;
+        Ok(time_module::naive_struct_time(wall, vm))
     }
 
     /// Builds time()/timetz() from copied civil components; only timetz retains tzinfo.
