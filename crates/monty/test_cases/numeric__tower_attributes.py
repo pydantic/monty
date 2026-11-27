@@ -39,7 +39,7 @@ assert False.conjugate() == 0
 assert type(False.conjugate()) is int
 
 # --- float attributes ---
-for f in [0.0, 3.14, -2.5, 1e20, float("inf"), float("-inf")]:
+for f in [0.0, 3.14, -2.5, 1e20, float('inf'), float('-inf')]:
     assert f.real == f
     assert type(f.real) is float
     assert f.imag == 0.0
@@ -57,7 +57,7 @@ assert neg_zero.imag == 0.0
 assert math.copysign(1.0, neg_zero.imag) == 1.0
 
 # NaN float:
-nan_val = float("nan")
+nan_val = float('nan')
 assert math.isnan(nan_val.real)
 assert nan_val.imag == 0.0
 assert math.copysign(1.0, nan_val.imag) == 1.0
@@ -69,99 +69,99 @@ try:
 except AttributeError as e:
     assert str(e) == "'float' object has no attribute 'numerator'"
 else:
-    raise AssertionError("expected AttributeError for float.numerator")
+    raise AssertionError('expected AttributeError for float.numerator')
 
 try:
     (1.5).denominator
 except AttributeError as e:
     assert str(e) == "'float' object has no attribute 'denominator'"
 else:
-    raise AssertionError("expected AttributeError for float.denominator")
+    raise AssertionError('expected AttributeError for float.denominator')
 
 # --- conjugate() argument validation ---
 try:
     (1).conjugate(1)
 except TypeError as e:
-    assert str(e) == "int.conjugate() takes no arguments (1 given)"
+    assert str(e) == 'int.conjugate() takes no arguments (1 given)'
 else:
-    raise AssertionError("expected TypeError")
+    raise AssertionError('expected TypeError')
 
 try:
     (1).conjugate(x=1)
 except TypeError as e:
-    assert str(e) == "int.conjugate() takes no keyword arguments"
+    assert str(e) == 'int.conjugate() takes no keyword arguments'
 else:
-    raise AssertionError("expected TypeError")
+    raise AssertionError('expected TypeError')
 
 try:
     True.conjugate(1)
 except TypeError as e:
-    assert str(e) == "int.conjugate() takes no arguments (1 given)"
+    assert str(e) == 'int.conjugate() takes no arguments (1 given)'
 else:
-    raise AssertionError("expected TypeError")
+    raise AssertionError('expected TypeError')
 
 try:
     True.conjugate(x=1)
 except TypeError as e:
-    assert str(e) == "int.conjugate() takes no keyword arguments"
+    assert str(e) == 'int.conjugate() takes no keyword arguments'
 else:
-    raise AssertionError("expected TypeError")
+    raise AssertionError('expected TypeError')
 
 try:
     (10**30).conjugate(1)
 except TypeError as e:
-    assert str(e) == "int.conjugate() takes no arguments (1 given)"
+    assert str(e) == 'int.conjugate() takes no arguments (1 given)'
 else:
-    raise AssertionError("expected TypeError")
+    raise AssertionError('expected TypeError')
 
 try:
     (10**30).conjugate(x=1)
 except TypeError as e:
-    assert str(e) == "int.conjugate() takes no keyword arguments"
+    assert str(e) == 'int.conjugate() takes no keyword arguments'
 else:
-    raise AssertionError("expected TypeError")
+    raise AssertionError('expected TypeError')
 
 try:
     (1.5).conjugate(1)
 except TypeError as e:
-    assert str(e) == "float.conjugate() takes no arguments (1 given)"
+    assert str(e) == 'float.conjugate() takes no arguments (1 given)'
 else:
-    raise AssertionError("expected TypeError")
+    raise AssertionError('expected TypeError')
 
 try:
     (1.5).conjugate(x=1)
 except TypeError as e:
-    assert str(e) == "float.conjugate() takes no keyword arguments"
+    assert str(e) == 'float.conjugate() takes no keyword arguments'
 else:
-    raise AssertionError("expected TypeError")
+    raise AssertionError('expected TypeError')
 
 # --- read-only assignment validation ---
-for attr_name in ["real", "imag", "numerator", "denominator"]:
+for attr_name in ['real', 'imag', 'numerator', 'denominator']:
     try:
         setattr(1, attr_name, 99)
     except AttributeError as e:
         assert str(e) == f"attribute '{attr_name}' of 'int' objects is not writable"
     else:
-        raise AssertionError(f"expected AttributeError for int.{attr_name} assignment")
+        raise AssertionError(f'expected AttributeError for int.{attr_name} assignment')
 
     try:
         setattr(10**30, attr_name, 99)
     except AttributeError as e:
         assert str(e) == f"attribute '{attr_name}' of 'int' objects is not writable"
     else:
-        raise AssertionError(f"expected AttributeError for large int.{attr_name} assignment")
+        raise AssertionError(f'expected AttributeError for large int.{attr_name} assignment')
 
     try:
         setattr(True, attr_name, 99)
     except AttributeError as e:
         assert str(e) == f"attribute '{attr_name}' of 'int' objects is not writable"
     else:
-        raise AssertionError(f"expected AttributeError for bool.{attr_name} assignment")
+        raise AssertionError(f'expected AttributeError for bool.{attr_name} assignment')
 
-for attr_name in ["real", "imag"]:
+for attr_name in ['real', 'imag']:
     try:
         setattr(1.5, attr_name, 99.0)
     except AttributeError as e:
         assert str(e) == f"attribute '{attr_name}' of 'float' objects is not writable"
     else:
-        raise AssertionError(f"expected AttributeError for float.{attr_name} assignment")
+        raise AssertionError(f'expected AttributeError for float.{attr_name} assignment')

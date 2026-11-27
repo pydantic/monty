@@ -374,7 +374,7 @@ mod tests {
         let operand_shapes = opcode_operand_shapes_fingerprint();
         assert_eq!(
             operand_shapes,
-            0x19e4_7bfc_4a4e_4af1,
+            0xc88a_c2e7_e779_aa0a,
             "opcode operand shapes changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(operand_shapes)
         );

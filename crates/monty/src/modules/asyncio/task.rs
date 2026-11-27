@@ -9,7 +9,7 @@ use crate::{
     asyncio::{Awaiter, ExternalFutureState, TaskFuture, TaskFutureState},
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, ExceptionValue, RunError, RunResult, SimpleException},
     heap::{HEAP_ENTRY_SIZE, HeapData, HeapId, HeapObjectRead, HeapReadOutput},
     heap_traits::{DropGuard, DropWithContext},
     intern::StaticStrings,
@@ -277,7 +277,7 @@ fn exception_value(error: &RunError, vm: &mut VM<'_>) -> Value {
         RunError::Exc(raise) | RunError::UncatchableExc(raise) => raise.exc.clone(),
         RunError::Internal(message) => SimpleException::new_msg(ExcType::RuntimeError, message),
     };
-    Value::allocate(exception, vm.heap)
+    Value::allocate(ExceptionValue::from(exception), vm.heap)
 }
 
 /// Renders a value with `str()` and extracts the resulting text.

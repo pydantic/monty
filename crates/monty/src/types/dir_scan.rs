@@ -26,7 +26,7 @@ use crate::{
     args::{ArgValues, FromArgs, LaxBool},
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, ExceptionValue, RunError, RunResult, SimpleException},
     hash::{HashValue, identity_hash},
     heap::{ContainsHeap, HeapData, HeapId, HeapItem, HeapObjectRead},
     identity::Identity,
@@ -378,7 +378,7 @@ fn walk_step<'h>(this: &mut HeapObjectRead<'h, DirScan>, vm: &mut VM<'h>) -> Run
                     let RunError::Exc(raise) = error else {
                         return Err(error);
                     };
-                    let exc = Value::allocate(raise.exc, vm.heap);
+                    let exc = Value::allocate(ExceptionValue::from(raise.exc), vm.heap);
                     let result = vm.evaluate_function(onerror, ArgValues::One(exc))?;
                     result.drop_with(vm);
                 }

@@ -2,6 +2,7 @@ use std::{
     borrow::Cow,
     fmt::{self, Display, Write},
     mem,
+    ops::{Deref, DerefMut},
 };
 
 use monty_types::{ExcData, JsonErrorData, MontyException, StackFrame, UnicodeErrorData, UnicodeErrorObject};
@@ -18,7 +19,7 @@ use crate::{
     py_value::PyValue,
     source_map::{SourceMap, StackFrameExt},
     types::{
-        PyTrait, Type, TypeRef, allocate_tuple,
+        LazyHeapSet, PyTrait, Type, TypeRef, allocate_tuple,
         long_int::INT_MAX_STR_DIGITS,
         str::{StringRepr, allocate_string, string_repr_fmt},
     },
@@ -1629,6 +1630,15 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::RuntimeError, "Set changed size during iteration").into()
     }
 
+    /// Creates the RuntimeError a `StopIteration` escaping a generator or coroutine
+    /// becomes (PEP 479); `kind` is `generator` or `coroutine`.
+    ///
+    /// Matches CPython's format: `RuntimeError: generator raised StopIteration`
+    #[must_use]
+    fn runtime_error_raised_stop_iteration(kind: &str) -> RunError {
+        SimpleException::new_msg(ExcType::RuntimeError, format!("{kind} raised StopIteration")).into()
+    }
+
     /// Creates a TypeError for functions that don't accept keyword arguments.
     ///
     /// Matches CPython's `PyArg_NoKeywords` format: `TypeError: {name}() takes
@@ -3047,6 +3057,9 @@ impl ExcTypeExt for ExcType {
     /// Allocates an exception for constructors like `ValueError('message')`.
     /// Currently supports zero or one string argument.
     fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+        if self == Self::StopIteration {
+            return stop_iteration_call(vm, args);
+        }
         defer_drop!(args, vm);
         let exc = match args {
             ArgValues::Empty => Ok(SimpleException::new_none(self)),
@@ -3060,7 +3073,82 @@ impl ExcTypeExt for ExcType {
                 "exceptions can only be called with zero or one string argument",
             )),
         }?;
-        Ok(Value::allocate(exc, vm.heap))
+        Ok(Value::allocate(ExceptionValue::from(exc), vm.heap))
+    }
+}
+
+/// `StopIteration(value)` keeps any one argument as its `value`, the way a
+/// generator's `return value` does; a string also becomes the message.
+fn stop_iteration_call(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    let value = match args {
+        ArgValues::Empty => None,
+        ArgValues::One(value) => Some(value),
+        args => {
+            args.drop_with(vm);
+            return Err(RunError::internal(
+                "StopIteration can only be called with zero or one argument",
+            ));
+        }
+    };
+    let message = match value.as_ref().map(|value| value.py_value(vm)) {
+        Some(PyValue::Str(string)) => Some(string.as_str(vm).to_owned()),
+        _ => None,
+    };
+    let exception = SimpleException::new(ExcType::StopIteration, message);
+    Ok(Value::allocate(
+        ExceptionValue {
+            exception,
+            value: value.map(Box::new),
+        },
+        vm.heap,
+    ))
+}
+
+/// A heap-resident exception: the exception itself, plus the arbitrary value a
+/// `StopIteration` carries, which a [`SimpleException`] cannot own.
+///
+/// The value keeps its identity, so `return obj` in a generator reaches
+/// `except StopIteration as e: e.value is obj`. Flattened so dumps written
+/// before the value existed still load.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ExceptionValue {
+    #[serde(flatten)]
+    pub(crate) exception: SimpleException,
+    /// Owned: the `StopIteration.value`, `None` when it was never given. Boxed
+    /// so the payload stays inside `HeapData`'s 64-bit size.
+    #[serde(rename = "V", default, skip_serializing_if = "Option::is_none")]
+    pub(crate) value: Option<Box<Value>>,
+}
+
+impl ExceptionValue {
+    /// A new reference to `StopIteration.value`: the stored value, else the message
+    /// of one built from text alone (raised by the host), else `None`.
+    pub(crate) fn stop_iteration_value(&self, vm: &VM<'_>) -> Value {
+        match (&self.value, &self.exception.arg) {
+            (Some(value), _) => value.clone_with_heap(vm.heap),
+            (None, Some(message)) => allocate_string(message.as_str(), vm.heap),
+            (None, None) => Value::None,
+        }
+    }
+}
+
+impl From<SimpleException> for ExceptionValue {
+    fn from(exception: SimpleException) -> Self {
+        Self { exception, value: None }
+    }
+}
+
+impl Deref for ExceptionValue {
+    type Target = SimpleException;
+
+    fn deref(&self) -> &SimpleException {
+        &self.exception
+    }
+}
+
+impl DerefMut for ExceptionValue {
+    fn deref_mut(&mut self) -> &mut SimpleException {
+        &mut self.exception
     }
 }
 
@@ -3252,27 +3340,68 @@ impl SimpleException {
     }
 }
 
-impl<'h> HeapRead<'h, SimpleException> {
+impl<'h> HeapRead<'h, ExceptionValue> {
     pub(crate) fn py_type(&self, vm: &VM<'h>) -> TypeRef {
         Type::from(self.get(vm.heap).exc_type).into()
     }
 
-    /// Gets an attribute from this exception: `args` (a tuple of the message, if
-    /// any), `__cause__`, `__context__` and `__suppress_context__`. Returns `None`
-    /// for all other attributes.
+    /// Gets an attribute from this exception: `args` (a tuple of the message or
+    /// `StopIteration` value, if any), `__cause__`, `__context__`,
+    /// `__suppress_context__` and `StopIteration.value`. Returns `None` for all
+    /// other attributes.
     pub fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> Option<CallResult> {
-        // Interned names match by ID; only `args` can also arrive as a dynamic string.
-        let name = attr.static_string(vm.interns);
+        // Interned names match by ID; `args` and `value` can also arrive as dynamic strings.
+        let name = attr
+            .static_string(vm.interns)
+            .or_else(|| match attr.as_str(vm.interns) {
+                "args" => Some(StaticStrings::Args),
+                "value" => Some(StaticStrings::Value),
+                _ => None,
+            });
         let exc = self.get(vm.heap);
         let value = match name {
             Some(StaticStrings::DunderCause) => chained_value(exc.cause(), vm),
             Some(StaticStrings::DunderContext) => chained_value(exc.context(), vm),
             Some(StaticStrings::DunderSuppressContext) => Value::Bool(exc.suppress_context()),
-            Some(StaticStrings::Args) => args_tuple(exc.arg.as_deref(), vm),
-            None if attr.as_str(vm.interns) == "args" => args_tuple(exc.arg.as_deref(), vm),
+            Some(StaticStrings::Args) => match &exc.value {
+                Some(value) => allocate_tuple(smallvec![value.clone_with_heap(vm.heap)], vm.heap),
+                None => args_tuple(exc.arg.as_deref(), vm),
+            },
+            Some(StaticStrings::Value) if exc.exc_type == ExcType::StopIteration => exc.stop_iteration_value(vm),
             _ => return None,
         };
         Some(CallResult::Value(value))
+    }
+
+    /// `repr(exc)`, formatting a `StopIteration` value with its own `repr`.
+    pub(crate) fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
+        let Some(value) = self.stop_value(vm) else {
+            return Ok(self.get(vm.heap).exception.py_repr_fmt(f)?);
+        };
+        defer_drop!(value, vm);
+        // The value can hold the exception itself, or nest exceptions arbitrarily deep.
+        let mut guard = vm.recursion_guard()?;
+        f.write_str("StopIteration(")?;
+        value.py_repr_fmt(f, &mut guard, heap_ids)?;
+        Ok(f.write_char(')')?)
+    }
+
+    /// `str(exc)`: a `StopIteration` value's own `str`, else the message.
+    pub(crate) fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+        let Some(value) = self.stop_value(vm) else {
+            return Ok(allocate_string(self.get(vm.heap).exception.py_str(), vm.heap));
+        };
+        defer_drop!(value, vm);
+        let mut guard = vm.recursion_guard()?;
+        value.py_str(&mut guard)
+    }
+
+    /// A new reference to the `StopIteration` value, released before it is formatted.
+    fn stop_value(&self, vm: &VM<'h>) -> Option<Value> {
+        self.get(vm.heap)
+            .value
+            .as_ref()
+            .map(|value| value.clone_with_heap(vm.heap))
     }
 }
 

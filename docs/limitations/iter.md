@@ -1,7 +1,8 @@
 # `iter()` and iterators
 
 - Collection constructors and synchronous native consumers such as `sum`, `sorted` and `itertools` adaptors cannot
-    suspend in user `__iter__` or `__next__` methods, or in callbacks reached through `map` and `filter`.
+    suspend in user `__iter__` or `__next__` methods, in generator bodies (see [generators.md](generators.md)), or in
+    callbacks reached through `map` and `filter`.
     An external or OS call raises `NotImplementedError` inside the method or callback, where it can be caught.
     This restriction does not apply to `for`, comprehensions, direct `iter()`/`next()`, or `functools.reduce()`.
 

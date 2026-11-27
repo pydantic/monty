@@ -1,4 +1,4 @@
-use std::mem;
+use std::{iter::once, mem};
 
 use ahash::{AHashMap, AHashSet, RandomState};
 use indexmap::IndexMap;
@@ -8,7 +8,8 @@ use crate::{
     builtins::Builtins,
     expressions::{
         AssignTarget, Callable, CaptureSource, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName,
-        MatchCase, NameScope, Node, Pattern, PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
+        MatchCase, NameScope, Node, Pattern, PreparedFunctionDef, PreparedGeneratorExpression, PreparedNode,
+        SequenceItem, UnpackTarget,
     },
     fstring::{FStringPart, FormatSpec},
     intern::{CompileInterns, StringId},
@@ -209,6 +210,8 @@ struct Prepare<'i, 'g> {
     /// stores must bypass this stack (see [`Prepare::get_id_for_store_target`])
     /// so PEP 572 binding semantics are preserved.
     comp_name_scopes: Vec<CompNameScope>,
+    /// Walrus targets skip synthetic generator scopes (PEP 572).
+    is_generator_expression: bool,
     /// True when this preparer is for a **class body** (see `prepare_class_def`).
     ///
     /// Class scope is skipped for method free-var resolution in CPython: a
@@ -591,6 +594,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             bound_class_members: AHashSet::new(),
             class_cell_slot: None,
             is_annotate: false,
+            is_generator_expression: false,
         }
     }
 
@@ -709,6 +713,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             bound_class_members: AHashSet::new(),
             class_cell_slot: None,
             is_annotate: false,
+            is_generator_expression: false,
         })
     }
 
@@ -925,6 +930,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
                             signature,
                             body,
                             is_async,
+                            is_generator,
                             annotate,
                             is_annotate,
                         },
@@ -937,7 +943,9 @@ impl<'i, 'g> Prepare<'i, 'g> {
                         .into_iter()
                         .map(|d| self.prepare_expression(d))
                         .collect::<Result<Vec<_>, ParseError>>()?;
-                    let func = self.prepare_function_def(name, &signature, body, is_async, annotate, is_annotate)?;
+                    let mut func =
+                        self.prepare_function_def(name, &signature, body, is_async, annotate, is_annotate)?;
+                    func.is_generator = is_generator;
                     // In a class body, the method name becomes a bound member
                     // only now — its own parameter defaults (evaluated in class
                     // scope, above) must see the pre-binding state.
@@ -1314,13 +1322,26 @@ impl<'i, 'g> Prepare<'i, 'g> {
                     captured_slots: prepared.captured_slots,
                 }
             }
+            Expr::GeneratorRaw {
+                name_id,
+                elt,
+                generators,
+            } => {
+                return self.prepare_generator_expression(name_id, *elt, generators, position);
+            }
+            Expr::Generator(_) => unreachable!("prepared generator before scope preparation"),
             Expr::LambdaRaw {
                 name_id,
                 signature,
                 body,
+                is_generator,
             } => {
                 // Convert the raw lambda into a prepared lambda expression
-                return self.prepare_lambda(name_id, &signature, &body, position);
+                let mut prepared = self.prepare_lambda(name_id, &signature, &body, position)?;
+                if let Expr::Lambda { func_def } = &mut prepared.expr {
+                    func_def.is_generator = is_generator;
+                }
+                return Ok(prepared);
             }
             Expr::Lambda { .. } => {
                 // Lambda should only be created during prepare, never during parsing
@@ -1345,6 +1366,8 @@ impl<'i, 'g> Prepare<'i, 'g> {
                 }
             }
             Expr::Await(value) => Expr::Await(Box::new(self.prepare_expression(*value)?)),
+            Expr::Yield(value) => Expr::Yield(Box::new(self.prepare_expression(*value)?)),
+            Expr::YieldFrom(value) => Expr::YieldFrom(Box::new(self.prepare_expression(*value)?)),
         };
 
         Ok(ExprLoc { position, expr })
@@ -1454,10 +1477,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
         // since the walrus statements themselves can be scattered through the
         // comprehension and don't have a single load-bearing position.
         let comp_pos = generators.first().map_or_default(|g| g.iter.position);
-        for &name in &walrus_targets {
-            self.ensure_scope_slot(name, comp_pos)?;
-            self.names_assigned_in_order.insert(name);
-        }
+        self.bind_comprehension_walrus(&generators, &walrus_targets, comp_pos)?;
 
         // A comprehension is a single lexical scope even though its generators are
         // written left-to-right. Push one comp scope for the whole comprehension and
@@ -1559,6 +1579,140 @@ impl<'i, 'g> Prepare<'i, 'g> {
             key_value: prepared_key_value,
             captured_slots,
         })
+    }
+
+    /// Prepares the first iterable in the enclosing scope and the body in a generator function.
+    fn prepare_generator_expression(
+        &mut self,
+        name_id: StringId,
+        elt: ExprLoc,
+        mut generators: Vec<Comprehension>,
+        position: CodeRange,
+    ) -> Result<ExprLoc, ParseError> {
+        let mut walrus_targets = AHashSet::new();
+        collect_comprehension_walrus(&elt, &generators, &mut walrus_targets, self.interner);
+        self.bind_comprehension_walrus(&generators, &walrus_targets, position)?;
+
+        let mut references = walrus_targets;
+        collect_referenced_names_from_comp_body(&generators, Some(&elt), None, &mut references, self.interner);
+        let enclosing_locals = self.child_enclosing_locals();
+        references.retain(|name| enclosing_locals.contains(name));
+
+        // The synthetic function receives the already-created iterator in slot zero.
+        let mut first = generators.remove(0);
+        first.iter = self.prepare_expression(first.iter)?;
+        let param = self
+            .interner
+            .get_string_id_by_name(".0")
+            .expect("generator iterator parameter is interned");
+        let params = [param];
+        let mut inner = Prepare::new_function(
+            &params,
+            position,
+            AHashSet::new(),
+            AHashSet::new(),
+            &AHashSet::new(),
+            &references,
+            self.globals.reborrow(),
+            enclosing_locals,
+            &AHashSet::new(),
+            self.interner,
+        )?;
+        inner.is_generator_expression = true;
+        inner.comp_name_scopes.push(CompNameScope::default());
+        for generator in once(&mut first).chain(&mut generators) {
+            generator.target = inner.prepare_unpack_target_for_comprehension(generator.target.clone())?;
+        }
+        let generators = once(first)
+            .chain(generators)
+            .enumerate()
+            .map(|(i, generator)| {
+                let Comprehension { target, iter, ifs } = generator;
+                let iter = if i == 0 { iter } else { inner.prepare_expression(iter)? };
+                let ifs = ifs
+                    .into_iter()
+                    .map(|condition| inner.prepare_expression(condition))
+                    .collect::<Result<_, _>>()?;
+                Ok(Comprehension { target, iter, ifs })
+            })
+            .collect::<Result<Vec<_>, ParseError>>()?;
+        let elt = inner.prepare_expression(elt)?;
+        let captured_slots = inner
+            .comp_name_scopes
+            .pop()
+            .expect("generator scope exists")
+            .into_values()
+            .filter_map(|binding| binding.captured.then_some(binding.slot))
+            .collect();
+        let PrepareState::Function(state) = mem::replace(&mut inner.state, PrepareState::Module) else {
+            unreachable!("generator body has a function scope")
+        };
+        let FunctionState {
+            locals,
+            free_var_map,
+            cell_var_map,
+            ..
+        } = *state;
+        drop(inner);
+        let FinalizedScope {
+            free_var_enclosing_slots,
+            free_var_slots,
+            cell_var_slots,
+            cell_param_indices,
+        } = self.finalize_child_scope(free_var_map, cell_var_map, &params, position)?;
+        let func_def = PreparedFunctionDef {
+            name: Identifier::new(name_id, position),
+            signature: Signature::new(vec![param], 0, vec![], 0, None, vec![], vec![], None),
+            body: Vec::new(),
+            namespace_size: locals.len(),
+            free_var_names: free_var_slots.iter().map(|slot| locals.names()[slot.index()]).collect(),
+            free_var_enclosing_slots,
+            free_var_slots,
+            cell_var_slots,
+            cell_param_indices,
+            default_exprs: Vec::new(),
+            is_async: false,
+            is_generator: true,
+            annotate: None,
+            is_annotate: false,
+        };
+        Ok(ExprLoc::new(
+            position,
+            Expr::Generator(Box::new(PreparedGeneratorExpression {
+                func_def,
+                elt,
+                generators,
+                captured_slots,
+            })),
+        ))
+    }
+
+    /// Registers walrus bindings in the nearest non-comprehension scope.
+    fn bind_comprehension_walrus(
+        &mut self,
+        generators: &[Comprehension],
+        targets: &AHashSet<StringId>,
+        position: CodeRange,
+    ) -> Result<(), ParseError> {
+        if !targets.is_empty() {
+            if let Some(target) = generators
+                .iter()
+                .find_map(|generator| rebound_comprehension_target(&generator.target, targets))
+            {
+                let name = self.interner.get_str(target.name_id);
+                return Err(ParseError::syntax(
+                    format!("assignment expression cannot rebind comprehension iteration variable '{name}'"),
+                    target.position,
+                ));
+            }
+            if !self.is_generator_expression {
+                for &name in targets {
+                    self.ensure_scope_slot(name, position)?;
+                    self.names_assigned_in_order.insert(name);
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Prepares an `AssignTarget` used by chained assignments.
@@ -2011,6 +2165,8 @@ impl<'i, 'g> Prepare<'i, 'g> {
             cell_param_indices,
             default_exprs,
             is_async,
+            // Set by the `def` caller from the parser's scope tracking.
+            is_generator: false,
             annotate,
             is_annotate,
         })
@@ -2205,6 +2361,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             cell_param_indices,
             default_exprs: Vec::new(),
             is_async: false,
+            is_generator: false,
             annotate: None,
             is_annotate: false,
         };
@@ -2373,6 +2530,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             cell_param_indices,
             default_exprs,
             is_async: false,
+            is_generator: false,
             annotate: None,
             is_annotate: false,
         };
@@ -3049,7 +3207,9 @@ fn collect_assigned_names_from_expr(
         | Expr::UnaryMinus(operand)
         | Expr::UnaryPlus(operand)
         | Expr::UnaryInvert(operand)
-        | Expr::Await(operand) => {
+        | Expr::Await(operand)
+        | Expr::Yield(operand)
+        | Expr::YieldFrom(operand) => {
             collect_assigned_names_from_expr(operand, assigned_names, interner);
         }
         Expr::Subscript { object, index } => {
@@ -3075,16 +3235,12 @@ fn collect_assigned_names_from_expr(
             collect_assigned_names_from_expr(body, assigned_names, interner);
             collect_assigned_names_from_expr(orelse, assigned_names, interner);
         }
-        // Per PEP 572, walrus in comprehensions assigns to the ENCLOSING scope
-        Expr::ListComp { elt, generators, .. } | Expr::SetComp { elt, generators, .. } => {
-            collect_assigned_names_from_expr(elt, assigned_names, interner);
-            for generator in generators {
-                collect_assigned_names_from_expr(&generator.iter, assigned_names, interner);
-                for cond in &generator.ifs {
-                    collect_assigned_names_from_expr(cond, assigned_names, interner);
-                }
-            }
+        Expr::ListComp { elt, generators, .. }
+        | Expr::SetComp { elt, generators, .. }
+        | Expr::GeneratorRaw { elt, generators, .. } => {
+            collect_comprehension_walrus(elt, generators, assigned_names, interner);
         }
+        Expr::Generator(_) => unreachable!("prepared generator during scope analysis"),
         Expr::DictComp {
             key, value, generators, ..
         } => {
@@ -3097,13 +3253,7 @@ fn collect_assigned_names_from_expr(
                 }
             }
         }
-        Expr::FString(parts) => {
-            for part in parts {
-                if let FStringPart::Interpolation { expr, .. } = part {
-                    collect_assigned_names_from_expr(expr, assigned_names, interner);
-                }
-            }
-        }
+        Expr::FString(parts) => collect_assigned_names_from_fstring_parts(parts, assigned_names, interner),
         Expr::Slice { lower, upper, step } => {
             if let Some(e) = lower {
                 collect_assigned_names_from_expr(e, assigned_names, interner);
@@ -3119,6 +3269,49 @@ fn collect_assigned_names_from_expr(
         Expr::LambdaRaw { .. } | Expr::Lambda { .. } => {}
         // Leaf expressions don't contain walrus operators
         Expr::Literal(_) | Expr::Builtin(_) | Expr::Name(_) => {}
+    }
+}
+
+/// Finds the first comprehension target also bound by a walrus expression.
+fn rebound_comprehension_target<'a>(target: &'a UnpackTarget, names: &AHashSet<StringId>) -> Option<&'a Identifier> {
+    match target {
+        UnpackTarget::Name(name) => names.contains(&name.name_id).then_some(name),
+        UnpackTarget::Starred(target) => rebound_comprehension_target(target, names),
+        UnpackTarget::Tuple { targets, .. } => targets
+            .iter()
+            .find_map(|target| rebound_comprehension_target(target, names)),
+        UnpackTarget::Attr { .. } | UnpackTarget::Subscript { .. } => None,
+    }
+}
+
+/// Collects walrus bindings in a comprehension's element and filters.
+fn collect_comprehension_walrus(
+    elt: &ExprLoc,
+    generators: &[Comprehension],
+    assigned_names: &mut AHashSet<StringId>,
+    interner: &CompileInterns<'_>,
+) {
+    collect_assigned_names_from_expr(elt, assigned_names, interner);
+    for generator in generators {
+        for condition in &generator.ifs {
+            collect_assigned_names_from_expr(condition, assigned_names, interner);
+        }
+    }
+}
+
+/// Finds walrus targets in interpolations and their format specifications.
+fn collect_assigned_names_from_fstring_parts(
+    parts: &[FStringPart],
+    assigned_names: &mut AHashSet<StringId>,
+    interner: &CompileInterns<'_>,
+) {
+    for part in parts {
+        if let FStringPart::Interpolation { expr, format_spec, .. } = part {
+            collect_assigned_names_from_expr(expr, assigned_names, interner);
+            if let Some(FormatSpec::Dynamic(parts)) = format_spec {
+                collect_assigned_names_from_fstring_parts(parts, assigned_names, interner);
+            }
+        }
     }
 }
 
@@ -3646,6 +3839,14 @@ fn collect_cell_vars_from_expr(
                 }
             }
         }
+        Expr::GeneratorRaw { elt, generators, .. } => {
+            collect_cell_vars_from_expr(&generators[0].iter, our_locals, cell_vars, interner);
+            let mut captures = AHashSet::new();
+            collect_referenced_names_from_comp_body(generators, Some(elt), None, &mut captures, interner);
+            collect_comprehension_walrus(elt, generators, &mut captures, interner);
+            cell_vars.extend(captures.into_iter().filter(|name| our_locals.contains(name)));
+        }
+        Expr::Generator(_) => unreachable!("prepared generator during cell analysis"),
         Expr::FString(parts) => {
             for part in parts {
                 if let FStringPart::Interpolation { expr, .. } = part {
@@ -3657,7 +3858,7 @@ fn collect_cell_vars_from_expr(
             // Only scan the value expression for cell vars
             collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
         }
-        Expr::Await(value) => {
+        Expr::Await(value) | Expr::Yield(value) | Expr::YieldFrom(value) => {
             collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
         }
         // Leaf expressions
@@ -4061,9 +4262,12 @@ fn collect_referenced_names_from_expr(
             collect_referenced_names_from_expr(body, referenced, interner);
             collect_referenced_names_from_expr(orelse, referenced, interner);
         }
-        Expr::ListComp { elt, generators, .. } | Expr::SetComp { elt, generators, .. } => {
+        Expr::ListComp { elt, generators, .. }
+        | Expr::SetComp { elt, generators, .. }
+        | Expr::GeneratorRaw { elt, generators, .. } => {
             collect_referenced_names_from_comprehension(generators, Some(elt), None, referenced, interner);
         }
+        Expr::Generator(_) => unreachable!("prepared generator during reference analysis"),
         Expr::DictComp {
             key, value, generators, ..
         } => {
@@ -4122,7 +4326,7 @@ fn collect_referenced_names_from_expr(
                 collect_referenced_names_from_expr(expr, referenced, interner);
             }
         }
-        Expr::Await(value) => {
+        Expr::Await(value) | Expr::Yield(value) | Expr::YieldFrom(value) => {
             collect_referenced_names_from_expr(value, referenced, interner);
         }
     }
@@ -4139,22 +4343,22 @@ fn collect_referenced_names_from_comprehension(
     referenced: &mut AHashSet<StringId>,
     interner: &CompileInterns<'_>,
 ) {
-    // Track loop variable names (these are local to the comprehension)
-    let mut comp_locals: AHashSet<StringId> = AHashSet::new();
+    collect_referenced_names_from_expr(&generators[0].iter, referenced, interner);
+    collect_referenced_names_from_comp_body(generators, elt, key_value, referenced, interner);
+}
 
-    // Collect references from expressions that can see prior loop variables.
-    // These need to be filtered against comp_locals before adding to referenced.
-    let mut inner_refs: AHashSet<StringId> = AHashSet::new();
-
+/// Collects free reads from the part of a comprehension inside its own scope.
+fn collect_referenced_names_from_comp_body(
+    generators: &[Comprehension],
+    elt: Option<&ExprLoc>,
+    key_value: Option<(&ExprLoc, &ExprLoc)>,
+    referenced: &mut AHashSet<StringId>,
+    interner: &CompileInterns<'_>,
+) {
+    let mut comp_locals = AHashSet::new();
+    let mut inner_refs = AHashSet::new();
     for (i, comp) in generators.iter().enumerate() {
-        if i == 0 {
-            // FIRST generator's iter expression truly references enclosing scope
-            // (evaluated before any loop variable is defined).
-            collect_referenced_names_from_expr(&comp.iter, referenced, interner);
-        } else {
-            // SUBSEQUENT generators' iter expressions can reference prior loop variables.
-            // For example, in `[y for x in xs for y in x]`, the `x` in the second
-            // generator's iter is the first generator's loop variable, not outer scope.
+        if i != 0 {
             collect_referenced_names_from_expr(&comp.iter, &mut inner_refs, interner);
         }
 
