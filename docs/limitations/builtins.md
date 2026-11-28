@@ -61,8 +61,9 @@ works on classes; see [classes.md](classes.md#inheritance).
     and Monty hashes an `int` too large for an `i64` differently again. Monty's
     hashes are stable within a run and across runs of the same build (there is
     no hash randomisation), but never persist one or compare one against a
-    CPython hash. `sys.hash_info` is not exposed, so the parameters CPython
-    publishes are unavailable (see [sys.md](sys.md)).
+    CPython hash. `sys.hash_info` exposes CPython 3.14's 64-bit parameters (such as `modulus` and `inf`),
+    but Monty's string, float and container hashing algorithms differ from CPython's and do not
+    reproduce CPython's SipHash-1-3 hashes (see [sys.md](sys.md)).
 - **a set iterated while it is mutated may yield a newly added element** —
     Monty's sets keep insertion order, so an element added during iteration is
     appended after the cursor and gets yielded. CPython places it by hash, which

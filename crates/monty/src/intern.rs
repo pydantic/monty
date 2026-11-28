@@ -575,6 +575,8 @@ pub enum StaticStrings {
     /// `adobe` parameter of `base64.a85encode()` / `a85decode()`.
     #[strum(serialize = "adobe")]
     Adobe,
+    /// `sys.hash_info.algorithm` field.
+    Algorithm,
     /// `hashlib.algorithms_available`, equal to `algorithms_guaranteed`.
     AlgorithmsAvailable,
     /// `hashlib.algorithms_guaranteed`.
@@ -931,6 +933,8 @@ pub enum StaticStrings {
     Curdir,
     /// `CacheInfo.currsize` field.
     Currsize,
+    /// `sys.hash_info.cutoff` field.
+    Cutoff,
     /// `Path.cwd()` classmethod: answered from the VM's working directory, no host call.
     Cwd,
     /// `itertools.cycle()` function.
@@ -1843,6 +1847,10 @@ pub enum StaticStrings {
     Groups,
     /// `field(hash=...)`.
     Hash,
+    /// `sys.hash_info.hash_bits` field.
+    HashBits,
+    /// `sys.hash_info` attribute.
+    HashInfo,
     /// `hash_name` parameter of `hashlib.pbkdf2_hmac()`.
     HashName,
     /// `sys.flags.hash_randomization` field.
@@ -2210,10 +2218,10 @@ pub enum StaticStrings {
     MatchClass,
     /// Module name for `import math`.
     Math,
-    /// `math.inf` constant
+    /// `math.inf` constant and `sys.hash_info.inf` field.
     #[strum(serialize = "inf")]
     MathInf,
-    /// `math.nan` constant
+    /// `math.nan` constant and `sys.hash_info.nan` field.
     #[strum(serialize = "nan")]
     MathNan,
     /// `sys.float_info.max` field; also the `max` class constant of the `datetime` classes.
@@ -2322,6 +2330,8 @@ pub enum StaticStrings {
     ModuleKwarg,
     /// Kwarg name `modulo` — `Context.power()`.
     Modulo,
+    /// `sys.hash_info.modulus` field.
+    Modulus,
     /// `time.monotonic()` function.
     Monotonic,
     /// `time.monotonic_ns()` function.
@@ -2781,6 +2791,8 @@ pub enum StaticStrings {
     Seconds,
     /// `random.seed()` function.
     Seed,
+    /// `sys.hash_info.seed_bits` field.
+    SeedBits,
     /// `file.seek()` method.
     Seek,
     /// `io.SEEK_CUR` constant.
@@ -2867,6 +2879,9 @@ pub enum StaticStrings {
     Sin,
     /// `math.sinh()` function.
     Sinh,
+    /// Algorithm name `'siphash13'` for `sys.hash_info`.
+    #[strum(serialize = "siphash13")]
+    Siphash13,
     /// `size` parameter of `os.urandom()`.
     Size,
     /// `skipinitialspace` dialect attribute and `csv` format parameter.
@@ -3008,6 +3023,9 @@ pub enum StaticStrings {
     /// Named-tuple type name of `sys.float_info`.
     #[strum(serialize = "sys.float_info")]
     SysFloatInfo,
+    /// Named-tuple type name of `sys.hash_info`.
+    #[strum(serialize = "sys.hash_info")]
+    SysHashInfo,
     /// Named-tuple type name of `sys.version_info`.
     #[strum(serialize = "sys.version_info")]
     SysVersionInfo,
@@ -3279,6 +3297,8 @@ pub enum StaticStrings {
     Weibullvariate,
     /// `weights` parameter of `random.choices()`.
     Weights,
+    /// `sys.hash_info.width` field.
+    Width,
     /// `Path.with_name()` method, answered without host I/O.
     WithName,
     /// `Path.with_stem()` method, answered without host I/O.

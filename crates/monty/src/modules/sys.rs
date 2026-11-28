@@ -6,7 +6,7 @@
 //! values that are true *of Monty* — the Python version it targets, the
 //! properties of the `f64` it stores floats in, the Unicode range, and the
 //! fact that it has no install tree, no `__pycache__` and no command line.
-//! Structseqs describing CPython's C implementation (`hash_info`, `int_info`,
+//! Structseqs describing CPython's C implementation (`int_info`,
 //! `thread_info`) are deliberately absent rather than fabricated; see
 //! `limitations/sys.md`.
 //!
@@ -101,6 +101,7 @@ pub fn create_module(vm: &mut VM<'_>) -> Module {
         vm,
     );
     module.set_attr(StaticStrings::FloatInfo, float_info(vm), vm);
+    module.set_attr(StaticStrings::HashInfo, hash_info(vm), vm);
     module.set_attr(
         StaticStrings::FloatReprStyle,
         Value::InternString(vm.interns.intern_static(StaticStrings::Short)),
@@ -235,6 +236,40 @@ fn float_info(vm: &VM<'_>) -> Value {
             Value::Float(f64::EPSILON),
             Value::Int(i64::from(f64::RADIX)),
             Value::Int(1),
+        ],
+    );
+    Value::allocate(named_tuple, vm.heap)
+}
+
+/// Builds `sys.hash_info` describing Python's 64-bit numeric hashing parameters.
+///
+/// Modulus is $P = 2^{61}-1$, width is 64 bits, inf is 314159, and the default algorithm
+/// is siphash13. Monty's internal hash algorithms diverge for strings and containers,
+/// but numeric constants are exposed for standard library compatibility.
+fn hash_info(vm: &VM<'_>) -> Value {
+    let named_tuple = NamedTuple::new(
+        EitherStr::Interned(vm.interns.intern_static(StaticStrings::SysHashInfo)),
+        vec![
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Width)),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Modulus)),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::MathInf)),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::MathNan)),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Imag)),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Algorithm)),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::HashBits)),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::SeedBits)),
+            EitherStr::Interned(vm.interns.intern_static(StaticStrings::Cutoff)),
+        ],
+        vec![
+            Value::Int(64),
+            Value::Int((1_i64 << 61) - 1),
+            Value::Int(314_159),
+            Value::Int(0),
+            Value::Int(1_000_003),
+            Value::InternString(vm.interns.intern_static(StaticStrings::Siphash13)),
+            Value::Int(64),
+            Value::Int(128),
+            Value::Int(0),
         ],
     );
     Value::allocate(named_tuple, vm.heap)

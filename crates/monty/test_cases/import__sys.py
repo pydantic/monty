@@ -84,6 +84,83 @@ assert sys.float_info[0] == sys.float_info.max
 assert sys.float_info[-1] == sys.float_info.rounds
 assert repr(sys.float_info).startswith('sys.float_info(max=')
 
+# === sys.hash_info ===
+hi = sys.hash_info
+assert isinstance(hi, tuple)
+assert len(hi) == 9
+assert len(tuple(hi)) == 9
+
+# Named attribute access
+assert hi.width == 64
+assert hi.modulus == 2305843009213693951
+assert hi.inf == 314159
+assert hi.nan == 0
+assert hi.imag == 1000003
+assert hi.algorithm == 'siphash13'
+assert hi.hash_bits == 64
+assert hi.seed_bits == 128
+assert hi.cutoff == 0
+
+# Sequence indexing access
+assert hi[0] == 64
+assert hi[1] == 2305843009213693951
+assert hi[2] == 314159
+assert hi[3] == 0
+assert hi[4] == 1000003
+assert hi[5] == 'siphash13'
+assert hi[6] == 64
+assert hi[7] == 128
+assert hi[8] == 0
+assert hi[-1] == 0
+
+# Slicing
+assert hi[0:3] == (64, 2305843009213693951, 314159)
+
+# Unpacking into variables
+w, m, inf, nan, im, algo, hb, sb, cut = hi
+assert w == 64
+assert m == 2305843009213693951
+assert algo == 'siphash13'
+
+# Tuple comparison and hashability
+assert hi == (64, 2305843009213693951, 314159, 0, 1000003, 'siphash13', 64, 128, 0)
+assert hash(hi) == hash(tuple(hi))
+
+# Repr check
+assert repr(hi) == (
+    'sys.hash_info(width=64, modulus=2305843009213693951, inf=314159, nan=0, '
+    "imag=1000003, algorithm='siphash13', hash_bits=64, seed_bits=128, cutoff=0)"
+)
+
+# Structseq API restrictions (absence of namedtuple-only methods)
+assert hasattr(hi, '_fields') is False
+assert hasattr(hi, '_replace') is False
+assert hasattr(hi, '_asdict') is False
+
+# Non-existent attribute error
+try:
+    hi.nonexistent
+except AttributeError:
+    pass
+else:
+    raise AssertionError('expected AttributeError for non-existent attribute')
+
+# Read-only attribute assignment error
+try:
+    hi.width = 32
+except AttributeError:
+    pass
+else:
+    raise AssertionError('expected AttributeError for attribute mutation')
+
+# Item mutation error
+try:
+    hi[0] = 32
+except TypeError:
+    pass
+else:
+    raise AssertionError('expected TypeError for item mutation')
+
 # === sys.copyright ===
 assert isinstance(sys.copyright, str)
 assert len(sys.copyright) > 0
