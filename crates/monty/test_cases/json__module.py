@@ -69,6 +69,7 @@ assert json.dumps('☃', ensure_ascii=False) == ('"☃"')
 assert json.dumps(float('nan')) == 'NaN'
 assert json.dumps(float('inf')) == ('Infinity')
 assert json.dumps(float('-inf')) == ('-Infinity')
+assert json.dumps([2**50 + 0.25, {2**47 + 0.125: 1}]) == '[1125899906842624.2, {"140737488355328.12": 1}]'
 
 # === dumps key coercion ===
 assert json.dumps({True: 1, False: 2, None: 3, 4: 5, 1.5: 6}) == '{"true": 1, "false": 2, "null": 3, "4": 5, "1.5": 6}'
