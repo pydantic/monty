@@ -175,6 +175,29 @@ assert frozenset({1, 2, 3}).difference([2]) == frozenset({1, 3})
 assert frozenset({1, 2}).symmetric_difference([2, 3]) == frozenset({1, 3})
 assert frozenset({1}).union(range(3)) == frozenset({0, 1, 2})
 assert frozenset({1}).union((2, 3)) == frozenset({1, 2, 3})
+assert frozenset({1, 2}).union([3], (4,)) == frozenset({1, 2, 3, 4})
+assert frozenset({1, 2, 3}).intersection([1, 2], (2,)) == frozenset({2})
+assert frozenset({1, 2, 3}).difference([1], [2]) == frozenset({3})
+assert type(frozenset({1}).union([2], [3])) is frozenset
+
+# with no arguments they return a new frozenset, unlike copy()
+fs = frozenset({1, 2})
+for result in [fs.union(), fs.intersection(), fs.difference()]:
+    assert result == fs
+    assert result is not fs
+    assert type(result) is frozenset
+
+try:
+    fs.union([3], 4)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'int' object is not iterable"
+
+try:
+    fs.union(x=[3])
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == 'frozenset.union() takes no keyword arguments'
 
 # === issubset/issuperset/isdisjoint with non-set iterables ===
 fs = frozenset({1, 2, 3})
