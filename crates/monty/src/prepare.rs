@@ -2210,9 +2210,13 @@ impl<'i, 'g> Prepare<'i, 'g> {
         decorators: Vec<ExprLoc>,
         position: CodeRange,
     ) -> Result<PreparedNode, ParseError> {
-        // The class name binds in the enclosing scope, exactly like a `def`.
-        self.names_assigned_in_order.insert(name.name_id);
-        let name = self.get_id(name)?;
+        // Decorators, bases, and keyword arguments evaluate in the enclosing
+        // scope before the class name binds — so in a class body `@C class C`
+        // or `class C(C)` reads the pre-binding global `C`, matching CPython.
+        let decorators = decorators
+            .into_iter()
+            .map(|d| self.prepare_expression(d))
+            .collect::<Result<Vec<_>, ParseError>>()?;
 
         let bases = bases
             .into_iter()
@@ -2232,11 +2236,12 @@ impl<'i, 'g> Prepare<'i, 'g> {
             })
             .collect::<Result<Vec<_>, ParseError>>()?;
 
-        // Decorators evaluate in the enclosing scope, not the class body.
-        let decorators = decorators
-            .into_iter()
-            .map(|d| self.prepare_expression(d))
-            .collect::<Result<Vec<_>, ParseError>>()?;
+        // The class name binds in the enclosing scope after header evaluation.
+        self.names_assigned_in_order.insert(name.name_id);
+        let name = self.get_id(name)?;
+        if self.is_class_scope {
+            self.bound_class_members.insert(name.name_id);
+        }
 
         // The class body is a synthetic zero-arg function: no params, no defaults.
         let RawFunctionDef {
@@ -2288,6 +2293,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
         };
         let FunctionState {
             locals: inner_locals,
+            assigned_names: inner_assigned_names,
             free_var_map: inner_free_var_map,
             cell_var_map: inner_cell_var_map,
             ..
@@ -2311,12 +2317,21 @@ impl<'i, 'g> Prepare<'i, 'g> {
             .collect::<Vec<_>>();
 
         // Same-name collision (a known divergence — see `limitations/classes.md`):
-        // a class-body owned cell means a method captured a class-body local that
-        // ALSO has the same name as a variable in an enclosing scope. CPython keeps
-        // these distinct (class-dict entry vs. closure cell); Monty maps one name
-        // to a single slot, so it cannot represent both. Reject cleanly rather than
-        // miscompile (the alternative is a runtime "expected cell reference" crash).
-        if let Some(&name_id) = inner_cell_var_map.keys().next() {
+        // a class-body owned cell means a method or nested class captured a
+        // class-body local that ALSO has the same name as a variable in an
+        // enclosing scope. That can show up either in `inner_cell_var_map`
+        // (when the outer name was already in `free_var_map`) or as a slot
+        // shared by both `inner_free_var_map` and `assigned_names` (when
+        // bubble-up added the pass-through free var via `locals.ensure_slot`).
+        if let Some(&name_id) = inner_cell_var_map
+            .keys()
+            .chain(
+                inner_free_var_map
+                    .keys()
+                    .filter(|name| inner_assigned_names.contains(*name)),
+            )
+            .next()
+        {
             let name_str = self.interner.get_str(name_id);
             return Err(ParseError::not_implemented(
                 format!(

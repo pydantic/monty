@@ -35,6 +35,7 @@ CPython-matching features: instance methods, `__init__` (full parameter
 shapes), instance and class attribute get/set (including `setattr(Foo, ...)`
 and function-attributes-become-methods), bound methods, class variables
 (arbitrary expressions, evaluated in a real suspendable class-body scope),
+nested class definitions (`class Outer: class Inner: ...`),
 class and method decorators (including `property`, `classmethod`, and `staticmethod`),
 `__repr__`/`__str__`/`__enter__`/`__exit__`/`__eq__`/`__hash__` dispatch,
 `__call__`, `__getitem__`/`__setitem__`, unary `+`/`-`, and binary numeric operators
@@ -510,19 +511,21 @@ every construction request. Divergences:
     (a `type()` namespace may bind its own; see [typing.md](typing.md#annotations)), and explicit
     `obj.__repr__()` / `obj.__str__()` calls when the class defines none, all
     raise `AttributeError`.
-- Class-body statements other than a `def`, a simple `name [: T] = <expr>`
-    variable assignment, `pass`, `...`, or a docstring, e.g. `if`/`for`/`while`
-    in the class body, or tuple/multiple assignment targets (rejected at parse
-    time).
+- Class-body statements other than a `def`, a nested `class`, a simple
+    `name [: T] = <expr>` variable assignment, `pass`, `...`, or a docstring,
+    e.g. `if`/`for`/`while` in the class body, or tuple/multiple assignment
+    targets (rejected at parse time).
 - Assignment expressions (`:=`) that bind in the class-body scope: in
-    class-variable values, method parameter defaults, and lambda parameter
-    defaults (rejected at parse time). In CPython the walrus target becomes a
+    class-variable values, method parameter defaults, lambda parameter
+    defaults, and a nested class's decorators, base classes, or keyword
+    arguments (rejected at parse time). In CPython the walrus target becomes a
     class member (`class C: x = (y := 5)` gives `C.y`); Monty's class-namespace
     assembly only records directly-assigned names, so the syntax is reserved
     rather than silently dropping the binding. A walrus inside a lambda *body*
-    (`f = lambda: (z := 1)`) binds in the lambda's own scope and works. A walrus
-    in a comprehension in the class body is also rejected (CPython rejects that
-    too, but as a `SyntaxError` with different wording).
+    (`f = lambda: (z := 1)`) or a nested class's method body binds in that
+    inner scope and works. A walrus in a comprehension in the class body is also
+    rejected (CPython rejects that too, but as a `SyntaxError` with different
+    wording).
 - `del obj.attr` (the `del` statement is unsupported generally).
 
 ## `object`

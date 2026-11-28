@@ -191,6 +191,35 @@ fn method_default_walrus_returns_not_implemented_error() {
 }
 
 #[test]
+fn nested_class_header_walrus_returns_not_implemented_error() {
+    // A nested class's decorators, bases, and keyword arguments evaluate in the
+    // outer class-body scope, so a walrus there would bind an outer class member.
+    for code in [
+        "class Outer:\n    class Inner((b := Base)):\n        pass",
+        "class Outer:\n    class Inner(Base, tag=(k := 1)):\n        pass",
+        "class Outer:\n    @(d := deco)\n    class Inner:\n        pass",
+    ] {
+        let err = get_parse_err(code);
+        assert_eq!(err.exc_type(), ExcType::NotImplementedError, "{code}");
+        assert_eq!(
+            err.message(),
+            Some("The monty syntax parser does not yet support assignment expressions (`:=`) in class bodies"),
+            "{code}"
+        );
+    }
+
+    // A walrus inside the nested class's own method body binds in that method's
+    // local scope and remains allowed.
+    let ok = MontyRun::new(
+        "class Outer:\n    class Inner:\n        def m(self):\n            return (w := 42)".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    );
+    assert!(ok.is_ok(), "walrus inside nested class method body should compile");
+}
+
+#[test]
 fn non_literal_class_var_compiles_successfully() {
     // The class body now has a real scope, so class variables may be arbitrary
     // expressions (including ones referencing earlier class variables).
@@ -206,8 +235,9 @@ fn non_literal_class_var_compiles_successfully() {
 #[test]
 fn class_member_shadowing_captured_var_returns_not_implemented_error() {
     // Same-name collision: an enclosing local and a class member share a name,
-    // and a method captures the enclosing one. Monty cannot represent both a
-    // class-dict entry and a closure cell under one name (see limitations/classes.md).
+    // and a method or nested class captures the enclosing one. Monty cannot
+    // represent both a class-dict entry and a closure cell under one name
+    // (see limitations/classes.md).
     let err = get_parse_err(
         "def outer():\n    x = 1\n    class C:\n        x = 2\n        def m(self):\n            return x\n    return C",
     );
@@ -216,6 +246,21 @@ fn class_member_shadowing_captured_var_returns_not_implemented_error() {
         err.message().unwrap(),
         @"The monty syntax parser does not yet support class member 'x' that shadows a captured variable of the same name from an enclosing scope"
     );
+
+    for code in [
+        "def outer():\n    x = 1\n    class Outer:\n        x = 2\n        class Inner:\n            y = x\n    return Outer",
+        "def outer():\n    x = 1\n    class Outer:\n        x = 2\n        class Inner:\n            def m(self):\n                return x\n    return Outer",
+    ] {
+        let err = get_parse_err(code);
+        assert_eq!(err.exc_type(), ExcType::NotImplementedError, "{code}");
+        assert_eq!(
+            err.message(),
+            Some(
+                "The monty syntax parser does not yet support class member 'x' that shadows a captured variable of the same name from an enclosing scope"
+            ),
+            "{code}"
+        );
+    }
 }
 
 #[test]
