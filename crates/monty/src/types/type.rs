@@ -133,7 +133,7 @@ impl Type {
     /// A type's own class methods run first, then `__class_getitem__`; any
     /// other name is looked up as a plain attribute and the result called, so
     /// `list.__name__()` raises `'str' object is not callable`.
-    pub(crate) fn call_class_method(self, attr: &EitherStr, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    pub(crate) fn call_type_attr(self, attr: &EitherStr, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         match self.lookup_attr(attr, vm.interns) {
             Some((_, AttrDef::ClassMethod(classmethod))) => {
                 return classmethod(TypeRef::Native(self), args, vm);

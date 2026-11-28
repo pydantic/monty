@@ -44,6 +44,10 @@ pub(crate) struct NativeMethod {
 }
 
 impl NativeMethod {
+    pub(crate) fn call_unbound(self, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+        self.owner.call_type_attr(&EitherStr::Interned(self.name), args, vm)
+    }
+
     pub(crate) fn bind(self, receiver: &Value, vm: &VM<'_>) -> RunResult<Value> {
         check_receiver(self.owner, &EitherStr::Interned(self.name), receiver, vm)?;
         Ok(BoundMethod::allocate(

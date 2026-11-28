@@ -329,7 +329,7 @@ impl<'h> PyValue<'h> {
         forward_py_value!(self, |value| value.py_call_attr(vm, attr, args), {
             Self::Module(value) => value.py_call_attr(vm, attr, args),
             Self::Task(value) => task_call_method(value, attr, args, vm),
-            Self::Builtin(Builtins::Type(ty)) => ty.call_class_method(attr, args, vm),
+            Self::Builtin(Builtins::Type(ty)) => ty.call_type_attr(attr, args, vm),
             Self::Bool(value) => {
                 match attr.static_string(vm.interns) {
                     Some(StaticStrings::BitLength) => {
