@@ -962,3 +962,24 @@ p = functools.partial(len, Mutator())
         "[[[1, 2, 3]], Repr('functools.partial(<built-in function len>, m)'), Holder(x=[9])]"
     );
 }
+
+#[test]
+fn function_introspection_attributes() {
+    let code = r"
+def outer():
+    x = 10
+    def inner():
+        return x
+    return inner
+
+fn = outer()
+class C:
+    def meth(self):
+        pass
+c = C()
+(fn.__name__, fn.__qualname__, fn.__doc__, fn.__module__, c.meth.__name__, c.meth.__qualname__)
+";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let res = ex.run_no_limits(vec![]).unwrap();
+    assert_eq!(res.py_repr(), "('inner', 'inner', None, '__main__', 'meth', 'meth')");
+}

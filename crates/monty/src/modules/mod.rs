@@ -349,6 +349,45 @@ impl fmt::Display for ModuleFunctions {
 }
 
 impl ModuleFunctions {
+    /// The Python module name defining this module function.
+    #[must_use]
+    pub(crate) fn module_name(self) -> &'static str {
+        match self {
+            Self::Asyncio(_) => "asyncio",
+            Self::Collections(_) => "collections",
+            Self::Json(_) => "json",
+            Self::Math(_) => "math",
+            Self::Os(_) => "os",
+            Self::OsPath(_) => "os.path",
+            Self::Re(_) => "re",
+            Self::Unicodedata(_) => "unicodedata",
+            Self::Itertools(_) => "itertools",
+            Self::Dataclasses(_) => "dataclasses",
+            Self::Functools(_) => "functools",
+            Self::Base64(_) => "base64",
+            Self::Binascii(_) => "binascii",
+            Self::Random(_) => "random",
+            Self::Copy(_) => "copy",
+            Self::Descriptor(_) => "builtins",
+            Self::Frozen(_) => "_frozen",
+            Self::Time(_) => "time",
+            Self::Hashlib(_) => "hashlib",
+            Self::Bisect(_) => "bisect",
+            Self::Csv(_) => "csv",
+            Self::Tomllib(_) => "tomllib",
+            Self::Decimal(_) => "decimal",
+            Self::Fnmatch(_) => "fnmatch",
+            Self::Typing(_) => "typing",
+            Self::Annotationlib(_) => "annotationlib",
+            Self::Statistics(_) => "statistics",
+            Self::Io(_) => "_io",
+            #[cfg(feature = "test-hooks")]
+            Self::Gc(_) => "gc",
+            #[cfg(feature = "test-hooks")]
+            Self::Sys(_) => "sys",
+        }
+    }
+
     /// Calls the module function with the given arguments.
     ///
     /// Returns `CallResult` to support both immediate values and OS calls that

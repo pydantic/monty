@@ -192,17 +192,15 @@ nor safe to surface in the sandbox.
 
 ## Function objects
 
-A function exposes only `__annotations__` and `__annotate__` (see [typing.md](typing.md#annotations)):
-`__name__`, `__doc__`, `__qualname__` and `__module__` all raise
-`AttributeError: 'function' object has no attribute '<name>'`, and attributes cannot be set —
-`fn.tag = True` raises
-`AttributeError: 'function' object has no attribute 'tag' and no __dict__ for setting new attributes`. CPython supports
-all of these.
+Functions support read-only `__name__`, `__qualname__`, `__doc__`, `__module__`, `__annotate__`, and `__annotations__`:
 
-This bounds what a decorator can do: it can call, wrap, store or replace the
-function it receives, but cannot ask the function about itself, so
-`functools.wraps`-style metadata copying, registries keyed by `fn.__name__`, and
-attribute tagging for later discovery all have no equivalent.
+- `__name__`: returns the function's identifier string (`'<lambda>'` for lambdas).
+- `__qualname__`: returns the function's base identifier string (`fn.__name__`), matching CPython for top-level functions and lambdas. Monty does not track enclosing scopes at compile time, so nested functions and class methods do not carry scope prefixes (`outer.<locals>.inner` or `Class.method`).
+- `__doc__`: returns `None` for all functions. Monty's AST and compiler discard leading string statements in function bodies without storing docstrings on the function object.
+- `__module__`: returns the module's `__name__` from the globals dict the function was compiled under, or `'__main__'` by default.
+
+Attributes cannot be set on functions — `fn.tag = True` raises
+`AttributeError: 'function' object has no attribute 'tag' and no __dict__ for setting new attributes`. Functions have no `__dict__`.
 
 ## Walrus assignments in lambda defaults
 

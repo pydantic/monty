@@ -1315,6 +1315,32 @@ impl Value {
                     None => Err(t.attribute_error(attr, vm)),
                 };
             }
+            Self::Builtin(Builtins::Function(func)) => match attr.as_str(vm.interns) {
+                "__name__" => {
+                    let full_name: &'static str = (*func).into();
+                    let name = full_name.rsplit_once('.').map_or(full_name, |(_, n)| n);
+                    return Ok(CallResult::Value(allocate_string(name, vm.heap)));
+                }
+                "__qualname__" => {
+                    let full_name: &'static str = (*func).into();
+                    return Ok(CallResult::Value(allocate_string(full_name, vm.heap)));
+                }
+                "__doc__" => return Ok(CallResult::Value(Self::None)),
+                "__module__" => {
+                    return Ok(CallResult::Value(allocate_string("builtins", vm.heap)));
+                }
+                _ => {}
+            },
+            Self::ModuleFunction(func) => match attr.as_str(vm.interns) {
+                "__name__" | "__qualname__" => {
+                    return Ok(CallResult::Value(allocate_string(func.to_string(), vm.heap)));
+                }
+                "__doc__" => return Ok(CallResult::Value(Self::None)),
+                "__module__" => {
+                    return Ok(CallResult::Value(allocate_string(func.module_name(), vm.heap)));
+                }
+                _ => {}
+            },
             // A plain `def` has its PEP 649 attributes and nothing else.
             Self::DefFunction(func_id) => {
                 if let Some(result) = annotations::function_getattr(*func_id, None, attr.as_str(vm.interns), vm) {
