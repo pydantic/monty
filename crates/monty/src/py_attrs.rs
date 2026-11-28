@@ -36,7 +36,11 @@ pub(crate) enum AttrDef {
     Value(fn(&mut VM<'_>) -> Value),
 }
 
-/// A registered native method identified by its defining class and interned Python name.
+/// A native method descriptor identified by its defining type and Python name.
+///
+/// Reading `list.append` returns this descriptor. Reading `items.append` wraps it in
+/// a [`BoundMethod`] that holds `items`. Class methods such as `dict.fromkeys`
+/// use the same representation with the class bound.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) struct NativeMethod {
     pub owner: Type,
@@ -44,10 +48,13 @@ pub(crate) struct NativeMethod {
 }
 
 impl NativeMethod {
+    /// Calls the method as a function, using the first positional argument as the
+    /// receiver for an instance method.
     pub(crate) fn call_unbound(self, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
-        self.owner.call_type_attr(&EitherStr::Interned(self.name), args, vm)
+        self.owner.call_on_class(&EitherStr::Interned(self.name), args, vm)
     }
 
+    /// Binds an instance after checking that it belongs to the defining type or a subtype.
     pub(crate) fn bind(self, receiver: &Value, vm: &VM<'_>) -> RunResult<Value> {
         check_receiver(self.owner, &EitherStr::Interned(self.name), receiver, vm)?;
         Ok(BoundMethod::allocate(
@@ -57,6 +64,7 @@ impl NativeMethod {
         ))
     }
 
+    /// Uses the bound class or the instance's class in the method's qualified name.
     pub(crate) fn bound_attr(self, receiver: &Value, name: &str, vm: &VM<'_>) -> Option<Value> {
         match name {
             "__self__" => Some(receiver.clone_with_heap(vm)),
@@ -74,6 +82,7 @@ impl NativeMethod {
         allocate_string(format!("{owner}.{}", vm.interns.get_str(self.name)), vm.heap)
     }
 
+    /// Reports descriptor metadata from the defining class, including the qualified name.
     pub(crate) fn attr(self, name: &str, vm: &VM<'_>) -> Option<Value> {
         Some(match name {
             "__name__" => Value::InternString(self.name),

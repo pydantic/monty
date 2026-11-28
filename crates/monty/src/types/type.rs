@@ -128,12 +128,12 @@ impl Type {
         }
     }
 
-    /// Dispatches calls on a type object's attribute (`dict.fromkeys(...)`).
+    /// Calls an attribute through the class object, as in `list.append(items, x)`.
     ///
-    /// A type's own class methods run first, then `__class_getitem__`; any
-    /// other name is looked up as a plain attribute and the result called, so
-    /// `list.__name__()` raises `'str' object is not callable`.
-    pub(crate) fn call_type_attr(self, attr: &EitherStr, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    /// Instance methods take the receiver from the first positional argument.
+    /// Class methods receive this class. Other attributes are read and then called.
+    /// Generic classes also support a direct call to `__class_getitem__`.
+    pub(crate) fn call_on_class(self, attr: &EitherStr, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         match self.lookup_attr(attr, vm.interns) {
             Some((_, AttrDef::ClassMethod(classmethod))) => {
                 return classmethod(TypeRef::Native(self), args, vm);
