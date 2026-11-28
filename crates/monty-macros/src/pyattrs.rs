@@ -151,6 +151,7 @@ fn project_receiver(ty: &Type) -> syn::Result<TokenStream> {
         "PyBytes" => (quote!(Bytes), quote!(value)),
         "PyInt" => (quote!(Int), quote!(value)),
         "f64" => (quote!(Float), quote!(*value)),
+        "NativeMethod" => (quote!(NativeMethod), quote!(*value)),
         "bool" => (quote!(Bool), quote!(*value)),
         "HeapRead" | "HeapReadMut" | "HeapObjectRead" => {
             let PathArguments::AngleBracketed(args) = &segment.arguments else {

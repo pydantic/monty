@@ -156,7 +156,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, CsvObject> {
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let Some(name) = attr.static_string(vm.interns) else {
-            return Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns)));
+            return Ok(None);
         };
         let value = match (self.get(vm.heap), name) {
             (CsvObject::Reader(reader), StaticStrings::Dialect) => {
@@ -186,9 +186,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, CsvObject> {
             (CsvObject::DictWriter(writer), StaticStrings::Writer) => writer.writer.clone_with_heap(vm.heap),
             (CsvObject::Dialect(dialect), name) => match dialect.attr(name, vm) {
                 Some(value) => value,
-                None => return Err(ExcType::attribute_error(Type::CsvDialect, attr.as_str(vm.interns))),
+                None => return Ok(None),
             },
-            _ => return Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns))),
+            _ => return Ok(None),
         };
         Ok(Some(CallResult::Value(value)))
     }

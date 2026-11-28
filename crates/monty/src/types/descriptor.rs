@@ -109,7 +109,8 @@ pub(crate) fn attribute_helper() -> Value {
 
 /// Instances remain candidates even before their class defines descriptor hooks.
 pub(crate) fn may_be_descriptor(value: &Value, heap: &Heap) -> bool {
-    matches!(value, Value::Ref(id) if matches!(heap.get(*id), HeapData::Instance(_) | HeapData::BuiltinDescriptor(_)))
+    matches!(value, Value::NativeMethod(_))
+        || matches!(value, Value::Ref(id) if matches!(heap.get(*id), HeapData::Instance(_) | HeapData::BuiltinDescriptor(_)))
 }
 
 /// User-defined members may gain setter/deleter hooks through mutations of their type.
@@ -252,12 +253,22 @@ pub(crate) fn is_data(value: &Value, vm: &VM<'_>) -> bool {
 
 /// Builtin wrappers always have a getter; user hooks are looked up on their type.
 pub(crate) fn has_get(value: &Value, vm: &VM<'_>) -> bool {
-    matches!(value, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::BuiltinDescriptor(_)))
+    matches!(value, Value::NativeMethod(_))
+        || matches!(value, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::BuiltinDescriptor(_)))
         || descriptor_class(value, vm).is_some_and(|class| class_defines(class, "__get__", vm))
 }
 
 /// A plain function binds an instance; arbitrary descriptors may install a Python frame.
 pub(crate) fn get(value: &Value, instance: Option<HeapId>, owner: HeapId, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    if let Value::NativeMethod(method) = value {
+        let Some(id) = instance else {
+            return Ok(CallResult::Value(Value::NativeMethod(*method)));
+        };
+        vm.heap.inc_ref(id);
+        let receiver = Value::Ref(id);
+        defer_drop!(receiver, vm);
+        return method.bind(receiver, vm).map(CallResult::Value);
+    }
     if let Value::Ref(id) = value
         && matches!(vm.heap.get(*id), HeapData::BuiltinDescriptor(_))
     {

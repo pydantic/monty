@@ -398,7 +398,7 @@ impl HeapData {
             // A class object's type is `type`.
             Self::HostClassType(_) | Self::Class(_) => Type::Type,
             Self::BuiltinDescriptor(d) => d.kind(),
-            Self::BoundMethod(_) => Type::Function,
+            Self::BoundMethod(method) => method.kind(),
             Self::DataclassField(_) => Type::DataclassField,
             Self::DataclassMethod(_) => Type::Function,
             Self::DataclassParams(_) => Type::DataclassParams,

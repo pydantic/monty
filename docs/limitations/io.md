@@ -29,8 +29,6 @@ and `io` is CPython's `Lib/io.py`, which re-exports them and adds `SEEK_SET` / `
 - **No instance attributes.** `s.x = 1` raises
     `AttributeError: '_io.StringIO' object has no attribute 'x' and no __dict__ for setting new attributes`;
     CPython's instances have a `__dict__`.
-- **Methods are call-only**, like every builtin method (see [builtins.md](builtins.md)): `w = s.write` raises
-    `AttributeError`.
 - **Missing methods:** `BytesIO.getbuffer()`, `readinto()`, `readinto1()`, `__getstate__()` and `__setstate__()`.
     Monty has no `bytearray` or `memoryview` for the first three to use.
     `copy.copy()` and `copy.deepcopy()` work without the last two.
