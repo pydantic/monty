@@ -126,7 +126,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: BisectFunctions, args: ArgValues) 
     defer_drop!(search_x, vm);
     let index = search(vm, a, search_x, (lo, hi), key, left)?;
     if insert {
-        let Value::Ref(_) = a else {
+        let Value::Ref(..) = a else {
             return Err(ExcType::attribute_error(a.py_type_name(vm), "insert"));
         };
         let argument = x.clone_with_heap(vm);

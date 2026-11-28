@@ -38,6 +38,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     hash::{HashValue, identity_hash},
     heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
+    heap_data::HeapKind,
     intern::{Interns, StaticStrings},
     modules::copy::{Memo, PyDeepCopy, deep_copy_slots},
     py_attrs::{MethodCall, PyAttrs},
@@ -144,7 +145,7 @@ impl NamedTuple {
             items.len(),
             "NamedTuple field_names and items must have same length"
         );
-        let contains_refs = items.iter().any(|v| matches!(v, Value::Ref(_)));
+        let contains_refs = items.iter().any(|v| matches!(v, Value::Ref(..)));
         Self {
             name: name.into(),
             field_names,
@@ -512,7 +513,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTuple> {
         // plain tuple with the same elements (class name is ignored). Both
         // directions of the tuple case are covered here, so `Tuple::py_eq_impl`
         // need not know about namedtuples.
-        match other.read_heap(vm) {
+        match other.read_heap_kind(vm, &[HeapKind::NamedTuple, HeapKind::Tuple]) {
             Some(HeapReadOutput::NamedTuple(other)) => {
                 if self.get(vm.heap).len() != other.get(vm.heap).len() {
                     return Ok(Some(false));
@@ -629,7 +630,7 @@ impl HeapItem for NamedTuple {
             return;
         }
         for obj in &mut self.items {
-            if let Value::Ref(id) = obj {
+            if let Value::Ref(_, id) = obj {
                 stack.push(*id);
                 #[cfg(feature = "memory-model-checks")]
                 obj.dec_ref_forget();
@@ -832,7 +833,7 @@ impl NamedTupleClass {
     /// `module` is taken by value: the class owns that reference from here on.
     #[must_use]
     pub fn new(name: impl Into<EitherStr>, field_names: Vec<EitherStr>, defaults: Vec<Value>, module: Value) -> Self {
-        let contains_refs = defaults.iter().any(|v| matches!(v, Value::Ref(_))) || matches!(module, Value::Ref(_));
+        let contains_refs = defaults.iter().any(|v| matches!(v, Value::Ref(..))) || matches!(module, Value::Ref(..));
         Self {
             name: name.into(),
             field_names,
@@ -1007,7 +1008,7 @@ impl HeapItem for NamedTupleClass {
         // MUST report exactly the same ids as the `NamedTupleClass` arm of
         // `for_each_child_id` — `module` is owned just like the defaults are.
         for obj in self.defaults.iter_mut().chain(once(&mut self.module)) {
-            if let Value::Ref(id) = obj {
+            if let Value::Ref(_, id) = obj {
                 stack.push(*id);
                 #[cfg(feature = "memory-model-checks")]
                 obj.dec_ref_forget();
@@ -1101,7 +1102,7 @@ pub(crate) fn cmp_item_seqs(a: Vec<Value>, b: Vec<Value>, vm: &mut VM<'_>) -> Ru
 /// Shared by named-tuple concatenation (`+`), whose result is always a plain
 /// tuple regardless of which operand is the namedtuple.
 fn cloned_tuple_like_items(value: &Value, vm: &VM<'_>) -> RunResult<Option<Vec<Value>>> {
-    let items = value.ref_id().and_then(|id| SequenceItems::from_tuple(vm.heap.get(id)));
+    let items = SequenceItems::from_tuple(value, vm.heap);
     items.map(|items| items.to_vec(vm.heap)).transpose()
 }
 

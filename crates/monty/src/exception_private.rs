@@ -14,6 +14,7 @@ use crate::{
     defer_drop,
     fstring::{FormatError, ascii_escape},
     heap::{DropWithContext, HeapId, HeapRead},
+    heap_data::HeapKind,
     intern::{Interns, StaticStrings, StringId},
     parse::CodeRange,
     py_value::PyValue,
@@ -3419,7 +3420,7 @@ fn chained_value(id: Option<HeapId>, vm: &VM<'_>) -> Value {
     match id {
         Some(id) => {
             vm.heap.inc_ref(id);
-            Value::Ref(id)
+            Value::Ref(HeapKind::Exception, id)
         }
         None => Value::None,
     }

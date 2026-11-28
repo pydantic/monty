@@ -204,7 +204,7 @@ impl FromValue for i32 {
             // so a bad-arg rewrite ("must be int, not int") would be wrong.
             // CPython's `i` format range-checks with sign-aware wording.
             Value::Int(i) => Self::try_from(i).map_err(|_| FromValueFail::Raise(ExcType::overflow_signed_c_int(i))),
-            _ if value.as_long_int(vm).is_some() => {
+            _ if value.is_long_int() => {
                 value.drop_with(vm);
                 Err(FromValueFail::Raise(ExcType::overflow_c_long()))
             }
@@ -226,7 +226,7 @@ impl FromValue for i64 {
         match value {
             Value::Bool(b) => Ok(Self::from(b)),
             Value::Int(i) => Ok(i),
-            _ if value.as_long_int(vm).is_some() => {
+            _ if value.is_long_int() => {
                 value.drop_with(vm);
                 Err(FromValueFail::Raise(ExcType::overflow_c_long()))
             }
@@ -251,7 +251,7 @@ impl FromValue for isize {
                 value.drop_with(vm);
                 FromValueFail::Raise(ExcType::overflow_c_ssize_t())
             }),
-            _ if value.as_long_int(vm).is_some() => {
+            _ if value.is_long_int() => {
                 value.drop_with(vm);
                 Err(FromValueFail::Raise(ExcType::overflow_c_ssize_t()))
             }
@@ -357,8 +357,8 @@ impl FromValue for StrArg {
     const EXPECTED_TYPE_NAME: Option<&'static str> = Some("str");
 
     #[inline]
-    fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
-        if value.is_str(vm.heap) {
+    fn from_value(value: Value, _: &mut VM<'_>) -> Result<Self, FromValueFail> {
+        if value.is_str() {
             Ok(Self(value))
         } else {
             Err(FromValueFail::WrongType(value))

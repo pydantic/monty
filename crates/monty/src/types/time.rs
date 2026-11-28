@@ -29,6 +29,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     hash::HashValue,
     heap::{Heap, HeapId, HeapItem, HeapObjectRead, HeapReadOutput, HeapReader},
+    heap_data::HeapKind,
     intern::StaticStrings,
     py_attrs::PyAttrs,
     types::{
@@ -570,7 +571,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Time> {
                     return Ok(Some(CallResult::Value(Value::None)));
                 };
                 vm.heap.inc_ref(tzinfo_ref);
-                Ok(Some(CallResult::Value(Value::Ref(tzinfo_ref))))
+                Ok(Some(CallResult::Value(Value::Ref(HeapKind::TimeZone, tzinfo_ref))))
             }
             _ => Ok(None),
         }

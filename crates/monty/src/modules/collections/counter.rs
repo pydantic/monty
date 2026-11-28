@@ -18,7 +18,8 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     expressions::CmpOperator,
-    heap::{DropGuard, DropWithContext, HeapData, HeapObjectRead},
+    heap::{DropGuard, DropWithContext, HeapObjectRead},
+    heap_data::HeapKind,
     intern::StaticStrings,
     py_attrs::{self, MethodCall},
     py_value::PyValue,
@@ -187,7 +188,7 @@ fn count_repeat_len(value: &Value, vm: &VM<'_>) -> RunResult<usize> {
     match value {
         Value::Int(i) => Ok(usize::try_from(*i).unwrap_or(0)),
         Value::Bool(b) => Ok(usize::from(*b)),
-        Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::LongInt(_)) => Err(ExcType::overflow_c_ssize_t()),
+        Value::Ref(HeapKind::LongInt, _) => Err(ExcType::overflow_c_ssize_t()),
         Value::InternLongInt(_) => Err(ExcType::overflow_c_ssize_t()),
         other => Err(ExcType::type_error_not_an_integer(&other.py_type_name(vm))),
     }
@@ -251,10 +252,10 @@ pub(crate) fn counter_update<'h>(
     if let Some(source) = source
         && !matches!(source, Value::None)
     {
-        let is_mapping = matches!(&source, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Dict(_)));
+        let is_mapping = matches!(&source, Value::Ref(HeapKind::Dict, _));
         if is_mapping {
             defer_drop!(source, vm);
-            let Value::Ref(src_id) = source else {
+            let Value::Ref(_, src_id) = source else {
                 unreachable!("mapping is a ref");
             };
             // Only an empty additive update can copy counts verbatim; other updates

@@ -14,11 +14,11 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{ContainsHeap, DropGuard, HeapData, HeapId, HeapReadOutput, HeapReader},
+    heap::{ContainsHeap, DropGuard, HeapId, HeapReadOutput, HeapReader},
     intern::StaticStrings,
     os_dispatch::PostConversionEffect,
     types::{
-        Dict, List, LongInt,
+        Bytes, Dict, HeapStr, List, LongInt,
         file::apply_buffer_store,
         long_int::{check_decimal_digit_count, decimal_digit_count_ascii},
         str::allocate_string,
@@ -172,11 +172,8 @@ fn parse_json_input(value: &Value, hooks: &NumberHooks<'_>, vm: &mut VM<'_>) -> 
         Value::InternString(string_id) => (Cow::Borrowed(vm.interns.get_str(*string_id).as_bytes()), true),
         Value::InlineString(text) => (Cow::Borrowed(text.as_str().as_bytes()), true),
         Value::InternBytes(bytes_id) => (Cow::Borrowed(vm.interns.get_bytes(*bytes_id)), false),
-        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
-            HeapData::Str(s) => (Cow::Owned(s.as_str().as_bytes().to_vec()), true),
-            HeapData::Bytes(b) => (Cow::Owned(b.as_slice().to_vec()), false),
-            _ => return Err(ExcType::json_loads_type_error(&value.py_type_name(vm))),
-        },
+        _ if let Some(s) = value.get_as::<HeapStr>(vm.heap) => (Cow::Owned(s.as_str().as_bytes().to_vec()), true),
+        _ if let Some(b) = value.get_as::<Bytes>(vm.heap) => (Cow::Owned(b.as_slice().to_vec()), false),
         _ => return Err(ExcType::json_loads_type_error(&value.py_type_name(vm))),
     };
     match bytes.strip_prefix(UTF8_BOM) {

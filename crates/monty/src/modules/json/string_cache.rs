@@ -188,7 +188,7 @@ mod tests {
         HeapReader::with(&mut heap, &mut (), |reader, ()| {
             let first = cache.get_or_allocate("1234567890123456".to_owned(), reader);
             let second = cache.get_or_allocate("1234567890123456".to_owned(), reader);
-            assert!(matches!((&first, &second), (Value::Ref(a), Value::Ref(b)) if a == b));
+            assert!(matches!((&first, &second), (Value::Ref(_, a), Value::Ref(_, b)) if a == b));
             first.drop_with(reader);
             second.drop_with(reader);
         });

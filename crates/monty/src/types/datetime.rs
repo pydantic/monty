@@ -25,6 +25,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    heap_data::HeapKind,
     intern::{Interns, StaticStrings},
     modules::time as time_module,
     py_attrs::PyAttrs,
@@ -730,11 +731,8 @@ struct CombineArgs {
 /// Extracts `(year, month, day)` from `combine`'s first argument.
 fn combine_date_part(date: &Value, vm: &mut VM<'_>) -> RunResult<(i32, i32, i32)> {
     let naive = match date {
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Date(d) => Some(d.0),
-            HeapData::DateTime(dt) => Some(dt.naive.date()),
-            _ => None,
-        },
+        _ if let Some(d) = date.get_as::<date::Date>(vm.heap) => Some(d.0),
+        _ if let Some(dt) = date.get_as::<DateTime>(vm.heap) => Some(dt.naive.date()),
         _ => None,
     };
     let naive = naive.ok_or_else(|| {
@@ -881,11 +879,10 @@ pub(crate) fn tzinfo_from_value(
 ) -> RunResult<(Option<TimeZone>, Option<HeapId>)> {
     match value {
         Value::None => Ok((None, None)),
-        Value::Ref(id) => match heap.get(*id) {
-            HeapData::TimeZone(tz) => Ok((Some(tz.clone()), Some(*id))),
-            other => Err(ExcType::type_error_tzinfo(&other.py_type().name(heap, interns))),
-        },
-        _ => Err(ExcType::type_error_tzinfo(value.py_type_shallow().name())),
+        _ if let Some(tz) = value.get_as::<TimeZone>(heap) => Ok((Some(tz.clone()), value.ref_id())),
+        _ => Err(ExcType::type_error_tzinfo(
+            &value.py_type_heap(heap).name(heap, interns),
+        )),
     }
 }
 
@@ -918,7 +915,7 @@ pub(crate) fn allocate_tzinfo_ref(offset_seconds: i32, timezone_name: Option<Str
     if offset_seconds == 0 && timezone_name.is_none() {
         let utc = heap.get_timezone_utc();
         defer_drop!(utc, heap);
-        let Value::Ref(id) = utc else {
+        let Value::Ref(_, id) = utc else {
             unreachable!("timezone.utc must be heap-allocated");
         };
         heap.inc_ref(*id);
@@ -1215,7 +1212,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
     }
 
     fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        match other.read_heap(vm) {
+        match other.read_heap_kind(vm, &[HeapKind::DateTime, HeapKind::TimeDelta]) {
             Some(HeapReadOutput::DateTime(other)) => {
                 let value = self.get(vm.heap).clone();
                 let other = other.get(vm.heap).clone();
@@ -1270,7 +1267,7 @@ impl<'h> HeapObjectRead<'h, DateTime> {
 
         if let Some(tzinfo_ref) = retained {
             vm.heap.inc_ref(tzinfo_ref);
-            Value::Ref(tzinfo_ref)
+            Value::Ref(HeapKind::TimeZone, tzinfo_ref)
         } else {
             match rebuilt {
                 Some(tz) if tz.offset_seconds == 0 && tz.name.is_none() => vm.heap.get_timezone_utc(),

@@ -13,6 +13,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, HeapId, HeapReadOutput},
+    heap_data::HeapKind,
     intern::StaticStrings,
     types::{io::is_memory_stream, str::allocate_string},
     value::{EitherStr, Value},
@@ -93,18 +94,17 @@ impl FileTarget {
         let name = vm.interns.intern_static(method);
         // `fp` is borrowed, so the call takes a reference of its own.
         vm.heap.inc_ref(id);
-        vm.call_attr(Value::Ref(id), name, args)?.require_synchronous(vm)
+        vm.call_attr(Value::Ref(vm.heap.get(id).kind(), id), name, args)?
+            .require_synchronous(vm)
     }
 
     /// `fp` as an `open()` handle or io stream, else its `method` attribute:
     /// CPython's `AttributeError` names the type when it is missing.
     fn resolve(fp: &Value, method: StaticStrings, vm: &mut VM<'_>) -> RunResult<Self> {
-        if let Value::Ref(id) = fp
-            && matches!(vm.heap.read(*id), HeapReadOutput::OpenFile(_))
-        {
+        if let Value::Ref(HeapKind::OpenFile, id) = fp {
             Ok(Self::OpenFile(*id))
-        } else if let Value::Ref(id) = fp
-            && is_memory_stream(fp, vm.heap)
+        } else if let Value::Ref(_, id) = fp
+            && is_memory_stream(fp)
         {
             Ok(Self::Stream(*id))
         } else {

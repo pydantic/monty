@@ -38,7 +38,7 @@ pub(crate) fn builtin_delattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Cal
     let key = attr.as_value(vm.heap);
     defer_drop!(key, vm);
     let removed = match object {
-        Value::Ref(id) => match vm.heap.read(*id) {
+        Value::Ref(_, id) => match vm.heap.read(*id) {
             HeapReadOutput::Instance(instance) => instance.attrs_mut().pop(key, vm)?.map(|(key, value)| {
                 key.drop_with(vm);
                 value
@@ -51,7 +51,7 @@ pub(crate) fn builtin_delattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Cal
     if let Some(value) = removed {
         value.drop_with(vm);
         Ok(CallResult::Value(Value::None))
-    } else if let Value::Ref(id) = object
+    } else if let Value::Ref(_, id) = object
         && matches!(vm.heap.get(*id), HeapData::Class(_))
     {
         Err(deletion_error(ExcType::attribute_error_type(

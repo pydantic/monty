@@ -12,6 +12,7 @@ use crate::{
         DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadMut,
         HeapReadOutput,
     },
+    heap_data::HeapKind,
     intern::StaticStrings,
     modules::copy::{Memo, PyDeepCopy, deep_copy},
     py_attrs::PyAttrs,
@@ -114,7 +115,7 @@ impl Deque {
                 }
             }
         }
-        let contains_refs = items.iter().any(|v| matches!(v, Value::Ref(_)));
+        let contains_refs = items.iter().any(|v| matches!(v, Value::Ref(..)));
         (
             Self {
                 items,
@@ -275,7 +276,7 @@ impl<'h> HeapReadMut<'h, Deque> {
     /// ring past the memory limit fails with `MemoryError`, dropping `item`.
     pub fn append(&self, vm: &mut VM<'h>, item: Value) -> RunResult<()> {
         let item = self.check_push(vm, item)?;
-        if matches!(item, Value::Ref(_)) {
+        if matches!(item, Value::Ref(..)) {
             self.get_mut(vm.heap).contains_refs = true;
         }
         let this = self.get_mut(vm.heap);
@@ -291,7 +292,7 @@ impl<'h> HeapReadMut<'h, Deque> {
     /// Appends to the left, evicting from the right if `maxlen` is reached.
     pub fn appendleft(&self, vm: &mut VM<'h>, item: Value) -> RunResult<()> {
         let item = self.check_push(vm, item)?;
-        if matches!(item, Value::Ref(_)) {
+        if matches!(item, Value::Ref(..)) {
             self.get_mut(vm.heap).contains_refs = true;
         }
         let this = self.get_mut(vm.heap);
@@ -336,9 +337,7 @@ impl<'h> HeapRead<'h, Deque> {
     /// Resolves a Python index (negative counts from the right) to a real one.
     fn resolve_index(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<usize> {
         // A slice is rejected with CPython's sequence wording (names the type).
-        if let Value::Ref(id) = key
-            && matches!(vm.heap.get(*id), HeapData::Slice(_))
-        {
+        if let Value::Ref(HeapKind::Slice, _) = key {
             return Err(ExcType::type_error_sequence_index("slice"));
         }
         // A big int is a valid index, raising `IndexError` if it can't fit.
@@ -444,7 +443,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
         defer_drop_mut!(value, vm);
 
         let idx = self.resolve_index(key, vm)?;
-        if matches!(*value, Value::Ref(_)) {
+        if matches!(*value, Value::Ref(..)) {
             self.get_mut(vm.heap).contains_refs = true;
         }
         // The guard drops whatever `value` holds after the swap — i.e. the old item.
@@ -667,7 +666,7 @@ impl HeapItem for Deque {
             return;
         }
         for obj in &mut self.items {
-            if let Value::Ref(id) = obj {
+            if let Value::Ref(_, id) = obj {
                 stack.push(*id);
                 #[cfg(feature = "memory-model-checks")]
                 obj.dec_ref_forget();
@@ -1124,7 +1123,7 @@ impl<'heap> PyAttrs<'heap> for PyDequeImpl {
         let idx = usize::try_from(normalized).expect("index clamped non-negative");
 
         let (item, vm) = item_guard.into_parts();
-        if matches!(item, Value::Ref(_)) {
+        if matches!(item, Value::Ref(..)) {
             deque.get_mut(vm.heap).contains_refs = true;
         }
         let this = deque.get_mut(vm.heap);

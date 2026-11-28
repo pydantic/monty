@@ -225,7 +225,7 @@ fn validate_ignored_open_kwarg(name: &str, value: &Value, vm: &VM<'_>) -> Result
         "errors" => {
             if matches!(value, Value::None) {
                 true
-            } else if value.is_str(vm.heap) {
+            } else if value.is_str() {
                 false
             } else {
                 return Err(kwarg_type_error(name, value, vm));

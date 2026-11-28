@@ -5,8 +5,9 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{HeapData, HeapRead, HeapReadOutput},
-    types::{Tuple, TypeRef},
+    heap::HeapRead,
+    heap_data::HeapKind,
+    types::{Tuple, TypeRef, Union},
     value::Value,
 };
 
@@ -36,13 +37,13 @@ pub fn builtin_issubclass(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> 
 /// `cls` is checked, so `issubclass(1, ())` is `False`.
 pub(crate) fn issubclass_check(cls: &Value, classinfo: &Value, vm: &mut VM<'_>) -> RunResult<bool> {
     match classinfo {
-        Value::Ref(id) if let HeapReadOutput::Tuple(tuple) = vm.heap.read(*id) => {
+        value if let Some(tuple) = value.read_as::<Tuple>(vm.heap) => {
             // A tuple can hold itself many times over, so walking nested
             // tuples is exponential in their depth: bound it by time.
             vm.heap.tracker.check_time()?;
             issubclass_check_tuple(cls, &tuple, vm)
         }
-        Value::Ref(id) if let HeapData::Union(union) = vm.heap.get(*id) => {
+        value if let Some(union) = value.get_as::<Union>(vm.heap) => {
             let args = union.args(vm.heap);
             defer_drop!(args, vm);
             let Some(members) = args.read_as::<Tuple>(vm.heap) else {
@@ -51,12 +52,12 @@ pub(crate) fn issubclass_check(cls: &Value, classinfo: &Value, vm: &mut VM<'_>) 
             issubclass_check_tuple(cls, &members, vm)
         }
         _ => {
-            let Some(class) = TypeRef::from_value(cls, vm.heap) else {
+            let Some(class) = TypeRef::from_value(cls) else {
                 return Err(ExcType::issubclass_arg1_error());
             };
-            match TypeRef::from_value(classinfo, vm.heap) {
+            match TypeRef::from_value(classinfo) {
                 Some(base) => Ok(class.is_subclass_of(base, vm.heap)),
-                None if matches!(classinfo, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::GenericAlias(_))) => {
+                None if matches!(classinfo, Value::Ref(HeapKind::GenericAlias, _)) => {
                     Err(ExcType::issubclass_parameterized_generic())
                 }
                 None => Err(ExcType::issubclass_arg2_error()),

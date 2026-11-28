@@ -4,7 +4,8 @@ use super::VM;
 use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{DropGuard, DropWithContext, HeapData, HeapReadOutput},
+    heap::{DropGuard, DropWithContext, HeapReadOutput},
+    heap_data::{Closure, FunctionDefaults},
     intern::StringId,
     resource_checks::check_estimated_size,
     types::{
@@ -195,11 +196,8 @@ impl VM<'_> {
     fn def_function_name(&self, value: &Value) -> Option<String> {
         let func_id = match value {
             Value::DefFunction(func_id) => *func_id,
-            Value::Ref(id) => match self.heap.get(*id) {
-                HeapData::FunctionDefaults(function) => function.func_id,
-                HeapData::Closure(closure) => closure.func_id,
-                _ => return None,
-            },
+            _ if let Some(function) = value.get_as::<FunctionDefaults>(self.heap) => function.func_id,
+            _ if let Some(closure) = value.get_as::<Closure>(self.heap) => closure.func_id,
             _ => return None,
         };
         let name_id = self.interns.get_function(func_id).name.name_id;
@@ -245,7 +243,7 @@ impl VM<'_> {
         };
 
         // Merge into the dict, validating string keys
-        let dict_id = if let Value::Ref(id) = dict_ref {
+        let dict_id = if let Value::Ref(_, id) = dict_ref {
             *id
         } else {
             return Err(RunError::internal("DictMerge: expected dict ref"));
@@ -319,7 +317,7 @@ impl VM<'_> {
         // SAFETY: the compiler always emits BuildDict before DictUpdate, so the
         // target is always a Value::Ref.  This is a VM invariant: reaching this else
         // arm means a compiler bug.
-        let Value::Ref(dict_id) = this.stack[dict_pos] else {
+        let Value::Ref(_, dict_id) = this.stack[dict_pos] else {
             unreachable!("DictUpdate: target is always a Ref — compiler invariant")
         };
 
@@ -632,5 +630,5 @@ fn unpack_type_error(value: &Value, vm: &VM<'_>) -> RunError {
 /// slot at all; a class opting out with `__iter__ = None` still fills the slot,
 /// so `slot_tp_iter`'s own error survives.
 fn opts_out_of_iter(value: &Value, vm: &VM<'_>) -> bool {
-    matches!(value, Value::Ref(id) if instance_defines_iter(*id, vm))
+    matches!(value, Value::Ref(_, id) if instance_defines_iter(*id, vm))
 }

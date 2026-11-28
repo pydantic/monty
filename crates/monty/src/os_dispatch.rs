@@ -33,7 +33,7 @@ use crate::{
     bytecode::{CallResult, PendingImport, VM},
     defer_drop,
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId},
+    heap::{ContainsHeap, DropWithContext, Heap, HeapId},
     intern::{Interns, StaticStrings},
     modules::{
         os::{PathArgError, check_mode},
@@ -44,7 +44,7 @@ use crate::{
         random::RandomRetry,
         time::ClockReading,
     },
-    types::{Path, Type, dir_scan::ScanEffect, file::FileName, random::RandomTarget},
+    types::{DirScan, Path, Type, dir_scan::ScanEffect, file::FileName, random::RandomTarget},
     value::Value,
     virtual_path::posix_join,
 };
@@ -892,12 +892,9 @@ pub(crate) fn value_as_path_str<'a>(value: &'a Value, heap: &'a Heap, interns: &
         return Some(text);
     }
 
-    match value {
-        Value::Ref(id) => match heap.get(*id) {
-            HeapData::Path(p) => Some(p.as_str()),
-            HeapData::DirScan(scan) => scan.fspath(),
-            _ => None,
-        },
-        _ => None,
+    if let Some(path) = value.get_as::<Path>(heap) {
+        Some(path.as_str())
+    } else {
+        value.get_as::<DirScan>(heap)?.fspath()
     }
 }

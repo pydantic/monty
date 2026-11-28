@@ -18,6 +18,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     frozen::{FrozenFunction, FrozenFunctions},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId},
+    heap_data::HeapKind,
     modules::{ModuleFunctions, dataclasses},
     value::{EitherStr, Value},
 };
@@ -109,13 +110,13 @@ pub(crate) fn attribute_helper() -> Value {
 
 /// Instances remain candidates even before their class defines descriptor hooks.
 pub(crate) fn may_be_descriptor(value: &Value, heap: &Heap) -> bool {
-    matches!(value, Value::Ref(id) if matches!(heap.get(*id), HeapData::Instance(_) | HeapData::BuiltinDescriptor(_)))
+    matches!(value, Value::Ref(_, id) if matches!(heap.get(*id), HeapData::Instance(_) | HeapData::BuiltinDescriptor(_)))
 }
 
 /// User-defined members may gain setter/deleter hooks through mutations of their type.
 /// Builtin staticmethod/classmethod objects cannot gain those hooks; property is always data.
 pub(crate) fn may_be_data_descriptor(value: &Value, heap: &Heap) -> bool {
-    matches!(value, Value::Ref(id) if match heap.get(*id) {
+    matches!(value, Value::Ref(_, id) if match heap.get(*id) {
         HeapData::Instance(_) => true,
         HeapData::BuiltinDescriptor(d) => d.kind() == Type::Property,
         _ => false,
@@ -157,7 +158,7 @@ impl AttributeResolution<'_> {
             }
             Self::Class(class) => {
                 vm.heap.inc_ref(class);
-                Some(Value::Ref(class))
+                Some(Value::Ref(HeapKind::Class, class))
             }
             Self::Getter(_) | Self::Missing => None,
         }
@@ -193,7 +194,7 @@ pub(crate) fn resolve_instance<'a>(id: HeapId, name: &str, vm: &'a VM<'_>) -> At
     } else {
         match member {
             Some(member) if getter => AttributeResolution::Getter(member),
-            Some(member) if is_method_value(member, vm) => match implicit_receiver(name, id, class_id) {
+            Some(member) if is_method_value(member) => match implicit_receiver(name, id, class_id) {
                 Some(receiver) => AttributeResolution::Method(member, receiver),
                 None => AttributeResolution::Value(member),
             },
@@ -229,7 +230,7 @@ pub(crate) fn data_member(class: HeapId, name: &str, vm: &VM<'_>) -> Option<Valu
 /// The sandbox class whose namespace supplies an instance's descriptor hooks.
 pub(crate) fn descriptor_class(value: &Value, vm: &VM<'_>) -> Option<HeapId> {
     match value {
-        Value::Ref(id) => match vm.heap.get(*id) {
+        Value::Ref(_, id) => match vm.heap.get(*id) {
             HeapData::Instance(instance) => Some(instance.class()),
             _ => None,
         },
@@ -239,7 +240,7 @@ pub(crate) fn descriptor_class(value: &Value, vm: &VM<'_>) -> Option<HeapId> {
 
 /// The setter/deleter is looked up on the descriptor's type, never its instance.
 pub(crate) fn is_data(value: &Value, vm: &VM<'_>) -> bool {
-    if let Value::Ref(id) = value
+    if let Value::Ref(_, id) = value
         && let HeapData::BuiltinDescriptor(d) = vm.heap.get(*id)
     {
         d.kind() == Type::Property
@@ -252,13 +253,13 @@ pub(crate) fn is_data(value: &Value, vm: &VM<'_>) -> bool {
 
 /// Builtin wrappers always have a getter; user hooks are looked up on their type.
 pub(crate) fn has_get(value: &Value, vm: &VM<'_>) -> bool {
-    matches!(value, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::BuiltinDescriptor(_)))
+    matches!(value, Value::Ref(_, id) if matches!(vm.heap.get(*id), HeapData::BuiltinDescriptor(_)))
         || descriptor_class(value, vm).is_some_and(|class| class_defines(class, "__get__", vm))
 }
 
 /// A plain function binds an instance; arbitrary descriptors may install a Python frame.
 pub(crate) fn get(value: &Value, instance: Option<HeapId>, owner: HeapId, vm: &mut VM<'_>) -> RunResult<CallResult> {
-    if let Value::Ref(id) = value
+    if let Value::Ref(_, id) = value
         && matches!(vm.heap.get(*id), HeapData::BuiltinDescriptor(_))
     {
         builtin_descriptor::get(*id, instance, owner, vm)
@@ -268,17 +269,21 @@ pub(crate) fn get(value: &Value, instance: Option<HeapId>, owner: HeapId, vm: &m
         defer_drop!(getter, vm);
         let receiver = instance.map_or(Value::None, |id| {
             vm.heap.inc_ref(id);
-            Value::Ref(id)
+            Value::Ref(HeapKind::Instance, id)
         });
         vm.heap.inc_ref(owner);
         let args = ArgValues::ArgsKargs {
-            args: vec![value.clone_with_heap(vm.heap), receiver, Value::Ref(owner)],
+            args: vec![
+                value.clone_with_heap(vm.heap),
+                receiver,
+                Value::Ref(HeapKind::Class, owner),
+            ],
             kwargs: KwargsValues::Empty,
         };
         vm.call_function(getter, args)
     } else {
         Ok(CallResult::Value(match instance {
-            Some(instance) if is_method_value(value, vm) => bind_method(value, instance, vm),
+            Some(instance) if is_method_value(value) => bind_method(value, instance, vm),
             _ => value.clone_with_heap(vm.heap),
         }))
     }
@@ -346,7 +351,7 @@ pub(crate) fn bind_descriptor(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Cal
     defer_drop!(member, vm);
     defer_drop!(instance, vm);
     defer_drop!(owner, vm);
-    let (Value::Ref(instance), Value::Ref(owner)) = (instance, owner) else {
+    let (Value::Ref(_, instance), Value::Ref(HeapKind::Class, owner)) = (instance, owner) else {
         return Err(ExcType::type_error(
             "descriptor binding requires a member, instance and class",
         ));
@@ -385,15 +390,15 @@ pub(crate) fn call_member(member: &Value, instance: HeapId, args: ArgValues, vm:
             [
                 Value::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::BindDescriptor)),
                 member.clone_with_heap(vm.heap),
-                Value::Ref(instance),
-                Value::Ref(owner),
+                Value::Ref(HeapKind::Instance, instance),
+                Value::Ref(HeapKind::Class, owner),
                 args,
                 kwargs,
             ],
         )
-    } else if is_method_value(member, vm) {
+    } else if is_method_value(member) {
         vm.heap.inc_ref(instance);
-        vm.call_function(member, args.prepend(Value::Ref(instance)))
+        vm.call_function(member, args.prepend(Value::Ref(HeapKind::Instance, instance)))
     } else {
         vm.call_function(member, args)
     }
@@ -435,14 +440,14 @@ pub(crate) fn mutate(
     let setting = value.is_some();
     let mut guard = DropGuard::new(value, vm);
     let (_, vm) = guard.as_parts_mut();
-    if let Value::Ref(id) = descriptor
+    if let Value::Ref(_, id) = descriptor
         && matches!(vm.heap.get(*id), HeapData::BuiltinDescriptor(_))
     {
         let (value, vm) = guard.into_parts();
         builtin_descriptor::mutate(*id, object, value, vm)
     } else {
         let name = if setting { "__set__" } else { "__delete__" };
-        let (Value::Ref(instance), Some(class)) = (descriptor, descriptor_class(descriptor, vm)) else {
+        let (Value::Ref(_, instance), Some(class)) = (descriptor, descriptor_class(descriptor, vm)) else {
             return Err(ExcType::type_error("mutation requires a data descriptor"));
         };
         let Some(function) = class_member(class, name, vm) else {
@@ -456,8 +461,8 @@ pub(crate) fn mutate(
             [
                 Value::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::BindDescriptor)),
                 function,
-                Value::Ref(*instance),
-                Value::Ref(class),
+                Value::Ref(HeapKind::Instance, *instance),
+                Value::Ref(HeapKind::Class, class),
                 object.clone_with_heap(vm.heap),
                 value.unwrap_or(Value::None),
                 Value::Bool(setting),
@@ -469,7 +474,7 @@ pub(crate) fn mutate(
 /// Notify the original namespace's descriptors, resolving each hook when it runs.
 pub(crate) fn finish_class(class: Value, kwargs: KwargsValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
     defer_drop!(class, vm);
-    let Value::Ref(id) = class else { unreachable!() };
+    let Value::Ref(_, id) = class else { unreachable!() };
     let HeapData::Class(cls) = vm.heap.get(*id) else {
         unreachable!()
     };
@@ -508,7 +513,7 @@ pub(crate) fn finish_class(class: Value, kwargs: KwargsValues, vm: &mut VM<'_>) 
 pub(crate) fn init_subclass(args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
     let (args, kwargs) = args.into_parts();
     defer_drop!(args, vm);
-    let [Value::Ref(id)] = args.as_slice() else {
+    let [Value::Ref(_, id)] = args.as_slice() else {
         kwargs.drop_with(vm);
         return Err(ExcType::type_error("expected a class"));
     };
@@ -525,13 +530,13 @@ pub(crate) fn lookup_set_name(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Cal
     let NameHookArgs { descriptor, missing } = NameHookArgs::from_args(args, vm)?;
     defer_drop!(descriptor, vm);
     defer_drop!(missing, vm);
-    if let Value::Ref(id) = descriptor
+    if let Value::Ref(_, id) = descriptor
         && let HeapData::BuiltinDescriptor(d) = vm.heap.get(*id)
         && d.kind() == Type::Property
     {
         let function = Value::ModuleFunction(ModuleFunctions::Descriptor(DescriptorMethod::SetName));
         Ok(CallResult::Value(bind_method(&function, *id, vm)))
-    } else if let Value::Ref(instance) = descriptor
+    } else if let Value::Ref(_, instance) = descriptor
         && let Some(owner) = descriptor_class(descriptor, vm)
         && let Some(function) = class_member(owner, "__set_name__", vm)
     {
@@ -555,5 +560,5 @@ struct NameHookArgs {
 /// Include user instances whose type may gain a hook during an earlier notification.
 fn may_have_name_hook(value: &Value, vm: &VM<'_>) -> bool {
     descriptor_class(value, vm).is_some()
-        || matches!(value, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::BuiltinDescriptor(d) if d.kind() == Type::Property))
+        || matches!(value, Value::Ref(_, id) if matches!(vm.heap.get(*id), HeapData::BuiltinDescriptor(d) if d.kind() == Type::Property))
 }

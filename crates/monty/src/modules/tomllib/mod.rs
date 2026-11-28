@@ -10,6 +10,7 @@
 //! (dotted keys, `[table]` redefinition, frozen inline containers) free of heap
 //! borrows; the conversion then allocates each value exactly once.
 
+use crate::types::OpenFile;
 mod parser;
 mod value;
 
@@ -29,7 +30,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     intern::StaticStrings,
     os_dispatch::PostConversionEffect,
-    types::{Module, OpenFile, Type},
+    types::{Module, Type},
     value::Value,
 };
 

@@ -117,7 +117,7 @@ impl MapFilter {
             Self::Filter { function, iterator } => (function, iterator),
         };
         for value in [function, source] {
-            if let Value::Ref(id) = value {
+            if let Value::Ref(_, id) = value {
                 on_child(*id);
             }
         }

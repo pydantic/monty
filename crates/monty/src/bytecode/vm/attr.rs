@@ -199,7 +199,7 @@ impl VM<'_> {
         defer_drop!(obj, this);
 
         let value = this.pop();
-        if let Value::Ref(id) = obj
+        if let Value::Ref(_, id) = obj
             && let HeapReadOutput::Instance(instance) = this.heap.read(*id)
             && descriptor::class_descriptor_free(instance.get(this.heap).class(), this)
         {

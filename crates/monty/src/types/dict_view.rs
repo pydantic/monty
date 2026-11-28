@@ -9,13 +9,14 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{RunError, RunResult},
     heap::{ContainsHeap, DropGuard, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
+    heap_data::HeapKind,
     py_attrs::PyAttrs,
     types::{
         Dict, LazyHeapSet, PyTrait, Set, Type, TypeRef, allocate_tuple,
         dict::{DictItemIterator, DictKeyIterator, DictValueIterator},
         iter::checked_preallocation_hint,
         sequence::SequenceItems,
-        set::SetStorage,
+        set::{FrozenSet, SetStorage},
     },
     value::Value,
 };
@@ -162,23 +163,26 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DictKeysView> {
     }
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        match other.read_heap(vm) {
-            Some(HeapReadOutput::DictKeysView(other)) => {
-                if self.get(vm.heap).dict_id == other.get(vm.heap).dict_id {
-                    return Ok(Some(true));
-                }
-                let left = self.dict(vm);
-                let right = other.dict(vm);
-                dict_keys_eq_set_like(
-                    &left,
-                    right.get(vm.heap).len(),
-                    |key, vm| right.contains_key(key, vm),
-                    vm,
-                )
-                .map(Some)
+        if let Some(other) = other.read_as::<DictKeysView>(vm.heap) {
+            if self.get(vm.heap).dict_id == other.get(vm.heap).dict_id {
+                return Ok(Some(true));
             }
-            Some(other) => other.set_storage().map(|storage| self.eq_set(&storage, vm)).transpose(),
-            None => Ok(None),
+            let left = self.dict(vm);
+            let right = other.dict(vm);
+            dict_keys_eq_set_like(
+                &left,
+                right.get(vm.heap).len(),
+                |key, vm| right.contains_key(key, vm),
+                vm,
+            )
+            .map(Some)
+        } else {
+            other
+                .read_heap_kind(vm, &[HeapKind::Set, HeapKind::FrozenSet])
+                .as_ref()
+                .and_then(HeapReadOutput::set_storage)
+                .map(|storage| self.eq_set(&storage, vm))
+                .transpose()
         }
     }
 
@@ -339,17 +343,20 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DictItemsView> {
     }
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        match other.read_heap(vm) {
-            Some(HeapReadOutput::DictItemsView(other)) => {
-                if self.get(vm.heap).dict_id == other.get(vm.heap).dict_id {
-                    return Ok(Some(true));
-                }
-                let left = self.dict(vm);
-                let right = other.dict(vm);
-                Ok(Some(left.eq_dict(&right, vm)?))
+        if let Some(other) = other.read_as::<DictItemsView>(vm.heap) {
+            if self.get(vm.heap).dict_id == other.get(vm.heap).dict_id {
+                return Ok(Some(true));
             }
-            Some(other) => other.set_storage().map(|storage| self.eq_set(&storage, vm)).transpose(),
-            None => Ok(None),
+            let left = self.dict(vm);
+            let right = other.dict(vm);
+            Ok(Some(left.eq_dict(&right, vm)?))
+        } else {
+            other
+                .read_heap_kind(vm, &[HeapKind::Set, HeapKind::FrozenSet])
+                .as_ref()
+                .and_then(HeapReadOutput::set_storage)
+                .map(|storage| self.eq_set(&storage, vm))
+                .transpose()
         }
     }
 
@@ -616,12 +623,9 @@ enum SetLikeView {
 impl SetLikeView {
     /// Reads `value` as a keys or items view; values views are not set-like.
     fn from_value(value: &Value, vm: &VM<'_>) -> Option<Self> {
-        let Value::Ref(id) = value else {
-            return None;
-        };
-        match vm.heap.get(*id) {
-            HeapData::DictKeysView(view) => Some(Self::Keys(view.dict_id())),
-            HeapData::DictItemsView(view) => Some(Self::Items(view.dict_id())),
+        match value {
+            _ if let Some(view) = value.get_as::<DictKeysView>(vm.heap) => Some(Self::Keys(view.dict_id())),
+            _ if let Some(view) = value.get_as::<DictItemsView>(vm.heap) => Some(Self::Items(view.dict_id())),
             _ => None,
         }
     }
@@ -717,16 +721,13 @@ fn view_intersection(view: SetLikeView, other: &Value, vm: &mut VM<'_>) -> RunRe
 /// while the view is iterated, so a long iterable is never consumed needlessly.
 fn view_isdisjoint(view: SetLikeView, view_id: HeapId, other: &Value, vm: &mut VM<'_>) -> RunResult<bool> {
     let len = view.len(vm);
-    if matches!(other, Value::Ref(id) if *id == view_id) {
+    if matches!(other, Value::Ref(_, id) if *id == view_id) {
         return Ok(len == 0);
     }
     let other_len = match other {
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Set(set) => Some(set.len()),
-            HeapData::FrozenSet(set) => Some(set.len()),
-            _ => SetLikeView::from_value(other, vm).map(|other_view| other_view.len(vm)),
-        },
-        _ => None,
+        _ if let Some(set) = other.get_as::<Set>(vm.heap) => Some(set.len()),
+        _ if let Some(set) = other.get_as::<FrozenSet>(vm.heap) => Some(set.len()),
+        _ => SetLikeView::from_value(other, vm).map(|view| view.len(vm)),
     };
     if other_len.is_some_and(|other_len| other_len > len) {
         let view_value = view.to_value(vm);
@@ -833,7 +834,7 @@ pub(crate) fn collect_iterable_to_set(value: Value, vm: &mut VM<'_>) -> Result<S
 /// Clones the key and value of a two-element tuple or named tuple for item membership.
 pub(crate) fn cloned_items_view_candidate(item: &Value, heap: &impl ContainsHeap) -> Option<(Value, Value)> {
     let heap = heap.heap();
-    let items = SequenceItems::from_tuple(heap.get(item.ref_id()?))?;
+    let items = SequenceItems::from_tuple(item, heap)?;
     if items.len() != 2 {
         return None;
     }

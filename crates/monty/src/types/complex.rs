@@ -18,7 +18,8 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_f64},
-    heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead},
+    heap::{Heap, HeapId, HeapItem, HeapObjectRead},
+    heap_data::HeapKind,
     intern::StaticStrings,
     py_attrs::PyAttrs,
     py_value::PyValue,
@@ -374,9 +375,7 @@ pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// `complex(x)`: the one form that also accepts a string.
 fn init_single(value: Value, vm: &mut VM<'_>) -> RunResult<Value> {
-    if let Value::Ref(id) = &value
-        && matches!(vm.heap.get(*id), HeapData::Complex(_))
-    {
+    if let Value::Ref(HeapKind::Complex, _) = &value {
         return Ok(value);
     }
     defer_drop!(value, vm);
@@ -457,9 +456,7 @@ impl FromValue for Part {
 /// `complex.from_number(x)`: a number or complex, never a string.
 pub(crate) fn class_from_number(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("complex.from_number", vm.heap)?;
-    if let Value::Ref(id) = &value
-        && matches!(vm.heap.get(*id), HeapData::Complex(_))
-    {
+    if let Value::Ref(HeapKind::Complex, _) = &value {
         return Ok(value);
     }
     defer_drop!(value, vm);

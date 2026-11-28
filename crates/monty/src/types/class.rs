@@ -21,6 +21,7 @@ use crate::{
         BorrowedHeapReadMut, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadMut,
         HeapReader, heap_read_ref_as_field_mut,
     },
+    heap_data::HeapKind,
     intern::{Interns, StringId},
     types::{Union, str::allocate_string, r#type::bind_init_subclass},
     value::{EitherStr, Value},
@@ -327,7 +328,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
         ) {
             let (args, vm) = guard.into_parts();
             vm.heap.inc_ref(self.id());
-            descriptor::call_attr(Value::Ref(self.id()), attr, args, vm)
+            descriptor::call_attr(Value::Ref(HeapKind::Class, self.id()), attr, args, vm)
         } else {
             let result = self
                 .py_getattr(attr, vm)?
@@ -367,9 +368,9 @@ pub(crate) fn class_getattr(class_id: HeapId, attr: &EitherStr, vm: &mut VM<'_>)
                     defer_drop!(member, vm);
                     return descriptor::get(member, None, class_id, vm).map(Some);
                 }
-                if attr_str == "__init_subclass__" && is_method_value(&member, vm) {
+                if attr_str == "__init_subclass__" && is_method_value(&member) {
                     vm.heap.inc_ref(class_id);
-                    bind_init_subclass(Value::Ref(class_id), member, vm.heap)
+                    bind_init_subclass(Value::Ref(HeapKind::Class, class_id), member, vm.heap)
                 } else {
                     member
                 }
@@ -378,14 +379,14 @@ pub(crate) fn class_getattr(class_id: HeapId, attr: &EitherStr, vm: &mut VM<'_>)
             {
                 if attr_str == "__init_subclass__" {
                     vm.heap.inc_ref(class_id);
-                    bind_init_subclass(Value::Ref(class_id), member, vm.heap)
+                    bind_init_subclass(Value::Ref(HeapKind::Class, class_id), member, vm.heap)
                 } else {
                     member
                 }
             } else if attr_str == "mro" {
                 vm.heap.inc_ref(class_id);
                 BoundMethod::allocate(
-                    Value::Ref(class_id),
+                    Value::Ref(HeapKind::Class, class_id),
                     Value::Builtin(Builtins::Function(BuiltinsFunctions::TypeMro)),
                     vm.heap,
                 )

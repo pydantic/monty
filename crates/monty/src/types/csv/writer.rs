@@ -16,7 +16,8 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     fstring::FormatFloat,
-    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapRead},
+    heap::{ContainsHeap, DropGuard, DropWithContext, HeapId, HeapRead},
+    heap_data::HeapKind,
     intern::StaticStrings,
     os_dispatch::{PendingEffect, PostConversionEffect},
     string_builder::StringBuilder,
@@ -55,8 +56,8 @@ impl Writer {
     }
 
     /// Whether the target is an `open()` file, whose `write()` yields a host call.
-    pub(crate) fn targets_file(&self, vm: &VM<'_>) -> bool {
-        is_file(&self.target, vm)
+    pub(crate) fn targets_file(&self) -> bool {
+        is_file(&self.target)
     }
 
     /// Owned clones of the target and its bound `write` (`None` for a file or io stream).
@@ -67,7 +68,7 @@ impl Writer {
     /// Invokes `on_child` for each heap id this writer owns (GC trace hook).
     pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
         for value in [&self.target, &self.write] {
-            if let Value::Ref(id) = value {
+            if let Value::Ref(_, id) = value {
                 on_child(*id);
             }
         }
@@ -84,7 +85,7 @@ impl Writer {
 /// does: `Some(Value::None)` for a file target (its write is a host call), `None` when
 /// `target` cannot back a writer. The caller owns the returned callable.
 pub(crate) fn write_method(target: &Value, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
-    if is_native_stream(target, vm.heap) {
+    if is_native_stream(target) {
         return Ok(Some(Value::None));
     }
     let name = EitherStr::Interned(vm.interns.intern_static(StaticStrings::Write));
@@ -134,7 +135,7 @@ pub(super) fn writerows<'h>(obj: &HeapRead<'h, CsvObject>, args: ArgValues, vm: 
     defer_drop!(target, vm);
     defer_drop!(write, vm);
     let terminator_chars = terminator_chars(&dialect.lineterminator);
-    if is_file(target, vm) {
+    if is_file(target) {
         let rows: Vec<Value> = collect_owned_iterable(rows.clone_with_heap(vm.heap), vm)?;
         defer_drop!(rows, vm);
         let mut lines = String::new();
@@ -178,7 +179,7 @@ pub(super) fn writerow_now(
     vm: &mut VM<'_>,
 ) -> RunResult<()> {
     let line = format_items(dialect, terminator_chars, items, line, vm)?;
-    let written = if is_memory_stream(target, vm.heap) {
+    let written = if is_memory_stream(target) {
         let name = vm.interns.intern_static(StaticStrings::Write);
         vm.call_attr(target.clone_with_heap(vm.heap), name, ArgValues::One(line))?
             .require_synchronous(vm)?
@@ -236,7 +237,7 @@ pub(crate) fn format_row(
         let mut quoted = match dialect.quoting {
             Quoting::Nonnumeric => !is_number(item, vm),
             Quoting::All => true,
-            Quoting::Strings => item.is_str(vm.heap),
+            Quoting::Strings => item.is_str(),
             Quoting::Notnull => !matches!(item, Value::None),
             Quoting::Minimal | Quoting::None => false,
         };
@@ -403,8 +404,8 @@ fn is_number(value: &Value, vm: &VM<'_>) -> bool {
 }
 
 /// Whether `value` is an `open()` file, whose `write()` yields a host call.
-fn is_file(value: &Value, vm: &VM<'_>) -> bool {
-    matches!(value, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::OpenFile(_)))
+fn is_file(value: &Value) -> bool {
+    matches!(value, Value::Ref(HeapKind::OpenFile, _))
 }
 
 /// Copies the row before field formatting can call Python. A non-iterable row raises `_csv.Error`.
@@ -434,7 +435,7 @@ fn row_items(row: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
 
 /// `write(line)`: called by name on a file or io stream target, otherwise the bound `write`.
 fn write_line(target: &Value, write: &Value, line: Value, vm: &mut VM<'_>) -> RunResult<CallResult> {
-    if is_native_stream(target, vm.heap) {
+    if is_native_stream(target) {
         let name = vm.interns.intern_static(StaticStrings::Write);
         vm.call_attr(target.clone_with_heap(vm.heap), name, ArgValues::One(line))
     } else {

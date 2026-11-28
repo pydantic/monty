@@ -30,6 +30,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcTypeExt, ExceptionRaise, RunError, RunResult, SimpleException},
     heap::{DropWithContext, HeapData, HeapId, HeapReadOutput},
+    heap_data::HeapKind,
     intern::{StaticStrings, StringId},
     modules::{
         StandardLib,
@@ -342,7 +343,7 @@ impl VM<'_> {
         let HeapReadOutput::Dict(dict) = self.heap.read(namespace) else {
             unreachable!("a file module's namespace is a dict")
         };
-        let old = dict.set(key, Value::Ref(module), self)?;
+        let old = dict.set(key, Value::Ref(HeapKind::Module, module), self)?;
         old.drop_with(self);
         Ok(())
     }
@@ -368,7 +369,7 @@ impl VM<'_> {
         let module = Module::file(name.clone(), namespace, path.to_owned());
         let module_id = self.heap.allocate(HeapData::Module(Box::new(module)));
         self.modules.insert(name, module_id, self.heap);
-        self.push(Value::Ref(module_id));
+        self.push(Value::Ref(HeapKind::Module, module_id));
 
         self.heap.inc_ref(namespace);
         let frame_namespace = Box::new(FrameNamespace::Snippet {
@@ -424,10 +425,8 @@ impl VM<'_> {
 
     /// `value` as a file module, with what an import of one of its submodules needs.
     fn file_parent(&self, value: &Value) -> Option<FileParent> {
-        let id = value.ref_id()?;
-        let HeapData::Module(module) = self.heap.get(id) else {
-            return None;
-        };
+        let reader = value.read_as::<Module>(self.heap)?;
+        let module = reader.get(self.heap);
         let namespace = module.namespace()?;
         let HeapData::Dict(dict) = self.heap.get(namespace) else {
             return None;
@@ -438,7 +437,7 @@ impl VM<'_> {
         let name = module.name_str(self.interns);
         let origin = module.origin().unwrap_or_default();
         Some(FileParent {
-            initializing: self.modules.is_initializing(name, id),
+            initializing: self.modules.is_initializing(name, reader.id()),
             vendored: origin.starts_with(VENDORED_PREFIX),
             name: name.to_owned(),
             origin: origin.to_owned(),
@@ -468,13 +467,10 @@ impl VM<'_> {
         if self.modules.is_empty() {
             return None;
         }
-        let id = self.stack.last()?.ref_id()?;
-        match self.heap.get(id) {
-            HeapData::Module(module) if module.namespace().is_some() => {
-                Some((id, module.name_str(self.interns).to_owned()))
-            }
-            _ => None,
-        }
+        let reader = self.stack.last()?.read_as::<Module>(self.heap)?;
+        let module = reader.get(self.heap);
+        module.namespace()?;
+        Some((reader.id(), module.name_str(self.interns).to_owned()))
     }
 }
 

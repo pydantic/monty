@@ -38,6 +38,8 @@ use minicbor_serde::{
 use monty_types::{ModuleStub, TypeCheckState};
 use serde::{Deserialize, Serialize, de::Error as _};
 
+pub(crate) mod legacy_refs;
+
 use crate::{
     dump_upgrade,
     heap::Heap,
@@ -66,7 +68,7 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 /// source-body changes do not require one; restored sessions retain their captured code.
 /// Older releases reject dumps with newer versions, and this build rejects dumps
 /// below [`MIN_SUPPORTED_DUMP_VERSION`].
-pub const DUMP_VERSION: u16 = 18;
+pub const DUMP_VERSION: u16 = 19;
 
 /// The oldest dump version this build loads. `Dump::load` runs `dump_upgrade`
 /// over an older dump, rebuilding what the newer versions changed.
@@ -180,8 +182,12 @@ impl Dump {
         } else {
             let payload = &bytes[HEADER_LEN..];
             let mut deserializer = Deserializer::new(payload);
-            let mut value =
-                Self::deserialize(&mut deserializer).map_err(|err| DumpError::Payload(DumpDecodeError(err)))?;
+            let mut value = if version < 19 {
+                legacy_refs::load(payload, || Self::deserialize(&mut deserializer))
+            } else {
+                Self::deserialize(&mut deserializer)
+            }
+            .map_err(|err| DumpError::Payload(DumpDecodeError(err)))?;
             // trailing bytes are rejected rather than ignored, so a padded dump
             // cannot decode as the shorter valid one it starts with
             if deserializer.into_decoder().position() == payload.len() {

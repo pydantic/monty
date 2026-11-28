@@ -26,7 +26,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
-    heap::{DropGuard, HeapData, HeapId, HeapItem, HeapObjectRead},
+    heap::{DropGuard, HeapId, HeapItem, HeapObjectRead},
     intern::StaticStrings,
     py_attrs::PyAttrs,
     types::{
@@ -77,7 +77,7 @@ impl StringIo {
     /// and rewinds to the start.
     pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         let stream = Self::from_init_args(vm, args)?;
-        Ok(Value::Ref(vm.heap.allocate(HeapData::StringIo(Box::new(stream)))))
+        Ok(Value::allocate(stream, vm.heap))
     }
 
     /// A fresh, open stream from the constructor's arguments, shared with `__init__`.
@@ -563,7 +563,7 @@ impl<'h> HeapObjectRead<'h, StringIo> {
             }
         }
         let (lines, vm) = lines_guard.into_parts();
-        Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(lines)))))
+        Ok(Value::allocate(List::new(lines), vm.heap))
     }
 
     /// `write(s, /)`: returns the length of `s`, before any newline translation.

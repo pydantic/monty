@@ -27,6 +27,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
+    heap_data::HeapKind,
     intern::{StaticStrings, StringId},
     modules::{ModuleFunctions, StandardLib},
     object_bridge::MontyObjectExt,
@@ -101,7 +102,10 @@ pub fn create_module(vm: &mut VM<'_>) -> Module {
             Value::Property(Property::Os(ZeroArgOsProperty::GetEnviron)),
         ),
         // `os.path` is its own module object, like CPython's `posixpath`.
-        (StaticStrings::Path, Value::Ref(StandardLib::OsPath.create(vm))),
+        (
+            StaticStrings::Path,
+            Value::Ref(HeapKind::Module, StandardLib::OsPath.create(vm)),
+        ),
         // POSIX path constants — the sandbox path model is POSIX on every host.
         (StaticStrings::Sep, Value::InternString(StringId::from_ascii(b'/'))),
         (StaticStrings::Pathsep, Value::InternString(StringId::from_ascii(b':'))),

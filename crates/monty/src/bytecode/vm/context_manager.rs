@@ -29,7 +29,7 @@ impl VM<'_> {
         // Pattern-matching `*self.peek()` is a place expression so it doesn't
         // move the whole Value — Rust only copies the HeapId out. Non-Ref
         // values (Int, Bool, None, …) never implement the protocol.
-        let Value::Ref(ctx_id) = *self.peek() else {
+        let Value::Ref(_, ctx_id) = *self.peek() else {
             return Err(not_a_context_manager(self));
         };
         let mut ctx = PyValue::from_heap(ctx_id, self.heap);
@@ -47,7 +47,7 @@ impl VM<'_> {
     pub(super) fn exec_with_exit(&mut self) -> RunResult<CallResult> {
         let this = self;
         let ctx = this.pop();
-        let Value::Ref(ctx_id) = ctx else {
+        let Value::Ref(_, ctx_id) = ctx else {
             unreachable!("WithExit: expected context-manager ref on stack");
         };
         // Drop the ctx reference on every exit path of this function — whether
@@ -65,10 +65,10 @@ impl VM<'_> {
     pub(super) fn exec_with_except_start(&mut self) -> RunResult<CallResult> {
         let len = self.stack.len();
         // Pattern-match via place expressions so neither stack slot is moved.
-        let Value::Ref(exc_id) = self.stack[len - 1] else {
+        let Value::Ref(_, exc_id) = self.stack[len - 1] else {
             unreachable!("WithExceptStart: expected exception ref on stack");
         };
-        let Value::Ref(ctx_id) = self.stack[len - 2] else {
+        let Value::Ref(_, ctx_id) = self.stack[len - 2] else {
             unreachable!("WithExceptStart: expected context-manager ref on stack");
         };
         PyValue::from_heap(ctx_id, self.heap).py_exit(self, Some(exc_id))

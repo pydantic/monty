@@ -118,7 +118,7 @@ impl Generator {
         if let GeneratorState::Created(saved) | GeneratorState::Suspended(saved) = &self.state {
             let exceptions = saved.exceptions.iter().map(CaughtException::value);
             for value in saved.stack.iter().chain(exceptions) {
-                if let Value::Ref(id) = value {
+                if let Value::Ref(_, id) = value {
                     on_child(*id);
                 }
             }
@@ -489,7 +489,7 @@ impl VM<'_> {
     /// replaces the iterator with its `StopIteration` value and moves on.
     pub(super) fn yield_from(&mut self) -> RunResult<Option<FrameExit>> {
         let sent = self.pop();
-        let Value::Ref(id) = *self.peek() else {
+        let Value::Ref(_, id) = *self.peek() else {
             sent.drop_with(self);
             return Err(RunError::internal("yield from: expected iterator ref on stack"));
         };
@@ -559,7 +559,7 @@ impl VM<'_> {
     /// delegation: the delegating generator resumes with the exception's `value`.
     pub(super) fn end_yield_from_with(&mut self, stop: Value) {
         let result = match &stop {
-            Value::Ref(id) => match self.heap.get(*id) {
+            Value::Ref(_, id) => match self.heap.get(*id) {
                 HeapData::Exception(exception) => exception.stop_iteration_value(self),
                 _ => Value::None,
             },

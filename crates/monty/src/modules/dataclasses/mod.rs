@@ -33,13 +33,15 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapRead, HeapReadMut, HeapReadOutput, HeapReader},
+    heap_data::HeapKind,
     intern::{Interns, StaticStrings, StringId},
     modules::{
         ModuleFunctions,
         typing::{self, HintFormat, HintsRequest, HintsTask},
     },
     types::{
-        Class, Dict, ForwardRef, GenericAlias, Module, PyTrait, TupleVec, Type, TypeRef, allocate_tuple,
+        Class, Dict, ForwardRef, GenericAlias, HostClass, HostClassType, Instance, Module, PyTrait, TupleVec, Type,
+        TypeRef, allocate_tuple,
         generic_alias::AliasOrigin,
         host_class::host_class_type,
         instance::{class_defines, namespace_member},
@@ -253,7 +255,7 @@ fn apply_dataclass(vm: &mut VM<'_>, cls: Value, options: DataclassOptions) -> Ru
     let mut guard = DropGuard::new(cls, vm);
     let (cls, vm) = guard.as_parts();
     match cls {
-        Value::Ref(class_id) if matches!(vm.heap.get(*class_id), HeapData::Class(_)) => {
+        Value::Ref(HeapKind::Class, class_id) => {
             decorate_class(cls, *class_id, options, vm)?;
         }
         _ => return Err(non_class_error(cls, vm)),
@@ -278,7 +280,7 @@ fn decorate_class(cls: &Value, class_id: HeapId, options: DataclassOptions, vm: 
         fields.drop_with(vm);
         return Err(err);
     }
-    let Value::Ref(fields_id) = fields else {
+    let Value::Ref(_, fields_id) = fields else {
         unreachable!("the fields mapping is a dict")
     };
     // Fields first, so nothing owns the mapping while the params allocation
@@ -386,7 +388,11 @@ fn allocate_fields_dict(vm: &mut VM<'_>, fields: Vec<Value>) -> RunResult<Value>
         // by the second, so a replacement does happen — CPython collapses the
         // pair the same way. A dict rejected by the memory limit releases the
         // field it was handed.
-        let replaced = dict.set(Value::InternString(name), Value::Ref(field_id), vm)?;
+        let replaced = dict.set(
+            Value::InternString(name),
+            Value::Ref(HeapKind::DataclassField, field_id),
+            vm,
+        )?;
         replaced.drop_with(vm);
     }
     Ok(guard.into_inner().into_value())
@@ -609,7 +615,7 @@ fn rewrite_field_attributes<'h>(class: &HeapReadMut<'h, Class>, fields_id: HeapI
             .get(vm.heap)
             .namespace()
             .get_by_str(vm.interns.get_str(name), vm.heap, vm.interns);
-        if !matches!(bound, Some(Value::Ref(id)) if *id == field_id) {
+        if !matches!(bound, Some(Value::Ref(_, id)) if *id == field_id) {
             continue;
         }
         let default =
@@ -636,7 +642,7 @@ fn adopted_field_ids(fields_id: HeapId, heap: &Heap) -> Vec<(StringId, HeapId)> 
     fields
         .iter()
         .filter_map(|(key, value)| match (key, value) {
-            (Value::InternString(name), Value::Ref(id)) if field_at_id(heap, *id).is_some() => Some((*name, *id)),
+            (Value::InternString(name), Value::Ref(HeapKind::DataclassField, id)) => Some((*name, *id)),
             _ => None,
         })
         .collect()
@@ -844,15 +850,11 @@ pub(crate) fn is_dataclass_class(class_id: HeapId, vm: &VM<'_>) -> bool {
 fn is_dataclass(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("is_dataclass", vm.heap)?;
     let result = match &arg {
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Class(_) => is_dataclass_class(*id, vm),
-            HeapData::Instance(instance) => is_dataclass_class(instance.class(), vm),
-            // Host-backed instances and classes carry dataclass-ness as a flag
-            // set by the host when the class crossed the wire.
-            HeapData::HostClass(hc) => host_class_type(vm.heap, hc.class_id()).is_dataclass(),
-            HeapData::HostClassType(ty) => ty.is_dataclass(),
-            _ => false,
-        },
+        Value::Ref(HeapKind::Class, id) => is_dataclass_class(*id, vm),
+        _ if let Some(instance) = arg.get_as::<Instance>(vm.heap) => is_dataclass_class(instance.class(), vm),
+        // Host-backed instances and classes carry dataclass-ness as a flag.
+        _ if let Some(hc) = arg.get_as::<HostClass>(vm.heap) => host_class_type(vm.heap, hc.class_id()).is_dataclass(),
+        _ if let Some(ty) = arg.get_as::<HostClassType>(vm.heap) => ty.is_dataclass(),
         _ => false,
     };
     arg.drop_with(vm);

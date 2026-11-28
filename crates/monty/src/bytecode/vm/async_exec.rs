@@ -30,6 +30,7 @@ use crate::{
         ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapObjectRead, HeapRead, HeapReadMut,
         HeapReadOutput, HeapReader,
     },
+    heap_data::HeapKind,
     intern::{FunctionId, StaticStrings},
     object_bridge::MontyObjectExt,
     run_progress::{ExtFunctionResult, ExtFunctionResultExt},
@@ -88,7 +89,14 @@ impl<'h> VM<'h> {
         );
 
         match awaitable {
-            Value::Ref(heap_id) => {
+            Value::Ref(
+                HeapKind::Coroutine
+                | HeapKind::GatherFuture
+                | HeapKind::ExternalFuture
+                | HeapKind::Task
+                | HeapKind::WaitFuture,
+                heap_id,
+            ) => {
                 let heap_id = *heap_id;
 
                 let poll = match this.heap.read(heap_id) {
@@ -383,7 +391,7 @@ impl<'h> VM<'h> {
             let list_id = self.heap.allocate(HeapData::List(List::new(results)));
             gather.cache_result(self.heap, list_id);
             frame.awaiter.drop_with(self.heap);
-            Poll::Ready(Value::Ref(list_id))
+            Poll::Ready(Value::Ref(HeapKind::List, list_id))
         } else {
             gather.get_mut(self.heap).state = GatherState::Awaited(AwaitedGather {
                 awaiter: frame.awaiter,
@@ -612,7 +620,7 @@ impl<'h> VM<'h> {
         // CPython's order: the single-awaitable check, `if not fs`,
         // `return_when`, then the elements.
         let fs = args.fs.as_ref().expect("wait arguments hold the input set");
-        if let Some(label) = single_waitable_label(fs, this.heap) {
+        if let Some(label) = single_waitable_label(fs) {
             return Err(ExcType::type_error(format!("expect a list of futures, not {label}")));
         }
         if !fs.py_bool(this)? {
@@ -638,7 +646,7 @@ impl<'h> VM<'h> {
             if seen.insert(id) {
                 inputs.push(id);
             } else {
-                Value::Ref(id).drop_with(this);
+                this.heap.dec_ref(id);
             }
         }
         if inputs.is_empty() {
@@ -705,7 +713,7 @@ impl<'h> VM<'h> {
         let mut pending_set = Set::with_capacity(inputs.len().saturating_sub(done.len()));
 
         for id in inputs {
-            let value = Value::Ref(id);
+            let value = Value::Ref(self.heap.get(id).kind(), id);
 
             if done_ids.contains(&id) {
                 done_set.add(value, self)?;
@@ -1324,7 +1332,7 @@ impl<'h> VM<'h> {
         };
 
         // Ensure future cleaned up on all paths
-        let fut_val = Value::Ref(future_id);
+        let fut_val = Value::Ref(HeapKind::ExternalFuture, future_id);
         let this = self;
         defer_drop!(fut_val, this);
 
@@ -1431,7 +1439,7 @@ impl<'h> VM<'h> {
             *awaiter = Some(slot);
         }
 
-        Value::Ref(wait_id)
+        Value::Ref(HeapKind::WaitFuture, wait_id)
     }
 
     /// Pushes `value` onto a blocked task's stack and queues it, returning the awakened task.
@@ -1500,7 +1508,7 @@ impl<'h> VM<'h> {
                         break;
                     }
                     Awaiter::GatherSlot { gather, source } => {
-                        let gather_val = Value::Ref(gather);
+                        let gather_val = Value::Ref(HeapKind::GatherFuture, gather);
                         defer_drop!(gather_val, this);
                         let HeapReadOutput::GatherFuture(outer) = this.heap.read(gather) else {
                             panic!("Awaiter::GatherSlot gather id is not a GatherFuture")
@@ -1509,10 +1517,10 @@ impl<'h> VM<'h> {
                             break;
                         };
                         awaiter = success.awaiter;
-                        value = Value::Ref(success.list_id);
+                        value = Value::Ref(HeapKind::List, success.list_id);
                     }
                     Awaiter::WaitSlot { wait, source } => {
-                        let wait_val = Value::Ref(wait);
+                        let wait_val = Value::Ref(HeapKind::WaitFuture, wait);
                         defer_drop!(wait_val, this);
                         let Some((next, result)) = this.resolve_wait_child_success(wait, source, value)? else {
                             break;
@@ -1521,7 +1529,7 @@ impl<'h> VM<'h> {
                         value = result;
                     }
                     Awaiter::UserTask { task } => {
-                        let task_val = Value::Ref(task);
+                        let task_val = Value::Ref(HeapKind::Task, task);
                         defer_drop!(task_val, this);
                         let mut waiters = this.record_task_success(task, &value);
                         if waiters.is_empty() {
@@ -1575,7 +1583,7 @@ impl<'h> VM<'h> {
                         awaiter = next;
                     }
                     Awaiter::WaitSlot { wait, source } => {
-                        let wait_val = Value::Ref(wait);
+                        let wait_val = Value::Ref(HeapKind::WaitFuture, wait);
                         let this = &mut *self;
                         defer_drop!(wait_val, this);
                         let Some((next, result)) = this.resolve_wait_child_failure(wait, source, &error)? else {
@@ -1587,7 +1595,7 @@ impl<'h> VM<'h> {
                         break;
                     }
                     Awaiter::UserTask { task } => {
-                        let task_val = Value::Ref(task);
+                        let task_val = Value::Ref(HeapKind::Task, task);
                         let this = &mut *self;
                         defer_drop!(task_val, this);
                         let mut waiters = this.record_task_failure(task, &error);
@@ -1627,7 +1635,7 @@ impl<'h> VM<'h> {
         let Some(future_id) = self.scheduler.take_pending_external(CallId::new(call_id)) else {
             return Ok(());
         };
-        let fut_val = Value::Ref(future_id);
+        let fut_val = Value::Ref(HeapKind::ExternalFuture, future_id);
         let this = self;
         defer_drop!(fut_val, this);
 
@@ -1688,7 +1696,7 @@ impl<'h> VM<'h> {
                 sleep_result,
             ))));
         self.scheduler.add_pending_external(call_id, future_id, self.heap);
-        Value::Ref(future_id)
+        Value::Ref(HeapKind::ExternalFuture, future_id)
     }
 
     /// Allocates an `ExternalFuture` already resolved with `value`, for an OS
@@ -1953,7 +1961,7 @@ impl<'h> HeapReadMut<'h, GatherFuture> {
     /// transition happens inside [`Self::resolve_child`].
     pub(crate) fn cache_result(&self, heap: &mut HeapReader<'h>, list_id: HeapId) {
         heap.inc_ref(list_id);
-        self.get_mut(heap).state = GatherState::Completed(Value::Ref(list_id));
+        self.get_mut(heap).state = GatherState::Completed(Value::Ref(HeapKind::List, list_id));
     }
 
     /// Records a child's value in its result slots, completing the gather when no children remain.
@@ -2086,17 +2094,14 @@ impl<'h> DropWithContext<VM<'h>> for WaitCommitArgs {
 }
 
 /// Names a single awaitable passed where `asyncio.wait` expects an iterable.
-fn single_waitable_label(value: &Value, heap: &HeapReader<'_>) -> Option<&'static str> {
-    let Value::Ref(id) = value else {
-        return None;
-    };
-    Some(match heap.read(*id) {
-        HeapReadOutput::Task(_) => "Task",
-        HeapReadOutput::ExternalFuture(_) => "Future",
-        HeapReadOutput::Coroutine(_) | HeapReadOutput::WaitFuture(_) => "coroutine",
-        HeapReadOutput::GatherFuture(_) => "GatheringFuture",
-        _ => return None,
-    })
+fn single_waitable_label(value: &Value) -> Option<&'static str> {
+    match value {
+        Value::Ref(HeapKind::Task, _) => Some("Task"),
+        Value::Ref(HeapKind::ExternalFuture, _) => Some("Future"),
+        Value::Ref(HeapKind::Coroutine | HeapKind::WaitFuture, _) => Some("coroutine"),
+        Value::Ref(HeapKind::GatherFuture, _) => Some("GatheringFuture"),
+        _ => None,
+    }
 }
 
 /// Rejects `asyncio.wait` elements that cannot be waited on, in CPython's order.
@@ -2106,21 +2111,15 @@ fn single_waitable_label(value: &Value, heap: &HeapReader<'_>) -> Option<&'stati
 /// future another task already awaits has no free awaiter slot.
 fn validate_wait_entries(entries: &[Value], vm: &VM<'_>) -> RunResult<()> {
     let kind = |value: &Value| match value {
-        Value::Ref(id) => match vm.heap.read(*id) {
-            HeapReadOutput::Coroutine(_) | HeapReadOutput::WaitFuture(_) => WaitEntry::Coroutine,
-            HeapReadOutput::Task(_) => WaitEntry::Input,
-            HeapReadOutput::ExternalFuture(future) => {
-                if matches!(
-                    future.get(vm.heap).state,
-                    ExternalFutureState::Pending { awaiter: Some(_) }
-                ) {
-                    WaitEntry::Busy
-                } else {
-                    WaitEntry::Input
-                }
+        Value::Ref(HeapKind::Coroutine | HeapKind::WaitFuture, _) => WaitEntry::Coroutine,
+        Value::Ref(HeapKind::Task, _) => WaitEntry::Input,
+        _ if let Some(future) = value.get_as::<ExternalFuture>(vm.heap) => {
+            if matches!(future.state, ExternalFutureState::Pending { awaiter: Some(_) }) {
+                WaitEntry::Busy
+            } else {
+                WaitEntry::Input
             }
-            _ => WaitEntry::Other,
-        },
+        }
         _ => WaitEntry::Other,
     };
 

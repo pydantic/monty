@@ -16,6 +16,7 @@ use crate::{
         HeapItem, HeapObjectRead, HeapRead, HeapReadMut, HeapReadOutput, heap_read_ref_as_field,
         heap_read_ref_as_field_mut,
     },
+    heap_data::HeapKind,
     modules::copy::{Memo, PyDeepCopy, deep_copy},
     py_attrs::PyAttrs,
     py_value::PyValue,
@@ -332,7 +333,7 @@ impl SetStorage {
     /// Only called on a set being freed, so its entries can be taken.
     fn collect_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         for entry in &mut self.table.take_entries() {
-            if let Value::Ref(id) = &entry.value {
+            if let Value::Ref(_, id) = &entry.value {
                 stack.push(*id);
                 #[cfg(feature = "memory-model-checks")]
                 entry.value.dec_ref_forget();
@@ -390,7 +391,15 @@ impl<'h> HeapRead<'h, SetStorage> {
     /// Ordering accepts set, frozenset, dict_keys and dict_items, in either operand position.
     /// Other iterables (including dict_values) are accepted by issubset/issuperset, but not by these operators.
     fn compare_operand(&self, other: &Value, op: CmpOperator, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        match other.read_heap(vm) {
+        match other.read_heap_kind(
+            vm,
+            &[
+                HeapKind::Set,
+                HeapKind::FrozenSet,
+                HeapKind::DictKeysView,
+                HeapKind::DictItemsView,
+            ],
+        ) {
             Some(view @ (HeapReadOutput::DictKeysView(_) | HeapReadOutput::DictItemsView(_))) => {
                 let view = PyValue::from(view);
                 let lhs_len = self.get(vm.heap).len();
@@ -873,12 +882,9 @@ impl<'h> HeapReadOutput<'h> {
 
 /// Borrows set/frozenset storage without reader handles; the heap borrow excludes mutation.
 fn borrow_set_storage<'a>(value: &Value, heap: &'a impl ContainsHeap) -> Option<&'a SetStorage> {
-    let Value::Ref(id) = value else {
-        return None;
-    };
-    match heap.heap().get(*id) {
-        HeapData::Set(set) => Some(&set.0),
-        HeapData::FrozenSet(set) => Some(&set.storage),
+    match value {
+        _ if let Some(set) = value.get_as::<Set>(heap.heap()) => Some(&set.0),
+        _ if let Some(set) = value.get_as::<FrozenSet>(heap.heap()) => Some(&set.storage),
         _ => None,
     }
 }
@@ -895,7 +901,7 @@ fn copy_storage_from_set(value: &Value, vm: &mut VM<'_>) -> RunResult<Option<Set
     }
 
     value
-        .read_heap(vm)
+        .read_heap_kind(vm, &[HeapKind::Set, HeapKind::FrozenSet])
         .as_ref()
         .and_then(HeapReadOutput::set_storage)
         .map(|storage| storage.copy(vm))
@@ -996,7 +1002,7 @@ impl<'h> HeapReadMut<'h, Set> {
         let mut guard = DropGuard::new(other, vm);
         let (other, vm) = guard.as_parts();
         let entries = other
-            .read_heap(vm)
+            .read_heap_kind(vm, &[HeapKind::Set, HeapKind::FrozenSet])
             .as_ref()
             .and_then(HeapReadOutput::set_storage)
             .map(|storage| storage.snapshot_entries(vm, CloneTableEntry::clone_with_heap))
@@ -1194,7 +1200,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Set> {
         // mutability. `set == dict_keys`/`dict_items` is handled by the reflected
         // pass via the dict-view impls.
         other
-            .read_heap(vm)
+            .read_heap_kind(vm, &[HeapKind::Set, HeapKind::FrozenSet])
             .as_ref()
             .and_then(HeapReadOutput::set_storage)
             .map(|other| self.storage().eq(&other, vm))
@@ -1362,7 +1368,7 @@ impl FrozenSet {
         let value = args.get_zero_one_arg("frozenset", vm.heap)?;
         match value {
             // An exact frozenset already has the required immutable storage.
-            Some(v @ Value::Ref(id)) if matches!(vm.heap.get(id), HeapData::FrozenSet(_)) => Ok(v),
+            Some(v @ Value::Ref(HeapKind::FrozenSet, _)) => Ok(v),
             value => {
                 let frozenset = match value {
                     None => Self::new(),
@@ -1408,7 +1414,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, FrozenSet> {
         // mutability. `frozenset == dict_keys`/`dict_items` is handled by the
         // reflected pass via the dict-view impls.
         other
-            .read_heap(vm)
+            .read_heap_kind(vm, &[HeapKind::Set, HeapKind::FrozenSet])
             .as_ref()
             .and_then(HeapReadOutput::set_storage)
             .map(|other| self.storage().eq(&other, vm))
@@ -1486,7 +1492,15 @@ impl HeapItem for FrozenSet {
 /// only accept CPython's set-like operands (`set`, `frozenset`, `dict_keys`,
 /// and `dict_items`), while method forms accept any iterable.
 fn get_storage_from_set_operand(value: &Value, vm: &mut VM<'_>) -> RunResult<Option<SetStorage>> {
-    match value.read_heap(vm) {
+    match value.read_heap_kind(
+        vm,
+        &[
+            HeapKind::Set,
+            HeapKind::FrozenSet,
+            HeapKind::DictKeysView,
+            HeapKind::DictItemsView,
+        ],
+    ) {
         Some(HeapReadOutput::DictKeysView(view)) => view.to_set(vm).map(|set| Some(set.0)),
         Some(HeapReadOutput::DictItemsView(view)) => view.to_set(vm).map(|set| Some(set.0)),
         Some(other) => other.set_storage().map(|storage| storage.copy(vm)).transpose(),
@@ -1653,7 +1667,7 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, Set> {
     #[inline(never)]
     fn py_deep_copy(&self, source: &Value, memo: &mut Memo, vm: &mut VM<'h>) -> RunResult<Value> {
         let copy_id = vm.heap.allocate(HeapData::Set(Set::new()));
-        let mut guard = DropGuard::new(Value::Ref(copy_id), vm);
+        let mut guard = DropGuard::new(Value::Ref(HeapKind::Set, copy_id), vm);
         let (copy, vm) = guard.as_parts_mut();
         memo.insert(source, copy, vm)?;
         // CPython reduces a set through `list(x)`, snapshotting its members before
@@ -1862,8 +1876,7 @@ impl<'heap> PyAttrs<'heap> for PySetImpl {
         {
             args.check_zero_args("set.copy", vm.heap)?;
             let copy = this.copy(vm)?;
-            let heap_id = vm.heap.allocate(HeapData::Set(copy));
-            Ok(Value::Ref(heap_id))
+            Ok(Value::allocate(copy, vm.heap))
         }
     }
 

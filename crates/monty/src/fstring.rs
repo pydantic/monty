@@ -19,7 +19,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     expressions::ExprLoc,
-    heap::HeapData,
+    heap_data::HeapKind,
     intern::StringId,
     py_value::PyValue,
     resource_checks::check_repeat_size,
@@ -794,9 +794,7 @@ pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>)
 
     // A complex has two checks of its own, still ahead of the precision preflight
     // below so an invalid spec raises `ValueError` whatever its precision costs.
-    if let Value::Ref(id) = value
-        && let HeapData::Complex(_) = vm.heap.get(*id)
-    {
+    if matches!(value, Value::Ref(HeapKind::Complex, _)) {
         check_complex_spec(spec)?;
     }
 

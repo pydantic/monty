@@ -23,6 +23,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::{HashValue, identity_hash},
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    heap_data::HeapKind,
     intern::{Interns, StaticStrings, StringId},
     types::{
         LazyHeapSet, PyTrait, Type, TypeRef, descriptor,
@@ -217,7 +218,7 @@ impl DataclassMethod {
             _ => &[],
         };
         fields.iter().filter_map(|field| match field.init.value() {
-            Some(Value::Ref(id)) => Some(*id),
+            Some(Value::Ref(_, id)) => Some(*id),
             _ => None,
         })
     }
@@ -368,7 +369,7 @@ fn field_names(method_id: HeapId, vm: &VM<'_>) -> Vec<StringId> {
 /// The instance `self` names, or the `TypeError` Monty raises for any other `self`.
 fn require_instance(this: &Value, qualname: &str, vm: &VM<'_>) -> RunResult<HeapId> {
     match this {
-        Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Instance(_)) => Ok(*id),
+        Value::Ref(HeapKind::Instance, id) => Ok(*id),
         _ => Err(ExcType::type_error(format!(
             "{qualname}() requires a class instance as self, not '{}'",
             this.py_type_name(vm)
@@ -380,13 +381,8 @@ fn require_instance(this: &Value, qualname: &str, vm: &VM<'_>) -> RunResult<Heap
 /// of the matching kind — the test the VM's dunder paths make before taking
 /// the direct route.
 pub(crate) fn generated_method(class_id: HeapId, dunder: &str, vm: &VM<'_>) -> Option<HeapId> {
-    match class_dunder(class_id, dunder, vm) {
-        Some(Value::Ref(id)) => match vm.heap.get(*id) {
-            HeapData::DataclassMethod(method) if <&'static str>::from(method.kind.dunder()) == dunder => Some(*id),
-            _ => None,
-        },
-        _ => None,
-    }
+    let method = class_dunder(class_id, dunder, vm)?.read_as::<DataclassMethod>(vm.heap)?;
+    (<&'static str>::from(method.get(vm.heap).kind.dunder()) == dunder).then(|| method.id())
 }
 
 /// [`generated_method`] for a repr/eq/hash dunder, returning its field names.
@@ -439,12 +435,12 @@ fn frozen_field_error(action: &str, name: &Value, vm: &mut VM<'_>) -> RunResult<
 /// `init` is the caller's reference to the method, which keeps its plan alive
 /// while factories and `__post_init__` re-enter the VM.
 pub(crate) fn run_init(vm: &mut VM<'_>, init: &Value, instance: Value, args: ArgValues) -> RunResult<Value> {
-    let &Value::Ref(method_id) = init else {
+    let &Value::Ref(_, method_id) = init else {
         unreachable!("is_generated_init matched a heap method")
     };
     let mut guard = DropGuard::new(instance, vm);
     let (instance, vm) = guard.as_parts();
-    let &Value::Ref(instance_id) = instance else {
+    let &Value::Ref(_, instance_id) = instance else {
         unreachable!("the caller just allocated the instance")
     };
     let method = method_at(method_id, vm);
@@ -566,7 +562,7 @@ fn store_fields(
             defer_drop!(member, vm);
             let value = mem::replace(&mut values[i], Value::None);
             vm.heap.inc_ref(instance_id);
-            let object = Value::Ref(instance_id);
+            let object = Value::Ref(HeapKind::Instance, instance_id);
             defer_drop!(object, vm);
             let result = descriptor::mutate(member, object, Some(value), vm)?.require_synchronous(vm)?;
             result.drop_with(vm);
@@ -696,7 +692,7 @@ pub(crate) fn dataclass_eq(
     other: &Value,
     vm: &mut VM<'_>,
 ) -> RunResult<Option<bool>> {
-    let &Value::Ref(other_id) = other else {
+    let &Value::Ref(_, other_id) = other else {
         return Ok(None);
     };
     if other_id == self_id {

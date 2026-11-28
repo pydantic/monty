@@ -84,7 +84,7 @@ pub(crate) fn builtin_object_new(vm: &mut VM<'_>, args: ArgValues) -> RunResult<
         return Err(ExcType::type_error("object.__new__(): not enough arguments"));
     };
     defer_drop!(cls, vm);
-    let class_id = match TypeRef::from_value(cls, vm.heap) {
+    let class_id = match TypeRef::from_value(cls) {
         Some(TypeRef::Class(id)) if matches!(vm.heap.get(id), HeapData::Class(_)) => id,
         Some(TypeRef::Native(Type::Object)) => {
             return Err(ExcType::type_error("cannot create 'object' instances"));
@@ -220,7 +220,7 @@ pub(crate) fn builtin_object_init_subclass(vm: &mut VM<'_>, args: ArgValues) -> 
     let name = match cls {
         Some(cls) => {
             defer_drop!(cls, vm);
-            match TypeRef::from_value(cls, vm.heap) {
+            match TypeRef::from_value(cls) {
                 Some(ty) => ty.dunder_name(vm.heap, vm.interns).into_owned(),
                 None => "object".to_owned(),
             }

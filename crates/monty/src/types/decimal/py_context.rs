@@ -25,6 +25,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead},
+    heap_data::HeapKind,
     py_attrs::PyAttrs,
     types::{
         Dict, LazyHeapSet, List, PyTrait, Type, TypeRef, allocate_string, iter::collect_iterable, tuple::allocate_tuple,
@@ -149,13 +150,13 @@ fn set_current(vm: &mut VM<'_>, id: HeapId) {
         id
     };
     let old = vm.heap.replace_decimal_context(DecimalSlot::Current, new_current);
-    old.map(Value::Ref).drop_with(vm);
+    old.map(|id| Value::Ref(HeapKind::DecimalContext, id)).drop_with(vm);
 }
 
 /// The context id a `Value` refers to, if it is a `decimal.Context`.
-pub(crate) fn as_context(value: &Value, vm: &VM<'_>) -> Option<HeapId> {
+pub(crate) fn as_context(value: &Value) -> Option<HeapId> {
     match value {
-        Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::DecimalContext(_)) => Some(*id),
+        Value::Ref(HeapKind::DecimalContext, id) => Some(*id),
         _ => None,
     }
 }
@@ -165,14 +166,14 @@ pub(crate) fn getcontext(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     args.check_zero_args("_decimal.getcontext", vm.heap)?;
     let id = current_context(vm);
     vm.heap.inc_ref(id);
-    Ok(Value::Ref(id))
+    Ok(Value::Ref(HeapKind::DecimalContext, id))
 }
 
 /// `decimal.setcontext(context)`.
 pub(crate) fn setcontext(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("_decimal.setcontext", vm.heap)?;
     defer_drop!(value, vm);
-    let id = as_context(value, vm).ok_or_else(|| ExcType::type_error("argument must be a context"))?;
+    let id = as_context(value).ok_or_else(|| ExcType::type_error("argument must be a context"))?;
     set_current(vm, id);
     Ok(Value::None)
 }
@@ -222,7 +223,7 @@ pub(crate) fn localcontext(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>
     let source = if matches!(ctx, Value::None) {
         current_context(vm)
     } else {
-        as_context(ctx, vm).ok_or_else(|| ExcType::type_error("optional argument must be a context"))?
+        as_context(ctx).ok_or_else(|| ExcType::type_error("optional argument must be a context"))?
     };
     let mut settings = settings_of(vm, source);
     apply_fields(&mut settings, fields, vm)?;
@@ -380,7 +381,7 @@ impl ContextField {
             settings.rounding = py::rounding_arg(value, vm)?;
             return Ok(());
         }
-        let n = integer_arg(value, vm)?;
+        let n = integer_arg(value)?;
         match self {
             Self::Prec => {
                 settings.prec = n
@@ -413,13 +414,11 @@ impl ContextField {
 
 /// An integer attribute value: `OverflowError` for an integer outside `i64` and
 /// `TypeError` for anything that is not an `int`, as C's `PyLong_AsSsize_t` raises.
-fn integer_arg(value: &Value, vm: &VM<'_>) -> RunResult<Option<i64>> {
+fn integer_arg(value: &Value) -> RunResult<Option<i64>> {
     match value {
         Value::Int(n) => Ok(Some(*n)),
         Value::Bool(b) => Ok(Some(i64::from(*b))),
-        _ if value.as_long_int(vm).is_some() => {
-            Err(ExcType::overflow_error("Python int too large to convert to C ssize_t"))
-        }
+        _ if value.is_long_int() => Err(ExcType::overflow_error("Python int too large to convert to C ssize_t")),
         _ => Err(ExcType::type_error("an integer is required")),
     }
 }
@@ -465,12 +464,9 @@ fn signal_set_arg(value: &Value, vm: &mut VM<'_>) -> RunResult<Conditions> {
 /// A dict assigned to `flags` / `traps`: exactly the nine signals as keys.
 /// A `SignalDict` copies the other context's set.
 fn signal_dict_arg(value: &Value, vm: &mut VM<'_>) -> RunResult<Conditions> {
-    let Value::Ref(id) = value else {
-        return Err(ExcType::type_error("argument must be a signal dict"));
-    };
-    match vm.heap.get(*id) {
-        HeapData::DecimalSignalDict(dict) => Ok(dict.read(vm)),
-        HeapData::Dict(dict) => {
+    match value {
+        _ if let Some(dict) = value.get_as::<SignalDict>(vm.heap) => Ok(dict.read(vm)),
+        _ if let Some(dict) = value.get_as::<Dict>(vm.heap) => {
             if dict.len() != Signal::ALL.len() {
                 return Err(ExcType::decimal_invalid_signal_dict());
             }
@@ -511,7 +507,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DecContext> {
 
     /// Contexts compare by identity, as in CPython.
     fn py_eq_impl(&self, other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        Ok(Some(matches!(other, Value::Ref(id) if *id == self.id())))
+        Ok(Some(matches!(other, Value::Ref(_, id) if *id == self.id())))
     }
 
     fn py_hash(&self, _vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
@@ -602,21 +598,18 @@ impl<'h> HeapObjectRead<'h, SignalDict> {
     /// iterable of `(signal, value)` pairs, applied in order.
     fn update(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<()> {
         let pairs: Option<Vec<(Value, Value)>> = match other {
-            Value::Ref(id) => match vm.heap.get(*id) {
-                HeapData::DecimalSignalDict(dict) => {
-                    let set = dict.read(vm);
-                    for signal in Signal::ALL {
-                        self.set(signal, set.has_signal(signal), vm);
-                    }
-                    return Ok(());
+            _ if let Some(dict) = other.get_as::<SignalDict>(vm.heap) => {
+                let set = dict.read(vm);
+                for signal in Signal::ALL {
+                    self.set(signal, set.has_signal(signal), vm);
                 }
-                HeapData::Dict(dict) => Some(
-                    dict.iter()
-                        .map(|(k, v)| (k.clone_with_heap(vm.heap), v.clone_with_heap(vm.heap)))
-                        .collect(),
-                ),
-                _ => None,
-            },
+                return Ok(());
+            }
+            _ if let Some(dict) = other.get_as::<Dict>(vm.heap) => Some(
+                dict.iter()
+                    .map(|(k, v)| (k.clone_with_heap(vm.heap), v.clone_with_heap(vm.heap)))
+                    .collect(),
+            ),
             _ => None,
         };
         if let Some(pairs) = pairs {
@@ -699,12 +692,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, SignalDict> {
     /// same truth values; any other non-empty dict is unequal, and `{}` raises
     /// `ValueError` as in CPython.
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        let Value::Ref(id) = other else { return Ok(None) };
         let mine = self.get(vm.heap).read(vm);
-        let theirs = match vm.heap.get(*id) {
-            HeapData::DecimalSignalDict(dict) => dict.read(vm),
-            HeapData::Dict(dict) if dict.is_empty() => return Err(ExcType::value_error("invalid signal dict")),
-            HeapData::Dict(_) => match signal_dict_arg(other, vm) {
+        let theirs = match other {
+            _ if let Some(dict) = other.get_as::<SignalDict>(vm.heap) => dict.read(vm),
+            _ if other.get_as::<Dict>(vm.heap).is_some_and(Dict::is_empty) => {
+                return Err(ExcType::value_error("invalid signal dict"));
+            }
+            Value::Ref(HeapKind::Dict, _) => match signal_dict_arg(other, vm) {
                 Ok(set) => set,
                 Err(_) => return Ok(Some(false)),
             },
@@ -797,7 +791,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ContextManager> {
     }
 
     fn py_eq_impl(&self, other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        Ok(Some(matches!(other, Value::Ref(id) if *id == self.id())))
+        Ok(Some(matches!(other, Value::Ref(_, id) if *id == self.id())))
     }
 
     fn py_hash(&self, _vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
@@ -821,7 +815,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ContextManager> {
         }
         set_current(vm, local);
         vm.heap.inc_ref(local);
-        Ok(CallResult::Value(Value::Ref(local)))
+        Ok(CallResult::Value(Value::Ref(HeapKind::DecimalContext, local)))
     }
 
     fn py_exit(&mut self, vm: &mut VM<'h>, _exc: Option<HeapId>) -> RunResult<CallResult> {

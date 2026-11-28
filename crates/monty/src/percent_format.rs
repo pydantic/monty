@@ -22,13 +22,14 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     fstring::{MAX_FLOAT_PRECISION, ParsedFormatSpec, Sign, TypeChar, format_float_e, format_float_f, format_float_g},
-    heap::{ContainsHeap, DropWithContext, Heap, HeapData},
+    heap::{ContainsHeap, DropWithContext, Heap},
     py_value::PyValue,
     resource_checks::check_repeat_size,
     str_format::value_error,
     string_builder::{BytesBuilder, StringBuilder},
     types::{
-        LongInt, PyTrait, Type, bytes::allocate_bytes, long_int::check_bits_str_digits_limit, str::allocate_string,
+        LongInt, NamedTuple, PyTrait, Tuple, Type, bytes::allocate_bytes, long_int::check_bits_str_digits_limit,
+        str::allocate_string,
     },
     value::{VALUE_SIZE, Value},
 };
@@ -447,8 +448,8 @@ struct Arguments {
 impl Arguments {
     fn new(args: &Value, bytes_template: bool, vm: &VM<'_>) -> RunResult<Self> {
         let positional = match args {
-            Value::Ref(id) if let HeapData::Tuple(tuple) = vm.heap.get(*id) => clone_items(tuple.as_slice(), vm)?,
-            Value::Ref(id) if let HeapData::NamedTuple(tuple) = vm.heap.get(*id) => clone_items(tuple.as_vec(), vm)?,
+            value if let Some(tuple) = value.get_as::<Tuple>(vm.heap) => clone_items(tuple.as_slice(), vm)?,
+            value if let Some(tuple) = value.get_as::<NamedTuple>(vm.heap) => clone_items(tuple.as_vec(), vm)?,
             _ => smallvec![args.clone_with_heap(vm.heap)],
         };
         let mapping = match args.py_type(vm).native() {

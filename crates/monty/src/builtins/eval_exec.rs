@@ -15,7 +15,8 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     expressions::{Identifier, Node},
     function::Function,
-    heap::{DropGuard, HeapData, HeapId},
+    heap::{DropGuard, HeapId},
+    heap_data::HeapKind,
     intern::{CompileInterns, FunctionId, StaticStrings},
     name_map::NameMap,
     parse::{
@@ -405,7 +406,7 @@ fn source_type_error(name: &str) -> RunError {
 fn globals_dict(globals: &Value, builtin: Builtin, vm: &mut VM<'_>) -> RunResult<Option<HeapId>> {
     match globals {
         Value::None => Ok(None),
-        Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Dict(_)) => Ok(Some(*id)),
+        Value::Ref(HeapKind::Dict, id) => Ok(Some(*id)),
         other => {
             let ty = other.py_type(vm);
             Err(match builtin {
@@ -432,7 +433,7 @@ fn globals_dict(globals: &Value, builtin: Builtin, vm: &mut VM<'_>) -> RunResult
 fn locals_dict(locals: &Value, builtin: Builtin, vm: &mut VM<'_>) -> RunResult<Option<HeapId>> {
     match locals {
         Value::None => Ok(None),
-        Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Dict(_)) => Ok(Some(*id)),
+        Value::Ref(HeapKind::Dict, id) => Ok(Some(*id)),
         other => Err(match builtin {
             Builtin::Eval => ExcType::type_error("locals must be a mapping"),
             Builtin::Exec => ExcType::type_error(format!(

@@ -20,15 +20,16 @@ use crate::{
     expressions::CmpOperator,
     hash::{HashValue, hash_f64, hash_named, hash_one},
     heap::{
-        ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapObjectRead, HeapPayload, HeapReadOutput,
-        HeapReader,
+        ContainsHeap, DropGuard, DropWithContext, Heap, HeapId, HeapObjectRead, HeapPayload, HeapReadOutput, HeapReader,
     },
+    heap_data::HeapKind,
     identity::Identity,
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
     modules::ModuleFunctions,
     py_value::PyValue,
     types::{
-        Bytes, BytesIterator, CmpOrder, Complex, HeapStr, LazyHeapSet, LongInt, Property, PyTrait, Type, TypeRef,
+        BuiltinDescriptor, Bytes, BytesIterator, CmpOrder, Complex, HeapStr, Instance, LazyHeapSet, LongInt, Module,
+        NamedTuple, Property, PyTrait, Type, TypeRef,
         bytes::PyBytes,
         decimal,
         instance::{class_defines, instance_getattr, instance_str, instance_user_eq, subclass_overrides},
@@ -43,7 +44,7 @@ use crate::{
 
 /// Primary value type representing Python objects at runtime.
 ///
-/// Stores immediate values directly and arena objects through `Ref(HeapId)`.
+/// Stores immediate values directly and arena objects through `Ref(HeapKind, HeapId)`.
 ///
 /// NOTE: `Clone` is intentionally NOT derived. Use `clone_with_heap()`. Direct cloning via `.clone()` would
 /// bypass reference counting and cause memory leaks.
@@ -101,8 +102,8 @@ pub(crate) enum Value {
     Property(Property),
 
     // Heap-allocated values (stored in arena)
-    #[serde(rename = "C")]
-    Ref(HeapId),
+    #[serde(rename = "C", deserialize_with = "crate::dump_format::legacy_refs::deserialize_ref")]
+    Ref(HeapKind, HeapId),
 
     /// Sentinel value indicating this Value was properly cleaned up via `drop_with`.
     /// Only exists when `memory-model-checks` feature is enabled. Used to verify reference counting
@@ -203,6 +204,7 @@ impl<'h> ValueRead<'h, '_> {
 ///
 /// Used to preflight operations that allocate many value slots at once.
 pub(crate) const VALUE_SIZE: usize = mem::size_of::<Value>();
+const _: () = assert!(VALUE_SIZE == 16);
 
 /// Runs a protocol method on the Python-type view of `$value`.
 ///
@@ -231,8 +233,8 @@ macro_rules! dispatch_py_value {
 #[cfg(feature = "memory-model-checks")]
 impl Drop for Value {
     fn drop(&mut self) {
-        if let Self::Ref(id) = self {
-            panic!("Value::Ref({id:?}) dropped without calling drop_with() - this is a reference counting bug");
+        if let Self::Ref(_, id) = self {
+            panic!("Value::Ref(_, {id:?}) dropped without calling drop_with() - this is a reference counting bug");
         }
     }
 }
@@ -267,7 +269,10 @@ impl<'h> PyTrait<'h> for Value {
             Self::DefFunction(_) => Type::Function.into(),
             Self::Marker(m) => m.py_type().into(),
             Self::Property(_) => Type::Property.into(),
-            Self::Ref(id) => PyValue::from_heap(*id, vm.heap).py_type(vm),
+            Self::Ref(kind, id) => match kind.fixed_type() {
+                Some(ty) => ty.into(),
+                None => PyValue::from_heap(*id, vm.heap).py_type(vm),
+            },
             #[cfg(feature = "memory-model-checks")]
             Self::Dereferenced => panic!("Cannot access Dereferenced object"),
         }
@@ -321,7 +326,7 @@ impl<'h> PyTrait<'h> for Value {
                 Self::Property(o) => Some(p == o),
                 _ => None,
             }),
-            Self::Ref(id) => PyValue::from_heap(*id, vm.heap).py_eq_impl(other, vm),
+            Self::Ref(_, id) => PyValue::from_heap(*id, vm.heap).py_eq_impl(other, vm),
             #[cfg(feature = "memory-model-checks")]
             Self::Dereferenced => panic!("Cannot access Dereferenced object"),
         }
@@ -365,7 +370,7 @@ impl<'h> PyTrait<'h> for Value {
             (Self::Bool(s), _) => Self::Int(i64::from(*s)).py_cmp(other, vm),
             (_, Self::Bool(s)) => self.py_cmp(&Self::Int(i64::from(*s)), vm),
             // Ref vs Ref comparison: same-kind heap values, then a `Decimal` operand
-            (Self::Ref(id1), Self::Ref(id2)) => {
+            (Self::Ref(_, id1), Self::Ref(_, id2)) => {
                 let order = cmp_heap_pair(*id1, *id2, vm)?;
                 if order == CmpOrder::Incomparable {
                     decimal_cmp_or_incomparable(self, other, vm)
@@ -373,42 +378,24 @@ impl<'h> PyTrait<'h> for Value {
                     Ok(order)
                 }
             }
-            // Interned string comparisons
-            (Self::InternString(s1), Self::InternString(s2)) => {
-                Ok(CmpOrder::Ordered(interns.get_str(*s1).cmp(interns.get_str(*s2))))
+            (Self::InlineString(a), Self::InlineString(b)) => Ok(CmpOrder::Ordered(a.as_bytes().cmp(b.as_bytes()))),
+            (Self::InlineString(a), rhs) if let Some(b) = rhs.as_str(vm) => {
+                Ok(CmpOrder::Ordered(a.as_bytes().cmp(b.as_bytes())))
             }
-            (Self::InlineString(text), Self::Ref(id)) if let HeapData::Str(value) = vm.heap.get(*id) => {
-                Ok(CmpOrder::Ordered(text.as_bytes().cmp(value.as_str().as_bytes())))
+            (lhs, Self::InlineString(b)) if let Some(a) = lhs.as_str(vm) => {
+                Ok(CmpOrder::Ordered(a.as_bytes().cmp(b.as_bytes())))
             }
-            (Self::Ref(id), Self::InlineString(text)) if let HeapData::Str(value) = vm.heap.get(*id) => {
-                Ok(CmpOrder::Ordered(value.as_str().as_bytes().cmp(text.as_bytes())))
+            (Self::InternString(a), rhs) if let Some(b) = rhs.as_str(vm) => {
+                Ok(CmpOrder::Ordered(interns.get_str(*a).cmp(b)))
             }
-            (Self::InlineString(left), Self::InlineString(right)) => {
-                // UTF-8 byte order matches Unicode scalar order, including prefixes.
-                Ok(CmpOrder::Ordered(left.as_bytes().cmp(right.as_bytes())))
+            (lhs, Self::InternString(b)) if let Some(a) = lhs.as_str(vm) => {
+                Ok(CmpOrder::Ordered(a.cmp(interns.get_str(*b))))
             }
-            (Self::InlineString(text), Self::InternString(id)) => {
-                Ok(CmpOrder::Ordered(text.as_bytes().cmp(interns.get_str(*id).as_bytes())))
+            (Self::InternBytes(a), rhs) if let Some(b) = rhs.as_bytes(vm) => {
+                Ok(CmpOrder::Ordered(interns.get_bytes(*a).cmp(b)))
             }
-            (Self::InternString(id), Self::InlineString(text)) => {
-                Ok(CmpOrder::Ordered(interns.get_str(*id).as_bytes().cmp(text.as_bytes())))
-            }
-            // Cross-type string comparisons: interned vs heap-allocated
-            (Self::InternString(s1), Self::Ref(id2)) if let HeapData::Str(s2) = vm.heap.get(*id2) => {
-                Ok(CmpOrder::Ordered(interns.get_str(*s1).cmp(s2.as_str())))
-            }
-            (Self::Ref(id1), Self::InternString(s2)) if let HeapData::Str(s1) = vm.heap.get(*id1) => {
-                Ok(CmpOrder::Ordered(s1.as_str().cmp(interns.get_str(*s2))))
-            }
-            (Self::InternBytes(b1), Self::InternBytes(b2)) => {
-                Ok(CmpOrder::Ordered(interns.get_bytes(*b1).cmp(interns.get_bytes(*b2))))
-            }
-            // Cross-type bytes comparisons: interned vs heap-allocated
-            (Self::InternBytes(b1), Self::Ref(id2)) if let HeapData::Bytes(b2) = vm.heap.get(*id2) => {
-                Ok(CmpOrder::Ordered(interns.get_bytes(*b1).cmp(b2.as_slice())))
-            }
-            (Self::Ref(id1), Self::InternBytes(b2)) if let HeapData::Bytes(b1) = vm.heap.get(*id1) => {
-                Ok(CmpOrder::Ordered(b1.as_slice().cmp(interns.get_bytes(*b2))))
+            (lhs, Self::InternBytes(b)) if let Some(a) = lhs.as_bytes(vm) => {
+                Ok(CmpOrder::Ordered(a.cmp(interns.get_bytes(*b))))
             }
             _ => decimal_cmp_or_incomparable(self, other, vm),
         }
@@ -464,10 +451,10 @@ impl<'h> PyTrait<'h> for Value {
             // the bytes into a fresh allocation.
             Self::InternString(string_id) => Ok(Self::InternString(*string_id)),
             Self::InlineString(text) => Ok(Self::InlineString(*text)),
-            Self::Ref(id) if matches!(vm.heap.get(*id), HeapData::Str(_)) => Ok(self.clone_with_heap(vm.heap)),
+            Self::Ref(HeapKind::Str, _) => Ok(self.clone_with_heap(vm.heap)),
             // Instances dispatch to a user `__str__`/`__repr__` (needs the heap id).
-            Self::Ref(id) if matches!(vm.heap.get(*id), HeapData::Instance(_)) => instance_str(*id, vm),
-            Self::Ref(id) => PyValue::from_heap(*id, vm.heap).py_str(vm),
+            Self::Ref(HeapKind::Instance, id) => instance_str(*id, vm),
+            Self::Ref(_, id) => PyValue::from_heap(*id, vm.heap).py_str(vm),
             _ => self.py_repr(vm),
         }
     }
@@ -481,7 +468,7 @@ impl<'h> PyTrait<'h> for Value {
         // Only an absent or declined `__radd__` permits native extension; errors propagate.
         let sequence = matches!(self.py_type_heap(vm.heap).native(), Some(Type::List | Type::Deque));
         if sequence
-            && other.is_instance(vm.heap)
+            && other.is_instance()
             && let Some(result) = other.py_radd_impl(self, vm)?
         {
             let old = mem::replace(self, result);
@@ -489,7 +476,7 @@ impl<'h> PyTrait<'h> for Value {
             return Ok(true);
         }
 
-        if let Self::Ref(id) = self {
+        if let Self::Ref(_, id) = self {
             PyValue::from_heap(*id, vm.heap).py_iadd_impl(other, vm)
         } else {
             Ok(false)
@@ -505,7 +492,7 @@ impl<'h> PyTrait<'h> for Value {
         // Only an absent or declined `__rmul__` permits native repetition; errors propagate.
         let sequence = matches!(self.py_type_heap(vm.heap).native(), Some(Type::List | Type::Deque));
         if sequence
-            && other.is_instance(vm.heap)
+            && other.is_instance()
             && let Some(result) = other.py_rmul_impl(self, vm)?
         {
             let old = mem::replace(self, result);
@@ -513,9 +500,9 @@ impl<'h> PyTrait<'h> for Value {
             return Ok(true);
         }
 
-        if let Self::Ref(id) = self {
+        if let Self::Ref(_, id) = self {
             let handled = PyValue::from_heap(*id, vm.heap).py_imul_impl(other, vm)?;
-            if !handled && sequence && other.is_instance(vm.heap) {
+            if !handled && sequence && other.is_instance() {
                 // `__rmul__` already declined; binary dispatch would call it a second time.
                 return Err(ExcType::type_error_sequence_repeat(other.py_type_name(vm)));
             }
@@ -526,7 +513,7 @@ impl<'h> PyTrait<'h> for Value {
     }
 
     fn py_ixor_impl(&mut self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
-        if let Self::Ref(id) = self {
+        if let Self::Ref(_, id) = self {
             PyValue::from_heap(*id, vm.heap).py_ixor_impl(other, vm)
         } else {
             Ok(false)
@@ -534,7 +521,7 @@ impl<'h> PyTrait<'h> for Value {
     }
 
     fn py_isub_impl(&mut self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
-        if let Self::Ref(id) = self {
+        if let Self::Ref(_, id) = self {
             PyValue::from_heap(*id, vm.heap).py_isub_impl(other, vm)
         } else {
             Ok(false)
@@ -542,7 +529,7 @@ impl<'h> PyTrait<'h> for Value {
     }
 
     fn py_iand_impl(&mut self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
-        if let Self::Ref(id) = self {
+        if let Self::Ref(_, id) = self {
             PyValue::from_heap(*id, vm.heap).py_iand_impl(other, vm)
         } else {
             Ok(false)
@@ -550,7 +537,7 @@ impl<'h> PyTrait<'h> for Value {
     }
 
     fn py_ior_impl(&mut self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
-        if let Self::Ref(id) = self {
+        if let Self::Ref(_, id) = self {
             PyValue::from_heap(*id, vm.heap).py_ior_impl(other, vm)
         } else {
             Ok(false)
@@ -558,7 +545,7 @@ impl<'h> PyTrait<'h> for Value {
     }
 
     fn py_cmp_op(&self, other: &Self, op: CmpOperator, vm: &mut VM<'_>) -> RunResult<Option<bool>> {
-        if let Self::Ref(id) = self {
+        if let Self::Ref(_, id) = self {
             PyValue::from_heap(*id, vm.heap).py_cmp_op(other, op, vm)
         } else {
             Ok(None)
@@ -741,7 +728,7 @@ impl<'h> PyTrait<'h> for Value {
 
     /// One-sided implementation of matrix multiplication.
     fn py_matmul_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        if let Self::Ref(id) = self {
+        if let Self::Ref(_, id) = self {
             PyValue::from_heap(*id, vm.heap).py_matmul_impl(other, vm)
         } else {
             Ok(None)
@@ -750,7 +737,7 @@ impl<'h> PyTrait<'h> for Value {
 
     /// Reflected implementation of matrix multiplication.
     fn py_rmatmul_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        if let Self::Ref(id) = self {
+        if let Self::Ref(_, id) = self {
             PyValue::from_heap(*id, vm.heap).py_rmatmul_impl(other, vm)
         } else {
             Ok(None)
@@ -762,7 +749,7 @@ impl<'h> PyTrait<'h> for Value {
     }
 
     fn py_setitem(&mut self, key: Self, value: Self, vm: &mut VM<'_>) -> RunResult<()> {
-        if let Self::Ref(id) = self {
+        if let Self::Ref(_, id) = self {
             PyValue::from_heap(*id, vm.heap).py_setitem(key, value, vm)
         } else {
             key.drop_with(vm);
@@ -775,7 +762,7 @@ impl<'h> PyTrait<'h> for Value {
         // No immediate value is an iterator; interned `str`/`bytes` are iterable
         // but, as in CPython, are not their own iterators.
         match self {
-            Self::Ref(id) => PyValue::from_heap(*id, vm.heap).py_is_iterator(vm),
+            Self::Ref(_, id) => PyValue::from_heap(*id, vm.heap).py_is_iterator(vm),
             _ => false,
         }
     }
@@ -785,13 +772,13 @@ impl<'h> PyTrait<'h> for Value {
             // Interned string and bytes literals iterate without ever reaching
             // the heap, so they answer here rather than through a heap-backed `PyValue`.
             Self::InternString(_) | Self::InlineString(_) | Self::InternBytes(_) => true,
-            Self::Ref(id) => PyValue::from_heap(*id, vm.heap).py_is_iterable(vm),
+            Self::Ref(_, id) => PyValue::from_heap(*id, vm.heap).py_is_iterable(vm),
             _ => false,
         }
     }
 
     fn py_iter(&self, vm: &mut VM<'_>) -> RunResult<CallResult> {
-        if let Self::Ref(id) = self {
+        if let Self::Ref(_, id) = self {
             PyValue::from_heap(*id, vm.heap).py_iter(vm)
         } else {
             match self {
@@ -804,7 +791,7 @@ impl<'h> PyTrait<'h> for Value {
     }
 
     fn py_next(&mut self, vm: &mut VM<'_>) -> RunResult<Option<CallResult>> {
-        if let Self::Ref(id) = self {
+        if let Self::Ref(_, id) = self {
             PyValue::from_heap(*id, vm.heap).py_next(vm)
         } else {
             Err(ExcType::type_error_not_iterator(&self.py_type_name(vm)))
@@ -885,7 +872,7 @@ impl<C: ContainsHeap> DropWithContext<C> for Value {
 impl Value {
     /// Allocates a heap payload and transfers its initial reference to the returned value.
     pub(crate) fn allocate<T: HeapPayload>(payload: T, heap: &Heap) -> Self {
-        Self::Ref(heap.allocate(payload.into_heap_data()))
+        Self::Ref(T::KIND, heap.allocate(payload.into_heap_data()))
     }
 
     /// Opens a Python-type view without copying heap payloads or borrowing this owner.
@@ -897,7 +884,7 @@ impl Value {
             Self::InternBytes(id) => PyValue::Bytes(PyBytes::Interned(*id)),
             Self::Int(value) => PyValue::Int(PyInt::Small(*value)),
             Self::InternLongInt(id) => PyValue::Int(PyInt::Interned(*id)),
-            Self::Ref(id) => PyValue::from_heap(*id, vm.heap),
+            Self::Ref(_, id) => PyValue::from_heap(*id, vm.heap),
             Self::Undefined => PyValue::Undefined,
             Self::Ellipsis => PyValue::Ellipsis,
             Self::NotImplemented => PyValue::NotImplemented,
@@ -927,34 +914,30 @@ impl Value {
     /// `namedtuple` type, belongs to its class object.
     #[must_use]
     pub(crate) fn py_class(&self, vm: &VM<'_>) -> TypeRef {
-        match self {
-            Self::Ref(id)
-                if let HeapData::NamedTuple(nt) = vm.heap.get(*id)
-                    && let Some(class_id) = nt.class_id() =>
-            {
-                TypeRef::Class(class_id)
-            }
-            _ => self.py_type(vm),
-        }
+        self.get_as::<NamedTuple>(vm.heap)
+            .and_then(NamedTuple::class_id)
+            .map_or_else(|| self.py_type(vm), TypeRef::Class)
     }
 
     /// Whether this is an instance of a user-defined class (`HeapData::Instance`).
     #[must_use]
-    pub(crate) fn is_instance(&self, heap: &Heap) -> bool {
-        matches!(self, Self::Ref(id) if matches!(heap.get(*id), HeapData::Instance(_)))
+    pub(crate) fn is_instance(&self) -> bool {
+        matches!(self, Self::Ref(HeapKind::Instance, _))
     }
 
     /// Returns the Python `Type` for this value using only `&Heap` (no full VM borrow).
     ///
     /// Wraps [`py_type_shallow`](Self::py_type_shallow) for immediate values and
-    /// delegates to [`HeapData::py_type`] for `Value::Ref`. Useful in code paths
+    /// delegates to [`HeapData::py_type`](crate::heap::HeapData::py_type) for `Value::Ref`. Useful in code paths
     /// that need a type label (e.g. CPython-style "argument N must be X, not Y"
     /// errors) but don't have a `&VM` handy — notably the macro-generated
     /// `from_args` bodies, which are passed `heap` + `interns` rather than a VM.
     #[must_use]
     pub(crate) fn py_type_heap(&self, heap: &Heap) -> TypeRef {
         match self {
-            Self::Ref(id) => heap.get(*id).py_type(),
+            Self::Ref(kind, id) => kind
+                .fixed_type()
+                .map_or_else(|| heap.get(*id).py_type(), TypeRef::Native),
             _ => self.py_type_shallow().into(),
         }
     }
@@ -991,17 +974,11 @@ impl Value {
     /// but messages use the bare class name.
     #[must_use]
     fn dynamic_class_name<'i>(&self, heap: &Heap, interns: &'i Interns) -> Option<Cow<'i, str>> {
-        let Self::Ref(heap_id) = self else {
-            return None;
-        };
-        let name = match heap.get(*heap_id) {
-            HeapData::NamedTuple(nt) => nt.name_either(),
-            // A Python class in CPython, so messages carry the bare name and
-            // only `repr(type(x))` the module-qualified one.
-            HeapData::Random(_) => return Some(Cow::Borrowed("Random")),
-            _ => return None,
-        };
-        Some(name.to_cow(interns))
+        if matches!(self, Self::Ref(HeapKind::Random, _)) {
+            return Some(Cow::Borrowed("Random"));
+        }
+        self.get_as::<NamedTuple>(heap)
+            .map(|nt| nt.name_either().to_cow(interns))
     }
 
     /// Returns the Python `Type` for immediate (non-heap) values without VM access.
@@ -1025,7 +1002,7 @@ impl Value {
             Self::ModuleFunction(_) | Self::DefFunction(_) => Type::Function,
             Self::Marker(m) => m.py_type(),
             Self::Property(_) => Type::Property,
-            Self::Ref(_) => Type::NoneType, // callers should resolve Ref via HeapData::py_type()
+            Self::Ref(..) => Type::NoneType, // callers should resolve Ref via HeapData::py_type()
             #[cfg(feature = "memory-model-checks")]
             Self::Dereferenced => Type::NoneType,
         }
@@ -1042,7 +1019,7 @@ impl Value {
     /// Returns the Ref ID if this value is a reference, otherwise returns None.
     pub fn ref_id(&self) -> Option<HeapId> {
         match self {
-            Self::Ref(id) => Some(*id),
+            Self::Ref(_, id) => Some(*id),
             _ => None,
         }
     }
@@ -1052,7 +1029,7 @@ impl Value {
     /// The caller is responsible for ensuring the `HeapId` is properly decref'd.
     pub fn into_ref_id(self) -> Option<HeapId> {
         match self {
-            Self::Ref(id) => {
+            Self::Ref(_, id) => {
                 #[cfg(feature = "memory-model-checks")]
                 {
                     // Mark the value as dereferenced to prevent double-free
@@ -1132,9 +1109,7 @@ impl Value {
 
     /// Runs one side of rich equality, using `NotImplemented` to request reflected dispatch.
     fn py_rich_eq_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Self> {
-        if let Self::Ref(id) = self
-            && matches!(vm.heap.get(*id), HeapData::Instance(_))
-        {
+        if let Self::Ref(HeapKind::Instance, id) = self {
             if let Some(result) = instance_user_eq(*id, other, vm)? {
                 Ok(result)
             } else if self.is(other) {
@@ -1168,7 +1143,7 @@ impl Value {
     /// Creates a scoped view that retains this value's heap reader when needed.
     pub(crate) fn read<'h, 'v>(&'v self, vm: &VM<'h>) -> ValueRead<'h, 'v> {
         match self {
-            Self::Ref(id) => ValueRead::Heap {
+            Self::Ref(_, id) => ValueRead::Heap {
                 value: PyValue::from_heap(*id, vm.heap),
                 steps: 0,
             },
@@ -1176,21 +1151,26 @@ impl Value {
         }
     }
 
-    /// Borrows the referenced payload for the lifetime of the heap borrow.
+    /// Borrows the payload for the lifetime of the heap borrow.
     pub(crate) fn get_as<'a, T: HeapPayload>(&self, heap: &'a Heap) -> Option<&'a T> {
-        T::from_heap_data(heap.get(self.ref_id()?))
-    }
-
-    /// Opens a typed reader when this value references a heap object of type `T`.
-    pub(crate) fn read_as<'h, T: HeapPayload>(&self, heap: &HeapReader<'h>) -> Option<HeapObjectRead<'h, T>> {
-        heap.read_as::<T>(self.ref_id()?)
-    }
-
-    /// Reads the heap entry this value references, or `None` if it is not a
-    /// heap reference.
-    pub(crate) fn read_heap<'a>(&self, vm: &VM<'a>) -> Option<HeapReadOutput<'a>> {
         match self {
-            Self::Ref(id) => Some(vm.heap.read(*id)),
+            Self::Ref(kind, id) if *kind == T::KIND => T::from_heap_data(heap.get(*id)),
+            _ => None,
+        }
+    }
+
+    /// Returns a typed reader, skipping the arena lookup when the tag differs.
+    pub(crate) fn read_as<'h, T: HeapPayload>(&self, heap: &HeapReader<'h>) -> Option<HeapObjectRead<'h, T>> {
+        match self {
+            Self::Ref(kind, id) if *kind == T::KIND => heap.read_as::<T>(*id),
+            _ => None,
+        }
+    }
+
+    /// Reads a payload only if its tag is one of the requested kinds.
+    pub(crate) fn read_heap_kind<'a>(&self, vm: &VM<'a>, kinds: &[HeapKind]) -> Option<HeapReadOutput<'a>> {
+        match self {
+            Self::Ref(kind, id) if kinds.contains(kind) => Some(vm.heap.read(*id)),
             _ => None,
         }
     }
@@ -1220,7 +1200,7 @@ impl Value {
             // impl. Types that benefit from caching (Str/Bytes/Tuple/
             // NamedTuple/FrozenSet/Path) carry an inline `cached_hash`;
             // cheap-to-hash types recompute each call.
-            Self::Ref(id) => PyValue::from_heap(*id, vm.heap).py_hash(vm),
+            Self::Ref(_, id) => PyValue::from_heap(*id, vm.heap).py_hash(vm),
             // Values with no heap identity hash by name, never by discriminant:
             // dict and set entries persist their hash, so a hash tied to an
             // enum's declaration order would break lookups in older dumps.
@@ -1291,15 +1271,15 @@ impl Value {
             // Instances resolve attributes (instance dict → class methods/vars,
             // binding methods) in a dedicated path that has the heap id needed to
             // build bound methods.
-            Self::Ref(heap_id) if matches!(vm.heap.get(*heap_id), HeapData::Instance(_)) => {
+            Self::Ref(HeapKind::Instance, heap_id) => {
                 return instance_getattr(*heap_id, attr, vm);
             }
-            Self::Ref(heap_id) => {
+            Self::Ref(_, heap_id) => {
                 if let Some(call_result) = PyValue::from_heap(*heap_id, vm.heap).py_getattr(attr, vm)? {
                     return Ok(call_result);
                 }
                 // CPython names the module, not its type, for a missing module attribute.
-                if let HeapData::Module(module) = vm.heap.get(*heap_id) {
+                if let Some(module) = self.get_as::<Module>(vm.heap) {
                     return Err(ExcType::attribute_error_module(
                         module.error_name(vm).ok(),
                         attr.as_str(vm.interns),
@@ -1329,7 +1309,7 @@ impl Value {
 
     /// Sets an attribute, consuming `value` on both success and error.
     pub fn py_set_attr(&self, name: &EitherStr, value: Self, vm: &mut VM<'_>) -> RunResult<()> {
-        if let Self::Ref(heap_id) = self {
+        if let Self::Ref(_, heap_id) = self {
             PyValue::from_heap(*heap_id, vm.heap).py_set_attr(name, value, vm)
         } else {
             value.drop_with(vm);
@@ -1469,6 +1449,11 @@ impl Value {
         }
     }
 
+    /// Recognizes both wide integer representations without reading their storage.
+    pub(crate) fn is_long_int(&self) -> bool {
+        matches!(self, Self::InternLongInt(_) | Self::Ref(HeapKind::LongInt, _))
+    }
+
     /// Saturating `i64` view of a `LongInt`-valued int (interned or
     /// heap-allocated), for the consumers that clamp rather than raise on
     /// overflow — slice bounds, where CPython clamps to the sequence so
@@ -1535,10 +1520,7 @@ impl Value {
     /// and a user instance on the right, `__rmul__` precedes `__index__`-based repetition.
     /// Absent or declined methods allow fallback; exceptions propagate immediately.
     pub(crate) fn py_mul(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Self> {
-        if matches!(other, Self::Ref(_))
-            && other.is_instance(vm.heap)
-            && self.py_type_heap(vm.heap).has_sequence_repeat()
-        {
+        if matches!(other, Self::Ref(..)) && other.is_instance() && self.py_type_heap(vm.heap).has_sequence_repeat() {
             // Numeric reflected multiplication precedes the sequence's `__index__` conversion.
             if let Some(result) = other.py_rmul_impl(self, vm)? {
                 return Ok(result);
@@ -1774,7 +1756,7 @@ impl Value {
             }
         } else if let Some(result) = direct(vm)? {
             Ok(Some(result))
-        } else if self.is_instance(vm.heap) && self.py_type(vm) == other.py_type(vm) {
+        } else if self.is_instance() && self.py_type(vm) == other.py_type(vm) {
             Ok(None)
         } else {
             reflected(vm)
@@ -1798,9 +1780,10 @@ impl Value {
     #[must_use]
     #[inline]
     pub fn clone_with_heap(&self, heap: &impl ContainsHeap) -> Self {
-        if let Self::Ref(id) = self {
+        if let Self::Ref(kind, id) = self {
+            debug_assert_eq!(*kind, heap.heap().get(*id).kind());
             heap.heap().inc_ref(*id);
-            Self::Ref(*id)
+            Self::Ref(*kind, *id)
         } else {
             self.copy_immediate()
         }
@@ -1834,7 +1817,7 @@ impl Value {
             Self::InternLongInt(bi) => Self::InternLongInt(*bi),
             Self::Marker(m) => Self::Marker(*m),
             Self::Property(p) => Self::Property(*p),
-            Self::Ref(_) => panic!("heap reference copied without refcounting"),
+            Self::Ref(..) => panic!("heap reference copied without refcounting"),
             #[cfg(feature = "memory-model-checks")]
             Self::Dereferenced => panic!("Cannot copy Dereferenced object"),
         }
@@ -1859,7 +1842,8 @@ impl Value {
     #[cfg(not(feature = "memory-model-checks"))]
     #[inline]
     pub fn drop_with(self, heap: &mut impl ContainsHeap) {
-        if let Self::Ref(id) = self {
+        if let Self::Ref(kind, id) = self {
+            debug_assert_eq!(kind, heap.heap().get(id).kind());
             heap.heap_mut().dec_ref(id);
         }
     }
@@ -1869,7 +1853,8 @@ impl Value {
     #[cfg(feature = "memory-model-checks")]
     pub fn drop_with(mut self, heap: &mut impl ContainsHeap) {
         let old = mem::replace(&mut self, Self::Dereferenced);
-        if let Self::Ref(id) = &old {
+        if let Self::Ref(kind, id) = &old {
+            debug_assert_eq!(*kind, heap.heap().get(*id).kind());
             heap.heap_mut().dec_ref(*id);
             mem::forget(old);
         }
@@ -1890,7 +1875,7 @@ impl Value {
     /// refcount can be decremented. When `memory-model-checks` is enabled, also marks
     /// this value as `Dereferenced` to prevent Drop panics.
     pub fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-        if let Self::Ref(id) = self {
+        if let Self::Ref(_, id) = self {
             stack.push(*id);
             #[cfg(feature = "memory-model-checks")]
             self.dec_ref_forget();
@@ -1961,12 +1946,11 @@ impl Value {
     }
 
     /// check if the value is a string.
-    pub fn is_str(&self, heap: &Heap) -> bool {
-        match self {
-            Self::InternString(_) | Self::InlineString(_) => true,
-            Self::Ref(heap_id) => matches!(heap.get(*heap_id), HeapData::Str(_)),
-            _ => false,
-        }
+    pub fn is_str(&self) -> bool {
+        matches!(
+            self,
+            Self::InternString(_) | Self::InlineString(_) | Self::Ref(HeapKind::Str, _)
+        )
     }
 
     /// Whether calling this value would succeed at dispatch.
@@ -1977,10 +1961,13 @@ impl Value {
     pub(crate) fn is_callable(&self, vm: &VM<'_>) -> bool {
         match self {
             Self::Builtin(_) | Self::ModuleFunction(_) | Self::DefFunction(_) => true,
-            Self::Ref(id) => match vm.heap.get(*id) {
-                HeapData::Instance(instance) => class_defines(instance.class(), "__call__", vm),
-                value => value.is_callable(),
-            },
+            _ if let Some(instance) = self.get_as::<Instance>(vm.heap) => {
+                class_defines(instance.class(), "__call__", vm)
+            }
+            Self::Ref(HeapKind::BuiltinDescriptor, _) => self
+                .get_as::<BuiltinDescriptor>(vm.heap)
+                .is_some_and(|descriptor| descriptor.kind() == Type::StaticMethod),
+            Self::Ref(kind, _) => kind.is_callable(),
             _ => false,
         }
     }
@@ -2033,10 +2020,8 @@ pub(crate) fn eq_bigint(b: &BigInt, other: &Value, vm: &VM<'_>) -> Option<bool> 
 /// `s == other`, returning `None` for non-string operands.
 pub(crate) fn eq_str(s: &str, other: &Value, vm: &VM<'_>) -> Option<bool> {
     match other {
-        Value::InternString(id) => Some(s == vm.interns.get_str(*id)),
         Value::InlineString(text) => Some(s.as_bytes() == text.as_bytes()),
-        Value::Ref(id) if let HeapData::Str(o) = vm.heap.get(*id) => Some(s == o.as_str()),
-        _ => None,
+        _ => other.as_str(vm).map(|text| s == text),
     }
 }
 
@@ -2383,6 +2368,7 @@ mod tests {
 
     use super::*;
     use crate::{
+        heap::{HeapData, HeapReader},
         run::{Program, SessionTables},
         types::{
             LongInt,
@@ -2413,7 +2399,7 @@ mod tests {
                 allocate_string(text.to_owned(), &heap),
                 allocate_string_no_interning(text.to_owned(), &heap),
             ] {
-                assert!(matches!(value, Value::Ref(_)));
+                assert!(matches!(value, Value::Ref(..)));
                 value.drop_with(&mut heap);
             }
         }
@@ -2492,7 +2478,7 @@ mod tests {
     #[test]
     fn as_index_longint_fits_in_i64() {
         let (mut heap, heap_id) = create_heap_with_longint(BigInt::from(42));
-        let value = Value::Ref(heap_id);
+        let value = Value::Ref(HeapKind::LongInt, heap_id);
 
         let mut tables = SessionTables::default();
         let program = Program::for_tests();
@@ -2508,7 +2494,7 @@ mod tests {
     #[test]
     fn as_index_longint_negative_fits_in_i64() {
         let (mut heap, heap_id) = create_heap_with_longint(BigInt::from(-100));
-        let value = Value::Ref(heap_id);
+        let value = Value::Ref(HeapKind::LongInt, heap_id);
 
         let mut tables = SessionTables::default();
         let program = Program::for_tests();
@@ -2526,7 +2512,7 @@ mod tests {
         // 2^100 is way larger than i64::MAX
         let big_value = BigInt::from(2).pow(100);
         let (mut heap, heap_id) = create_heap_with_longint(big_value);
-        let value = Value::Ref(heap_id);
+        let value = Value::Ref(HeapKind::LongInt, heap_id);
 
         let mut tables = SessionTables::default();
         let program = Program::for_tests();
@@ -2544,7 +2530,7 @@ mod tests {
     #[test]
     fn as_int_longint_fits_in_i64() {
         let (mut heap, heap_id) = create_heap_with_longint(BigInt::from(12345));
-        let value = Value::Ref(heap_id);
+        let value = Value::Ref(HeapKind::LongInt, heap_id);
 
         let mut tables = SessionTables::default();
         let program = Program::for_tests();
@@ -2561,7 +2547,7 @@ mod tests {
     fn as_int_longint_too_large() {
         let big_value = BigInt::from(2).pow(100);
         let (mut heap, heap_id) = create_heap_with_longint(big_value);
-        let value = Value::Ref(heap_id);
+        let value = Value::Ref(HeapKind::LongInt, heap_id);
 
         let mut tables = SessionTables::default();
         let program = Program::for_tests();
@@ -2577,7 +2563,7 @@ mod tests {
     #[test]
     fn as_index_longint_at_i64_max() {
         let (mut heap, heap_id) = create_heap_with_longint(BigInt::from(i64::MAX));
-        let value = Value::Ref(heap_id);
+        let value = Value::Ref(HeapKind::LongInt, heap_id);
 
         let mut tables = SessionTables::default();
         let program = Program::for_tests();
@@ -2593,7 +2579,7 @@ mod tests {
     #[test]
     fn as_index_longint_at_i64_min() {
         let (mut heap, heap_id) = create_heap_with_longint(BigInt::from(i64::MIN));
-        let value = Value::Ref(heap_id);
+        let value = Value::Ref(HeapKind::LongInt, heap_id);
 
         let mut tables = SessionTables::default();
         let program = Program::for_tests();
@@ -2610,7 +2596,7 @@ mod tests {
     fn as_index_longint_just_over_i64_max() {
         let big_value = BigInt::from(i64::MAX) + BigInt::from(1);
         let (mut heap, heap_id) = create_heap_with_longint(big_value);
-        let value = Value::Ref(heap_id);
+        let value = Value::Ref(HeapKind::LongInt, heap_id);
 
         let mut tables = SessionTables::default();
         let program = Program::for_tests();
@@ -2627,7 +2613,7 @@ mod tests {
     fn as_index_longint_just_under_i64_min() {
         let big_value = BigInt::from(i64::MIN) - BigInt::from(1);
         let (mut heap, heap_id) = create_heap_with_longint(big_value);
-        let value = Value::Ref(heap_id);
+        let value = Value::Ref(HeapKind::LongInt, heap_id);
 
         let mut tables = SessionTables::default();
         let program = Program::for_tests();

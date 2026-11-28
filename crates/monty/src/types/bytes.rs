@@ -75,7 +75,7 @@ use super::{CmpOrder, LazyHeapSet, PyTrait, Type, TypeRef};
 ///
 /// # Unimplemented Methods
 /// - `expandtabs(tabsize=8)` - Tab expansion
-use crate::types::Slice;
+use crate::heap_data::HeapKind;
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
@@ -93,7 +93,7 @@ use crate::{
         check_estimated_size, check_repeat_size, check_replace_size, push_checked, repeated_len, try_vec_with_capacity,
     },
     types::{
-        List,
+        List, Slice,
         iter::checked_preallocation_hint,
         py_trait::PyObjectIdentity,
         slice::{SearchRange, search_range, slice_collect_iterator},
@@ -343,7 +343,7 @@ impl<'h> PyBytes<'h> {
     pub(crate) fn from_value(value: &Value, vm: &VM<'h>) -> Option<Self> {
         match value {
             Value::InternBytes(id) => Some(Self::Interned(*id)),
-            Value::Ref(id) => vm.heap.read_as(*id).map(Self::Heap),
+            Value::Ref(_, id) => vm.heap.read_as(*id).map(Self::Heap),
             _ => None,
         }
     }
@@ -916,18 +916,13 @@ fn extract_single_bytes_for_prefix_suffix(value: &Value, vm: &VM<'_>) -> RunResu
 /// CPython raises `TypeError: a bytes-like object is required, not 'str'` when
 /// a str is passed to bytes methods like find, count, index, startswith, endswith.
 fn extract_bytes_only<'a>(value: &Value, vm: &'a VM<'_>) -> RunResult<&'a [u8]> {
-    match value {
-        Value::InternBytes(id) => Ok(vm.interns.get_bytes(*id)),
-        Value::InternString(_) | Value::InlineString(_) => {
-            Err(ExcType::type_error("a bytes-like object is required, not 'str'"))
+    value.as_bytes(vm).ok_or_else(|| {
+        if value.is_str() {
+            ExcType::type_error("a bytes-like object is required, not 'str'")
+        } else {
+            ExcType::type_error("a bytes-like object is required")
         }
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Bytes(b) => Ok(b.as_slice()),
-            HeapData::Str(_) => Err(ExcType::type_error("a bytes-like object is required, not 'str'")),
-            _ => Err(ExcType::type_error("a bytes-like object is required")),
-        },
-        _ => Err(ExcType::type_error("a bytes-like object is required")),
-    }
+    })
 }
 
 /// Parses arguments for bytes.find/count/index methods.
@@ -2085,28 +2080,13 @@ fn bytes_join<'h>(separator: &impl HeapView<'h, [u8]>, iterable: Value, vm: &mut
             result.extend_from_slice(separator.get(vm.heap));
         }
 
-        // Check item is bytes and extract its content
-        match item {
-            Value::InternBytes(id) => {
-                result.extend_from_slice(vm.interns.get_bytes(*id));
-            }
-            Value::Ref(heap_id) => {
-                if let HeapData::Bytes(b) = vm.heap.get(*heap_id) {
-                    result.extend_from_slice(b.as_slice());
-                } else {
-                    let t = item.py_type_name(vm);
-                    return Err(ExcType::type_error(format!(
-                        "sequence item {index}: expected a bytes-like object, {t} found"
-                    )));
-                }
-            }
-            _ => {
-                let t = item.py_type_name(vm);
-                return Err(ExcType::type_error(format!(
-                    "sequence item {index}: expected a bytes-like object, {t} found"
-                )));
-            }
-        }
+        let bytes = item.as_bytes(vm).ok_or_else(|| {
+            let t = item.py_type_name(vm);
+            ExcType::type_error(format!(
+                "sequence item {index}: expected a bytes-like object, {t} found"
+            ))
+        })?;
+        result.extend_from_slice(bytes);
         index += 1;
     }
 
@@ -2472,9 +2452,9 @@ pub(crate) fn bytes_contains(container: &[u8], item: &Value, vm: &VM<'_>) -> Run
         Value::Int(i) => Some(*i),
         Value::Bool(b) => Some(i64::from(*b)),
         Value::InternLongInt(_) => None,
-        Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::LongInt(_)) => None,
+        Value::Ref(HeapKind::LongInt, _) => None,
         // A bytes-like probe is a substring test.
-        Value::InternBytes(_) | Value::Ref(_) => {
+        Value::InternBytes(_) | Value::Ref(..) => {
             let needle = extract_bytes_only(item, vm)?;
             // An empty needle is in everything, and `find_subsequence` rejects it.
             return Ok(needle.is_empty() || find_subsequence(container, needle, vm.heap)?.is_some());

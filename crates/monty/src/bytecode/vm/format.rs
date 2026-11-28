@@ -12,6 +12,7 @@ use crate::{
         validate_string_spec,
     },
     heap::HeapReadOutput,
+    heap_data::HeapKind,
     intern::StringId,
     string_builder::StringBuilder,
     types::{
@@ -151,7 +152,7 @@ impl VM<'_> {
             self.reject_stringifier(value)?;
             // Only a `Decimal` needs the spec back as text; checking first keeps the
             // render off every other value's path.
-            if value.get_as::<decimal::Decimal>(self.heap).is_some()
+            if matches!(value, Value::Ref(HeapKind::Decimal, _))
                 && let Some(formatted) = self.try_format_decimal(value, &spec.to_spec_string())?
             {
                 return Ok(formatted);
@@ -224,18 +225,10 @@ impl VM<'_> {
 
     /// Keeps temporal strftime specs out of generic mini-language parsing.
     fn try_format_temporal(&mut self, value: &Value, spec_str: &str) -> Result<Option<String>, RunError> {
-        let Value::Ref(id) = value else {
+        let Value::Ref(HeapKind::Date | HeapKind::DateTime | HeapKind::Time, id) = value else {
             return Ok(None);
         };
         let id = *id;
-        let temporal = matches!(
-            self.heap.read(id),
-            HeapReadOutput::Date(_) | HeapReadOutput::DateTime(_) | HeapReadOutput::Time(_)
-        );
-        if !temporal {
-            return Ok(None);
-        }
-
         // `datetime.__format__("")` falls back to `str()`.
         if spec_str.is_empty() {
             return self.convert_value(value, 0).map(Some);
@@ -256,7 +249,7 @@ impl VM<'_> {
     /// Formats a `Decimal` with its own spec grammar (`Decimal.__format__`), under the
     /// current context's rounding and capitals; `None` for any other value.
     fn try_format_decimal(&mut self, value: &Value, spec: &str) -> Result<Option<String>, RunError> {
-        if value.get_as::<decimal::Decimal>(self.heap).is_some() {
+        if matches!(value, Value::Ref(HeapKind::Decimal, _)) {
             let ctx_id = decimal::py_context::current_context(self);
             decimal::py::with_ctx(self, ctx_id, |ctx, vm| {
                 value

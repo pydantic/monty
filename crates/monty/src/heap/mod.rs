@@ -29,7 +29,7 @@ use crate::{
 // Re-export items moved to `heap_traits` so that `crate::heap::DropGuard` etc. continue
 // to resolve (used by the `defer_drop!` macros and throughout the codebase).
 pub(crate) use crate::{
-    heap_data::HeapData,
+    heap_data::{HeapData, HeapKind},
     heap_traits::{ContainsHeap, DropGuard, DropWithContext, HeapItem},
 };
 
@@ -42,7 +42,9 @@ pub(crate) use stable_heap::StableHeap;
 /// The ID does not encode ownership. Local IDs should normally be borrowed or
 /// wrapped immediately in `Value::Ref`; owned fields must document and release
 /// their reference through `HeapItem` or `DropWithContext` cleanup.
+/// Four-byte alignment leaves room for the heap kind in a 16-byte `Value` on 64-bit targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[repr(Rust, packed(4))]
 pub struct HeapId(usize);
 
 impl HeapId {
@@ -254,10 +256,12 @@ macro_rules! heap_storage_value {
 /// Implementations are generated from `heap_data::heap_payloads`, keeping each
 /// payload's storage conversion and typed read extraction in the central registry.
 pub(crate) trait HeapPayload: Sized {
+    const KIND: HeapKind;
+
     /// Wraps this payload in its corresponding `HeapData` variant.
     fn into_heap_data(self) -> HeapData;
 
-    /// Borrows this payload from its matching heap variant.
+    /// Borrows this payload from its matching arena variant.
     fn from_heap_data(data: &HeapData) -> Option<&Self>;
 
     /// Extracts this payload's typed handle from a dynamic heap read.
@@ -289,6 +293,8 @@ macro_rules! define_heap_read_support {
 
         $(
             impl HeapPayload for $payload {
+                const KIND: HeapKind = HeapKind::$variant;
+
                 #[inline]
                 fn into_heap_data(self) -> HeapData {
                     HeapData::$variant(heap_storage_value!($storage self))
@@ -346,7 +352,7 @@ impl<'a, T: HeapPayload> HeapAllocation<'a, T> {
 
     /// Transfers the allocation's initial reference into a `Value`.
     pub fn into_value(self) -> Value {
-        Value::Ref(self.into_id())
+        Value::Ref(T::KIND, self.into_id())
     }
 
     /// Transfers the allocation's initial reference as an owned raw ID.
@@ -357,10 +363,10 @@ impl<'a, T: HeapPayload> HeapAllocation<'a, T> {
     }
 }
 
-impl<C: ContainsHeap, T> DropWithContext<C> for HeapAllocation<'_, T> {
+impl<C: ContainsHeap, T: HeapPayload> DropWithContext<C> for HeapAllocation<'_, T> {
     fn drop_with(mut self, ctx: &mut C) {
         drop(self.read.take());
-        Value::Ref(self.id).drop_with(ctx);
+        Value::Ref(T::KIND, self.id).drop_with(ctx);
     }
 }
 
@@ -385,9 +391,12 @@ impl<'a, T: ?Sized> HeapObjectRead<'a, T> {
     }
 
     /// Returns a new owned reference to this object.
-    pub fn clone_value(&self, heap: &HeapReader<'a>) -> Value {
+    pub fn clone_value(&self, heap: &HeapReader<'a>) -> Value
+    where
+        T: HeapPayload,
+    {
         heap.inc_ref(self.id);
-        Value::Ref(self.id)
+        Value::Ref(T::KIND, self.id)
     }
 }
 
@@ -1235,7 +1244,7 @@ impl Heap {
     pub fn get_empty_tuple(&self) -> Value {
         // Return existing singleton with incremented refcount
         self.inc_ref(EMPTY_TUPLE_ID);
-        Value::Ref(EMPTY_TUPLE_ID)
+        Value::Ref(HeapKind::Tuple, EMPTY_TUPLE_ID)
     }
 
     /// Returns the sync or async external function for `name`, reusing a live object when possible.
@@ -1245,7 +1254,7 @@ impl Heap {
     pub fn get_ext_function(&mut self, name: &str, is_async: bool) -> Value {
         if let Some(id) = self.ext_function_cache.get(name).and_then(|slots| slots.get(is_async)) {
             self.inc_ref(id);
-            Value::Ref(id)
+            Value::Ref(HeapKind::ExtFunction, id)
         } else {
             let function = ExtFunction::new(name, is_async);
             let cache_key = function.cache_key();
@@ -1253,7 +1262,7 @@ impl Heap {
             let slot = self.ext_function_cache.entry(cache_key).or_default().slot_mut(is_async);
             debug_assert!(slot.is_none());
             *slot = Some(id);
-            Value::Ref(id)
+            Value::Ref(HeapKind::ExtFunction, id)
         }
     }
 
@@ -1360,14 +1369,14 @@ impl Heap {
     pub fn get_timezone_utc(&mut self) -> Value {
         if let Some(id) = self.timezone_utc {
             self.inc_ref(id);
-            Value::Ref(id)
+            Value::Ref(HeapKind::TimeZone, id)
         } else {
             let tz = TimeZone::utc();
             let id = self.allocate(HeapData::TimeZone(tz));
             // Keep an extra refcount for the singleton cache
             self.inc_ref(id);
             self.timezone_utc = Some(id);
-            Value::Ref(id)
+            Value::Ref(HeapKind::TimeZone, id)
         }
     }
 
@@ -1670,7 +1679,7 @@ impl<'a> HeapReader<'a> {
         //    The linear scan may legitimately encounter freed slots, so we use
         //    `try_entry` to skip them rather than panicking.
         for i in 0..self.heap.entries.len() {
-            let id = HeapId(i);
+            let id = HeapId::from_index(i);
             let ptr = self.read_ptr(id);
             let Some(entry) = ptr.try_entry(self) else {
                 continue;
@@ -1887,7 +1896,7 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 return;
             }
             for value in deque.iter() {
-                if let Value::Ref(id) = value {
+                if let Value::Ref(_, id) = value {
                     on_child(*id);
                 }
             }
@@ -1898,7 +1907,7 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 return;
             }
             for value in tuple.as_slice() {
-                if let Value::Ref(id) = value {
+                if let Value::Ref(_, id) = value {
                     on_child(*id);
                 }
             }
@@ -1917,7 +1926,7 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 return;
             }
             for value in nt.as_vec() {
-                if let Value::Ref(id) = value {
+                if let Value::Ref(_, id) = value {
                     on_child(*id);
                 }
             }
@@ -1929,7 +1938,7 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 return;
             }
             for value in class.defaults().iter().chain(once(class.module())) {
-                if let Value::Ref(id) = value {
+                if let Value::Ref(_, id) = value {
                     on_child(*id);
                 }
             }
@@ -1939,7 +1948,7 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
             // e.g. a lambda) before the `has_refs` early-out. MUST report exactly
             // the same ids as `Dict::py_dec_ref_ids`: reporting fewer leaks,
             // reporting more is a use-after-free.
-            if let Some(Value::Ref(id)) = dict.default_factory() {
+            if let Some(Value::Ref(_, id)) = dict.default_factory() {
                 on_child(*id);
             }
             // Skip iteration if no refs - major GC optimization for dicts of primitives
@@ -1947,10 +1956,10 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 return;
             }
             for (k, v) in dict {
-                if let Value::Ref(id) = k {
+                if let Value::Ref(_, id) = k {
                     on_child(*id);
                 }
-                if let Value::Ref(id) = v {
+                if let Value::Ref(_, id) = v {
                     on_child(*id);
                 }
             }
@@ -1966,14 +1975,14 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
         }
         HeapData::Set(set) => {
             for value in set.storage().iter() {
-                if let Value::Ref(id) = value {
+                if let Value::Ref(_, id) = value {
                     on_child(*id);
                 }
             }
         }
         HeapData::FrozenSet(frozenset) => {
             for value in frozenset.storage().iter() {
-                if let Value::Ref(id) = value {
+                if let Value::Ref(_, id) = value {
                     on_child(*id);
                 }
             }
@@ -1985,7 +1994,7 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
             }
             // Add default values that are heap references
             for default in &closure.defaults {
-                if let Value::Ref(id) = default {
+                if let Value::Ref(_, id) = default {
                     on_child(*id);
                 }
             }
@@ -1996,7 +2005,7 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
         HeapData::FunctionDefaults(fd) => {
             // Add default values that are heap references
             for default in &fd.defaults {
-                if let Value::Ref(id) = default {
+                if let Value::Ref(_, id) = default {
                     on_child(*id);
                 }
             }
@@ -2006,7 +2015,7 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
         }
         HeapData::Cell(cell) => {
             // Cell can contain a reference to another heap value
-            if let Value::Ref(id) = &cell.0 {
+            if let Value::Ref(_, id) = &cell.0 {
                 on_child(*id);
             }
         }
@@ -2015,10 +2024,10 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
             // the same ids as `HostClass::py_dec_ref_ids`.
             on_child(dc.class_id());
             for (k, v) in dc.attrs() {
-                if let Value::Ref(id) = k {
+                if let Value::Ref(_, id) = k {
                     on_child(*id);
                 }
-                if let Value::Ref(id) = v {
+                if let Value::Ref(_, id) = v {
                     on_child(*id);
                 }
             }
@@ -2028,10 +2037,10 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
             // (`Klass.data`) and mutate to close a cycle back to this type
             // object, so they must be traced like `HostClass` attrs.
             for (k, v) in t.attrs() {
-                if let Value::Ref(id) = k {
+                if let Value::Ref(_, id) = k {
                     on_child(*id);
                 }
-                if let Value::Ref(id) = v {
+                if let Value::Ref(_, id) = v {
                     on_child(*id);
                 }
             }
@@ -2045,10 +2054,10 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
             }
             // The class namespace holds method/class-variable values.
             for (k, v) in class.namespace() {
-                if let Value::Ref(id) = k {
+                if let Value::Ref(_, id) = k {
                     on_child(*id);
                 }
-                if let Value::Ref(id) = v {
+                if let Value::Ref(_, id) = v {
                     on_child(*id);
                 }
             }
@@ -2057,20 +2066,20 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
             // An instance references its class plus its attribute dict's entries.
             on_child(instance.class());
             for (k, v) in instance.attrs() {
-                if let Value::Ref(id) = k {
+                if let Value::Ref(_, id) = k {
                     on_child(*id);
                 }
-                if let Value::Ref(id) = v {
+                if let Value::Ref(_, id) = v {
                     on_child(*id);
                 }
             }
         }
         HeapData::BuiltinDescriptor(d) => d.visit_children(&mut on_child),
         HeapData::BoundMethod(bm) => {
-            if let Value::Ref(id) = &bm.instance {
+            if let Value::Ref(_, id) = &bm.instance {
                 on_child(*id);
             }
-            if let Value::Ref(id) = &bm.func {
+            if let Value::Ref(_, id) = &bm.func {
                 on_child(*id);
             }
         }
@@ -2123,7 +2132,7 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
         HeapData::Coroutine(coro) => {
             // Add namespace values that are heap references
             for value in &coro.namespace {
-                if let Value::Ref(id) = value {
+                if let Value::Ref(_, id) = value {
                     on_child(*id);
                 }
             }
@@ -2148,12 +2157,12 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                         on_child(id);
                     }
                     for result in awaited.results.iter().flatten() {
-                        if let Value::Ref(id) = result {
+                        if let Value::Ref(_, id) = result {
                             on_child(*id);
                         }
                     }
                 }
-                GatherState::Completed(Value::Ref(id)) => on_child(*id),
+                GatherState::Completed(Value::Ref(_, id)) => on_child(*id),
                 GatherState::Pending | GatherState::Failed(_) | GatherState::Completed(_) => {}
             }
         }
@@ -2161,11 +2170,11 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
             // `Pending`'s awaiter may own an inc_ref on a gather, wait
             // future or task. `Resolved` owns the cached value, and a pending
             // sleep owns the `result` it will resolve with.
-            if let Some(Value::Ref(id)) = &fut.sleep_result {
+            if let Some(Value::Ref(_, id)) = &fut.sleep_result {
                 on_child(*id);
             }
             match &fut.state {
-                ExternalFutureState::Resolved(Value::Ref(id)) => on_child(*id),
+                ExternalFutureState::Resolved(Value::Ref(_, id)) => on_child(*id),
                 ExternalFutureState::Pending { awaiter: Some(awaiter) } => {
                     if let Some(id) = awaiter.heap_ref() {
                         on_child(id);
@@ -2181,16 +2190,16 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                     on_child(id);
                 }
             }
-            if let TaskFutureState::Completed(Value::Ref(id)) = &task.state {
+            if let TaskFutureState::Completed(Value::Ref(_, id)) = &task.state {
                 on_child(*id);
             }
         }
         HeapData::WaitFuture(wait) => match &wait.state {
             WaitFutureState::Unawaited(unawaited) => {
-                if let Value::Ref(id) = &unawaited.fs {
+                if let Value::Ref(_, id) = &unawaited.fs {
                     on_child(*id);
                 }
-                if let Some(Value::Ref(id)) = &unawaited.return_when {
+                if let Some(Value::Ref(_, id)) = &unawaited.return_when {
                     on_child(*id);
                 }
                 if let Some(timer) = unawaited.timer {
@@ -2237,7 +2246,7 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
         HeapData::ReMatch(m) => {
             // Mirror `py_dec_ref_ids_for_data`: a match holds one ref on its
             // shared subject string (`None` for an interned subject).
-            if let Value::Ref(id) = m.subject_ref() {
+            if let Value::Ref(_, id) = m.subject_ref() {
                 on_child(*id);
             }
         }
@@ -2248,7 +2257,7 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
         HeapData::Exception(exc) => {
             exc.owned_chain_ids().for_each(&mut on_child);
             // A `StopIteration` carries an arbitrary value.
-            if let Some(Value::Ref(id)) = exc.value.as_deref() {
+            if let Some(Value::Ref(_, id)) = exc.value.as_deref() {
                 on_child(*id);
             }
         }
@@ -2446,9 +2455,54 @@ mod tests {
 
     use super::*;
     use crate::{
-        types::{List, callable_iterator::CallableIterator},
+        types::{Bytes, List, callable_iterator::CallableIterator},
         value::Value,
     };
+
+    #[test]
+    fn heap_id_index_boundaries() {
+        assert_eq!(HeapId::from_index(0).index(), 0);
+        assert_eq!(HeapId::from_index(usize::MAX).index(), usize::MAX);
+    }
+
+    #[test]
+    fn typed_references_keep_kind_after_slot_reuse() {
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        let list_id = HeapReader::with(&mut heap, &mut (), |reader, ()| {
+            let mut allocation = reader.allocate_as(List::new(Vec::new()));
+            let cloned = allocation.read(reader).clone_value(reader);
+            let value = allocation.into_value();
+            assert!(matches!(value, Value::Ref(HeapKind::List, _)));
+            assert!(matches!(cloned, Value::Ref(HeapKind::List, _)));
+            let id = value.ref_id().unwrap();
+            cloned.drop_with(reader);
+            value.drop_with(reader);
+            id
+        });
+        HeapReader::with(&mut heap, &mut (), |reader, ()| {
+            let value = reader.allocate_as(Bytes::new(vec![1])).into_value();
+            assert!(matches!(value, Value::Ref(HeapKind::Bytes, id) if id == list_id));
+            assert_eq!(value.get_as::<Bytes>(reader).unwrap().as_slice(), &[1]);
+            assert!(value.get_as::<List>(reader).is_none());
+            let cloned = value.clone_with_heap(reader);
+            assert!(matches!(cloned, Value::Ref(HeapKind::Bytes, _)));
+            cloned.drop_with(reader);
+            value.drop_with(reader);
+        });
+    }
+
+    #[test]
+    fn singleton_references_keep_kind() {
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        for _ in 0..2 {
+            let empty = heap.get_empty_tuple();
+            assert!(matches!(empty, Value::Ref(HeapKind::Tuple, _)));
+            empty.drop_with(&mut heap);
+            let utc = heap.get_timezone_utc();
+            assert!(matches!(utc, Value::Ref(HeapKind::TimeZone, _)));
+            utc.drop_with(&mut heap);
+        }
+    }
 
     /// Returns whether a heap entry is still allocated at `id`.
     fn is_alive(heap: &Heap, id: HeapId) -> bool {
@@ -2457,7 +2511,7 @@ mod tests {
 
     /// Allocates a self-referencing one-element list and returns its id.
     ///
-    /// The list's items become `[Value::Ref(id)]` and its refcount is bumped
+    /// The list's items become `[Value::Ref(HeapKind::List, id)]` and its refcount is bumped
     /// to 2 to reflect both the caller's ref and the new self-reference.
     fn alloc_self_cycle(heap: &Heap) -> HeapId {
         let id = heap.allocate(HeapData::List(List::new(vec![])));
@@ -2471,7 +2525,7 @@ mod tests {
         let data = unsafe { &mut *entry.data.0.get() };
         match data {
             HeapData::List(list) => {
-                list.extend_owned([Value::Ref(id)]);
+                list.extend_owned([Value::Ref(HeapKind::List, id)]);
             }
             _ => unreachable!(),
         }
@@ -2507,7 +2561,7 @@ mod tests {
             let data = unsafe { &mut *entry.data.0.get() };
             match data {
                 HeapData::List(list) => {
-                    list.extend_owned(refs.iter().copied().map(Value::Ref));
+                    list.extend_owned(refs.iter().copied().map(|id| Value::Ref(HeapKind::List, id)));
                 }
                 _ => unreachable!(),
             }
@@ -2773,8 +2827,8 @@ mod tests {
         heap.inc_ref(c);
         heap.inc_ref(s);
         let iter = heap.allocate(HeapData::CallableIterator(CallableIterator::new(
-            Value::Ref(c),
-            Value::Ref(s),
+            Value::Ref(HeapKind::List, c),
+            Value::Ref(HeapKind::List, s),
         )));
 
         let mut traced = vec![];
@@ -2787,8 +2841,8 @@ mod tests {
         heap.inc_ref(c);
         heap.inc_ref(c);
         let shared = heap.allocate(HeapData::CallableIterator(CallableIterator::new(
-            Value::Ref(c),
-            Value::Ref(c),
+            Value::Ref(HeapKind::List, c),
+            Value::Ref(HeapKind::List, c),
         )));
 
         let mut dup = vec![];
@@ -2807,8 +2861,8 @@ mod tests {
         heap.inc_ref(list);
         heap.inc_ref(sentinel);
         let iter = heap.allocate(HeapData::CallableIterator(CallableIterator::new(
-            Value::Ref(list),
-            Value::Ref(sentinel),
+            Value::Ref(HeapKind::List, list),
+            Value::Ref(HeapKind::List, sentinel),
         )));
 
         // Close the cycle: the callable list references the iterator back.
@@ -2818,7 +2872,7 @@ mod tests {
                 unreachable!("just allocated a list")
             };
             let l = l.get_mut(reader);
-            l.extend_owned([Value::Ref(iter)]);
+            l.extend_owned([Value::Ref(HeapKind::CallableIterator, iter)]);
         });
         // list.rc = 2, iter.rc = 2, sentinel.rc = 2.
 

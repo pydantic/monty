@@ -584,7 +584,7 @@ fn c_int(value: &Value, vm: &VM<'_>) -> RunResult<i32> {
     match value {
         Value::Bool(b) => Ok(i32::from(*b)),
         Value::Int(i) => i32::try_from(*i).map_err(|_| overflow_error("Python int too large to convert to C int")),
-        _ if value.as_long_int(vm).is_some() => Err(overflow_error("Python int too large to convert to C int")),
+        _ if value.is_long_int() => Err(overflow_error("Python int too large to convert to C int")),
         _ => Err(ExcType::type_error_not_integer(&value.py_type_name(vm))),
     }
 }
@@ -595,7 +595,7 @@ fn c_long(value: &Value, vm: &VM<'_>) -> RunResult<i64> {
     match value {
         Value::Bool(b) => Ok(i64::from(*b)),
         Value::Int(i) => Ok(*i),
-        _ if value.as_long_int(vm).is_some() => Err(ExcType::overflow_c_long()),
+        _ if value.is_long_int() => Err(ExcType::overflow_c_long()),
         _ => Err(ExcType::type_error_not_integer(&value.py_type_name(vm))),
     }
 }

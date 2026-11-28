@@ -87,7 +87,7 @@ impl<'h> PyStr<'h> {
             // A missing object wins over the decoding args: `str(encoding='utf-8')` is ''.
             return Ok(Value::InternString(StringId::EMPTY));
         };
-        if object.is_str(vm.heap) {
+        if object.is_str() {
             return Err(ExcType::type_error_decoding_str_not_supported());
         }
         let bytes = object
@@ -105,7 +105,7 @@ impl<'h> PyStr<'h> {
         match value {
             Value::InternString(id) => Some(Self::Interned(*id)),
             Value::InlineString(text) => Some(Self::Inline(*text)),
-            Value::Ref(id) => vm.heap.read_as(*id).map(Self::Heap),
+            Value::Ref(_, id) => vm.heap.read_as(*id).map(Self::Heap),
             _ => None,
         }
     }
@@ -373,7 +373,7 @@ struct StrInitArgs {
 /// `str() argument '{name}' must be str, not {tp_name}` wording.
 fn str_ctor_arg_check(arg: Option<&Value>, name: &str, vm: &VM<'_>) -> RunResult<()> {
     match arg {
-        Some(v) if !v.is_str(vm.heap) => Err(ExcType::type_error_bad_arg_named(
+        Some(v) if !v.is_str() => Err(ExcType::type_error_bad_arg_named(
             "str",
             name,
             "str",

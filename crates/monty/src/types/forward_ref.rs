@@ -28,11 +28,12 @@ use crate::{
     frozen::{FrozenFunction, FrozenFunctions},
     hash::{HashValue, identity_hash},
     heap::{ContainsHeap, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead},
+    heap_data::HeapKind,
     intern::StaticStrings,
     modules::{ModuleFunctions, StandardLib, typing},
     py_attrs::PyAttrs,
     types::{
-        Dict, LazyHeapSet, PyTrait, Type, TypeRef, Union,
+        Dict, LazyHeapSet, List, PyTrait, Set, Slice, Tuple, Type, TypeRef, Union,
         generic_alias::repr_type_arg,
         sequence::SequenceItems,
         str::{StringRepr, allocate_string},
@@ -240,7 +241,7 @@ impl ForwardRef {
     /// Invokes `on_child` for each heap id this reference owns (GC trace hook).
     pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
         for value in [&self.arg, &self.module, &self.owner] {
-            if let Value::Ref(id) = value {
+            if let Value::Ref(_, id) = value {
                 on_child(*id);
             }
         }
@@ -425,14 +426,14 @@ impl<'h> HeapObjectRead<'h, ForwardRef> {
         // `__globals__` (the dict a stringifier was composed against), then the owner's.
         let globals = if let Some(id) = globals {
             vm.heap.inc_ref(id);
-            Value::Ref(id)
+            Value::Ref(HeapKind::Dict, id)
         } else if let Some(module_globals) = module_globals(module, vm)? {
             module_globals
         } else {
             match own_globals {
                 Some(FrameGlobals::Dict(id)) => {
                     vm.heap.inc_ref(id);
-                    Value::Ref(id)
+                    Value::Ref(HeapKind::Dict, id)
                 }
                 Some(FrameGlobals::Slots) => Value::None,
                 None => typing::owner_globals(owner, vm),
@@ -442,7 +443,7 @@ impl<'h> HeapObjectRead<'h, ForwardRef> {
         let locals = match locals {
             Some(id) => {
                 vm.heap.inc_ref(id);
-                Value::Ref(id)
+                Value::Ref(HeapKind::Dict, id)
             }
             None => typing::owner_locals(owner, vm)?,
         };
@@ -483,7 +484,7 @@ fn module_globals(module: &Value, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
         Ok(Some(Value::None))
     } else if let Some(namespace) = file_namespace {
         vm.heap.inc_ref(namespace);
-        Ok(Some(Value::Ref(namespace)))
+        Ok(Some(Value::Ref(HeapKind::Dict, namespace)))
     } else if let Some(bundled) = StaticStrings::from_str(name).ok().and_then(StandardLib::from_static) {
         bundled_module_dict(bundled, vm).map(Some)
     } else {
@@ -494,7 +495,7 @@ fn module_globals(module: &Value, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
 /// A fresh dict holding a newly created bundled module's attributes.
 fn bundled_module_dict(bundled: StandardLib, vm: &mut VM<'_>) -> RunResult<Value> {
     let module_id = bundled.create(vm);
-    let module = Value::Ref(module_id);
+    let module = Value::Ref(HeapKind::Module, module_id);
     defer_drop!(module, vm);
     let HeapData::Module(module) = vm.heap.get(module_id) else {
         unreachable!("StandardLib::create allocates a module");
@@ -691,7 +692,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ForwardRef> {
         match key {
             // A tuple key lists its items bare, as `ast.unparse` writes a subscript,
             // keeping the `()` and trailing comma that make `Later[()]` and `Later[int,]` tuples.
-            Value::Ref(id) if let HeapData::Tuple(tuple) = vm.heap.get(*id) => {
+            value if let Some(tuple) = value.get_as::<Tuple>(vm.heap) => {
                 let items = SequenceItems::from_slice(tuple.as_slice()).to_vec(vm.heap)?;
                 defer_drop!(items, vm);
                 if items.is_empty() {
@@ -703,7 +704,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ForwardRef> {
                     }
                 }
             }
-            Value::Ref(id) if let HeapData::Slice(slice) = vm.heap.get(*id) => {
+            value if let Some(slice) = value.get_as::<Slice>(vm.heap) => {
                 let (start, stop, step) = (slice.start, slice.stop, slice.step);
                 for (index, bound) in [start, stop].into_iter().enumerate() {
                     if index > 0 {
@@ -820,39 +821,40 @@ fn render_operand(value: &Value, demanded: Precedence, vm: &mut VM<'_>, text: &m
     let mut guard = vm.recursion_guard()?;
     let vm = &mut *guard;
     let container = match value {
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::ForwardRef(forward_ref) if forward_ref.is_stringifier() => {
-                let inner = forward_ref.arg.as_str_heap(vm.heap, vm.interns).unwrap_or_default();
-                if demanded > forward_ref.precedence {
-                    write!(text, "({inner})")?;
-                } else {
-                    text.push_str(inner);
-                }
-                return Ok(());
+        _ if let Some(forward_ref) = value.get_as::<ForwardRef>(vm.heap)
+            && forward_ref.is_stringifier() =>
+        {
+            let inner = forward_ref.arg.as_str_heap(vm.heap, vm.interns).unwrap_or_default();
+            if demanded > forward_ref.precedence {
+                write!(text, "({inner})")?;
+            } else {
+                text.push_str(inner);
             }
-            HeapData::Tuple(tuple) => Container::Tuple(SequenceItems::from_slice(tuple.as_slice()).to_vec(vm.heap)?),
-            HeapData::List(list) => Container::List(list.items().to_vec(vm.heap)?),
-            HeapData::Set(set) => {
-                let items: Vec<&Value> = set.iter().collect();
-                vm.heap
-                    .tracker
-                    .check_allocation(items.len().saturating_mul(VALUE_SIZE))?;
-                Container::Set(items.into_iter().map(|item| item.clone_with_heap(vm.heap)).collect())
-            }
-            HeapData::Dict(dict) => {
-                let pairs: Vec<(&Value, &Value)> = dict.iter().collect();
-                vm.heap
-                    .tracker
-                    .check_allocation(pairs.len().saturating_mul(2 * VALUE_SIZE))?;
-                Container::Dict(
-                    pairs
-                        .into_iter()
-                        .map(|(k, v)| (k.clone_with_heap(vm.heap), v.clone_with_heap(vm.heap)))
-                        .collect(),
-                )
-            }
-            _ => return repr_type_arg(value, text, vm, &mut LazyHeapSet::default()),
-        },
+            return Ok(());
+        }
+        _ if let Some(tuple) = value.get_as::<Tuple>(vm.heap) => {
+            Container::Tuple(SequenceItems::from_slice(tuple.as_slice()).to_vec(vm.heap)?)
+        }
+        _ if let Some(list) = value.get_as::<List>(vm.heap) => Container::List(list.items().to_vec(vm.heap)?),
+        _ if let Some(set) = value.get_as::<Set>(vm.heap) => {
+            let items: Vec<&Value> = set.iter().collect();
+            vm.heap
+                .tracker
+                .check_allocation(items.len().saturating_mul(VALUE_SIZE))?;
+            Container::Set(items.into_iter().map(|item| item.clone_with_heap(vm.heap)).collect())
+        }
+        _ if let Some(dict) = value.get_as::<Dict>(vm.heap) => {
+            let pairs: Vec<(&Value, &Value)> = dict.iter().collect();
+            vm.heap
+                .tracker
+                .check_allocation(pairs.len().saturating_mul(2 * VALUE_SIZE))?;
+            Container::Dict(
+                pairs
+                    .into_iter()
+                    .map(|(k, v)| (k.clone_with_heap(vm.heap), v.clone_with_heap(vm.heap)))
+                    .collect(),
+            )
+        }
         _ => return repr_type_arg(value, text, vm, &mut LazyHeapSet::default()),
     };
     defer_drop!(container, vm);

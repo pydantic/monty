@@ -72,7 +72,7 @@ fn wrapped_hash(value: &Value, wrap: fn(&str, &str) -> RunError, vm: &mut VM<'_>
 /// which item refused, so tuple-likes are walked here in the same hashing pass.
 pub(crate) fn hash_or_culprit(value: &Value, vm: &mut VM<'_>) -> RunResult<Result<HashValue, String>> {
     let hash = match value {
-        Value::Ref(id) => match PyValue::from_heap(*id, vm.heap) {
+        Value::Ref(_, id) => match PyValue::from_heap(*id, vm.heap) {
             PyValue::Tuple(tuple) => return tuple.hash_or_culprit(vm),
             PyValue::NamedTuple(namedtuple) => return namedtuple.hash_or_culprit(vm),
             other => other.py_hash(vm)?,

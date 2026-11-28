@@ -11,6 +11,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, ExceptionValue, RunError, RunResult, SimpleException},
     heap::{HEAP_ENTRY_SIZE, HeapData, HeapId, HeapObjectRead, HeapReadOutput},
+    heap_data::HeapKind,
     heap_traits::{DropGuard, DropWithContext},
     intern::StaticStrings,
     types::{PyTrait, Type, str::allocate_string},
@@ -35,9 +36,9 @@ pub(crate) fn create_task(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> 
         let ((coro, _), vm) = args_guard.as_parts();
 
         match coro {
-            Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Coroutine(_)) => TaskStart::Coroutine,
-            Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::ExternalFuture(_)) => TaskStart::ExternalFuture,
-            Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::WaitFuture(_)) => TaskStart::WaitFuture,
+            Value::Ref(HeapKind::Coroutine, _) => TaskStart::Coroutine,
+            Value::Ref(HeapKind::ExternalFuture, _) => TaskStart::ExternalFuture,
+            Value::Ref(HeapKind::WaitFuture, _) => TaskStart::WaitFuture,
             _ => {
                 let rendered = coro.py_repr(vm)?;
                 defer_drop!(rendered, vm);
@@ -75,7 +76,7 @@ pub(crate) fn create_task(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> 
         TaskStart::WaitFuture => vm.start_wait_task(coro_id, handle)?,
     }
 
-    Ok(Value::Ref(handle))
+    Ok(Value::Ref(HeapKind::Task, handle))
 }
 
 /// How `create_task` starts the supplied awaitable.
@@ -149,7 +150,7 @@ pub(crate) fn task_call_method<'h>(
             let id = task.get(vm.heap).coroutine_id;
             vm.heap.inc_ref(id);
 
-            Value::Ref(id)
+            Value::Ref(vm.heap.get(id).kind(), id)
         }
         StaticStrings::Result => {
             args.check_zero_args("Task.result", vm.heap)?;

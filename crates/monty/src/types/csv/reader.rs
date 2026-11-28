@@ -53,7 +53,7 @@ impl Reader {
 
     /// Invokes `on_child` for each heap id this reader owns (GC trace hook).
     pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
-        if let Value::Ref(id) = &self.source {
+        if let Value::Ref(_, id) = &self.source {
             on_child(*id);
         }
     }
@@ -112,7 +112,7 @@ pub(super) fn next_fields<'h>(obj: &HeapReadMut<'h, CsvObject>, vm: &mut VM<'h>)
             return Ok(None);
         };
         defer_drop!(line, vm);
-        if !line.is_str(vm.heap) {
+        if !line.is_str() {
             return Err(ExcType::csv_error(format!(
                 "iterator should return strings, not {} (the file should be opened in text mode)",
                 line.py_type_name(vm)
