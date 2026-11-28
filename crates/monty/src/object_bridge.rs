@@ -21,7 +21,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExceptionValue, RunError, RunResult, SimpleException},
-    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
+    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapRead, HeapReadOutput},
     intern::StringId,
     modules::dataclasses,
     types::{
@@ -230,6 +230,7 @@ impl GraphExporter {
                 // A deque exports as a list, so it takes a list's placeholder
                 // (as its repr does too).
                 HeapData::List(_) | HeapData::Deque(_) => "[...]",
+                HeapData::Instance(instance) if instance.native_list().is_some() => "[...]",
                 HeapData::Tuple(_) | HeapData::NamedTuple(_) => "(...)",
                 HeapData::Dict(_) => "{...}",
                 _ => "...",
@@ -255,6 +256,13 @@ impl GraphExporter {
         node_id
     }
 
+    /// Clones the elements before a nested conversion can run Python and mutate the list.
+    fn list_node<'h>(&mut self, list: &HeapRead<'h, List>, vm: &mut VM<'h>) -> MontyNode {
+        let children: Vec<Value> = list.get(vm.heap).items().cloned(vm.heap).collect();
+        defer_drop!(children, vm);
+        MontyNode::List(self.push_all(children, vm))
+    }
+
     /// Converts one heap object into its node, pushing container children first.
     /// Recursing can run a user `__repr__` ([`repr_node`](Self::repr_node) on e.g. a
     /// `functools.partial` bound to an instance), so mutable containers clone
@@ -272,12 +280,7 @@ impl GraphExporter {
         match output {
             HeapReadOutput::Str(heap_string) => MontyNode::String(heap_string.get(vm.heap).as_str().to_owned()),
             HeapReadOutput::Bytes(b) => MontyNode::Bytes(b.get(vm.heap).as_slice().to_owned()),
-            HeapReadOutput::List(list) => {
-                // Snapshot before recursing: a nested `__repr__` may mutate this list.
-                let children: Vec<Value> = list.get(vm.heap).items().cloned(vm.heap).collect();
-                defer_drop!(children, vm);
-                MontyNode::List(self.push_all(children, vm))
-            }
+            HeapReadOutput::List(list) => self.list_node(&list, vm),
             // A deque exports as a host list: there is no host-side deque
             // *value* type, so it degrades to the nearest structural one
             // rather than to a repr string, matching how defaultdict and
@@ -424,6 +427,13 @@ impl GraphExporter {
             // plus worker-generated uuids (stored on the heap objects, so
             // stable across crossings and dump/restore).
             HeapReadOutput::Instance(inst) => {
+                if let Some(list_id) = inst.get(vm.heap).native_list() {
+                    let list = vm.heap.read_as::<List>(list_id).expect("instance owns list storage");
+                    return self.list_node(&list, vm);
+                }
+                if let Some(text) = inst.get(vm.heap).native_str() {
+                    return MontyNode::String(text.as_str(vm).expect("instance owns string storage").to_owned());
+                }
                 let class_id = inst.get(vm.heap).class();
                 let instance_id = vm.heap.boundary_uuid(id);
                 let class_type = self.sandbox_class_node(class_id, vm);
@@ -906,7 +916,7 @@ impl MontyTypeExt for MontyType {
             Type::SpecialForm => Self::SpecialForm,
             Type::Path => Self::Path,
             Type::Property => Self::Property,
-            Type::ClassMethod | Type::StaticMethod => return None,
+            Type::ClassMethod | Type::StaticMethod | Type::MethodDescriptor => return None,
             Type::Object => Self::Object,
             Type::RePattern => Self::RePattern,
             Type::ReMatch => Self::ReMatch,

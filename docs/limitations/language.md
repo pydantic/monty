@@ -11,9 +11,8 @@ any code runs.
     `__init__`/`__repr__`/`__str__`, class variables of arbitrary expressions).
     Rejected at parse time: metaclasses (`class Foo(metaclass=M):`), `**kwargs`
     in a class statement, and class-body statements other than `def`, a simple
-    `name [: T] = <expr>` assignment, `pass`, or a docstring. Classes can inherit
-    from other classes and `object` but not from native types, and there is no
-    general dunder protocol. See [classes.md](classes.md).
+    `name [: T] = <expr>` assignment, `pass`, or a docstring.
+    Classes can inherit from Python classes, `object`, `list`, and `str`. See [classes.md](classes.md).
 - **`async with` statements** — not yet supported.
 - **Async generator functions and expressions** — rejected with `NotImplementedError`.
     See [generators.md](generators.md).

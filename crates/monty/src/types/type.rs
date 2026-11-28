@@ -91,7 +91,10 @@ impl Type {
     /// Returns the first definition in the MRO and the native namespace that owns it.
     /// The owner validates descriptors; class methods bind to the accessing class.
     pub(crate) fn lookup_attr(self, attr: &EitherStr, interns: &Interns) -> Option<(Self, AttrDef)> {
-        let name = attr.static_string(interns)?;
+        self.lookup_static_attr(attr.static_string(interns)?)
+    }
+
+    pub(crate) fn lookup_static_attr(self, name: StaticStrings) -> Option<(Self, AttrDef)> {
         self.mro()
             .find_map(|owner| (owner.def().attrs?.lookup)(name).map(|definition| (owner, definition)))
     }
@@ -106,7 +109,21 @@ impl Type {
     ) -> RunResult<CallResult> {
         match self.lookup_attr(attr, vm.interns) {
             Some((owner, AttrDef::Method(call))) => py_attrs::call_method(owner, obj, attr, call, args, vm),
-            Some((_, AttrDef::ClassMethod(classmethod))) => classmethod(obj.py_type(vm), args, vm),
+            Some((_, AttrDef::ClassMethod(classmethod))) => {
+                let class = if let PyValue::NamedTuple(tuple) = obj {
+                    let Some(id) = tuple.get(vm.heap).class_id() else {
+                        args.drop_with(vm);
+                        return Err(ExcType::attribute_error(
+                            tuple.get(vm.heap).name(vm.interns),
+                            attr.as_str(vm.interns),
+                        ));
+                    };
+                    TypeRef::Class(id)
+                } else {
+                    obj.py_type(vm)
+                };
+                classmethod(class, args, vm)
+            }
             _ => obj.call_dynamic_attr(vm, attr, args),
         }
     }
@@ -168,7 +185,7 @@ impl Type {
                 vm.heap,
             ),
             "__init_subclass__" => bind_init_subclass(type_value(self), self.class_constant(attr, vm)?, vm.heap),
-            _ => self.class_constant(attr, vm)?,
+            _ => py_attrs::read_member(self, attr, None, vm)?,
         })
     }
 

@@ -26,12 +26,18 @@ use crate::{
     identity::Identity,
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
     modules::ModuleFunctions,
+    py_attrs::{self, NativeMethod},
     py_value::PyValue,
     types::{
-        Bytes, BytesIterator, CmpOrder, Complex, HeapStr, LazyHeapSet, LongInt, Property, PyTrait, Type, TypeRef,
+        Bytes, BytesIterator, CmpOrder, Complex, HeapStr, Instance, LazyHeapSet, List, LongInt, Property, PyTrait,
+        Type, TypeRef,
         bytes::PyBytes,
         decimal,
-        instance::{class_defines, instance_getattr, instance_str, instance_user_eq, subclass_overrides},
+        instance::{
+            class_defines, instance_call_dunder_sync, instance_getattr, instance_str, instance_user_eq,
+            subclass_overrides,
+        },
+        list::list_storage_id,
         long_int::{
             PyInt, bigint_cmp_f64, bigint_cmp_i64, bigint_divmod_tuple, bigint_eq_f64, bigint_eq_i64, i64_cmp_f64,
         },
@@ -88,6 +94,9 @@ pub(crate) enum Value {
     /// Module functions require importing a module to access (e.g., `asyncio.gather`).
     #[serde(rename = "M")]
     ModuleFunction(ModuleFunctions),
+    /// A method descriptor read from a native class.
+    #[serde(rename = "W")]
+    NativeMethod(NativeMethod),
     /// A function defined in the module (not a closure, doesn't capture any variables)
     #[serde(rename = "D")]
     DefFunction(FunctionId),
@@ -263,6 +272,7 @@ impl<'h> PyTrait<'h> for Value {
             Self::InlineString(_) => Type::Str.into(),
             Self::InternBytes(_) => Type::Bytes.into(),
             Self::Builtin(c) => c.py_type().into(),
+            Self::NativeMethod(_) => Type::MethodDescriptor.into(),
             Self::ModuleFunction(_) => Type::BuiltinFunction.into(),
             Self::DefFunction(_) => Type::Function.into(),
             Self::Marker(m) => m.py_type().into(),
@@ -303,6 +313,10 @@ impl<'h> PyTrait<'h> for Value {
             }),
             Self::Builtin(b) => Ok(match other {
                 Self::Builtin(o) => Some(b == o),
+                _ => None,
+            }),
+            Self::NativeMethod(m) => Ok(match other {
+                Self::NativeMethod(o) => Some(m == o),
                 _ => None,
             }),
             Self::ModuleFunction(mf) => Ok(match other {
@@ -368,7 +382,7 @@ impl<'h> PyTrait<'h> for Value {
             (Self::Ref(id1), Self::Ref(id2)) => {
                 let order = cmp_heap_pair(*id1, *id2, vm)?;
                 if order == CmpOrder::Incomparable {
-                    decimal_cmp_or_incomparable(self, other, vm)
+                    cmp_string_or_decimal(self, other, vm)
                 } else {
                     Ok(order)
                 }
@@ -410,7 +424,7 @@ impl<'h> PyTrait<'h> for Value {
             (Self::Ref(id1), Self::InternBytes(b2)) if let HeapData::Bytes(b1) = vm.heap.get(*id1) => {
                 Ok(CmpOrder::Ordered(b1.as_slice().cmp(interns.get_bytes(*b2))))
             }
-            _ => decimal_cmp_or_incomparable(self, other, vm),
+            _ => cmp_string_or_decimal(self, other, vm),
         }
     }
 
@@ -475,6 +489,9 @@ impl<'h> PyTrait<'h> for Value {
     /// For lists/deques, tries user `__radd__` before native extension from an iterable.
     /// A reflected result replaces the value; native extension preserves the container's identity.
     fn py_iadd_impl(&mut self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
+        if let Some(id) = self.list_subclass_id(vm.heap) {
+            return self.inplace_list_op(id, "__iadd__", other, vm);
+        }
         // CPython tries numeric addition, including the RHS's `__radd__`, before
         // sequence in-place concatenation. A user operand can therefore replace
         // the assigned value even if it is iterable; aliases keep the original container.
@@ -499,6 +516,9 @@ impl<'h> PyTrait<'h> for Value {
     /// For lists/deques, tries user `__rmul__` before native repetition through `__index__`.
     /// A reflected result replaces the value; native repetition preserves the container's identity.
     fn py_imul_impl(&mut self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
+        if let Some(id) = self.list_subclass_id(vm.heap) {
+            return self.inplace_list_op(id, "__imul__", other, vm);
+        }
         // CPython tries numeric multiplication, including the RHS's `__rmul__`, before
         // sequence in-place repetition. A user operand can therefore replace
         // the assigned value even if it implements `__index__`; aliases keep the original container.
@@ -850,6 +870,14 @@ fn cmp_heap_pair(id1: HeapId, id2: HeapId, vm: &mut VM<'_>) -> RunResult<CmpOrde
             cmp_item_seqs(a_items.into_inner(), b_items, vm)
         }
         (HeapReadOutput::List(a), HeapReadOutput::List(b)) => a.py_cmp(&b, vm),
+        (HeapReadOutput::Instance(_), _) | (_, HeapReadOutput::Instance(_)) => {
+            let a = list_storage_id(id1, vm.heap).and_then(|id| vm.heap.read_as::<List>(id));
+            let b = list_storage_id(id2, vm.heap).and_then(|id| vm.heap.read_as::<List>(id));
+            match (a, b) {
+                (Some(a), Some(b)) => a.py_cmp(&b, vm),
+                _ => Ok(CmpOrder::Incomparable),
+            }
+        }
         (HeapReadOutput::Deque(a), HeapReadOutput::Deque(b)) => a.py_cmp(&b, vm),
         (HeapReadOutput::Date(a), HeapReadOutput::Date(b)) => {
             Ok(CmpOrder::from_total(a.get(vm.heap).partial_cmp(b.get(vm.heap))))
@@ -863,11 +891,13 @@ fn cmp_heap_pair(id1: HeapId, id2: HeapId, vm: &mut VM<'_>) -> RunResult<CmpOrde
     }
 }
 
-/// The ordering of a pair with a `Decimal` operand, `Incomparable` for any other pair.
-///
-/// Tried only once the common types have missed, keeping them off this check.
-fn decimal_cmp_or_incomparable(lhs: &Value, rhs: &Value, vm: &mut VM<'_>) -> RunResult<CmpOrder> {
-    Ok(decimal::py::cmp_order(lhs, rhs, vm)?.unwrap_or(CmpOrder::Incomparable))
+/// Handles string subclasses and Decimal after the ordinary representations have missed.
+fn cmp_string_or_decimal(lhs: &Value, rhs: &Value, vm: &mut VM<'_>) -> RunResult<CmpOrder> {
+    if let (Some(lhs), Some(rhs)) = (lhs.as_str(vm), rhs.as_str(vm)) {
+        Ok(CmpOrder::Ordered(lhs.cmp(rhs)))
+    } else {
+        Ok(decimal::py::cmp_order(lhs, rhs, vm)?.unwrap_or(CmpOrder::Incomparable))
+    }
 }
 
 /// `Value` releases its (possible) heap reference through any [`ContainsHeap`]
@@ -905,6 +935,7 @@ impl Value {
             Self::Bool(value) => PyValue::Bool(*value),
             Self::Float(value) => PyValue::Float(*value),
             Self::Builtin(value) => PyValue::Builtin(*value),
+            Self::NativeMethod(method) => PyValue::NativeMethod(*method),
             Self::ModuleFunction(value) => PyValue::ModuleFunction(*value),
             Self::DefFunction(id) => PyValue::DefFunction(*id),
             Self::Marker(value) => PyValue::Marker(*value),
@@ -935,6 +966,31 @@ impl Value {
                 TypeRef::Class(class_id)
             }
             _ => self.py_type(vm),
+        }
+    }
+
+    pub(crate) fn str_subclass_storage<'a>(&self, heap: &'a Heap) -> Option<&'a Self> {
+        self.get_as::<Instance>(heap)?.native_str()
+    }
+
+    pub(crate) fn native_subclass_id(&self, heap: &Heap) -> Option<HeapId> {
+        self.get_as::<Instance>(heap)?.native_layout()?;
+        self.ref_id()
+    }
+
+    pub(crate) fn list_subclass_id(&self, heap: &Heap) -> Option<HeapId> {
+        let id = self.ref_id()?;
+        matches!(heap.get(id), HeapData::Instance(instance) if instance.native_list().is_some()).then_some(id)
+    }
+
+    fn inplace_list_op(&mut self, id: HeapId, name: &'static str, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
+        let result = instance_call_dunder_sync(id, name, Some(other.clone_with_heap(vm.heap)), vm)?;
+        match result {
+            None | Some(Self::NotImplemented) => Ok(false),
+            Some(result) => {
+                mem::replace(self, result).drop_with(vm);
+                Ok(true)
+            }
         }
     }
 
@@ -1022,6 +1078,7 @@ impl Value {
             Self::InlineString(_) => Type::Str,
             Self::InternBytes(_) => Type::Bytes,
             Self::Builtin(_) => Type::BuiltinFunction,
+            Self::NativeMethod(_) => Type::MethodDescriptor,
             Self::ModuleFunction(_) | Self::DefFunction(_) => Type::Function,
             Self::Marker(m) => m.py_type(),
             Self::Property(_) => Type::Property,
@@ -1234,6 +1291,11 @@ impl Value {
             Self::Builtin(Builtins::Type(Type::Type)) => Ok(Some(hash_named("builtin", "type"))),
             Self::Builtin(Builtins::Type(ty)) => Ok(Some(hash_named("type", ty.name()))),
             // the `Debug` form carries the module too, so `time.sleep` and `asyncio.sleep` differ
+            Self::NativeMethod(method) => Ok(Some(hash_one((
+                "method_descriptor",
+                method.owner.legacy_index(),
+                method.name.raw(),
+            )))),
             Self::ModuleFunction(function) => Ok(Some(hash_named("module_function", &format!("{function:?}")))),
             // Hash functions based on function ID
             Self::DefFunction(f_id) => Ok(Some(hash_one(f_id))),
@@ -1310,10 +1372,15 @@ impl Value {
             // `__name__`, class constants and the members handed out as values
             // all live with the type, including the `AttributeError`.
             Self::Builtin(Builtins::Type(t)) => {
-                return match t.class_getattr(attr, vm) {
-                    Some(value) => Ok(CallResult::Value(value)),
-                    None => Err(t.attribute_error(attr, vm)),
-                };
+                return t
+                    .class_getattr(attr, vm)
+                    .map(CallResult::Value)
+                    .ok_or_else(|| t.attribute_error(attr, vm));
+            }
+            Self::NativeMethod(method) => {
+                if let Some(value) = method.attr(attr.as_str(vm.interns), vm) {
+                    return Ok(CallResult::Value(value));
+                }
             }
             // A plain `def` has its PEP 649 attributes and nothing else.
             Self::DefFunction(func_id) => {
@@ -1322,6 +1389,11 @@ impl Value {
                 }
             }
             _ => {}
+        }
+        if let TypeRef::Native(ty) = self.py_type(vm)
+            && let Some(method) = py_attrs::read_member(ty, attr, Some(self), vm)
+        {
+            return Ok(CallResult::Value(method));
         }
         let type_name = self.py_type_name(vm);
         Err(ExcType::attribute_error(type_name, attr.as_str(vm.interns)))
@@ -1826,6 +1898,7 @@ impl Value {
             Self::Int(v) => Self::Int(*v),
             Self::Float(v) => Self::Float(*v),
             Self::Builtin(b) => Self::Builtin(*b),
+            Self::NativeMethod(method) => Self::NativeMethod(*method),
             Self::ModuleFunction(mf) => Self::ModuleFunction(*mf),
             Self::DefFunction(f) => Self::DefFunction(*f),
             Self::InternString(s) => Self::InternString(*s),
@@ -1905,7 +1978,8 @@ impl Value {
             Self::InlineString(text) => Some(EitherStr::Inline(*text)),
             _ => self
                 .get_as::<HeapStr>(heap)
-                .map(|s| EitherStr::Heap(s.as_str().to_owned())),
+                .map(|s| EitherStr::Heap(s.as_str().to_owned()))
+                .or_else(|| self.str_subclass_storage(heap)?.as_either_str(heap)),
         }
     }
 
@@ -1938,7 +2012,10 @@ impl Value {
         match self {
             Self::InternString(string_id) => Some(interns.get_str(*string_id)),
             Self::InlineString(text) => Some(text.as_str()),
-            _ => self.get_as::<HeapStr>(heap).map(HeapStr::as_str),
+            _ => self
+                .get_as::<HeapStr>(heap)
+                .map(HeapStr::as_str)
+                .or_else(|| self.str_subclass_storage(heap)?.as_str_heap(heap, interns)),
         }
     }
 
@@ -1964,7 +2041,11 @@ impl Value {
     pub fn is_str(&self, heap: &Heap) -> bool {
         match self {
             Self::InternString(_) | Self::InlineString(_) => true,
-            Self::Ref(heap_id) => matches!(heap.get(*heap_id), HeapData::Str(_)),
+            Self::Ref(heap_id) => match heap.get(*heap_id) {
+                HeapData::Str(_) => true,
+                HeapData::Instance(instance) => instance.native_str().is_some(),
+                _ => false,
+            },
             _ => false,
         }
     }
@@ -1976,7 +2057,7 @@ impl Value {
     /// `__call__` enables the protocol even when that member is not callable.
     pub(crate) fn is_callable(&self, vm: &VM<'_>) -> bool {
         match self {
-            Self::Builtin(_) | Self::ModuleFunction(_) | Self::DefFunction(_) => true,
+            Self::Builtin(_) | Self::ModuleFunction(_) | Self::NativeMethod(_) | Self::DefFunction(_) => true,
             Self::Ref(id) => match vm.heap.get(*id) {
                 HeapData::Instance(instance) => class_defines(instance.class(), "__call__", vm),
                 value => value.is_callable(),
@@ -2035,8 +2116,7 @@ pub(crate) fn eq_str(s: &str, other: &Value, vm: &VM<'_>) -> Option<bool> {
     match other {
         Value::InternString(id) => Some(s == vm.interns.get_str(*id)),
         Value::InlineString(text) => Some(s.as_bytes() == text.as_bytes()),
-        Value::Ref(id) if let HeapData::Str(o) = vm.heap.get(*id) => Some(s == o.as_str()),
-        _ => None,
+        _ => other.as_str(vm).map(|text| s == text),
     }
 }
 

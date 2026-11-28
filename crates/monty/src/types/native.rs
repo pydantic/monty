@@ -25,7 +25,7 @@ use crate::{
     bytecode::{CallResult, PyGeneratorImpl, VM},
     exception_private::{ExcType, RunResult, exc_new},
     modules::{collections, csv, hashlib, itertools},
-    py_attrs::{AttrTable, PyAttrs, SubtypeCall},
+    py_attrs::{AttrTable, NativeMethod, PyAttrs, SubtypeCall},
     types::{
         Bytes, Deque, Dict, ForwardRef, FrozenSet, List, Partial, Path, Random, Range, Set, Slice, TimeZone, Tuple,
         builtin_descriptor, complex, date, datetime, decimal,
@@ -57,6 +57,8 @@ pub(crate) struct TypeDef {
     pub mro: Option<&'static [Type]>,
     /// Whether CPython allows subclassing (`Py_TPFLAGS_BASETYPE`).
     pub basetype: bool,
+    /// Whether Monty accepts this native type as a base of a Python class.
+    pub accepts_python_subclasses: bool,
     /// Whether subscripting the type builds a `types.GenericAlias` (`list[int]`).
     pub class_getitem: bool,
     /// Whether multiplication can fall back to sequence repetition.
@@ -95,6 +97,7 @@ impl TypeDef {
             bases,
             mro: None,
             basetype: false,
+            accepts_python_subclasses: false,
             class_getitem: false,
             sequence_repeat: false,
             iterator: false,
@@ -126,6 +129,12 @@ impl TypeDef {
     /// Subclassable, as CPython's `Py_TPFLAGS_BASETYPE` marks it.
     const fn basetype(mut self) -> Self {
         self.basetype = true;
+        self
+    }
+
+    /// Allows Python classes to use this native type as a base.
+    const fn accepts_python_subclasses(mut self) -> Self {
+        self.accepts_python_subclasses = true;
         self
     }
 
@@ -441,6 +450,7 @@ impl Type {
             Self::BlockingIOError => 169,
             Self::ClassMethod => 170,
             Self::StaticMethod => 171,
+            Self::MethodDescriptor => 172,
         }
     }
 
@@ -644,6 +654,8 @@ native_types! {
         .builtin()
         .basetype()
         .sequence_repeat()
+        .accepts_python_subclasses()
+        .subtype_call(super::str::adapt_str_subclass)
         .ctor(Constructor::Value(PyStr::init)),
     Bytes("bytes")
         .attrs(<super::bytes::PyBytes<'static> as PyAttrs<'static>>::TABLE)
@@ -657,6 +669,8 @@ native_types! {
         .basetype()
         .class_getitem()
         .sequence_repeat()
+        .accepts_python_subclasses()
+        .subtype_call(super::list::adapt_list_subclass)
         .ctor(Constructor::Value(List::init)),
     Tuple("tuple")
         .subtype_call(super::namedtuple::call_tuple_descriptor)
@@ -854,7 +868,8 @@ native_types! {
         .attrs(<PyObjectImpl as PyAttrs<'static>>::TABLE)
         .root()
         .builtin()
-        .basetype(),
+        .basetype()
+        .accepts_python_subclasses(),
     Time("datetime.time")
         .attrs(<super::time::PyTimeImpl as PyAttrs<'static>>::TABLE)
         .basetype()
@@ -1217,6 +1232,7 @@ native_types! {
         .exc(ExcType::InvalidStateError),
     ClassMethod("classmethod").builtin().basetype().ctor(Constructor::Value(builtin_descriptor::classmethod_init)),
     StaticMethod("staticmethod").builtin().basetype().ctor(Constructor::Value(builtin_descriptor::staticmethod_init)),
+    MethodDescriptor("method_descriptor").attrs(<NativeMethod as PyAttrs<'static>>::TABLE),
 }
 
 #[cfg(test)]

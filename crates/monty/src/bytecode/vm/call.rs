@@ -15,7 +15,7 @@ use super::{
 use crate::{
     args::{ArgValues, KwargsValues},
     asyncio::Coroutine,
-    builtins::{BuiltinsFunctions, BuiltinsFunctionsExt, object::takes_no_arguments},
+    builtins::{Builtins, BuiltinsFunctions, BuiltinsFunctionsExt, object::takes_no_arguments},
     bytecode::FrameExit,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
@@ -29,8 +29,8 @@ use crate::{
     py_value::PyValue,
     resource_checks::check_estimated_size,
     types::{
-        Dict, Instance, PyTrait, Tuple, Type, TypeRef, descriptor,
-        instance::{class_defines, class_lookup},
+        Dict, Instance, List, PyTrait, Tuple, Type, TypeRef, descriptor,
+        instance::{class_defines, class_lookup, class_member},
     },
     value::{EitherStr, VALUE_SIZE, Value},
 };
@@ -556,6 +556,11 @@ impl<'h> VM<'h> {
     pub(crate) fn call_function(&mut self, callable: &Value, args: ArgValues) -> Result<CallResult, RunError> {
         match callable {
             Value::Builtin(builtin) => builtin.call(self, args),
+            Value::NativeMethod(method) => {
+                method
+                    .owner
+                    .call_class_method(&EitherStr::Interned(method.name), args, self)
+            }
             Value::ModuleFunction(mf) => mf.call(self, args),
             Value::DefFunction(func_id) => {
                 // Defined function without defaults, captured variables or a globals dict
@@ -1160,15 +1165,14 @@ impl<'h> VM<'h> {
     /// on external/OS calls; the `is_initializer` flag is threaded through frame
     /// serialization so a suspended initializer resumes correctly.
     pub(crate) fn instantiate_class(&mut self, class_id: HeapId, args: ArgValues) -> Result<CallResult, RunError> {
-        if let Some(new_func) = class_lookup(class_id, "__new__", self.heap, self.interns) {
-            let new_func = new_func.clone_with_heap(self.heap);
-            return self.instantiate_with_new(class_id, new_func, args);
+        if let Some(new_func) = class_member(class_id, "__new__", self) {
+            let default_list_new = matches!(new_func, Value::Builtin(Builtins::Function(BuiltinsFunctions::ListNew)))
+                && matches!(self.heap.get(class_id), HeapData::Class(class) if class.native_layout() == Some(Type::List));
+            if !default_list_new {
+                return self.instantiate_with_new(class_id, new_func, args);
+            }
         }
-        let instance_id = self
-            .heap
-            .allocate(HeapData::Instance(Box::new(Instance::new(class_id, Dict::new()))));
-        // The instance now owns a reference to its class object.
-        self.heap.inc_ref(class_id);
+        let instance_id = Instance::allocate(class_id, self.heap);
         self.initialize_instance(class_id, instance_id, args)
     }
 
@@ -1212,6 +1216,15 @@ impl<'h> VM<'h> {
         let init = class_lookup(class_id, "__init__", self.heap, self.interns).map(|v| v.clone_with_heap(self));
 
         match init {
+            None if let HeapData::Instance(instance) = self.heap.get(instance_id)
+                && let Some(list) = instance.native_list() =>
+            {
+                let mut pending = DropGuard::new(Value::Ref(instance_id), self);
+                let (_, vm) = pending.as_parts_mut();
+                let mut list = vm.heap.read_as::<List>(list).expect("instance owns its list storage");
+                list.initialize(args, vm)?;
+                Ok(CallResult::Value(pending.into_inner()))
+            }
             None if matches!(args, ArgValues::Empty) => Ok(CallResult::Value(Value::Ref(instance_id))),
             // `object.__init__` ignores extra arguments when `__new__` is overridden.
             None if class_defines(class_id, "__new__", self) => {

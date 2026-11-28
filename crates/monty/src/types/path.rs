@@ -644,32 +644,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        // Fast path: interned strings can be matched by ID without string comparison
-        if let Some(ss) = attr.static_string(vm.interns) {
-            if let Some(v) = self.get(vm.heap).getattr_by_static(ss, vm.heap) {
-                return Ok(Some(CallResult::Value(v)));
-            }
-            return Err(ExcType::attribute_error(Type::Path, attr.as_str(vm.interns)));
-        }
-        // Slow path: heap-allocated strings need string comparison
-        let attr_str = attr.as_str(vm.interns);
-        let ss = match attr_str {
-            "anchor" => StaticStrings::Anchor,
-            "drive" => StaticStrings::Drive,
-            "name" => StaticStrings::Name,
-            "parent" => StaticStrings::Parent,
-            "parts" => StaticStrings::Parts,
-            "root" => StaticStrings::Root,
-            "stem" => StaticStrings::Stem,
-            "suffix" => StaticStrings::Suffix,
-            "suffixes" => StaticStrings::Suffixes,
-            _ => return Err(ExcType::attribute_error(Type::Path, attr_str)),
-        };
-        let v = self
-            .get(vm.heap)
-            .getattr_by_static(ss, vm.heap)
-            .expect("matched attribute must produce a value");
-        Ok(Some(CallResult::Value(v)))
+        Ok(attr
+            .static_string(vm.interns)
+            .and_then(|name| self.get(vm.heap).getattr_by_static(name, vm.heap))
+            .map(CallResult::Value))
     }
 }
 

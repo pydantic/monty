@@ -44,6 +44,8 @@ object.__new__: 2098378
 object.__init__: 2098410
 type.mro: 2098474
 delattr: 2098506
+list.__new__: 2098538
+str.__new__: 2098570
 Exception: 2105354
 BaseException: 2105386
 SystemExit: 2105418

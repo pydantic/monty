@@ -7,6 +7,7 @@
 use super::{
     Dict, Type,
     builtin_descriptor::{self, DescriptorMethod},
+    class::{ClassMember, native_member},
     instance::{bind_method, class_defines, class_dunder, class_member, implicit_receiver, is_method_value},
     tuple::allocate_tuple,
 };
@@ -18,7 +19,9 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     frozen::{FrozenFunction, FrozenFunctions},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId},
+    intern::StaticStrings,
     modules::{ModuleFunctions, dataclasses},
+    py_attrs::AttrDef,
     value::{EitherStr, Value},
 };
 
@@ -109,7 +112,8 @@ pub(crate) fn attribute_helper() -> Value {
 
 /// Instances remain candidates even before their class defines descriptor hooks.
 pub(crate) fn may_be_descriptor(value: &Value, heap: &Heap) -> bool {
-    matches!(value, Value::Ref(id) if matches!(heap.get(*id), HeapData::Instance(_) | HeapData::BuiltinDescriptor(_)))
+    matches!(value, Value::NativeMethod(_))
+        || matches!(value, Value::Ref(id) if matches!(heap.get(*id), HeapData::Instance(_) | HeapData::BuiltinDescriptor(_)))
 }
 
 /// User-defined members may gain setter/deleter hooks through mutations of their type.
@@ -134,6 +138,7 @@ pub(crate) enum AttributeResolution<'a> {
     /// A native function that binds the instance when read or called.
     Method(&'a Value, HeapId),
     ObjectMethod(BuiltinsFunctions, Option<HeapId>),
+    NativeMember(Type, StaticStrings, AttrDef, HeapId, HeapId),
     /// A descriptor whose getter may suspend.
     Getter(&'a Value),
     /// The synthesized instance __class__ attribute.
@@ -154,6 +159,9 @@ impl AttributeResolution<'_> {
                     Some(id) => bind_method(&method, id, vm),
                     None => method,
                 })
+            }
+            Self::NativeMember(owner, key, definition, class, id) => {
+                Some(native_member(owner, key, definition, class, Some(id), vm))
             }
             Self::Class(class) => {
                 vm.heap.inc_ref(class);
@@ -179,7 +187,16 @@ pub(crate) fn resolve_instance<'a>(id: HeapId, name: &str, vm: &'a VM<'_>) -> At
     {
         return AttributeResolution::Value(value);
     }
-    let member = class_dunder(class_id, name, vm);
+    let member = match class.lookup_member(name, vm.heap, vm.interns) {
+        Some(ClassMember::Python(member)) => Some(member),
+        Some(ClassMember::Native(owner, key, definition)) => {
+            return stored.map_or(
+                AttributeResolution::NativeMember(owner, key, definition, class_id, id),
+                AttributeResolution::Value,
+            );
+        }
+        None => None,
+    };
     let getter = !class.descriptor_free() && member.is_some_and(|member| has_get(member, vm));
     // A setter alone never overrides a read; only a data descriptor with a getter does.
     if getter
@@ -252,12 +269,22 @@ pub(crate) fn is_data(value: &Value, vm: &VM<'_>) -> bool {
 
 /// Builtin wrappers always have a getter; user hooks are looked up on their type.
 pub(crate) fn has_get(value: &Value, vm: &VM<'_>) -> bool {
-    matches!(value, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::BuiltinDescriptor(_)))
+    matches!(value, Value::NativeMethod(_))
+        || matches!(value, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::BuiltinDescriptor(_)))
         || descriptor_class(value, vm).is_some_and(|class| class_defines(class, "__get__", vm))
 }
 
 /// A plain function binds an instance; arbitrary descriptors may install a Python frame.
 pub(crate) fn get(value: &Value, instance: Option<HeapId>, owner: HeapId, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    if let Value::NativeMethod(method) = value {
+        let Some(id) = instance else {
+            return Ok(CallResult::Value(Value::NativeMethod(*method)));
+        };
+        vm.heap.inc_ref(id);
+        let receiver = Value::Ref(id);
+        defer_drop!(receiver, vm);
+        return method.bind(receiver, vm).map(CallResult::Value);
+    }
     if let Value::Ref(id) = value
         && matches!(vm.heap.get(*id), HeapData::BuiltinDescriptor(_))
     {

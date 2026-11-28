@@ -17,7 +17,11 @@ use crate::{
     py_value::PyValue,
     sorting::{apply_permutation, sort_indices},
     string_builder::StringBuilder,
-    types::{Dict, PyTrait, TypeRef, sequence::SequenceItems, str::allocate_string},
+    types::{
+        Dict, PyTrait, TypeRef,
+        sequence::SequenceItems,
+        str::{PyStr, allocate_string},
+    },
     value::Value,
 };
 
@@ -272,10 +276,11 @@ fn encode(obj: &Value, config: &JsonDumpsConfig, default: &Value, vm: &mut VM<'_
 /// bracket) before any of its elements could fail to encode.
 fn is_container(value: &Value, vm: &VM<'_>) -> bool {
     match value {
-        Value::Ref(heap_id) => matches!(
-            vm.heap.get(*heap_id),
-            HeapData::List(_) | HeapData::Tuple(_) | HeapData::Dict(_)
-        ),
+        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
+            HeapData::List(_) | HeapData::Tuple(_) | HeapData::Dict(_) => true,
+            HeapData::Instance(instance) => instance.native_list().is_some(),
+            _ => false,
+        },
         _ => false,
     }
 }
@@ -357,8 +362,10 @@ fn parse_indent_value(value: &Value, vm: &mut VM<'_>) -> RunResult<Option<String
         PyValue::Int(integer) => {
             spaces_from_indent_count(integer.to_i64(vm).ok_or_else(ExcType::overflow_index_sized_int)?, vm)
         }
-        PyValue::Str(value) => Ok(Some(value.as_str(vm).to_owned())),
-        _ => Err(ExcType::type_error_sequence_repeat(value.py_type_name(vm))),
+        _ => value
+            .as_str(vm)
+            .map(|text| Some(text.to_owned()))
+            .ok_or_else(|| ExcType::type_error_sequence_repeat(value.py_type_name(vm))),
     }
 }
 
@@ -504,10 +511,10 @@ impl<'h> Encoder<'_, 'h> {
             }
             PyValue::Int(integer) => integer.write_decimal(self.out, self.vm),
             PyValue::Float(value) => serialize_float(value, self.out, self.config),
-            PyValue::Str(string) => {
-                self.check_output_growth(string.as_str(self.vm).len())?;
-                write_json_string(string.as_str(self.vm), self.out, self.config.ensure_ascii());
-                Ok(())
+            PyValue::Str(string) => self.serialize_string(&string),
+            PyValue::Instance(instance) if instance.get(self.vm.heap).native_str().is_some() => {
+                let string = PyStr::from_value(value, self.vm).expect("instance owns string storage");
+                self.serialize_string(&string)
             }
             PyValue::List(list) => self.with_entered_container(list.id(), |enc| {
                 let iter = list.iter(enc.vm)?;
@@ -521,6 +528,20 @@ impl<'h> Encoder<'_, 'h> {
                     }
                 })
             }),
+            PyValue::Instance(instance) if instance.get(self.vm.heap).native_list().is_some() => self
+                .with_entered_container(instance.id(), |enc| {
+                    let iterator = value.py_iter(enc.vm)?.require_synchronous(enc.vm)?;
+                    defer_drop!(iterator, enc);
+                    let mut iterator = iterator.read(enc.vm);
+                    enc.serialize_array(depth, |enc, depth| {
+                        let Some(item) = iterator.py_next(enc.vm)? else {
+                            return Ok(false);
+                        };
+                        defer_drop!(item, enc);
+                        enc.serialize_value(item, depth)?;
+                        Ok(true)
+                    })
+                }),
             PyValue::Tuple(tuple) => self.with_entered_container(tuple.id(), |enc| {
                 let iter = tuple.iter(enc.vm)?;
                 defer_drop_mut!(iter, enc);
@@ -547,6 +568,12 @@ impl<'h> Encoder<'_, 'h> {
             }
             _ => self.serialize_fallback(value, depth),
         }
+    }
+
+    fn serialize_string(&mut self, string: &PyStr<'h>) -> RunResult<()> {
+        self.check_output_growth(string.as_str(self.vm).len())?;
+        write_json_string(string.as_str(self.vm), self.out, self.config.ensure_ascii());
+        Ok(())
     }
 
     /// Encodes a value no JSON type covers through `default(value)`, or raises
@@ -771,7 +798,7 @@ fn is_json_key_allowed(value: &Value, vm: &VM<'_>) -> bool {
     matches!(
         value.py_value(vm),
         PyValue::None | PyValue::Bool(_) | PyValue::Int(_) | PyValue::Float(_) | PyValue::Str(_)
-    )
+    ) || value.str_subclass_storage(vm.heap).is_some()
 }
 
 /// Serializes a dict key by applying CPython's JSON key coercions.
@@ -791,6 +818,7 @@ fn write_json_key(key: &Value, out: &mut String, config: &JsonDumpsConfig, vm: &
         }
         PyValue::Float(value) => serialize_float_key(value, out, config)?,
         PyValue::Str(value) => write_json_string(value.as_str(vm), out, ensure_ascii),
+        _ if let Some(text) = key.as_str(vm) => write_json_string(text, out, ensure_ascii),
         _ => return Err(ExcType::json_invalid_key_error(&key.py_type_name(vm))),
     }
     Ok(())

@@ -21,7 +21,8 @@ use crate::{
         BorrowedHeapReadMut, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadMut,
         HeapReader, heap_read_ref_as_field_mut,
     },
-    intern::{Interns, StringId},
+    intern::{Interns, StaticStrings, StringId},
+    py_attrs::{self, AttrDef},
     types::{Union, str::allocate_string, r#type::bind_init_subclass},
     value::{EitherStr, Value},
 };
@@ -33,10 +34,7 @@ use crate::{
 /// class's own [`HeapId`] is its type identity — `type(x) is Foo` and `isinstance`
 /// work via reference identity, so there is no separate type-id counter.
 ///
-/// Calling a class (`Foo(...)`) constructs an [`Instance`](super::Instance); see
-/// `instantiate_class` in the VM's call module. Inheritance is not yet supported,
-/// but a future `bases: Vec<HeapId>` field would slot in here without disturbing
-/// the rest of the design.
+/// Calling a class (`Foo(...)`) constructs an [`Instance`](super::Instance).
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Class {
     /// Class name (e.g. `Foo`), used for `repr` and `__name__`. Interned for
@@ -66,6 +64,39 @@ pub(crate) struct Class {
     /// User-defined members remain candidates because their types can acquire setter/deleter hooks.
     #[serde(default)]
     data_descriptor_free: bool,
+}
+
+pub(crate) enum ClassMember<'a> {
+    Python(&'a Value),
+    Native(Type, StaticStrings, AttrDef),
+}
+
+pub(super) fn native_member(
+    owner: Type,
+    key: StaticStrings,
+    definition: AttrDef,
+    class: HeapId,
+    instance: Option<HeapId>,
+    vm: &VM<'_>,
+) -> Value {
+    let receiver = match definition {
+        AttrDef::Method(_) => instance,
+        AttrDef::ClassMethod(_) => Some(class),
+        AttrDef::Value(_) => {
+            debug_assert_eq!(key, StaticStrings::DunderNew);
+            let function = match owner {
+                Type::List => BuiltinsFunctions::ListNew,
+                Type::Str => BuiltinsFunctions::StrNew,
+                _ => unreachable!("only list and str have native layouts"),
+            };
+            return Value::Builtin(Builtins::Function(function));
+        }
+    };
+    let receiver = receiver.map(|id| {
+        vm.heap.inc_ref(id);
+        Value::Ref(id)
+    });
+    py_attrs::native_method_value(owner, key, receiver, vm)
 }
 
 impl Class {
@@ -147,19 +178,44 @@ impl Class {
         &self.bases
     }
 
-    /// Looks `name` up in this class's namespace, then in each ancestor class's
-    /// in MRO order. Native ancestors carry no namespace, so they are skipped.
-    #[must_use]
+    pub(crate) fn native_layout(&self) -> Option<Type> {
+        self.mro
+            .iter()
+            .find_map(|ancestor| ancestor.native().filter(|ty| *ty != Type::Object))
+    }
+
+    /// Borrows a Python namespace member if it wins the MRO lookup.
     pub(crate) fn lookup<'h>(&'h self, name: &str, heap: &'h Heap, interns: &Interns) -> Option<&'h Value> {
-        self.namespace.get_by_str(name, heap, interns).or_else(|| {
-            self.mro.iter().find_map(|ancestor| match ancestor {
-                TypeRef::Class(id) => match heap.get(*id) {
-                    HeapData::Class(class) => class.namespace.get_by_str(name, heap, interns),
-                    _ => None,
-                },
-                TypeRef::Native(_) => None,
+        match self.lookup_member(name, heap, interns)? {
+            ClassMember::Python(value) => Some(value),
+            ClassMember::Native(..) => None,
+        }
+    }
+
+    pub(crate) fn lookup_member<'h>(
+        &'h self,
+        name: &str,
+        heap: &'h Heap,
+        interns: &Interns,
+    ) -> Option<ClassMember<'h>> {
+        self.namespace
+            .get_by_str(name, heap, interns)
+            .map(ClassMember::Python)
+            .or_else(|| {
+                self.mro.iter().find_map(|ancestor| match ancestor {
+                    TypeRef::Class(id) => match heap.get(*id) {
+                        HeapData::Class(class) => {
+                            class.namespace.get_by_str(name, heap, interns).map(ClassMember::Python)
+                        }
+                        _ => None,
+                    },
+                    TypeRef::Native(owner @ (Type::List | Type::Str)) => {
+                        let key = StaticStrings::try_from(name).ok()?;
+                        (owner.def().attrs?.lookup)(key).map(|definition| ClassMember::Native(*owner, key, definition))
+                    }
+                    TypeRef::Native(_) => None,
+                })
             })
-        })
     }
 
     /// The ancestors after this class in method resolution order, ending at `object`.
@@ -361,7 +417,10 @@ pub(crate) fn class_getattr(class_id: HeapId, attr: &EitherStr, vm: &mut VM<'_>)
             .get_by_str(attr_str, vm.heap, vm.interns)
             .map_or(Value::None, |value| value.clone_with_heap(vm.heap)),
         _ => {
-            if let Some(member) = class.lookup(attr_str, vm.heap, vm.interns) {
+            let member = class.lookup_member(attr_str, vm.heap, vm.interns);
+            if let Some(ClassMember::Native(owner, key, definition)) = member {
+                native_member(owner, key, definition, class_id, None, vm)
+            } else if let Some(ClassMember::Python(member)) = member {
                 let member = member.clone_with_heap(vm.heap);
                 if descriptor::has_get(&member, vm) {
                     defer_drop!(member, vm);

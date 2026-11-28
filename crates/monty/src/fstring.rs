@@ -696,15 +696,9 @@ pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>)
     // numeric validation/dispatch below and makes the VM's `!s`/`!r`/`!a`
     // conversion paths — which reuse the very same two functions — reject
     // identical specs (`f"{x:#}"` and `f"{x!s:#}"` raise the same error).
-    if value_type == Type::Str {
+    if let Some(text) = value.as_str(vm) {
         validate_string_spec(spec)?;
-        // `value` is already a `str`, so borrow it directly — no `py_str`
-        // round-trip (which would allocate a fresh heap copy just to drop it).
-        return format_string(
-            value.as_str(vm).expect("string type checked above"),
-            spec,
-            &vm.heap.tracker,
-        );
+        return format_string(text, spec, &vm.heap.tracker);
     }
 
     // A grouping option (`,`/`_`) is only legal for certain presentation

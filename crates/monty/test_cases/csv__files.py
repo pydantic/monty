@@ -6,7 +6,9 @@
 import csv
 
 with open(root / 'data.csv', 'w', newline='') as f:
-    f.write('name,qty\r\napple,3\r\n"pear, green",5\r\n')
+    assert not hasattr(f, 'no_such_file_method')
+    write = f.write
+    write('name,qty\r\napple,3\r\n"pear, green",5\r\n')
 
 # === Reading ===
 with open(root / 'data.csv', newline='') as f:
@@ -19,6 +21,8 @@ with open(root / 'data.csv') as f:
 with open(root / 'data.csv', newline='') as f:
     reader = csv.reader(f)
     assert next(reader) == ['name', 'qty']
+    assert not hasattr(reader, 'writerow')
+    assert not hasattr(reader.dialect, 'writerow')
     assert reader.line_num == 1
     assert list(reader) == [['apple', '3'], ['pear, green', '5']]
     assert reader.line_num == 3

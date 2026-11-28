@@ -130,6 +130,454 @@ else:
 }
 
 #[test]
+fn native_list_subclasses_share_one_layout() {
+    run(r"
+class Mixin:
+    label = 'from mixin'
+
+class Left(list, object):
+    pass
+
+class Right(list):
+    pass
+
+class Child(Mixin, Left, Right):
+    pass
+
+xs = Child([1, 2])
+assert type(xs) is Child
+assert Child.__mro__ == (Child, Mixin, Left, Right, list, object)
+assert isinstance(xs, list) and issubclass(Child, list)
+assert xs.label == 'from mixin'
+assert xs == [1, 2] == xs
+assert xs < [2] and [0] < xs
+assert list.__lt__(xs, [2])
+assert 1 in xs and list(xs) == [1, 2]
+assert type(xs[:]) is list and type(xs.copy()) is list
+assert hash(type(xs)) == hash(Child)
+try:
+    hash(xs)
+except TypeError:
+    pass
+else:
+    assert False
+
+saved = xs.append
+saved(3)
+Child.append(xs, 4)
+getattr(xs, 'append')(5)
+assert xs == [1, 2, 3, 4, 5]
+assert [0] + xs == [0, 1, 2, 3, 4, 5]
+assert xs * 2 == [1, 2, 3, 4, 5, 1, 2, 3, 4, 5]
+ys = type('Dynamic', (Child,), {})([1])
+alias = ys
+ys += ys
+ys *= 2
+assert ys is alias and ys == [1, 1, 1, 1]
+assert list.__iadd__(ys, [2]) is ys
+assert list.__imul__(ys, 1) is ys
+assert ys == [1, 1, 1, 1, 2]
+");
+    run_err(
+        "class Conflict(list, dict): pass",
+        "multiple bases have instance lay-out conflict",
+    );
+    run_err(
+        "class Left(list): pass\nclass Conflict(Left, dict): pass",
+        "multiple bases have instance lay-out conflict",
+    );
+}
+
+#[test]
+fn native_list_storage_and_python_overrides() {
+    run(r"
+class After:
+    def append(self, value):
+        raise AssertionError('list precedes this mixin')
+
+    def __len__(self):
+        return 42
+
+class NativeFirst(list, After):
+    pass
+
+native = NativeFirst([1])
+native.append(2)
+assert len(native) == 2
+
+class Override(NativeFirst):
+    def __init__(self, value):
+        self.received = value
+
+    def append(self, item):
+        self.last = item
+
+    def __len__(self):
+        return 99
+
+    def __getitem__(self, index):
+        return 'override'
+
+    def __setitem__(self, index, value):
+        self.assigned = value
+
+    def __iadd__(self, other):
+        return 'replacement'
+
+    def __eq__(self, other):
+        return 'reflected'
+
+    def __gt__(self, other):
+        return True
+
+xs = Override([1])
+assert xs.received == [1]
+assert list.__len__(xs) == 0
+xs.append(2)
+assert xs.last == 2 and list.__len__(xs) == 0
+list.append(xs, 3)
+assert xs[0] == 'override' and list.__getitem__(xs, 0) == 3
+xs[0] = 4
+assert xs.assigned == 4 and list.__getitem__(xs, 0) == 3
+list.__setitem__(xs, 0, 5)
+assert len(xs) == 99 and list.__len__(xs) == 1
+assert ([8] == xs) == 'reflected'
+assert [8] < xs
+assert not list.__gt__(xs, [8])
+xs += [6]
+assert xs == 'replacement'
+
+class Empty(list):
+    def __len__(self):
+        return 1
+
+assert bool(Empty())
+assert not bool(Leftover := NativeFirst())
+list.__init__(Leftover, [4])
+assert Leftover == [4]
+list.__init__(Leftover, Leftover)
+assert Leftover == []
+
+class CustomNew(list):
+    def __new__(cls, items):
+        return list.__new__(cls)
+
+assert type(CustomNew([1])) is CustomNew
+assert CustomNew([1]) == [1]
+uninitialized = CustomNew.__new__(CustomNew, [1])
+assert type(uninitialized) is CustomNew and uninitialized == []
+try:
+    object.__new__(CustomNew)
+except TypeError:
+    pass
+else:
+    assert False
+try:
+    list.append(object, 1)
+except TypeError:
+    pass
+else:
+    assert False
+");
+}
+
+#[test]
+fn native_list_subclasses_keep_contents_in_copy_and_conversion() {
+    let code = r"
+import copy
+import json
+
+class Items(list):
+    __init__ = list.__init__
+
+items = Items([[1], 2])
+items.first = items[0]
+shallow = copy.copy(items)
+deep = copy.deepcopy(items)
+assert type(shallow) is type(deep) is Items
+assert shallow == deep == items
+assert shallow.first is shallow[0] is items[0]
+assert deep.first is deep[0] and deep.first is not items[0]
+assert json.dumps(items) == '[[1], 2]'
+
+match items:
+    case [a, b]:
+        assert a is items.first and b == 2
+    case _:
+        assert False
+match items:
+    case Items(entire):
+        assert entire is items
+    case _:
+        assert False
+
+class Sibling(list):
+    pass
+
+items.__class__ = Sibling
+assert type(items) is Sibling and items == [[1], 2]
+try:
+    items.__class__ = type('Plain', (), {})
+except TypeError:
+    pass
+else:
+    assert False
+
+cycle = Items()
+cycle.append(cycle)
+copied = copy.deepcopy(cycle)
+assert copied[0] is copied
+items
+";
+    let output = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default())
+        .unwrap()
+        .run_no_limits(vec![])
+        .unwrap();
+    assert_eq!(
+        output,
+        MontyObject::list([MontyObject::list([MontyObject::int(1)]), MontyObject::int(2)])
+    );
+}
+
+#[test]
+fn native_list_subclass_survives_snapshot() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        "class Items(list): pass\nitems = Items([1, 2])\nitems.label = 3\nappend = items.append\n",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    let bytes = dump("test.py", None, &[], SessionRef::Idle(&repl)).unwrap();
+    let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else {
+        panic!("expected an idle session");
+    };
+    let output = restored
+        .feed_run(
+            "assert type(items) is Items\nappend(4)\nassert items == [1, 2, 4]\nitems.label",
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_eq!(output, MontyObject::int(3));
+}
+
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn native_list_storage_cycles_are_collected() {
+    let code = r"
+def make_cycle():
+    class Items(list): pass
+    items = Items()
+    items.append(items)
+    assert repr(items) == '[[...]]'
+
+make_cycle()
+";
+    let output = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default())
+        .unwrap()
+        .run_ref_counts(vec![])
+        .unwrap();
+    assert!(output.unreachable.is_empty(), "{:?}", output.unreachable);
+}
+
+#[test]
+fn native_str_subclasses_use_string_storage() {
+    run(r"
+class Mixin:
+    label = 'mixin'
+
+class Text(str):
+    pass
+
+class Left(Text):
+    pass
+
+class Right(Text):
+    pass
+
+class Child(Mixin, Left, Right):
+    pass
+
+text = Child('hé😀')
+assert text.label == 'mixin'
+assert type(text) is Child and isinstance(text, str) and issubclass(Child, str)
+assert Child.__mro__ == (Child, Mixin, Left, Right, Text, str, object)
+assert text == 'hé😀' and 'hé😀' == text
+assert hash(text) == hash('hé😀')
+assert {text: 1}['hé😀'] == 1 and {'hé😀': 2}[text] == 2
+assert text > 'a' and 'a' < text and str.__gt__(text, 'a')
+assert len(text) == 3 and list(text) == ['h', 'é', '😀']
+assert text[1] == 'é' and text[-1] == '😀' and text[1:] == 'é😀'
+assert 'é😀' in text and text in 'A hé😀!'
+assert text + Text('!') == 'hé😀!' and '!' + text == '!hé😀'
+assert text * 2 == 2 * text == 'hé😀hé😀'
+assert Text('%s!') % text == 'hé😀!'
+assert text.upper() == 'HÉ😀' and str.upper(text) == 'HÉ😀'
+assert text.upper.__self__ is text and Child.upper(text) == 'HÉ😀'
+assert Child.maketrans('h', 'H') == text.maketrans('h', 'H')
+assert Text(',').join([text, Child('B')]) == 'hé😀,B'
+assert type(text[:]) is type(text.upper()) is type(str(text)) is str
+assert type(Text()) is Text and not Text()
+assert type(Text(b'caf\xc3\xa9', 'utf-8')) is Text
+assert Text(b'caf\xc3\xa9', encoding='utf-8') == 'café'
+assert format(Text('ab'), '>4') == '  ab'
+assert str.__format__(Text('ab'), '>4') == '  ab'
+
+match text:
+    case Child(whole):
+        assert whole is text
+    case _:
+        assert False
+
+tagged = type('Tagged', (Text,), {})(text)
+assert tagged == text and tagged is not text and type(tagged).__name__ == 'Tagged'
+");
+    run_err(
+        "class Text(str): pass\nclass Items(list): pass\nclass Conflict(Text, Items): pass",
+        "multiple bases have instance lay-out conflict",
+    );
+    run_err(
+        "class Conflict(str, list): pass",
+        "multiple bases have instance lay-out conflict",
+    );
+}
+
+#[test]
+fn native_str_new_and_overrides() {
+    run(r#"
+class Tagged(str):
+    def __new__(cls, text, label):
+        return str.__new__(cls, text)
+
+    def __init__(self, text, label):
+        self.label = label
+
+    def upper(self):
+        return 'override'
+
+    def __len__(self):
+        return 0
+
+    def __getitem__(self, key):
+        return key
+
+    def __str__(self):
+        return self.label
+
+    def __repr__(self):
+        return '<tagged>'
+
+item = Tagged('original', 'label')
+assert type(item) is Tagged and item.label == 'label'
+assert item.upper() == 'override' and str.upper(item) == 'ORIGINAL'
+assert len(item) == 0 and str.__len__(item) == 8 and not item
+assert item[2] == 2 and str.__getitem__(item, 2) == 'i'
+assert str(item) == 'label' and str.__str__(item) == 'original'
+assert repr(item) == '<tagged>' and str.__repr__(item) == "'original'"
+assert str.__new__(str, item) == 'label'
+
+class Comparing(str):
+    def __eq__(self, other):
+        return 'custom equality'
+
+    def __gt__(self, other):
+        return True
+
+other = Comparing('a')
+assert ('b' == other) == 'custom equality'
+assert 'b' < other and not str.__gt__(other, 'b')
+try:
+    hash(other)
+except TypeError:
+    pass
+else:
+    assert False
+
+class Replaced(str):
+    def __new__(cls, arg):
+        return str(arg)
+
+    def __init__(self, arg):
+        assert False
+
+assert type(Replaced(1)) is str
+for allocator in (object.__new__, list.__new__):
+    try:
+        allocator(Tagged)
+    except TypeError:
+        pass
+    else:
+        assert False
+
+class Invalid:
+    __new__ = list.__new__
+
+try:
+    Invalid()
+except TypeError:
+    pass
+else:
+    assert False
+"#);
+}
+
+#[test]
+fn native_str_subclass_survives_copy_snapshot_and_conversion() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        r#"
+import copy
+import json
+
+class Text(str): pass
+text = Text('é' * 40)
+text.tag = [1]
+text.self = text
+assert type(copy.copy(text)) is Text
+deep = copy.deepcopy(text)
+assert type(deep) is Text and deep == text and deep.self is deep
+assert deep.tag == text.tag and deep.tag is not text.tag
+assert json.dumps({Text('key'): Text('value')}) == '{"key": "value"}'
+bound = text.upper
+"#,
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    let bytes = dump("test.py", None, &[], SessionRef::Idle(&repl)).unwrap();
+    let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else {
+        panic!("expected an idle session");
+    };
+    let output = restored
+        .feed_run(
+            "assert type(text) is Text and text.tag == [1] and text.self is text\nassert bound() == 'É' * 40\ntext",
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_eq!(output, MontyObject::string("é".repeat(40)));
+}
+
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn native_str_storage_is_collected_with_instance() {
+    let code = r"
+def make_cycle():
+    class Text(str): pass
+    text = Text('abc' * 100)
+    text.cycle = text
+
+make_cycle()
+";
+    let output = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default())
+        .unwrap()
+        .run_ref_counts(vec![])
+        .unwrap();
+    assert!(output.unreachable.is_empty(), "{:?}", output.unreachable);
+}
+
+#[test]
 fn deeply_nested_subclass_checks_respect_recursion_limits() {
     let code = r"
 class Parent: pass

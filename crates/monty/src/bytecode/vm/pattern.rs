@@ -21,7 +21,7 @@ use crate::{
     modules::ModuleFunctions,
     types::{
         Dict, PyTrait, Tuple, Type, TypeRef, descriptor,
-        instance::{FastAttributeLookupResult, class_dunder, lookup_attribute_fast},
+        instance::{FastAttributeLookupResult, class_dunder, lookup_attribute_fast, native_subclass_len},
         key_hash::set_element_hash,
         tuple::allocate_tuple,
         type_ref::is_class_like,
@@ -62,8 +62,9 @@ impl VM<'_> {
     ///
     /// Sequences are `list`, `tuple`, namedtuples, `range` and `deque`, never
     /// `str` or `bytes`; mappings are `dict` and its `collections` subclasses.
-    pub(super) fn match_shape(&mut self, length: u16, flags: u8) {
+    pub(super) fn match_shape(&mut self, length: u16, flags: u8) -> RunResult<()> {
         let subject = self.peek();
+        let list_subclass = subject.list_subclass_id(self.heap);
         let ty = subject.py_type(self).native();
         let shape_ok = if flags & MATCH_SHAPE_MAPPING != 0 {
             matches!(ty, Some(Type::Dict | Type::DefaultDict | Type::Counter))
@@ -71,10 +72,14 @@ impl VM<'_> {
             matches!(
                 ty,
                 Some(Type::List | Type::Tuple | Type::NamedTuple | Type::Range | Type::Deque)
-            )
+            ) || list_subclass.is_some()
         };
         let matched = shape_ok && {
-            let actual = subject.py_len(self).unwrap_or(0);
+            let actual = if let Some(id) = list_subclass {
+                usize::try_from(native_subclass_len(id, self)?).unwrap_or(usize::MAX)
+            } else {
+                subject.py_len(self).unwrap_or(0)
+            };
             if flags & MATCH_SHAPE_MIN_LEN != 0 {
                 actual >= usize::from(length)
             } else {
@@ -82,6 +87,7 @@ impl VM<'_> {
             }
         };
         self.push(Value::Bool(matched));
+        Ok(())
     }
 
     /// `MatchKeys` (values mode): `[subject, keys] -> [subject, keys, values_or_None, bool]`.
@@ -451,6 +457,10 @@ fn class_match_args(cls: &Value, nargs: usize, vm: &mut VM<'_>) -> RunResult<Mat
         _ => None,
     };
     let Some(match_args) = match_args else {
+        if matches!(vm.heap.get(*cls_id), HeapData::Class(class) if matches!(class.native_layout(), Some(Type::List | Type::Str)))
+        {
+            return check_count(1, vm).map(|()| MatchArgs::SelfMatch);
+        }
         check_count(0, vm)?;
         return Ok(MatchArgs::Names(Vec::new()));
     };

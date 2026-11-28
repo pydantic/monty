@@ -1153,6 +1153,38 @@ pub enum StaticStrings {
     /// `__eq__` — written into a class namespace by `@dataclass`.
     #[strum(serialize = "__eq__")]
     DunderEq,
+    #[strum(serialize = "__add__")]
+    DunderAdd,
+    #[strum(serialize = "__contains__")]
+    DunderContains,
+    #[strum(serialize = "__getitem__")]
+    DunderGetitem,
+    #[strum(serialize = "__iadd__")]
+    DunderIadd,
+    #[strum(serialize = "__imul__")]
+    DunderImul,
+    #[strum(serialize = "__iter__")]
+    DunderIter,
+    #[strum(serialize = "__len__")]
+    DunderLen,
+    #[strum(serialize = "__mod__")]
+    DunderMod,
+    #[strum(serialize = "__str__")]
+    DunderStr,
+    #[strum(serialize = "__lt__")]
+    DunderLt,
+    #[strum(serialize = "__le__")]
+    DunderLe,
+    #[strum(serialize = "__gt__")]
+    DunderGt,
+    #[strum(serialize = "__ge__")]
+    DunderGe,
+    #[strum(serialize = "__mul__")]
+    DunderMul,
+    #[strum(serialize = "__rmul__")]
+    DunderRmul,
+    #[strum(serialize = "__setitem__")]
+    DunderSetitem,
     /// `Decimal.__float__()`.
     #[strum(serialize = "__float__")]
     DunderFloat,
@@ -1174,6 +1206,9 @@ pub enum StaticStrings {
     /// `__forward_module__` attribute of `annotationlib.ForwardRef`.
     #[strum(serialize = "__forward_module__")]
     DunderForwardModule,
+    /// Binds a descriptor to its receiver.
+    #[strum(serialize = "__get__")]
+    DunderGet,
     /// `__getnewargs__` — the copy/pickle hook on named tuples.
     #[strum(serialize = "__getnewargs__")]
     DunderGetnewargs,

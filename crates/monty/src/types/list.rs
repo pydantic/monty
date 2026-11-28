@@ -11,24 +11,26 @@ use super::{
 };
 use crate::{
     args::ArgValues,
+    builtins::{Builtins, BuiltinsFunctions},
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
+    expressions::CmpOperator,
     heap::{
         DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadMut,
         HeapReadOutput, HeapReader,
     },
     modules::copy::{Memo, PyDeepCopy, deep_copy},
-    py_attrs::PyAttrs,
+    py_attrs::{self, PyAttrs},
     py_value::PyValue,
     resource_checks::{check_repeat_size, check_value_buffer_growth, repeated_len, try_vec_with_capacity},
     sorting::parse_and_sort,
     types::{
-        LazyHeapSet, Slice, Type, TypeRef,
+        Instance, LazyHeapSet, Slice, Type, TypeRef,
         sequence::SequenceItems,
         slice::{normalize_sequence_index, slice_collect_iterator, value_to_i64_bound},
     },
-    value::{VALUE_SIZE, Value},
+    value::{EitherStr, VALUE_SIZE, Value},
 };
 
 /// Python list type, wrapping a Vec of Values.
@@ -284,6 +286,75 @@ impl List {
     }
 }
 
+pub(crate) fn list_new(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    let (class, rest) = match py_attrs::take_receiver(args) {
+        Ok(parts) => parts,
+        Err(args) => {
+            args.drop_with(vm);
+            return Err(ExcType::type_error("list.__new__(): not enough arguments"));
+        }
+    };
+    rest.drop_with(vm);
+    defer_drop!(class, vm);
+    match TypeRef::from_value(class, vm.heap) {
+        Some(TypeRef::Native(Type::List)) => Ok(Value::allocate(List::default(), vm.heap)),
+        Some(TypeRef::Class(id))
+            if matches!(vm.heap.get(id), HeapData::Class(cls)
+            if cls.native_layout() == Some(Type::List)) =>
+        {
+            Ok(Value::Ref(Instance::allocate(id, vm.heap)))
+        }
+        Some(ty) => Err(ExcType::type_error(format!(
+            "list.__new__({}): {} is not a subtype of list",
+            ty.dunder_name(vm.heap, vm.interns),
+            ty.dunder_name(vm.heap, vm.interns)
+        ))),
+        None => Err(ExcType::type_error(format!(
+            "list.__new__(X): X is not a type object ({})",
+            class.py_type_name(vm)
+        ))),
+    }
+}
+
+pub(crate) fn read_list_storage<'h>(value: &Value, heap: &HeapReader<'h>) -> Option<HeapObjectRead<'h, List>> {
+    value.read_as::<List>(heap).or_else(|| {
+        let id = value.get_as::<Instance>(heap)?.native_list()?;
+        heap.read_as(id)
+    })
+}
+
+pub(crate) fn list_storage_id(id: HeapId, heap: &Heap) -> Option<HeapId> {
+    match heap.get(id) {
+        HeapData::List(_) => Some(id),
+        HeapData::Instance(instance) => instance.native_list(),
+        _ => None,
+    }
+}
+
+pub(crate) fn adapt_list_subclass<'h>(
+    receiver: &mut PyValue<'h>,
+    key: &EitherStr,
+    call: py_attrs::MethodCall,
+    args: ArgValues,
+    vm: &mut VM<'h>,
+) -> RunResult<CallResult> {
+    if let PyValue::Instance(instance) = receiver
+        && let Some(id) = instance.get(vm.heap).native_list()
+    {
+        let result = call(&mut PyValue::from_heap(id, vm.heap), args, vm)?;
+        if matches!(&result, CallResult::Value(Value::Ref(result_id)) if *result_id == id) {
+            result.drop_with(vm);
+            return Ok(CallResult::Value(instance.clone_value(vm.heap)));
+        }
+        return Ok(result);
+    }
+    args.drop_with(vm);
+    Err(ExcType::attribute_error(
+        receiver.py_type_name(vm),
+        key.as_str(vm.interns),
+    ))
+}
+
 impl<'h> HeapRead<'h, List> {
     /// Handles slice-based indexing for lists.
     ///
@@ -368,7 +439,7 @@ impl<'h> HeapRead<'h, List> {
     ///
     /// Preflights the slot bytes so an over-budget clone raises a graceful
     /// `MemoryError` instead of bursting past the allocator's hard limit.
-    fn clone_all_items(&self, vm: &mut VM<'h>) -> RunResult<Vec<Value>> {
+    pub(crate) fn clone_all_items(&self, vm: &mut VM<'h>) -> RunResult<Vec<Value>> {
         self.get(vm.heap).items().to_vec(vm.heap)
     }
 
@@ -475,6 +546,37 @@ impl<'h, C: ContainsVM<'h>> DropWithContext<C> for ListIter<'_, 'h> {
     }
 }
 
+impl<'h> HeapObjectRead<'h, List> {
+    fn compare_order(&self, other: &Value, op: CmpOperator, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        let Some(other) = read_list_storage(other, vm.heap) else {
+            return Ok(None);
+        };
+        Ok(match self.py_cmp(&other, vm)? {
+            CmpOrder::Ordered(order) => Some(match op {
+                CmpOperator::Lt => order.is_lt(),
+                CmpOperator::LtE => order.is_le(),
+                CmpOperator::Gt => order.is_gt(),
+                CmpOperator::GtE => order.is_ge(),
+                _ => unreachable!("list order requires an ordering operator"),
+            }),
+            CmpOrder::Unordered => Some(false),
+            CmpOrder::Incomparable => None,
+        })
+    }
+
+    pub(crate) fn initialize(&mut self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<()> {
+        let iterable = args.get_zero_one_arg("list", vm.heap)?;
+        defer_drop!(iterable, vm);
+        let items = mem::take(&mut self.get_mut(vm.heap).items);
+        self.get_mut(vm.heap).contains_refs = false;
+        items.drop_with(vm);
+        if let Some(iterable) = iterable {
+            self.py_iadd_impl(iterable, vm)?;
+        }
+        Ok(())
+    }
+}
+
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
     fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
         true
@@ -505,6 +607,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
 
     fn py_cmp(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<CmpOrder> {
         HeapRead::py_cmp(self, other, vm)
+    }
+
+    fn py_cmp_op(&self, other: &Value, op: CmpOperator, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        if other.list_subclass_id(vm.heap).is_some() {
+            self.compare_order(other, op, vm)
+        } else {
+            Ok(None)
+        }
     }
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
@@ -573,7 +683,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
     }
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        let Some(other) = other.read_as::<List>(vm.heap) else {
+        let Some(other) = read_list_storage(other, vm.heap) else {
             return Ok(None);
         };
         if self.get(vm.heap).items.len() != other.get(vm.heap).items.len() {
@@ -614,7 +724,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
     }
 
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let Some(other) = other.read_as::<List>(vm.heap) else {
+        let Some(other) = read_list_storage(other, vm.heap) else {
             return Ok(None);
         };
         // The guard releases our clones if cloning `other` hits the memory limit.
@@ -655,9 +765,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
     /// Extends in place from a list or synchronous iterable, preserving aliases.
     fn py_iadd_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
         // Lists use bulk copying; other operands follow the iterator protocol, including its errors.
-        let other_id = other
-            .ref_id()
-            .filter(|id| matches!(vm.heap.get(*id), HeapData::List(_)));
+        let other_id = other.ref_id().and_then(|id| match vm.heap.get(id) {
+            HeapData::List(_) => Some(id),
+            HeapData::Instance(instance) => instance.native_list().filter(|id| *id == self.id()),
+            _ => None,
+        });
         let Some(other_id) = other_id else {
             // Append as the source yields so an iterator error keeps earlier additions.
             let iterator = other.py_iter(vm)?.require_synchronous(vm)?;
@@ -952,28 +1064,27 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, List> {
         let mut guard = DropGuard::new(Value::Ref(copy_id), vm);
         let (copy, vm) = guard.as_parts_mut();
         memo.insert(source, copy, vm)?;
+        self.deep_copy_items_into(copy_id, memo, vm)?;
+        Ok(guard.into_inner())
+    }
+}
+
+impl<'h> HeapRead<'h, List> {
+    pub(crate) fn deep_copy_items_into(&self, copy_id: HeapId, memo: &mut Memo, vm: &mut VM<'h>) -> RunResult<()> {
         let len = self.get(vm.heap).len();
         vm.heap.tracker.check_allocation(len.saturating_mul(VALUE_SIZE))?;
-        // The length is never cached across a step: copying an item runs Python
-        // (a `__deepcopy__` hook, or a `__hash__` reached while filling a nested
-        // dict), which can shrink the source. Reading it live also visits items
-        // appended mid-walk, which is what CPython's `for a in x` does.
+        let dest = vm.heap.read_as::<List>(copy_id).expect("copy owns list storage");
+        // A Python copy hook can resize the source between iterations.
         for index in 0.. {
-            let (_, vm) = guard.as_parts_mut();
             vm.heap.tracker.check_time_every(index)?;
             let Some(item) = self.try_clone_item(index, vm) else {
                 break;
             };
-            let copied = deep_copy(&item, memo, vm);
-            item.drop_with(vm);
-            let copied = copied?;
-            let HeapReadOutput::List(dest) = vm.heap.read(copy_id) else {
-                unreachable!("copy was allocated as a list")
-            };
+            defer_drop!(item, vm);
+            let copied = deep_copy(item, memo, vm)?;
             dest.append(vm, copied)?;
         }
-        let (copy, _) = guard.into_parts();
-        Ok(copy)
+        Ok(())
     }
 }
 
@@ -981,7 +1092,145 @@ pub(crate) struct PyListImpl;
 
 #[pyattrs]
 impl<'heap> PyAttrs<'heap> for PyListImpl {
-    type Receiver = HeapReadMut<'heap, List>;
+    type Receiver = HeapObjectRead<'heap, List>;
+
+    #[pyvalue(DunderNew)]
+    fn __new__(_vm: &mut VM<'_>) -> Value {
+        Value::Builtin(Builtins::Function(BuiltinsFunctions::ListNew))
+    }
+
+    #[pymethod(DunderInit)]
+    fn __init__<'h>(list: &mut HeapObjectRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        list.initialize(args, vm)?;
+        Ok(Value::None)
+    }
+
+    #[pymethod(DunderLen)]
+    fn __len__<'h>(list: &HeapObjectRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        args.check_zero_args("list.__len__", vm.heap)?;
+        Ok(Value::Int(
+            i64::try_from(list.get(vm.heap).len()).map_err(|_| ExcType::overflow_c_ssize_t())?,
+        ))
+    }
+
+    #[pymethod(DunderIter)]
+    fn __iter__<'h>(list: &HeapObjectRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        args.check_zero_args("list.__iter__", vm.heap)?;
+        list.py_iter(vm)
+    }
+
+    #[pymethod(DunderGetitem)]
+    fn __getitem__<'h>(list: &HeapObjectRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let key = args.get_one_arg("list.__getitem__", vm.heap)?;
+        defer_drop!(key, vm);
+        list.py_getitem(key, vm)
+    }
+
+    #[pymethod(DunderSetitem)]
+    fn __setitem__<'h>(list: &mut HeapObjectRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let (key, value) = args.get_two_args("list.__setitem__", vm.heap)?;
+        list.py_setitem(key, value, vm)?;
+        Ok(Value::None)
+    }
+
+    #[pymethod(DunderContains)]
+    fn __contains__<'h>(list: &HeapObjectRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let item = args.get_one_arg("list.__contains__", vm.heap)?;
+        defer_drop!(item, vm);
+        Ok(Value::Bool(list.py_contains_impl(item, vm)?.unwrap_or(false)))
+    }
+
+    #[pymethod(DunderEq)]
+    fn __eq__<'h>(list: &HeapObjectRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let other = args.get_one_arg("list.__eq__", vm.heap)?;
+        defer_drop!(other, vm);
+        Ok(list.py_eq_impl(other, vm)?.map_or(Value::NotImplemented, Value::Bool))
+    }
+
+    #[pymethod(DunderLt)]
+    fn __lt__<'h>(list: &HeapObjectRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let other = args.get_one_arg("list.__lt__", vm.heap)?;
+        defer_drop!(other, vm);
+        Ok(list
+            .compare_order(other, CmpOperator::Lt, vm)?
+            .map_or(Value::NotImplemented, Value::Bool))
+    }
+
+    #[pymethod(DunderLe)]
+    fn __le__<'h>(list: &HeapObjectRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let other = args.get_one_arg("list.__le__", vm.heap)?;
+        defer_drop!(other, vm);
+        Ok(list
+            .compare_order(other, CmpOperator::LtE, vm)?
+            .map_or(Value::NotImplemented, Value::Bool))
+    }
+
+    #[pymethod(DunderGt)]
+    fn __gt__<'h>(list: &HeapObjectRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let other = args.get_one_arg("list.__gt__", vm.heap)?;
+        defer_drop!(other, vm);
+        Ok(list
+            .compare_order(other, CmpOperator::Gt, vm)?
+            .map_or(Value::NotImplemented, Value::Bool))
+    }
+
+    #[pymethod(DunderGe)]
+    fn __ge__<'h>(list: &HeapObjectRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let other = args.get_one_arg("list.__ge__", vm.heap)?;
+        defer_drop!(other, vm);
+        Ok(list
+            .compare_order(other, CmpOperator::GtE, vm)?
+            .map_or(Value::NotImplemented, Value::Bool))
+    }
+
+    #[pymethod(DunderRepr)]
+    fn __repr__<'h>(list: &HeapObjectRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        args.check_zero_args("list.__repr__", vm.heap)?;
+        PyValue::from_heap(list.id(), vm.heap).py_repr(vm)
+    }
+
+    #[pymethod(DunderAdd)]
+    fn __add__<'h>(list: &HeapObjectRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let other = args.get_one_arg("list.__add__", vm.heap)?;
+        defer_drop!(other, vm);
+        Ok(list.py_add_impl(other, vm)?.unwrap_or(Value::NotImplemented))
+    }
+
+    #[pymethod(DunderMul)]
+    fn __mul__<'h>(list: &HeapObjectRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let other = args.get_one_arg("list.__mul__", vm.heap)?;
+        defer_drop!(other, vm);
+        Ok(list.py_mul_impl(other, vm)?.unwrap_or(Value::NotImplemented))
+    }
+
+    #[pymethod(DunderRmul)]
+    fn __rmul__<'h>(list: &HeapObjectRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let other = args.get_one_arg("list.__rmul__", vm.heap)?;
+        defer_drop!(other, vm);
+        Ok(list.py_rmul_impl(other, vm)?.unwrap_or(Value::NotImplemented))
+    }
+
+    #[pymethod(DunderIadd)]
+    fn __iadd__<'h>(list: &mut HeapObjectRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let other = args.get_one_arg("list.__iadd__", vm.heap)?;
+        defer_drop!(other, vm);
+        if list.py_iadd_impl(other, vm)? {
+            Ok(list.clone_value(vm.heap))
+        } else {
+            Ok(Value::NotImplemented)
+        }
+    }
+
+    #[pymethod(DunderImul)]
+    fn __imul__<'h>(list: &mut HeapObjectRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let other = args.get_one_arg("list.__imul__", vm.heap)?;
+        defer_drop!(other, vm);
+        if list.py_imul_impl(other, vm)? {
+            Ok(list.clone_value(vm.heap))
+        } else {
+            Ok(Value::NotImplemented)
+        }
+    }
 
     #[pymethod(Append)]
     fn append<'h>(list: &HeapReadMut<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
