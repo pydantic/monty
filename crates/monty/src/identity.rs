@@ -8,6 +8,7 @@ use crate::{
     builtins::Builtins,
     heap::{Heap, HeapId},
     modules::ModuleFunctions,
+    py_attrs::NativeMethod,
     types::{LongInt, Property, str::InlineStr},
     value::{Marker, Value},
 };
@@ -50,6 +51,8 @@ pub(crate) enum Identity {
     Builtin(Builtins),
     /// Identity of a standard-library function.
     ModuleFunction(ModuleFunctions),
+    /// A native descriptor shared by every access through its owning type.
+    NativeMethod(NativeMethod),
     /// Identity of a sandbox-defined function.
     DefFunction(usize),
     /// Identity of an interpreter marker.
@@ -76,6 +79,7 @@ impl Identity {
             Value::InternBytes(id) => Self::InternBytes(id.index()),
             Value::InternLongInt(id) => Self::InternLongInt(id.index()),
             Value::Builtin(builtin) => Self::Builtin(*builtin),
+            Value::NativeMethod(method) => Self::NativeMethod(*method),
             Value::ModuleFunction(function) => Self::ModuleFunction(*function),
             Value::DefFunction(id) => Self::DefFunction(id.index()),
             Value::Marker(marker) => Self::Marker(*marker),
@@ -105,6 +109,9 @@ impl Identity {
             | Self::Heap(index) => u128::try_from(*index).expect("usize fits in u128"),
             Self::InlineString(text) => bytes_payload(text.as_str().as_bytes()),
             Self::Builtin(value) => payload::builtin(*value),
+            Self::NativeMethod(method) => {
+                (u128::from(method.owner.legacy_index()) << 32) | u128::from(method.name.raw())
+            }
             Self::ModuleFunction(value) => payload::module_function(*value),
             Self::Marker(value) => payload::marker(*value),
             Self::Property(value) => payload::property(*value),
@@ -135,6 +142,7 @@ impl Identity {
             Self::InternLongInt(_) => 9,
             Self::Builtin(_) => 10,
             Self::ModuleFunction(_) => 11,
+            Self::NativeMethod(_) => 18,
             Self::DefFunction(_) => 12,
             Self::Marker(_) => 14,
             Self::Property(_) => 15,

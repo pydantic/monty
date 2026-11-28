@@ -453,7 +453,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
         let origin = self.get(vm.heap).origin_value(vm.heap);
         defer_drop!(origin, vm);
         match self.get(vm.heap).origin {
-            AliasOrigin::Builtin(origin) if !own_attribute => origin.call_class_method(attr, args, vm),
+            AliasOrigin::Builtin(origin) if !own_attribute => origin.call_on_class(attr, args, vm),
             // A `typing` form's origin answers the call itself: a host class's
             // lookup may suspend for the host, which only a call-attr carries. A
             // form's own markers take the lookup path below, for its errors.

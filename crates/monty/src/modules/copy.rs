@@ -297,6 +297,9 @@ enum Copyability {
 /// Decides what the two passes do with a heap value.
 fn classify<'h>(output: &HeapReadOutput<'h>, vm: &VM<'h>) -> Copyability {
     match output {
+        HeapReadOutput::BoundMethod(method) if matches!(method.get(vm.heap).func, Value::NativeMethod(_)) => {
+            Copyability::Shared
+        }
         HeapReadOutput::List(_)
         | HeapReadOutput::Dict(_)
         | HeapReadOutput::Set(_)

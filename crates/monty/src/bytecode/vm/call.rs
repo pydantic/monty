@@ -556,6 +556,7 @@ impl<'h> VM<'h> {
     pub(crate) fn call_function(&mut self, callable: &Value, args: ArgValues) -> Result<CallResult, RunError> {
         match callable {
             Value::Builtin(builtin) => builtin.call(self, args),
+            Value::NativeMethod(method) => method.call_unbound(args, self),
             Value::ModuleFunction(mf) => mf.call(self, args),
             Value::DefFunction(func_id) => {
                 // Defined function without defaults, captured variables or a globals dict

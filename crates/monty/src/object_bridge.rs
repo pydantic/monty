@@ -906,7 +906,7 @@ impl MontyTypeExt for MontyType {
             Type::SpecialForm => Self::SpecialForm,
             Type::Path => Self::Path,
             Type::Property => Self::Property,
-            Type::ClassMethod | Type::StaticMethod => return None,
+            Type::ClassMethod | Type::StaticMethod | Type::MethodDescriptor => return None,
             Type::Object => Self::Object,
             Type::RePattern => Self::RePattern,
             Type::ReMatch => Self::ReMatch,
