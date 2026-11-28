@@ -1382,9 +1382,10 @@ impl<'a, 'i> Parser<'a, 'i> {
     /// CPython's class-body code object): the class statements are collected in
     /// source order into a [`RawFunctionDef`] that, when prepared and compiled,
     /// runs in its own scope and returns the namespace `Dict` that
-    /// `type(name, bases, dict, **kw)` turns into the class. Methods become nested `FunctionDef`s; class variables become `Assign`s with arbitrary
-    /// expressions (`name = <expr>` / `name: T = <expr>`). Every member name is
-    /// recorded in `members`, in source order, for namespace assembly.
+    /// `type(name, bases, dict, **kw)` turns into the class. Methods become nested
+    /// `FunctionDef`s, nested classes become `ClassDef`s, and class variables become
+    /// `Assign`s with arbitrary expressions (`name = <expr>` / `name: T = <expr>`).
+    /// Every member name is recorded in `members`, in source order, for namespace assembly.
     ///
     /// `pass` and `...` are ignored; a leading docstring becomes a `__doc__`
     /// member, and annotated names the class's `__annotate__` function. Class
@@ -1467,6 +1468,31 @@ impl<'a, 'i> Parser<'a, 'i> {
                         def: method,
                         decorators,
                     });
+                }
+                Stmt::ClassDef(inner_class) => {
+                    // Decorators, bases, and keyword arguments run in the enclosing
+                    // class-body scope; a walrus there would bind an outer class member.
+                    for decorator in &inner_class.decorator_list {
+                        self.reject_class_body_walrus(&decorator.expression)?;
+                    }
+                    if let Some(arguments) = &inner_class.arguments {
+                        for base_expr in &arguments.args {
+                            self.reject_class_body_walrus(base_expr)?;
+                        }
+                        for keyword in &arguments.keywords {
+                            self.reject_class_body_walrus(&keyword.value)?;
+                        }
+                    }
+                    let inner_range = inner_class.range;
+                    self.decr_depth_remaining(|| inner_range)?;
+                    let parsed = self.parse_class_def(inner_class);
+                    self.depth_remaining += 1;
+                    let inner_node = parsed?;
+                    let Node::ClassDef { name: inner_name, .. } = &inner_node else {
+                        unreachable!("parse_class_def returns Node::ClassDef");
+                    };
+                    members.push(*inner_name);
+                    body.push(inner_node);
                 }
                 // `name = <expr>` — a class-level variable.
                 Stmt::Assign(ast::StmtAssign {
