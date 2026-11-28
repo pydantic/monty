@@ -5,7 +5,7 @@ use monty_types::{ResourceError, ResourceTracker};
 
 use super::{PyTrait, iter::checked_preallocation_hint};
 use crate::{
-    args::ArgValues,
+    args::{ArgPosIter, ArgValues},
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
@@ -257,6 +257,40 @@ impl<'h> HeapRead<'h, SetStorage> {
         defer_drop!(other_storage, vm);
         let other_storage = vm.heap.protect(other_storage);
         self.algebra(&other_storage, op, vm)
+    }
+
+    /// Applies method-form algebra over `*others` left to right; with none, CPython returns a copy.
+    ///
+    /// As in CPython, union and difference then update the first result in place
+    /// rather than copying it for each later argument, so `set().union(*many)` stays linear.
+    fn algebra_from_values(&self, others: ArgPosIter, op: SetAlgebra, vm: &mut VM<'h>) -> RunResult<SetStorage> {
+        defer_drop_mut!(others, vm);
+        let first = match others.next() {
+            Some(first) => self.algebra_from_value(first, op, vm)?,
+            None => self.copy(vm)?,
+        };
+        let mut result_guard = DropGuard::new(first, vm);
+        for other in others.by_ref() {
+            let (result, vm) = result_guard.as_parts_mut();
+            let Set(other_storage) = Set::from_iterable_as(other, op.hash_role(), vm)?;
+            defer_drop!(other_storage, vm);
+            let other_storage = vm.heap.protect(other_storage);
+            if matches!(op, SetAlgebra::Union | SetAlgebra::Difference) {
+                let iter = other_storage.iter(vm)?;
+                defer_drop_mut!(iter, vm);
+                while let Some((value, hash)) = iter.next_entry(vm)? {
+                    if matches!(op, SetAlgebra::Union) {
+                        result.add_with_hash(value.clone_with_heap(vm.heap), hash, vm)?;
+                    } else {
+                        vm.heap.protect_mut(&mut *result).remove_with_hash(value, hash, vm)?;
+                    }
+                }
+            } else {
+                let next = vm.heap.protect(&*result).algebra(&other_storage, op, vm)?;
+                mem::replace(result, next).drop_with(vm);
+            }
+        }
+        Ok(result_guard.into_inner())
     }
 
     /// Compares owned snapshots so equality callbacks cannot invalidate either operand's storage.
@@ -1039,14 +1073,14 @@ impl<'h> HeapRead<'h, Set> {
     /// `self.intersection(other)` for an owned iterable `other`, hashing its
     /// items bare as CPython's `set.intersection` does. Used by dict views.
     pub(crate) fn intersection_with(&self, other: Value, vm: &mut VM<'h>) -> RunResult<Value> {
-        self.set_algebra(other, SetAlgebra::Intersection, vm)
+        self.set_algebra(ArgPosIter::One(other), SetAlgebra::Intersection, vm)
     }
 
     /// Wraps shared storage algebra as a mutable set; method forms accept any iterable.
     // Keep result allocation out of native method dispatch's stack frame.
     #[inline(never)]
-    fn set_algebra(&self, other: Value, op: SetAlgebra, vm: &mut VM<'h>) -> RunResult<Value> {
-        let result = self.storage().algebra_from_value(other, op, vm)?;
+    fn set_algebra(&self, others: ArgPosIter, op: SetAlgebra, vm: &mut VM<'h>) -> RunResult<Value> {
+        let result = self.storage().algebra_from_values(others, op, vm)?;
         Ok(Value::allocate(Set(result), vm.heap))
     }
 }
@@ -1145,8 +1179,8 @@ impl<'h> HeapRead<'h, FrozenSet> {
     /// Set algebra operations for frozenset via HeapRead.
     // Keep result allocation out of native method dispatch's stack frame.
     #[inline(never)]
-    fn set_algebra(&self, other: Value, op: SetAlgebra, vm: &mut VM<'h>) -> RunResult<Value> {
-        let result = self.storage().algebra_from_value(other, op, vm)?;
+    fn set_algebra(&self, others: ArgPosIter, op: SetAlgebra, vm: &mut VM<'h>) -> RunResult<Value> {
+        let result = self.storage().algebra_from_values(others, op, vm)?;
         Ok(Value::allocate(FrozenSet::wrap(result), vm.heap))
     }
     fn storage(&self) -> BorrowedHeapRead<'_, 'h, SetStorage> {
@@ -1728,8 +1762,8 @@ impl<'heap> PyAttrs<'heap> for PyFrozenSetImpl {
     #[pymethod(Union)]
     fn union<'h>(this: &mut HeapObjectRead<'h, FrozenSet>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
-            let other = args.get_one_arg("frozenset.union", vm.heap)?;
-            this.set_algebra(other, SetAlgebra::Union, vm)
+            let others = args.into_pos_only("frozenset.union", vm.heap)?;
+            this.set_algebra(others, SetAlgebra::Union, vm)
         }
     }
 
@@ -1740,16 +1774,16 @@ impl<'heap> PyAttrs<'heap> for PyFrozenSetImpl {
         vm: &mut VM<'h>,
     ) -> RunResult<Value> {
         {
-            let other = args.get_one_arg("frozenset.intersection", vm.heap)?;
-            this.set_algebra(other, SetAlgebra::Intersection, vm)
+            let others = args.into_pos_only("frozenset.intersection", vm.heap)?;
+            this.set_algebra(others, SetAlgebra::Intersection, vm)
         }
     }
 
     #[pymethod(Difference)]
     fn difference<'h>(this: &mut HeapObjectRead<'h, FrozenSet>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
-            let other = args.get_one_arg("frozenset.difference", vm.heap)?;
-            this.set_algebra(other, SetAlgebra::Difference, vm)
+            let others = args.into_pos_only("frozenset.difference", vm.heap)?;
+            this.set_algebra(others, SetAlgebra::Difference, vm)
         }
     }
 
@@ -1761,7 +1795,7 @@ impl<'heap> PyAttrs<'heap> for PyFrozenSetImpl {
     ) -> RunResult<Value> {
         {
             let other = args.get_one_arg("frozenset.symmetric_difference", vm.heap)?;
-            this.set_algebra(other, SetAlgebra::SymmetricDifference, vm)
+            this.set_algebra(ArgPosIter::One(other), SetAlgebra::SymmetricDifference, vm)
         }
     }
 
@@ -1870,8 +1904,11 @@ impl<'heap> PyAttrs<'heap> for PySetImpl {
     #[pymethod(Update)]
     fn update<'h>(this: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
-            let other = args.get_one_arg("set.update", vm.heap)?;
-            this.hr_update(other, vm)?;
+            let others = args.into_pos_only("set.update", vm.heap)?;
+            defer_drop_mut!(others, vm);
+            for other in others.by_ref() {
+                this.hr_update(other, vm)?;
+            }
             Ok(Value::None)
         }
     }
@@ -1879,24 +1916,24 @@ impl<'heap> PyAttrs<'heap> for PySetImpl {
     #[pymethod(Union)]
     fn union<'h>(this: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
-            let other = args.get_one_arg("set.union", vm.heap)?;
-            this.set_algebra(other, SetAlgebra::Union, vm)
+            let others = args.into_pos_only("set.union", vm.heap)?;
+            this.set_algebra(others, SetAlgebra::Union, vm)
         }
     }
 
     #[pymethod(Intersection)]
     fn intersection<'h>(this: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
-            let other = args.get_one_arg("set.intersection", vm.heap)?;
-            this.set_algebra(other, SetAlgebra::Intersection, vm)
+            let others = args.into_pos_only("set.intersection", vm.heap)?;
+            this.set_algebra(others, SetAlgebra::Intersection, vm)
         }
     }
 
     #[pymethod(Difference)]
     fn difference<'h>(this: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
-            let other = args.get_one_arg("set.difference", vm.heap)?;
-            this.set_algebra(other, SetAlgebra::Difference, vm)
+            let others = args.into_pos_only("set.difference", vm.heap)?;
+            this.set_algebra(others, SetAlgebra::Difference, vm)
         }
     }
 
@@ -1908,7 +1945,7 @@ impl<'heap> PyAttrs<'heap> for PySetImpl {
     ) -> RunResult<Value> {
         {
             let other = args.get_one_arg("set.symmetric_difference", vm.heap)?;
-            this.set_algebra(other, SetAlgebra::SymmetricDifference, vm)
+            this.set_algebra(ArgPosIter::One(other), SetAlgebra::SymmetricDifference, vm)
         }
     }
 

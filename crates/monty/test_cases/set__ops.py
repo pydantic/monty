@@ -42,24 +42,70 @@ assert s != s2
 s = set([1, 2])
 s.update([2, 3, 4])
 assert len(s) == 4
+s.update([5], (6,), {7})
+assert s == {1, 2, 3, 4, 5, 6, 7}
+s.update()
+assert s == {1, 2, 3, 4, 5, 6, 7}
+
+# each argument is applied before the next is read
+s = {1}
+try:
+    s.update([2], 3, [4])
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'int' object is not iterable"
+assert s == {1, 2}
+
+try:
+    s.update(x=[3])
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == 'set.update() takes no keyword arguments'
 
 # === Union ===
 s1 = set([1, 2])
 s2 = set([2, 3])
 u = s1.union(s2)
 assert len(u) == 3
+assert s1.union([3], (4,), {5}) == {1, 2, 3, 4, 5}
+assert s1.union() == s1
+assert s1.union() is not s1
 
 # === Intersection ===
 s1 = set([1, 2, 3])
 s2 = set([2, 3, 4])
 i = s1.intersection(s2)
 assert len(i) == 2
+assert s1.intersection([3, 2], {2, 4}) == {2}
+assert s1.intersection() == s1
+assert s1.intersection() is not s1
 
 # === Difference ===
 s1 = set([1, 2, 3])
 s2 = set([2, 3, 4])
 d = s1.difference(s2)
 assert len(d) == 1
+assert {1, 2, 3, 4}.difference({1}, [2], (3,)) == {4}
+assert s1.difference() == s1
+assert s1.difference() is not s1
+
+# === Union, intersection and difference arguments ===
+for call in [
+    lambda: {1}.union([2], 3, [4]),
+    lambda: {1}.intersection([1], 3, [4]),
+    lambda: {1}.difference([2], 3, [4]),
+]:
+    try:
+        call()
+        assert False, 'expected TypeError'
+    except TypeError as exc:
+        assert str(exc) == "'int' object is not iterable"
+
+try:
+    {1}.union(x=[2])
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == 'set.union() takes no keyword arguments'
 
 # === Symmetric Difference ===
 s1 = set([1, 2, 3])
