@@ -57,6 +57,8 @@ pub(crate) struct TypeDef {
     pub mro: Option<&'static [Type]>,
     /// Whether CPython allows subclassing (`Py_TPFLAGS_BASETYPE`).
     pub basetype: bool,
+    /// Whether Monty accepts this native type as a base of a Python class.
+    pub accepts_python_subclasses: bool,
     /// Whether subscripting the type builds a `types.GenericAlias` (`list[int]`).
     pub class_getitem: bool,
     /// Whether multiplication can fall back to sequence repetition.
@@ -95,6 +97,7 @@ impl TypeDef {
             bases,
             mro: None,
             basetype: false,
+            accepts_python_subclasses: false,
             class_getitem: false,
             sequence_repeat: false,
             iterator: false,
@@ -126,6 +129,12 @@ impl TypeDef {
     /// Subclassable, as CPython's `Py_TPFLAGS_BASETYPE` marks it.
     const fn basetype(mut self) -> Self {
         self.basetype = true;
+        self
+    }
+
+    /// Allows Python classes to use this native type as a base.
+    const fn accepts_python_subclasses(mut self) -> Self {
+        self.accepts_python_subclasses = true;
         self
     }
 
@@ -854,7 +863,8 @@ native_types! {
         .attrs(<PyObjectImpl as PyAttrs<'static>>::TABLE)
         .root()
         .builtin()
-        .basetype(),
+        .basetype()
+        .accepts_python_subclasses(),
     Time("datetime.time")
         .attrs(<super::time::PyTimeImpl as PyAttrs<'static>>::TABLE)
         .basetype()

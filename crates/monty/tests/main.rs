@@ -650,6 +650,8 @@ fn external_function_as_itertools_callable_raises_not_implemented() {
 fn class_with_native_base_raises_type_error() {
     for (code, base) in [
         ("type('A', (int,), {})", "int"),
+        ("class A(list):\n    pass", "list"),
+        ("type('A', (dict,), {})", "dict"),
         ("class E(ValueError):\n    pass", "ValueError"),
     ] {
         let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();

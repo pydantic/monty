@@ -54,7 +54,7 @@ subclass-first rule for reflected operators and `==` all follow CPython.
 
 ## Inheritance
 
-- **Only classes and `object` can be bases.** Subclassing a native type CPython
+- **Native bases must opt in.** `object` is the only native base currently enabled. Subclassing a native type CPython
     allows (`int`, `list`, `dict`, `Exception`, `ValueError`, `datetime.date`, a
     `namedtuple` class, a host class, ...) raises
     `TypeError: Monty does not support subclassing 'int': classes can only inherit from classes defined in Python and object`.

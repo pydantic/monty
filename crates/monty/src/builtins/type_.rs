@@ -183,8 +183,7 @@ fn create_class(
 
 /// Validates the `bases` tuple of a new class, returning the bases it names.
 ///
-/// Monty classes derive only from other classes and `object`: the native
-/// types CPython lets a class subclass are rejected (see `limitations/classes.md`).
+/// Native bases must explicitly opt in to Python subclassing.
 fn class_bases(bases: &Value, vm: &VM<'_>) -> RunResult<Vec<TypeRef>> {
     let Some(tuple) = bases.get_as::<Tuple>(vm.heap) else {
         let got = bases.py_type(vm).cpython_arg_name(vm.heap, vm.interns);
@@ -201,7 +200,7 @@ fn class_bases(bases: &Value, vm: &VM<'_>) -> RunResult<Vec<TypeRef>> {
         };
         let name = base.dunder_name(vm.heap, vm.interns);
         match base {
-            TypeRef::Native(Type::Object) => {}
+            TypeRef::Native(ty) if ty.def().accepts_python_subclasses => {}
             TypeRef::Native(ty) if !ty.def().basetype => {
                 return Err(ExcType::type_error(format!(
                     "type '{}' is not an acceptable base type",
