@@ -27,25 +27,27 @@ use super::{
 };
 use crate::{
     args::{ArgValues, FromArgs, FromValue, FromValueFail, StrArg},
+    builtins::{Builtins, BuiltinsFunctions},
     bytecode::{CallResult, VM},
     codecs::Codec,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_python_str},
-    heap::{DropGuard, DropWithContext, Heap, HeapObjectRead},
+    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapObjectRead},
     identity::Identity,
     intern::{Interns, StaticStrings, StringId},
     percent_format::percent_format,
-    py_attrs::PyAttrs,
+    py_attrs::{self, PyAttrs},
+    py_value::PyValue,
     resource_checks::{check_repeat_size, check_replace_size, collect_checked, push_checked, repeated_len},
     str_format::str_format,
     string_builder::StringBuilder,
     types::{
-        LazyHeapSet, Slice, Tuple, Type, TypeRef,
+        Instance, LazyHeapSet, Slice, Tuple, Type, TypeRef,
         py_trait::PyObjectIdentity,
         slice::{SearchRange, search_range, slice_collect_iterator},
     },
-    value::{VALUE_SIZE, Value, eq_str},
+    value::{EitherStr, VALUE_SIZE, Value, eq_str},
 };
 
 /// A string view that preserves Python identity.
@@ -105,7 +107,15 @@ impl<'h> PyStr<'h> {
         match value {
             Value::InternString(id) => Some(Self::Interned(*id)),
             Value::InlineString(text) => Some(Self::Inline(*text)),
-            Value::Ref(id) => vm.heap.read_as(*id).map(Self::Heap),
+            Value::Ref(id) => vm.heap.read_as(*id).map(Self::Heap).or_else(|| {
+                let value = value.str_subclass_storage(vm.heap)?;
+                match value {
+                    Value::InternString(id) => Some(Self::Interned(*id)),
+                    Value::InlineString(text) => Some(Self::Inline(*text)),
+                    Value::Ref(id) => vm.heap.read_as(*id).map(Self::Heap),
+                    _ => None,
+                }
+            }),
             _ => None,
         }
     }
@@ -253,6 +263,66 @@ impl<'h> PyStr<'h> {
             Self::Heap(heap_string) => heap_string.get(vm.heap).as_str(),
         }
     }
+}
+
+pub(crate) fn str_new(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    let (class, args) = match py_attrs::take_receiver(args) {
+        Ok(parts) => parts,
+        Err(args) => {
+            args.drop_with(vm);
+            return Err(ExcType::type_error("str.__new__(): not enough arguments"));
+        }
+    };
+    defer_drop!(class, vm);
+    match TypeRef::from_value(class, vm.heap) {
+        Some(TypeRef::Native(Type::Str)) => PyStr::init(vm, args),
+        Some(TypeRef::Class(id))
+            if matches!(vm.heap.get(id), HeapData::Class(class)
+            if class.native_layout() == Some(Type::Str)) =>
+        {
+            let value = PyStr::init(vm, args)?;
+            defer_drop!(value, vm);
+            let payload = value
+                .str_subclass_storage(vm.heap)
+                .unwrap_or(value)
+                .clone_with_heap(vm.heap);
+            Ok(Value::Ref(Instance::allocate_str(id, payload, vm.heap)))
+        }
+        Some(ty) => {
+            args.drop_with(vm);
+            let name = ty.dunder_name(vm.heap, vm.interns);
+            Err(ExcType::type_error(format!(
+                "str.__new__({name}): {name} is not a subtype of str"
+            )))
+        }
+        None => {
+            args.drop_with(vm);
+            Err(ExcType::type_error(format!(
+                "str.__new__(X): X is not a type object ({})",
+                class.py_type_name(vm)
+            )))
+        }
+    }
+}
+
+pub(crate) fn adapt_str_subclass<'h>(
+    receiver: &mut PyValue<'h>,
+    key: &EitherStr,
+    call: py_attrs::MethodCall,
+    args: ArgValues,
+    vm: &mut VM<'h>,
+) -> RunResult<CallResult> {
+    if let PyValue::Instance(instance) = receiver
+        && let Some(value) = instance.get(vm.heap).native_str()
+        && let Some(string) = PyStr::from_value(value, vm)
+    {
+        return call(&mut PyValue::Str(string), args, vm);
+    }
+    args.drop_with(vm);
+    Err(ExcType::attribute_error(
+        receiver.py_type_name(vm),
+        key.as_str(vm.interns),
+    ))
 }
 
 impl PyObjectIdentity for PyStr<'_> {
@@ -563,6 +633,136 @@ pub(crate) fn copy_format_template(template: &str, tracker: &ResourceTracker) ->
 #[pyattrs]
 impl<'h> PyAttrs<'h> for PyStr<'h> {
     type Receiver = PyStr<'h>;
+
+    #[pyvalue(DunderNew)]
+    fn __new__(_vm: &mut VM<'_>) -> Value {
+        Value::Builtin(Builtins::Function(BuiltinsFunctions::StrNew))
+    }
+
+    #[pymethod(DunderStr)]
+    fn __str__(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        args.check_zero_args("str.__str__", vm.heap)?;
+        s.py_str(vm)
+    }
+
+    #[pymethod(DunderRepr)]
+    fn __repr__(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        args.check_zero_args("str.__repr__", vm.heap)?;
+        s.py_repr(vm)
+    }
+
+    #[pymethod(DunderFormat)]
+    fn __format__(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let spec = args.get_one_arg("str.__format__", vm.heap)?;
+        defer_drop!(spec, vm);
+        let formatted = vm.format_runtime_string(s.as_str(vm), spec.try_as_str(vm)?)?;
+        Ok(allocate_string(formatted, vm.heap))
+    }
+
+    #[pymethod(DunderLen)]
+    fn __len__(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        args.check_zero_args("str.__len__", vm.heap)?;
+        Ok(Value::Int(
+            i64::try_from(s.checked_char_len(vm)?).map_err(|_| ExcType::overflow_c_ssize_t())?,
+        ))
+    }
+
+    #[pymethod(DunderHash)]
+    fn __hash__(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        args.check_zero_args("str.__hash__", vm.heap)?;
+        Ok(Value::Int(s.py_hash(vm)?.expect("str is hashable").raw().cast_signed()))
+    }
+
+    #[pymethod(DunderIter)]
+    fn __iter__(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        args.check_zero_args("str.__iter__", vm.heap)?;
+        s.py_iter(vm)
+    }
+
+    #[pymethod(DunderGetitem)]
+    fn __getitem__(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let key = args.get_one_arg("str.__getitem__", vm.heap)?;
+        defer_drop!(key, vm);
+        s.py_getitem(key, vm)
+    }
+
+    #[pymethod(DunderContains)]
+    fn __contains__(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let item = args.get_one_arg("str.__contains__", vm.heap)?;
+        defer_drop!(item, vm);
+        str_contains(s.as_str(vm), item, vm.heap, vm.interns).map(Value::Bool)
+    }
+
+    #[pymethod(DunderEq)]
+    fn __eq__(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let other = args.get_one_arg("str.__eq__", vm.heap)?;
+        defer_drop!(other, vm);
+        Ok(eq_str(s.as_str(vm), other, vm).map_or(Value::NotImplemented, Value::Bool))
+    }
+
+    #[pymethod(DunderLt)]
+    fn __lt__(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let other = args.get_one_arg("str.__lt__", vm.heap)?;
+        defer_drop!(other, vm);
+        Ok(other.as_str(vm).map_or(Value::NotImplemented, |other| {
+            Value::Bool(s.as_str(vm).cmp(other).is_lt())
+        }))
+    }
+
+    #[pymethod(DunderLe)]
+    fn __le__(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let other = args.get_one_arg("str.__le__", vm.heap)?;
+        defer_drop!(other, vm);
+        Ok(other.as_str(vm).map_or(Value::NotImplemented, |other| {
+            Value::Bool(s.as_str(vm).cmp(other).is_le())
+        }))
+    }
+
+    #[pymethod(DunderGt)]
+    fn __gt__(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let other = args.get_one_arg("str.__gt__", vm.heap)?;
+        defer_drop!(other, vm);
+        Ok(other.as_str(vm).map_or(Value::NotImplemented, |other| {
+            Value::Bool(s.as_str(vm).cmp(other).is_gt())
+        }))
+    }
+
+    #[pymethod(DunderGe)]
+    fn __ge__(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let other = args.get_one_arg("str.__ge__", vm.heap)?;
+        defer_drop!(other, vm);
+        Ok(other.as_str(vm).map_or(Value::NotImplemented, |other| {
+            Value::Bool(s.as_str(vm).cmp(other).is_ge())
+        }))
+    }
+
+    #[pymethod(DunderAdd)]
+    fn __add__(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let other = args.get_one_arg("str.__add__", vm.heap)?;
+        defer_drop!(other, vm);
+        Ok(s.py_add_impl(other, vm)?.unwrap_or(Value::NotImplemented))
+    }
+
+    #[pymethod(DunderMul)]
+    fn __mul__(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let other = args.get_one_arg("str.__mul__", vm.heap)?;
+        defer_drop!(other, vm);
+        Ok(s.py_mul_impl(other, vm)?.unwrap_or(Value::NotImplemented))
+    }
+
+    #[pymethod(DunderRmul)]
+    fn __rmul__(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let other = args.get_one_arg("str.__rmul__", vm.heap)?;
+        defer_drop!(other, vm);
+        Ok(s.py_rmul_impl(other, vm)?.unwrap_or(Value::NotImplemented))
+    }
+
+    #[pymethod(DunderMod)]
+    fn __mod__(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let other = args.get_one_arg("str.__mod__", vm.heap)?;
+        defer_drop!(other, vm);
+        Ok(s.py_mod_impl(other, vm)?.unwrap_or(Value::NotImplemented))
+    }
 
     #[pymethod(Translate)]
     fn translate(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {

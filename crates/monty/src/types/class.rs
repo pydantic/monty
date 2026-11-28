@@ -22,7 +22,7 @@ use crate::{
         HeapReader, heap_read_ref_as_field_mut,
     },
     intern::{Interns, StaticStrings, StringId},
-    py_attrs,
+    py_attrs::{self, AttrDef},
     types::{Union, str::allocate_string, r#type::bind_init_subclass},
     value::{EitherStr, Value},
 };
@@ -68,19 +68,35 @@ pub(crate) struct Class {
 
 pub(crate) enum ClassMember<'a> {
     Python(&'a Value),
-    List(StaticStrings),
+    Native(Type, StaticStrings, AttrDef),
 }
 
-pub(super) fn list_member(key: StaticStrings, receiver: Option<HeapId>, vm: &VM<'_>) -> Value {
-    if key == StaticStrings::DunderNew {
-        Value::Builtin(Builtins::Function(BuiltinsFunctions::ListNew))
-    } else {
-        let receiver = receiver.map(|id| {
-            vm.heap.inc_ref(id);
-            Value::Ref(id)
-        });
-        py_attrs::native_method_value(Type::List, key, receiver, vm)
-    }
+pub(super) fn native_member(
+    owner: Type,
+    key: StaticStrings,
+    definition: AttrDef,
+    class: HeapId,
+    instance: Option<HeapId>,
+    vm: &VM<'_>,
+) -> Value {
+    let receiver = match definition {
+        AttrDef::Method(_) => instance,
+        AttrDef::ClassMethod(_) => Some(class),
+        AttrDef::Value(_) => {
+            debug_assert_eq!(key, StaticStrings::DunderNew);
+            let function = match owner {
+                Type::List => BuiltinsFunctions::ListNew,
+                Type::Str => BuiltinsFunctions::StrNew,
+                _ => unreachable!("only list and str have native layouts"),
+            };
+            return Value::Builtin(Builtins::Function(function));
+        }
+    };
+    let receiver = receiver.map(|id| {
+        vm.heap.inc_ref(id);
+        Value::Ref(id)
+    });
+    py_attrs::native_method_value(owner, key, receiver, vm)
 }
 
 impl Class {
@@ -172,7 +188,7 @@ impl Class {
     pub(crate) fn lookup<'h>(&'h self, name: &str, heap: &'h Heap, interns: &Interns) -> Option<&'h Value> {
         match self.lookup_member(name, heap, interns)? {
             ClassMember::Python(value) => Some(value),
-            ClassMember::List(_) => None,
+            ClassMember::Native(..) => None,
         }
     }
 
@@ -193,9 +209,9 @@ impl Class {
                         }
                         _ => None,
                     },
-                    TypeRef::Native(Type::List) => {
+                    TypeRef::Native(owner @ (Type::List | Type::Str)) => {
                         let key = StaticStrings::try_from(name).ok()?;
-                        (Type::List.def().attrs?.lookup)(key).map(|_| ClassMember::List(key))
+                        (owner.def().attrs?.lookup)(key).map(|definition| ClassMember::Native(*owner, key, definition))
                     }
                     TypeRef::Native(_) => None,
                 })
@@ -402,8 +418,8 @@ pub(crate) fn class_getattr(class_id: HeapId, attr: &EitherStr, vm: &mut VM<'_>)
             .map_or(Value::None, |value| value.clone_with_heap(vm.heap)),
         _ => {
             let member = class.lookup_member(attr_str, vm.heap, vm.interns);
-            if let Some(ClassMember::List(key)) = member {
-                list_member(key, None, vm)
+            if let Some(ClassMember::Native(owner, key, definition)) = member {
+                native_member(owner, key, definition, class_id, None, vm)
             } else if let Some(ClassMember::Python(member)) = member {
                 let member = member.clone_with_heap(vm.heap);
                 if descriptor::has_get(&member, vm) {

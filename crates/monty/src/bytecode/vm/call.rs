@@ -15,7 +15,7 @@ use super::{
 use crate::{
     args::{ArgValues, KwargsValues},
     asyncio::Coroutine,
-    builtins::{BuiltinsFunctions, BuiltinsFunctionsExt, object::takes_no_arguments},
+    builtins::{Builtins, BuiltinsFunctions, BuiltinsFunctionsExt, object::takes_no_arguments},
     bytecode::FrameExit,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
@@ -30,7 +30,7 @@ use crate::{
     resource_checks::check_estimated_size,
     types::{
         Dict, Instance, List, PyTrait, Tuple, Type, TypeRef, descriptor,
-        instance::{class_defines, class_lookup},
+        instance::{class_defines, class_lookup, class_member},
     },
     value::{EitherStr, VALUE_SIZE, Value},
 };
@@ -1165,9 +1165,12 @@ impl<'h> VM<'h> {
     /// on external/OS calls; the `is_initializer` flag is threaded through frame
     /// serialization so a suspended initializer resumes correctly.
     pub(crate) fn instantiate_class(&mut self, class_id: HeapId, args: ArgValues) -> Result<CallResult, RunError> {
-        if let Some(new_func) = class_lookup(class_id, "__new__", self.heap, self.interns) {
-            let new_func = new_func.clone_with_heap(self.heap);
-            return self.instantiate_with_new(class_id, new_func, args);
+        if let Some(new_func) = class_member(class_id, "__new__", self) {
+            let default_list_new = matches!(new_func, Value::Builtin(Builtins::Function(BuiltinsFunctions::ListNew)))
+                && matches!(self.heap.get(class_id), HeapData::Class(class) if class.native_layout() == Some(Type::List));
+            if !default_list_new {
+                return self.instantiate_with_new(class_id, new_func, args);
+            }
         }
         let instance_id = Instance::allocate(class_id, self.heap);
         self.initialize_instance(class_id, instance_id, args)

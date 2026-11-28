@@ -2055,7 +2055,7 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
         }
         HeapData::Instance(instance) => {
             on_child(instance.class());
-            if let Some(id) = instance.native_list() {
+            if let Some(id) = instance.native_ref() {
                 on_child(id);
             }
             for (k, v) in instance.attrs() {

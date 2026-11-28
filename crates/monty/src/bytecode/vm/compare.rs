@@ -96,8 +96,8 @@ impl VM<'_> {
             CmpOperator::GtE => CmpOperator::LtE,
             _ => unreachable!("cmp_ordering reached with a non-ordering operator"),
         };
-        let rhs_is_list_subclass = rhs.list_subclass_id(self.heap).is_some();
-        let rhs_first = rhs_is_list_subclass && subclass_overrides(lhs, rhs, None, self);
+        let rhs_native_subclass = rhs.native_subclass_id(self.heap).is_some();
+        let rhs_first = rhs_native_subclass && subclass_overrides(lhs, rhs, None, self);
         if rhs_first && let Some(result) = rhs.py_cmp_op(lhs, reflected_op, self)? {
             return Ok(result);
         }
@@ -108,7 +108,10 @@ impl VM<'_> {
             return Ok(result);
         }
 
-        let order = if rhs_is_list_subclass || lhs.list_subclass_id(self.heap).is_some() {
+        let order = if rhs.list_subclass_id(self.heap).is_some()
+            || lhs.list_subclass_id(self.heap).is_some()
+            || (rhs_native_subclass && lhs.native_subclass_id(self.heap).is_some())
+        {
             CmpOrder::Incomparable
         } else {
             lhs.py_cmp(rhs, self)?

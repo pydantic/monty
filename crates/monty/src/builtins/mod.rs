@@ -50,7 +50,7 @@ use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     exception_private::{ExcType, RunResult},
-    types::{Type, list::list_new},
+    types::{Type, list::list_new, str::str_new},
     value::Value,
 };
 
@@ -192,6 +192,7 @@ impl BuiltinsFunctionsExt for BuiltinsFunctions {
             Self::ObjectSetattr => return object_setattr::builtin_object_setattr(vm, args),
             Self::ObjectNew => object::builtin_object_new(vm, args),
             Self::ListNew => list_new(vm, args),
+            Self::StrNew => str_new(vm, args),
             Self::ObjectInit => object::builtin_object_init(vm, args),
             Self::ObjectInitSubclass => object::builtin_object_init_subclass(vm, args),
             Self::TypeMro => type_::builtin_type_mro(vm, args),

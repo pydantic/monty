@@ -1167,6 +1167,10 @@ pub enum StaticStrings {
     DunderIter,
     #[strum(serialize = "__len__")]
     DunderLen,
+    #[strum(serialize = "__mod__")]
+    DunderMod,
+    #[strum(serialize = "__str__")]
+    DunderStr,
     #[strum(serialize = "__lt__")]
     DunderLt,
     #[strum(serialize = "__le__")]

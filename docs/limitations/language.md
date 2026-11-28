@@ -12,7 +12,7 @@ any code runs.
     Rejected at parse time: metaclasses (`class Foo(metaclass=M):`), `**kwargs`
     in a class statement, and class-body statements other than `def`, a simple
     `name [: T] = <expr>` assignment, `pass`, or a docstring.
-    Classes can inherit from Python classes, `object`, and `list`. See [classes.md](classes.md).
+    Classes can inherit from Python classes, `object`, `list`, and `str`. See [classes.md](classes.md).
 - **`async with` statements** — not yet supported.
 - **Async generator functions and expressions** — rejected with `NotImplementedError`.
     See [generators.md](generators.md).

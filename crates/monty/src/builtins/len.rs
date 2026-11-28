@@ -5,7 +5,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    types::{Instance, PyTrait, instance::list_subclass_len},
+    types::{PyTrait, instance::native_subclass_len},
     value::Value,
 };
 
@@ -15,12 +15,8 @@ use crate::{
 pub fn builtin_len(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("len", vm.heap)?;
     defer_drop!(value, vm);
-    if let Value::Ref(id) = value
-        && value
-            .get_as::<Instance>(vm.heap)
-            .is_some_and(|instance| instance.native_list().is_some())
-    {
-        return list_subclass_len(*id, vm).map(Value::Int);
+    if let Some(id) = value.native_subclass_id(vm.heap) {
+        return native_subclass_len(id, vm).map(Value::Int);
     }
     if let Some(len) = value.py_len(vm) {
         Ok(Value::Int(

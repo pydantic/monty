@@ -654,6 +654,8 @@ native_types! {
         .builtin()
         .basetype()
         .sequence_repeat()
+        .accepts_python_subclasses()
+        .subtype_call(super::str::adapt_str_subclass)
         .ctor(Constructor::Value(PyStr::init)),
     Bytes("bytes")
         .attrs(<super::bytes::PyBytes<'static> as PyAttrs<'static>>::TABLE)

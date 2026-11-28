@@ -62,7 +62,7 @@ For compilation and runtime limits, see [resource limits](resource_limits.md).
 
 **Missing in other ways:**
 
-- User-defined exception classes. The supported native base classes are `object` and `list`.
+- User-defined exception classes. The supported native base classes are `object`, `list`, and `str`.
     See [class inheritance](classes.md#inheritance).
 - Function attributes.
     `fn.__name__`, `fn.__doc__` and friends raise `AttributeError`, and new attributes cannot be set — so

@@ -45,19 +45,19 @@ class and method decorators (including `property`, `classmethod`, and `staticmet
 `type()` constructor. The `__enter__`/`__exit__` divergences are in
 [with.md](with.md).
 
-Classes can inherit from other Python classes, `object` and `list`, singly or with multiple bases.
+Classes can inherit from Python classes, `object`, `list`, and `str`, singly or with multiple bases.
 Inherited methods, class variables and dunders resolve through CPython's C3 method resolution order (`__mro__`). `isinstance`, `issubclass`,
 `__new__`, `__init_subclass__` with class keyword arguments, and the
 subclass-first rule for reflected operators and `==` all follow CPython.
 
 ## Inheritance
 
-- **Native bases must opt in.** `object` and `list` are supported.
+- **Native bases must opt in.** `object`, `list`, and `str` are supported.
     Other native or host-provided classes, such as `dict`, `int`, and `Exception`, raise `TypeError`.
     Types CPython refuses, such as `bool` and `range`, still raise `type 'bool' is not an acceptable base type`.
-- **One native storage layout per class.** A class can inherit multiple paths to `list` and include Python mixins.
-    Combining `list` and `dict` raises `TypeError: multiple bases have instance lay-out conflict`.
-- **List subclass values cross to the host as plain lists.** Session snapshots retain the subclass and its attributes.
+- **One native storage layout per class.** A class can inherit the same native layout through multiple bases and include Python mixins.
+    Combining `list` and `str` raises `TypeError: multiple bases have instance lay-out conflict`.
+- **Native subclass values cross to the host as plain lists or strings.** Session snapshots retain the subclass and its attributes.
     Parameterized class bases such as `list[int]` and subscripting a list subclass such as `Items[int]` are unsupported.
 - **No `super()`**: the name is undefined, so `super().__init__()` raises
     `NameError: name 'super' is not defined`. Call the base class explicitly
@@ -108,7 +108,7 @@ order and error wording, but with these divergences:
 - **Python-defined bound methods report `function`, not `method`.** `type(obj.method)` is
     `<class 'function'>` where CPython says `<class 'method'>`; Monty has no
     dedicated `method` type.
-- **Ordering comparisons dispatch on list subclasses.** Monty truth-tests the result of an ordering override.
+- **Ordering comparisons dispatch on `list` and `str` subclasses.** Monty truth-tests the result of an ordering override.
     Ordering on instances without native storage raises `TypeError`.
 - **`__repr__`/`__str__` cannot suspend**: they are run to completion
     synchronously, so a `__repr__`/`__str__` that calls an external/OS function
@@ -129,7 +129,7 @@ order and error wording, but with these divergences:
     `__trunc__`, binary numeric dunders (including reflected forms), `__getitem__` and `__setitem__` run synchronously.
     An external or OS call raises `NotImplementedError` rather than yielding to the host.
     `__call__` uses the ordinary suspendable call path.
-- **Truth testing** on list subclasses uses `__bool__` and falls back to `__len__`.
+- **Truth testing** on `list` and `str` subclasses uses `__bool__` and falls back to `__len__`.
     Instances without native storage are always truthy.
 - **Python-defined bound methods compare and hash by identity**: each `obj.method` access
     creates a fresh object, so `obj.method == obj.method` is `False` and two
@@ -428,7 +428,7 @@ every construction request. Divergences:
 
 ## What does NOT exist for user code
 
-- Subclassing native types other than `object` and `list`.
+- Subclassing native types other than `object`, `list`, and `str`.
 - Metaclasses and any other metaclass-driven namespace
     customization.
 - `__slots__`.

@@ -29,7 +29,8 @@ use crate::{
     py_attrs::{self, NativeMethod},
     py_value::PyValue,
     types::{
-        Bytes, BytesIterator, CmpOrder, Complex, HeapStr, LazyHeapSet, List, LongInt, Property, PyTrait, Type, TypeRef,
+        Bytes, BytesIterator, CmpOrder, Complex, HeapStr, Instance, LazyHeapSet, List, LongInt, Property, PyTrait,
+        Type, TypeRef,
         bytes::PyBytes,
         decimal,
         instance::{
@@ -381,7 +382,7 @@ impl<'h> PyTrait<'h> for Value {
             (Self::Ref(id1), Self::Ref(id2)) => {
                 let order = cmp_heap_pair(*id1, *id2, vm)?;
                 if order == CmpOrder::Incomparable {
-                    decimal_cmp_or_incomparable(self, other, vm)
+                    cmp_string_or_decimal(self, other, vm)
                 } else {
                     Ok(order)
                 }
@@ -423,7 +424,7 @@ impl<'h> PyTrait<'h> for Value {
             (Self::Ref(id1), Self::InternBytes(b2)) if let HeapData::Bytes(b1) = vm.heap.get(*id1) => {
                 Ok(CmpOrder::Ordered(b1.as_slice().cmp(interns.get_bytes(*b2))))
             }
-            _ => decimal_cmp_or_incomparable(self, other, vm),
+            _ => cmp_string_or_decimal(self, other, vm),
         }
     }
 
@@ -890,11 +891,13 @@ fn cmp_heap_pair(id1: HeapId, id2: HeapId, vm: &mut VM<'_>) -> RunResult<CmpOrde
     }
 }
 
-/// The ordering of a pair with a `Decimal` operand, `Incomparable` for any other pair.
-///
-/// Tried only once the common types have missed, keeping them off this check.
-fn decimal_cmp_or_incomparable(lhs: &Value, rhs: &Value, vm: &mut VM<'_>) -> RunResult<CmpOrder> {
-    Ok(decimal::py::cmp_order(lhs, rhs, vm)?.unwrap_or(CmpOrder::Incomparable))
+/// Handles string subclasses and Decimal after the ordinary representations have missed.
+fn cmp_string_or_decimal(lhs: &Value, rhs: &Value, vm: &mut VM<'_>) -> RunResult<CmpOrder> {
+    if let (Some(lhs), Some(rhs)) = (lhs.as_str(vm), rhs.as_str(vm)) {
+        Ok(CmpOrder::Ordered(lhs.cmp(rhs)))
+    } else {
+        Ok(decimal::py::cmp_order(lhs, rhs, vm)?.unwrap_or(CmpOrder::Incomparable))
+    }
 }
 
 /// `Value` releases its (possible) heap reference through any [`ContainsHeap`]
@@ -964,6 +967,15 @@ impl Value {
             }
             _ => self.py_type(vm),
         }
+    }
+
+    pub(crate) fn str_subclass_storage<'a>(&self, heap: &'a Heap) -> Option<&'a Self> {
+        self.get_as::<Instance>(heap)?.native_str()
+    }
+
+    pub(crate) fn native_subclass_id(&self, heap: &Heap) -> Option<HeapId> {
+        self.get_as::<Instance>(heap)?.native_layout()?;
+        self.ref_id()
     }
 
     pub(crate) fn list_subclass_id(&self, heap: &Heap) -> Option<HeapId> {
@@ -1966,7 +1978,8 @@ impl Value {
             Self::InlineString(text) => Some(EitherStr::Inline(*text)),
             _ => self
                 .get_as::<HeapStr>(heap)
-                .map(|s| EitherStr::Heap(s.as_str().to_owned())),
+                .map(|s| EitherStr::Heap(s.as_str().to_owned()))
+                .or_else(|| self.str_subclass_storage(heap)?.as_either_str(heap)),
         }
     }
 
@@ -1999,7 +2012,10 @@ impl Value {
         match self {
             Self::InternString(string_id) => Some(interns.get_str(*string_id)),
             Self::InlineString(text) => Some(text.as_str()),
-            _ => self.get_as::<HeapStr>(heap).map(HeapStr::as_str),
+            _ => self
+                .get_as::<HeapStr>(heap)
+                .map(HeapStr::as_str)
+                .or_else(|| self.str_subclass_storage(heap)?.as_str_heap(heap, interns)),
         }
     }
 
@@ -2025,7 +2041,11 @@ impl Value {
     pub fn is_str(&self, heap: &Heap) -> bool {
         match self {
             Self::InternString(_) | Self::InlineString(_) => true,
-            Self::Ref(heap_id) => matches!(heap.get(*heap_id), HeapData::Str(_)),
+            Self::Ref(heap_id) => match heap.get(*heap_id) {
+                HeapData::Str(_) => true,
+                HeapData::Instance(instance) => instance.native_str().is_some(),
+                _ => false,
+            },
             _ => false,
         }
     }
@@ -2096,8 +2116,7 @@ pub(crate) fn eq_str(s: &str, other: &Value, vm: &VM<'_>) -> Option<bool> {
     match other {
         Value::InternString(id) => Some(s == vm.interns.get_str(*id)),
         Value::InlineString(text) => Some(s.as_bytes() == text.as_bytes()),
-        Value::Ref(id) if let HeapData::Str(o) = vm.heap.get(*id) => Some(s == o.as_str()),
-        _ => None,
+        _ => other.as_str(vm).map(|text| s == text),
     }
 }
 

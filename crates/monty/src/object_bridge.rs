@@ -431,6 +431,9 @@ impl GraphExporter {
                     let list = vm.heap.read_as::<List>(list_id).expect("instance owns list storage");
                     return self.list_node(&list, vm);
                 }
+                if let Some(text) = inst.get(vm.heap).native_str() {
+                    return MontyNode::String(text.as_str(vm).expect("instance owns string storage").to_owned());
+                }
                 let class_id = inst.get(vm.heap).class();
                 let instance_id = vm.heap.boundary_uuid(id);
                 let class_type = self.sandbox_class_node(class_id, vm);

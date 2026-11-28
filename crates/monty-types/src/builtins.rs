@@ -12,7 +12,7 @@ use strum::{Display, EnumString, FromRepr, IntoStaticStr, VariantNames};
 /// Uses strum derives for automatic `Display`, `FromStr`, and `IntoStaticStr` implementations.
 /// All variants serialize to lowercase (e.g., `Print` -> "print").
 /// Explicit discriminants are bytecode operands and identity codes; never change or reuse them.
-#[monty_macros::explicit_discriminants(checksum = 0xb7f6_ab22_530d_8baa)]
+#[monty_macros::explicit_discriminants(checksum = 0xf0ee_70c5_42ce_3495)]
 #[derive(
     Debug,
     Clone,
@@ -145,4 +145,8 @@ pub enum BuiltinsFunctions {
     #[strum(serialize = "list.__new__")]
     #[serde(rename = "list.__new__")]
     ListNew = 43,
+    /// Construct a string or string subclass.
+    #[strum(serialize = "str.__new__")]
+    #[serde(rename = "str.__new__")]
+    StrNew = 44,
 }

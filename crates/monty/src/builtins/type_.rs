@@ -215,7 +215,7 @@ fn class_bases(bases: &Value, vm: &VM<'_>) -> RunResult<Vec<TypeRef>> {
         };
         if let Some(base_layout) = base_layout {
             if layout.is_some_and(|layout| layout != base_layout)
-                && (layout == Some(Type::List) || base_layout == Type::List)
+                && (matches!(layout, Some(Type::List | Type::Str)) || matches!(base_layout, Type::List | Type::Str))
             {
                 return Err(ExcType::type_error("multiple bases have instance lay-out conflict"));
             }
@@ -228,7 +228,7 @@ fn class_bases(bases: &Value, vm: &VM<'_>) -> RunResult<Vec<TypeRef>> {
     }
     if let Some(name) = unsupported {
         return Err(ExcType::type_error(format!(
-            "Monty does not support subclassing '{name}': classes can only inherit from classes defined in Python, object and list"
+            "Monty does not support subclassing '{name}': classes can only inherit from classes defined in Python, object, list and str"
         )));
     }
     Ok(out)

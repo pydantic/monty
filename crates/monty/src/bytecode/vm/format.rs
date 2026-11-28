@@ -135,7 +135,7 @@ impl VM<'_> {
     }
 
     /// Formats an already-converted string from a runtime format spec.
-    pub(crate) fn format_runtime_string(&mut self, value: &str, format_spec: &str) -> Result<String, RunError> {
+    pub(crate) fn format_runtime_string(&self, value: &str, format_spec: &str) -> Result<String, RunError> {
         let spec = self.parse_runtime_spec(format_spec, "str")?;
         self.format_parsed_string(value, &spec)
     }

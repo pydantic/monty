@@ -21,7 +21,7 @@ use crate::{
     modules::ModuleFunctions,
     types::{
         Dict, PyTrait, Tuple, Type, TypeRef, descriptor,
-        instance::{FastAttributeLookupResult, class_dunder, list_subclass_len, lookup_attribute_fast},
+        instance::{FastAttributeLookupResult, class_dunder, lookup_attribute_fast, native_subclass_len},
         key_hash::set_element_hash,
         tuple::allocate_tuple,
         type_ref::is_class_like,
@@ -76,7 +76,7 @@ impl VM<'_> {
         };
         let matched = shape_ok && {
             let actual = if let Some(id) = list_subclass {
-                usize::try_from(list_subclass_len(id, self)?).unwrap_or(usize::MAX)
+                usize::try_from(native_subclass_len(id, self)?).unwrap_or(usize::MAX)
             } else {
                 subject.py_len(self).unwrap_or(0)
             };
@@ -457,7 +457,8 @@ fn class_match_args(cls: &Value, nargs: usize, vm: &mut VM<'_>) -> RunResult<Mat
         _ => None,
     };
     let Some(match_args) = match_args else {
-        if matches!(vm.heap.get(*cls_id), HeapData::Class(class) if class.native_layout() == Some(Type::List)) {
+        if matches!(vm.heap.get(*cls_id), HeapData::Class(class) if matches!(class.native_layout(), Some(Type::List | Type::Str)))
+        {
             return check_count(1, vm).map(|()| MatchArgs::SelfMatch);
         }
         check_count(0, vm)?;

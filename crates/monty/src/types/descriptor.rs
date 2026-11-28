@@ -7,7 +7,7 @@
 use super::{
     Dict, Type,
     builtin_descriptor::{self, DescriptorMethod},
-    class::{ClassMember, list_member},
+    class::{ClassMember, native_member},
     instance::{bind_method, class_defines, class_dunder, class_member, implicit_receiver, is_method_value},
     tuple::allocate_tuple,
 };
@@ -21,6 +21,7 @@ use crate::{
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId},
     intern::StaticStrings,
     modules::{ModuleFunctions, dataclasses},
+    py_attrs::AttrDef,
     value::{EitherStr, Value},
 };
 
@@ -137,7 +138,7 @@ pub(crate) enum AttributeResolution<'a> {
     /// A native function that binds the instance when read or called.
     Method(&'a Value, HeapId),
     ObjectMethod(BuiltinsFunctions, Option<HeapId>),
-    ListMethod(StaticStrings, HeapId),
+    NativeMember(Type, StaticStrings, AttrDef, HeapId, HeapId),
     /// A descriptor whose getter may suspend.
     Getter(&'a Value),
     /// The synthesized instance __class__ attribute.
@@ -159,7 +160,9 @@ impl AttributeResolution<'_> {
                     None => method,
                 })
             }
-            Self::ListMethod(key, id) => Some(list_member(key, Some(id), vm)),
+            Self::NativeMember(owner, key, definition, class, id) => {
+                Some(native_member(owner, key, definition, class, Some(id), vm))
+            }
             Self::Class(class) => {
                 vm.heap.inc_ref(class);
                 Some(Value::Ref(class))
@@ -186,8 +189,11 @@ pub(crate) fn resolve_instance<'a>(id: HeapId, name: &str, vm: &'a VM<'_>) -> At
     }
     let member = match class.lookup_member(name, vm.heap, vm.interns) {
         Some(ClassMember::Python(member)) => Some(member),
-        Some(ClassMember::List(key)) => {
-            return stored.map_or(AttributeResolution::ListMethod(key, id), AttributeResolution::Value);
+        Some(ClassMember::Native(owner, key, definition)) => {
+            return stored.map_or(
+                AttributeResolution::NativeMember(owner, key, definition, class_id, id),
+                AttributeResolution::Value,
+            );
         }
         None => None,
     };

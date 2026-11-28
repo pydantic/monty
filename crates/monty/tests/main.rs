@@ -658,7 +658,7 @@ fn class_with_native_base_raises_type_error() {
             Some(
                 format!(
                     "Monty does not support subclassing '{base}': classes can only inherit from classes defined in \
-                     Python, object and list"
+                     Python, object, list and str"
                 )
                 .as_str()
             )

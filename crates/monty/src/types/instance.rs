@@ -4,7 +4,7 @@ use monty_types::MontyUuid;
 
 use super::{
     Dict, LazyHeapSet, PyTrait, Type, TypeRef,
-    class::{ClassMember, list_member},
+    class::{ClassMember, native_member},
     descriptor,
 };
 use crate::{
@@ -51,26 +51,67 @@ pub(crate) struct Instance {
     /// to the host; dumped with the heap so it stays stable across restores.
     #[serde(rename = "U")]
     uuid: Option<MontyUuid>,
-    /// Owns the list payload when the class derives from `list`.
     #[serde(default, rename = "N", skip_serializing_if = "Option::is_none")]
-    native_list: Option<HeapId>,
+    native: Option<NativeStorage>,
+}
+
+/// The numeric form preserves list payload references written by older dumps.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+enum NativeStorage {
+    List(HeapId),
+    Str {
+        #[serde(rename = "S")]
+        value: Value,
+    },
 }
 
 impl Instance {
     pub(crate) fn allocate(class: HeapId, heap: &Heap) -> HeapId {
-        let native_list = matches!(heap.get(class), HeapData::Class(cls) if cls.native_layout() == Some(Type::List))
-            .then(|| heap.allocate(HeapData::List(super::List::default())));
+        let native = matches!(heap.get(class), HeapData::Class(cls) if cls.native_layout() == Some(Type::List))
+            .then(|| NativeStorage::List(heap.allocate(HeapData::List(super::List::default()))));
+        Self::allocate_with_storage(class, native, heap)
+    }
+
+    pub(crate) fn allocate_str(class: HeapId, value: Value, heap: &Heap) -> HeapId {
+        Self::allocate_with_storage(class, Some(NativeStorage::Str { value }), heap)
+    }
+
+    fn allocate_with_storage(class: HeapId, native: Option<NativeStorage>, heap: &Heap) -> HeapId {
         heap.inc_ref(class);
         heap.allocate(HeapData::Instance(Box::new(Self {
             class,
             attrs: Dict::new(),
             uuid: None,
-            native_list,
+            native,
         })))
     }
 
+    pub(crate) fn native_layout(&self) -> Option<Type> {
+        self.native.as_ref().map(|native| match native {
+            NativeStorage::List(_) => Type::List,
+            NativeStorage::Str { .. } => Type::Str,
+        })
+    }
+
     pub(crate) fn native_list(&self) -> Option<HeapId> {
-        self.native_list
+        if let Some(NativeStorage::List(id)) = self.native {
+            Some(id)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn native_str(&self) -> Option<&Value> {
+        if let Some(NativeStorage::Str { value }) = &self.native {
+            Some(value)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn native_ref(&self) -> Option<HeapId> {
+        self.native_list().or_else(|| self.native_str()?.ref_id())
     }
 
     /// Boundary identity of the instance, generated and stored on first use
@@ -162,7 +203,12 @@ impl<'h> HeapRead<'h, Instance> {
     /// What `copy` builds before filling a copy's `__dict__`; CPython's reducer
     /// path skips `__init__` the same way.
     pub(crate) fn allocate_empty_like(&self, vm: &mut VM<'h>) -> HeapId {
-        Instance::allocate(self.get(vm.heap).class(), vm.heap)
+        let instance = self.get(vm.heap);
+        if let Some(value) = instance.native_str() {
+            Instance::allocate_str(instance.class(), value.clone_with_heap(vm.heap), vm.heap)
+        } else {
+            Instance::allocate(instance.class(), vm.heap)
+        }
     }
 }
 
@@ -215,7 +261,7 @@ impl<'h> HeapReadMut<'h, Instance> {
         match value {
             Value::Ref(id)
                 if matches!(vm.heap.get(id), HeapData::Class(cls)
-                if cls.native_layout() == self.get(vm.heap).native_list.map(|_| Type::List)) =>
+                if cls.native_layout() == self.get(vm.heap).native_layout()) =>
             {
                 // The instance takes over `value`'s reference to the new class.
                 let class_id = value.into_ref_id().expect("matched a reference");
@@ -351,7 +397,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
     }
 
     fn py_cmp_op(&self, other: &Value, op: CmpOperator, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        if self.get(vm.heap).native_list().is_none() {
+        if self.get(vm.heap).native_layout().is_none() {
             return Ok(None);
         }
         let name = match op {
@@ -449,15 +495,16 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
-        let id = self.get(vm.heap).native_list()?;
-        match vm.heap.get(id) {
-            HeapData::List(list) => Some(list.len()),
+        let instance = self.get(vm.heap);
+        match &instance.native {
+            Some(NativeStorage::List(id)) if let HeapData::List(list) = vm.heap.get(*id) => Some(list.len()),
+            Some(NativeStorage::Str { value }) => value.py_len(vm),
             _ => None,
         }
     }
 
     fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {
-        if self.get(vm.heap).native_list().is_none() {
+        if self.get(vm.heap).native_layout().is_none() {
             return Ok(true);
         }
         if let Some(result) = instance_call_dunder_sync(self.id(), "__bool__", None, vm)? {
@@ -471,7 +518,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
                 )))
             }
         } else {
-            list_subclass_len(self.id(), vm).map(|len| len != 0)
+            native_subclass_len(self.id(), vm).map(|len| len != 0)
         }
     }
 
@@ -641,7 +688,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
 impl HeapItem for Instance {
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         stack.push(self.class);
-        stack.extend(self.native_list);
+        match &mut self.native {
+            Some(NativeStorage::List(id)) => stack.push(*id),
+            Some(NativeStorage::Str { value }) => value.py_dec_ref_ids(stack),
+            None => {}
+        }
         self.attrs.py_dec_ref_ids(stack);
     }
 }
@@ -934,7 +985,7 @@ pub(crate) fn instance_call_dunder_sync(
     call_dunder_args_sync(self_id, dunder, args, vm)
 }
 
-pub(crate) fn list_subclass_len(id: HeapId, vm: &mut VM<'_>) -> RunResult<i64> {
+pub(crate) fn native_subclass_len(id: HeapId, vm: &mut VM<'_>) -> RunResult<i64> {
     let result = instance_call_dunder_sync(id, "__len__", None, vm)?
         .ok_or_else(|| ExcType::type_error_no_len(&class_name(instance_class(id, vm), vm.heap, vm.interns)))?;
     defer_drop!(result, vm);
@@ -1074,7 +1125,7 @@ pub(crate) fn class_defines_not_none(class_id: HeapId, dunder: &str, vm: &VM<'_>
         return false;
     };
     match class.lookup_member(dunder, vm.heap, vm.interns) {
-        Some(ClassMember::List(_)) => true,
+        Some(ClassMember::Native(..)) => true,
         Some(ClassMember::Python(value)) => !matches!(value, Value::None),
         None => false,
     }
@@ -1126,6 +1177,12 @@ pub(crate) fn class_lookup<'v>(class_id: HeapId, name: &str, heap: &'v Heap, int
 pub(crate) fn subclass_overrides(lhs: &Value, rhs: &Value, dunder: Option<&str>, vm: &VM<'_>) -> bool {
     match (lhs, rhs) {
         (Value::Ref(lhs_id), Value::Ref(rhs_id)) => heap_subclass_overrides(*lhs_id, *rhs_id, dunder, vm),
+        (Value::InlineString(_) | Value::InternString(_), Value::Ref(rhs)) => {
+            let HeapData::Instance(rhs) = vm.heap.get(*rhs) else {
+                return false;
+            };
+            native_subclass_overrides(Type::Str, rhs, dunder, vm)
+        }
         _ => false,
     }
 }
@@ -1136,9 +1193,8 @@ fn heap_subclass_overrides(lhs_id: HeapId, rhs_id: HeapId, dunder: Option<&str>,
         return false;
     };
     let lhs = match vm.heap.get(lhs_id) {
-        HeapData::List(_) if rhs.native_list().is_some() => {
-            return dunder.is_none_or(|dunder| class_lookup(rhs.class, dunder, vm.heap, vm.interns).is_some());
-        }
+        HeapData::List(_) => return native_subclass_overrides(Type::List, rhs, dunder, vm),
+        HeapData::Str(_) => return native_subclass_overrides(Type::Str, rhs, dunder, vm),
         HeapData::Instance(lhs) => lhs,
         _ => return false,
     };
@@ -1155,6 +1211,11 @@ fn heap_subclass_overrides(lhs_id: HeapId, rhs_id: HeapId, dunder: Option<&str>,
             None => false,
         },
     }
+}
+
+fn native_subclass_overrides(owner: Type, rhs: &Instance, dunder: Option<&str>, vm: &VM<'_>) -> bool {
+    rhs.native_layout() == Some(owner)
+        && dunder.is_none_or(|name| class_lookup(rhs.class, name, vm.heap, vm.interns).is_some())
 }
 
 /// Returns the `HeapId` of `self_id`'s class object.
@@ -1215,7 +1276,7 @@ pub(crate) fn class_member(class_id: HeapId, name: &str, vm: &VM<'_>) -> Option<
     };
     Some(match class.lookup_member(name, vm.heap, vm.interns)? {
         ClassMember::Python(value) => value.clone_with_heap(vm.heap),
-        ClassMember::List(key) => list_member(key, None, vm),
+        ClassMember::Native(owner, key, definition) => native_member(owner, key, definition, class_id, None, vm),
     })
 }
 
@@ -1331,6 +1392,15 @@ mod tests {
 
     use super::*;
     use crate::{bytecode::FrameExit, heap::HeapReader, run::Executor};
+
+    #[test]
+    fn native_storage_retains_the_list_reference_encoding() {
+        let id = HeapId::from_index(42);
+        let legacy = minicbor_serde::to_vec(id).unwrap();
+        let native: NativeStorage = minicbor_serde::from_slice(&legacy).unwrap();
+        assert!(matches!(native, NativeStorage::List(restored) if restored == id));
+        assert_eq!(minicbor_serde::to_vec(&native).unwrap(), legacy);
+    }
 
     struct FailingWriter;
 
