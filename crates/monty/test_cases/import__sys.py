@@ -128,7 +128,7 @@ assert hash(hi) == hash(tuple(hi))
 
 # Repr check
 assert repr(hi) == (
-    "sys.hash_info(width=64, modulus=2305843009213693951, inf=314159, nan=0, "
+    'sys.hash_info(width=64, modulus=2305843009213693951, inf=314159, nan=0, '
     "imag=1000003, algorithm='siphash13', hash_bits=64, seed_bits=128, cutoff=0)"
 )
 
