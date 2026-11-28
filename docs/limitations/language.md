@@ -198,7 +198,7 @@ Divergences from CPython:
 
 - `__qualname__`: returns only the function's base identifier (`fn.__name__`). Monty does not track enclosing scopes at compile time, so nested functions and methods do not carry scope prefixes (`outer.<locals>.inner` or `Class.method`).
 - `__doc__`: always returns `None`. Docstrings in function bodies are discarded at compile time.
-- `__module__`: resolved dynamically from `globals()['__name__']` rather than snapshotted at definition time.
+- `__module__`: resolved on each access from the defining module's `__name__` global, rather than snapshotted at definition time.
 - Functions in the `os` module report `__module__ == 'os'` across all platforms rather than CPython's underlying platform module (`'posix'` or `'nt'`).
 - Attributes cannot be set on functions — `fn.tag = True` raises `AttributeError: 'function' object has no attribute 'tag' and no __dict__ for setting new attributes`. Functions have no `__dict__`.
 

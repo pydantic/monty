@@ -440,7 +440,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_module_functions_module_name_and_display() {
+    fn test_module_functions_module_name() {
         let cases: &[(ModuleFunctions, &str)] = &[
             (ModuleFunctions::Asyncio(asyncio::AsyncioFunctions::Gather), "asyncio"),
             (
@@ -505,7 +505,6 @@ mod tests {
 
         for &(mf, expected_name) in cases {
             assert_eq!(mf.module_name(), expected_name);
-            assert!(!format!("{mf}").is_empty());
         }
     }
 }

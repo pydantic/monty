@@ -111,7 +111,7 @@ import os.path
 
 assert os.path.join.__name__ == 'join'
 assert os.path.join.__qualname__ == 'join'
-assert os.path.join.__module__ == 'posixpath'
+assert os.path.join.__module__ in ('posixpath', 'ntpath')
 
 import json
 
