@@ -113,6 +113,45 @@ assert os.path.join.__name__ == 'join'
 assert os.path.join.__qualname__ == 'join'
 assert os.path.join.__module__ == 'posixpath'
 
+import json
+
+assert json.dumps.__name__ == 'dumps'
+assert json.dumps.__qualname__ == 'dumps'
+assert json.dumps.__module__ == 'json'
+
+import re
+
+assert re.compile.__name__ == 'compile'
+assert re.compile.__qualname__ == 'compile'
+assert re.compile.__module__ == 're'
+
+import time
+
+assert time.time.__name__ == 'time'
+assert time.time.__qualname__ == 'time'
+assert time.time.__module__ == 'time'
+
+# --- Dynamic __module__ from globals dict ---
+ns_custom = {'__name__': 'custom_module'}
+exec('def custom_fn(): pass', ns_custom)
+assert ns_custom['custom_fn'].__module__ == 'custom_module'
+
+exec(
+    """
+def outer_fn():
+    x = 1
+    def inner_fn():
+        return x
+    return inner_fn
+""",
+    ns_custom,
+)
+assert ns_custom['outer_fn']().__module__ == 'custom_module'
+
+ns_no_name = {}
+exec('def no_name_fn(): pass', ns_no_name)
+assert ns_no_name['no_name_fn'].__module__ is None
+
 
 # --- Bound methods on user classes ---
 class Greeter:

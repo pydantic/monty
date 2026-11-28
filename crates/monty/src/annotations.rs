@@ -50,9 +50,11 @@ pub(crate) fn function_getattr(
         "__module__" => {
             if let Some(globals_id) = globals
                 && let HeapData::Dict(dict) = vm.heap.get(globals_id)
-                && let Some(mod_name) = dict.get_by_str(StaticStrings::DunderName.into(), vm.heap, vm.interns)
             {
-                return Some(Ok(CallResult::Value(mod_name.clone_with_heap(vm.heap))));
+                return match dict.get_by_str(StaticStrings::DunderName.into(), vm.heap, vm.interns) {
+                    Some(mod_name) => Some(Ok(CallResult::Value(mod_name.clone_with_heap(vm.heap)))),
+                    None => Some(Ok(CallResult::Value(Value::None))),
+                };
             }
             Some(Ok(CallResult::Value(Value::InternString(
                 vm.interns.intern_static(StaticStrings::DunderMain),

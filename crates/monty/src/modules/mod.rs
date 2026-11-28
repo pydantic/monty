@@ -434,3 +434,78 @@ impl ModuleFunctions {
         write!(f, "<function {self} at 0x{py_id:x}>")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_module_functions_module_name_and_display() {
+        let cases: &[(ModuleFunctions, &str)] = &[
+            (ModuleFunctions::Asyncio(asyncio::AsyncioFunctions::Gather), "asyncio"),
+            (
+                ModuleFunctions::Collections(collections::CollectionsFunctions::Namedtuple),
+                "collections",
+            ),
+            (ModuleFunctions::Json(json::JsonFunctions::Loads), "json"),
+            (ModuleFunctions::Math(math::MathFunctions::Floor), "math"),
+            (ModuleFunctions::Os(os::OsFunctions::Getenv), "os"),
+            (ModuleFunctions::OsPath(os_path::OsPathFunctions::Abspath), "posixpath"),
+            (ModuleFunctions::Re(re::ReFunctions::Compile), "re"),
+            (
+                ModuleFunctions::Unicodedata(unicodedata::UnicodedataFunctions::Category),
+                "unicodedata",
+            ),
+            (
+                ModuleFunctions::Itertools(itertools::ItertoolsFunctions::Tee),
+                "itertools",
+            ),
+            (
+                ModuleFunctions::Dataclasses(dataclasses::DataclassesFunctions::Dataclass),
+                "dataclasses",
+            ),
+            (
+                ModuleFunctions::Functools(functools::FunctoolsFunctions::Reduce),
+                "functools",
+            ),
+            (ModuleFunctions::Base64(base64::Base64Functions::B64Encode), "base64"),
+            (
+                ModuleFunctions::Binascii(binascii::BinasciiFunctions::Hexlify),
+                "binascii",
+            ),
+            (ModuleFunctions::Random(random::RandomFunctions::Random), "random"),
+            (ModuleFunctions::Copy(copy::CopyFunctions::Copy), "copy"),
+            (ModuleFunctions::Descriptor(DescriptorMethod::Get), "builtins"),
+            (ModuleFunctions::Frozen(FrozenFunctions::AliasWith), "_frozen"),
+            (ModuleFunctions::Time(time::TimeFunctions::Time), "time"),
+            (ModuleFunctions::Hashlib(hashlib::HashlibFunctions::Md5), "hashlib"),
+            (ModuleFunctions::Bisect(bisect::BisectFunctions::BisectLeft), "bisect"),
+            (ModuleFunctions::Csv(csv::CsvFunctions::Reader), "csv"),
+            (ModuleFunctions::Tomllib(tomllib::TomllibFunctions::Loads), "tomllib"),
+            (
+                ModuleFunctions::Decimal(decimal::DecimalFunctions::Getcontext),
+                "decimal",
+            ),
+            (ModuleFunctions::Fnmatch(fnmatch::FnmatchFunctions::Fnmatch), "fnmatch"),
+            (ModuleFunctions::Typing(typing::TypingFunctions::GetTypeHints), "typing"),
+            (
+                ModuleFunctions::Annotationlib(annotationlib::AnnotationlibFunctions::GetAnnotations),
+                "annotationlib",
+            ),
+            (
+                ModuleFunctions::Statistics(statistics::StatisticsFunctions::Mean),
+                "statistics",
+            ),
+            (ModuleFunctions::Io(_io::IoFunctions::OpenCode), "_io"),
+            #[cfg(feature = "test-hooks")]
+            (ModuleFunctions::Gc(gc::GcFunctions::Collect), "gc"),
+            #[cfg(feature = "test-hooks")]
+            (ModuleFunctions::Sys(sys::SysFunctions::Setrecursionlimit), "sys"),
+        ];
+
+        for &(mf, expected_name) in cases {
+            assert_eq!(mf.module_name(), expected_name);
+            assert!(!format!("{mf}").is_empty());
+        }
+    }
+}
