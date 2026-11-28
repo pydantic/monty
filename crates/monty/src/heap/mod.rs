@@ -2054,8 +2054,10 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
             }
         }
         HeapData::Instance(instance) => {
-            // An instance references its class plus its attribute dict's entries.
             on_child(instance.class());
+            if let Some(id) = instance.native_list() {
+                on_child(id);
+            }
             for (k, v) in instance.attrs() {
                 if let Value::Ref(id) = k {
                     on_child(*id);

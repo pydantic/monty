@@ -1,11 +1,8 @@
 # Exceptions
 
-Monty implements a fixed set of exception classes, listed below. Sandboxed
-code **cannot define new exception classes**: classes can inherit only from
-classes defined in Python and `object` (see [classes.md](classes.md#inheritance)), so there
-is no way to subclass `BaseException`/`Exception`. `raise` must therefore use one of
-these built-ins; `raise MyClass()` on a plain user class raises
-`TypeError: exceptions must derive from BaseException`, as in CPython.
+Monty implements the fixed set of exception classes listed below.
+Exception classes cannot be subclassed in the sandbox. See [class inheritance](classes.md#inheritance).
+`raise MyClass()` on a plain Python class raises `TypeError: exceptions must derive from BaseException`, as in CPython.
 
 ## Implemented exception classes
 

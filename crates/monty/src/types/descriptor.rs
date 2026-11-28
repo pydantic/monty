@@ -7,6 +7,7 @@
 use super::{
     Dict, Type,
     builtin_descriptor::{self, DescriptorMethod},
+    class::{ClassMember, list_member},
     instance::{bind_method, class_defines, class_dunder, class_member, implicit_receiver, is_method_value},
     tuple::allocate_tuple,
 };
@@ -18,6 +19,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     frozen::{FrozenFunction, FrozenFunctions},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId},
+    intern::StaticStrings,
     modules::{ModuleFunctions, dataclasses},
     value::{EitherStr, Value},
 };
@@ -135,6 +137,7 @@ pub(crate) enum AttributeResolution<'a> {
     /// A native function that binds the instance when read or called.
     Method(&'a Value, HeapId),
     ObjectMethod(BuiltinsFunctions, Option<HeapId>),
+    ListMethod(StaticStrings, HeapId),
     /// A descriptor whose getter may suspend.
     Getter(&'a Value),
     /// The synthesized instance __class__ attribute.
@@ -156,6 +159,7 @@ impl AttributeResolution<'_> {
                     None => method,
                 })
             }
+            Self::ListMethod(key, id) => Some(list_member(key, Some(id), vm)),
             Self::Class(class) => {
                 vm.heap.inc_ref(class);
                 Some(Value::Ref(class))
@@ -180,7 +184,13 @@ pub(crate) fn resolve_instance<'a>(id: HeapId, name: &str, vm: &'a VM<'_>) -> At
     {
         return AttributeResolution::Value(value);
     }
-    let member = class_dunder(class_id, name, vm);
+    let member = match class.lookup_member(name, vm.heap, vm.interns) {
+        Some(ClassMember::Python(member)) => Some(member),
+        Some(ClassMember::List(key)) => {
+            return stored.map_or(AttributeResolution::ListMethod(key, id), AttributeResolution::Value);
+        }
+        None => None,
+    };
     let getter = !class.descriptor_free() && member.is_some_and(|member| has_get(member, vm));
     // A setter alone never overrides a read; only a data descriptor with a getter does.
     if getter

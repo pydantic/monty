@@ -29,10 +29,14 @@ use crate::{
     py_attrs::{self, NativeMethod},
     py_value::PyValue,
     types::{
-        Bytes, BytesIterator, CmpOrder, Complex, HeapStr, LazyHeapSet, LongInt, Property, PyTrait, Type, TypeRef,
+        Bytes, BytesIterator, CmpOrder, Complex, HeapStr, LazyHeapSet, List, LongInt, Property, PyTrait, Type, TypeRef,
         bytes::PyBytes,
         decimal,
-        instance::{class_defines, instance_getattr, instance_str, instance_user_eq, subclass_overrides},
+        instance::{
+            class_defines, instance_call_dunder_sync, instance_getattr, instance_str, instance_user_eq,
+            subclass_overrides,
+        },
+        list::list_storage_id,
         long_int::{
             PyInt, bigint_cmp_f64, bigint_cmp_i64, bigint_divmod_tuple, bigint_eq_f64, bigint_eq_i64, i64_cmp_f64,
         },
@@ -484,6 +488,9 @@ impl<'h> PyTrait<'h> for Value {
     /// For lists/deques, tries user `__radd__` before native extension from an iterable.
     /// A reflected result replaces the value; native extension preserves the container's identity.
     fn py_iadd_impl(&mut self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
+        if let Some(id) = self.list_subclass_id(vm.heap) {
+            return self.inplace_list_op(id, "__iadd__", other, vm);
+        }
         // CPython tries numeric addition, including the RHS's `__radd__`, before
         // sequence in-place concatenation. A user operand can therefore replace
         // the assigned value even if it is iterable; aliases keep the original container.
@@ -508,6 +515,9 @@ impl<'h> PyTrait<'h> for Value {
     /// For lists/deques, tries user `__rmul__` before native repetition through `__index__`.
     /// A reflected result replaces the value; native repetition preserves the container's identity.
     fn py_imul_impl(&mut self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
+        if let Some(id) = self.list_subclass_id(vm.heap) {
+            return self.inplace_list_op(id, "__imul__", other, vm);
+        }
         // CPython tries numeric multiplication, including the RHS's `__rmul__`, before
         // sequence in-place repetition. A user operand can therefore replace
         // the assigned value even if it implements `__index__`; aliases keep the original container.
@@ -859,6 +869,14 @@ fn cmp_heap_pair(id1: HeapId, id2: HeapId, vm: &mut VM<'_>) -> RunResult<CmpOrde
             cmp_item_seqs(a_items.into_inner(), b_items, vm)
         }
         (HeapReadOutput::List(a), HeapReadOutput::List(b)) => a.py_cmp(&b, vm),
+        (HeapReadOutput::Instance(_), _) | (_, HeapReadOutput::Instance(_)) => {
+            let a = list_storage_id(id1, vm.heap).and_then(|id| vm.heap.read_as::<List>(id));
+            let b = list_storage_id(id2, vm.heap).and_then(|id| vm.heap.read_as::<List>(id));
+            match (a, b) {
+                (Some(a), Some(b)) => a.py_cmp(&b, vm),
+                _ => Ok(CmpOrder::Incomparable),
+            }
+        }
         (HeapReadOutput::Deque(a), HeapReadOutput::Deque(b)) => a.py_cmp(&b, vm),
         (HeapReadOutput::Date(a), HeapReadOutput::Date(b)) => {
             Ok(CmpOrder::from_total(a.get(vm.heap).partial_cmp(b.get(vm.heap))))
@@ -945,6 +963,22 @@ impl Value {
                 TypeRef::Class(class_id)
             }
             _ => self.py_type(vm),
+        }
+    }
+
+    pub(crate) fn list_subclass_id(&self, heap: &Heap) -> Option<HeapId> {
+        let id = self.ref_id()?;
+        matches!(heap.get(id), HeapData::Instance(instance) if instance.native_list().is_some()).then_some(id)
+    }
+
+    fn inplace_list_op(&mut self, id: HeapId, name: &'static str, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
+        let result = instance_call_dunder_sync(id, name, Some(other.clone_with_heap(vm.heap)), vm)?;
+        match result {
+            None | Some(Self::NotImplemented) => Ok(false),
+            Some(result) => {
+                mem::replace(self, result).drop_with(vm);
+                Ok(true)
+            }
         }
     }
 

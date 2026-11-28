@@ -643,14 +643,11 @@ fn external_function_as_itertools_callable_raises_not_implemented() {
     "#);
 }
 
-/// Monty classes inherit only from classes and `object`, so a native base
-/// CPython accepts is a `TypeError` (see `limitations/classes.md`). Kept as a
-/// Rust-side test because the comparative test-case suite cannot cover it.
+/// CPython accepts these bases, so the comparative test suite cannot test Monty's rejection.
 #[test]
 fn class_with_native_base_raises_type_error() {
     for (code, base) in [
         ("type('A', (int,), {})", "int"),
-        ("class A(list):\n    pass", "list"),
         ("type('A', (dict,), {})", "dict"),
         ("class E(ValueError):\n    pass", "ValueError"),
     ] {
@@ -661,7 +658,7 @@ fn class_with_native_base_raises_type_error() {
             Some(
                 format!(
                     "Monty does not support subclassing '{base}': classes can only inherit from classes defined in \
-                     Python and object"
+                     Python, object and list"
                 )
                 .as_str()
             )

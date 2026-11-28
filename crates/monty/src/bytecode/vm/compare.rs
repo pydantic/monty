@@ -7,7 +7,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     expressions::CmpOperator,
-    types::{CmpOrder, PyTrait, long_int::i64_cmp_f64},
+    types::{CmpOrder, PyTrait, instance::subclass_overrides, long_int::i64_cmp_f64},
     value::Value,
 };
 
@@ -89,12 +89,6 @@ impl VM<'_> {
         // a multiset) answers the operator itself. Hooked in here rather than at
         // the opcode so the fused-assert path, which calls `cmp_values` directly,
         // gets the same semantics.
-        if let Some(result) = lhs.py_cmp_op(rhs, op, self)? {
-            return Ok(result);
-        }
-
-        // The right operand may handle a comparison the left declines:
-        // dict_keys <= set is answered by set >= dict_keys.
         let reflected_op = match op {
             CmpOperator::Lt => CmpOperator::Gt,
             CmpOperator::LtE => CmpOperator::GtE,
@@ -102,11 +96,24 @@ impl VM<'_> {
             CmpOperator::GtE => CmpOperator::LtE,
             _ => unreachable!("cmp_ordering reached with a non-ordering operator"),
         };
-        if let Some(result) = rhs.py_cmp_op(lhs, reflected_op, self)? {
+        let rhs_is_list_subclass = rhs.list_subclass_id(self.heap).is_some();
+        let rhs_first = rhs_is_list_subclass && subclass_overrides(lhs, rhs, None, self);
+        if rhs_first && let Some(result) = rhs.py_cmp_op(lhs, reflected_op, self)? {
+            return Ok(result);
+        }
+        if let Some(result) = lhs.py_cmp_op(rhs, op, self)? {
+            return Ok(result);
+        }
+        if !rhs_first && let Some(result) = rhs.py_cmp_op(lhs, reflected_op, self)? {
             return Ok(result);
         }
 
-        match lhs.py_cmp(rhs, self)? {
+        let order = if rhs_is_list_subclass || lhs.list_subclass_id(self.heap).is_some() {
+            CmpOrder::Incomparable
+        } else {
+            lhs.py_cmp(rhs, self)?
+        };
+        match order {
             CmpOrder::Ordered(ordering) => Ok(match op {
                 CmpOperator::Lt => ordering.is_lt(),
                 CmpOperator::LtE => ordering.is_le(),

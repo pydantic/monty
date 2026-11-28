@@ -272,10 +272,11 @@ fn encode(obj: &Value, config: &JsonDumpsConfig, default: &Value, vm: &mut VM<'_
 /// bracket) before any of its elements could fail to encode.
 fn is_container(value: &Value, vm: &VM<'_>) -> bool {
     match value {
-        Value::Ref(heap_id) => matches!(
-            vm.heap.get(*heap_id),
-            HeapData::List(_) | HeapData::Tuple(_) | HeapData::Dict(_)
-        ),
+        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
+            HeapData::List(_) | HeapData::Tuple(_) | HeapData::Dict(_) => true,
+            HeapData::Instance(instance) => instance.native_list().is_some(),
+            _ => false,
+        },
         _ => false,
     }
 }
@@ -521,6 +522,20 @@ impl<'h> Encoder<'_, 'h> {
                     }
                 })
             }),
+            PyValue::Instance(instance) if instance.get(self.vm.heap).native_list().is_some() => self
+                .with_entered_container(instance.id(), |enc| {
+                    let iterator = value.py_iter(enc.vm)?.require_synchronous(enc.vm)?;
+                    defer_drop!(iterator, enc);
+                    let mut iterator = iterator.read(enc.vm);
+                    enc.serialize_array(depth, |enc, depth| {
+                        let Some(item) = iterator.py_next(enc.vm)? else {
+                            return Ok(false);
+                        };
+                        defer_drop!(item, enc);
+                        enc.serialize_value(item, depth)?;
+                        Ok(true)
+                    })
+                }),
             PyValue::Tuple(tuple) => self.with_entered_container(tuple.id(), |enc| {
                 let iter = tuple.iter(enc.vm)?;
                 defer_drop_mut!(iter, enc);

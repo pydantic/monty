@@ -14,7 +14,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{DropWithContext, HeapData, HeapId, HeapRead},
     py_attrs::PyAttrs,
-    types::{Dict, Instance, PyTrait, Type, TypeRef, instance::class_defines},
+    types::{Instance, PyTrait, Type, TypeRef, instance::class_defines},
     value::Value,
 };
 
@@ -112,6 +112,12 @@ pub(crate) fn builtin_object_new(vm: &mut VM<'_>, args: ArgValues) -> RunResult<
             )));
         }
     };
+    if matches!(vm.heap.get(class_id), HeapData::Class(class) if class.native_layout().is_some()) {
+        let name = TypeRef::Class(class_id).dunder_name(vm.heap, vm.interns);
+        return Err(ExcType::type_error(format!(
+            "object.__new__({name}) is not safe, use {name}.__new__()"
+        )));
+    }
     if excess {
         if class_defines(class_id, "__new__", vm) {
             return Err(ExcType::type_error(
@@ -122,9 +128,7 @@ pub(crate) fn builtin_object_new(vm: &mut VM<'_>, args: ArgValues) -> RunResult<
             return Err(takes_no_arguments(class_id, vm));
         }
     }
-    vm.heap.inc_ref(class_id);
-    let instance = Instance::new(class_id, Dict::new());
-    Ok(Value::allocate(instance, vm.heap))
+    Ok(Value::Ref(Instance::allocate(class_id, vm.heap)))
 }
 
 /// Arguments of `object.__init__(self, /, *args, **kwargs)`.

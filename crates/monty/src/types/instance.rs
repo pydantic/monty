@@ -2,7 +2,11 @@ use std::{borrow::Cow, fmt::Write, mem};
 
 use monty_types::MontyUuid;
 
-use super::{Dict, LazyHeapSet, PyTrait, Type, TypeRef, descriptor};
+use super::{
+    Dict, LazyHeapSet, PyTrait, Type, TypeRef,
+    class::{ClassMember, list_member},
+    descriptor,
+};
 use crate::{
     args::{ArgValues, KwargsValues},
     boundary_uuid::create_uuid,
@@ -10,6 +14,7 @@ use crate::{
     bytecode::{CallResult, RunReentryGuard, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
+    expressions::CmpOperator,
     frozen::{FrozenFunction, FrozenFunctions},
     hash::{HashValue, hash_one, identity_hash},
     heap::{
@@ -24,6 +29,7 @@ use crate::{
         dataclasses,
     },
     py_attrs::AttrDef,
+    py_value::PyValue,
     value::{EitherStr, Value},
 };
 
@@ -45,17 +51,26 @@ pub(crate) struct Instance {
     /// to the host; dumped with the heap so it stays stable across restores.
     #[serde(rename = "U")]
     uuid: Option<MontyUuid>,
+    /// Owns the list payload when the class derives from `list`.
+    #[serde(default, rename = "N", skip_serializing_if = "Option::is_none")]
+    native_list: Option<HeapId>,
 }
 
 impl Instance {
-    /// Creates a new instance of `class` with the given initial attributes.
-    #[must_use]
-    pub fn new(class: HeapId, attrs: Dict) -> Self {
-        Self {
+    pub(crate) fn allocate(class: HeapId, heap: &Heap) -> HeapId {
+        let native_list = matches!(heap.get(class), HeapData::Class(cls) if cls.native_layout() == Some(Type::List))
+            .then(|| heap.allocate(HeapData::List(super::List::default())));
+        heap.inc_ref(class);
+        heap.allocate(HeapData::Instance(Box::new(Self {
             class,
-            attrs,
+            attrs: Dict::new(),
             uuid: None,
-        }
+            native_list,
+        })))
+    }
+
+    pub(crate) fn native_list(&self) -> Option<HeapId> {
+        self.native_list
     }
 
     /// Boundary identity of the instance, generated and stored on first use
@@ -147,10 +162,7 @@ impl<'h> HeapRead<'h, Instance> {
     /// What `copy` builds before filling a copy's `__dict__`; CPython's reducer
     /// path skips `__init__` the same way.
     pub(crate) fn allocate_empty_like(&self, vm: &mut VM<'h>) -> HeapId {
-        let class_id = self.get(vm.heap).class();
-        vm.heap.inc_ref(class_id);
-        vm.heap
-            .allocate(HeapData::Instance(Box::new(Instance::new(class_id, Dict::new()))))
+        Instance::allocate(self.get(vm.heap).class(), vm.heap)
     }
 }
 
@@ -198,11 +210,13 @@ impl<'h> HeapReadMut<'h, Instance> {
         }
     }
 
-    /// `obj.__class__ = cls`: every class shares the instance layout, so any
-    /// class is compatible; the instance takes `value`'s reference to it.
+    /// Class reassignment keeps the original storage layout.
     fn assign_class(&self, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         match value {
-            Value::Ref(id) if matches!(vm.heap.get(id), HeapData::Class(_)) => {
+            Value::Ref(id)
+                if matches!(vm.heap.get(id), HeapData::Class(cls)
+                if cls.native_layout() == self.get(vm.heap).native_list.map(|_| Type::List)) =>
+            {
                 // The instance takes over `value`'s reference to the new class.
                 let class_id = value.into_ref_id().expect("matched a reference");
                 let previous = mem::replace(&mut self.get_mut(vm.heap).class, class_id);
@@ -336,6 +350,26 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
         call_power_dunder(self.id(), "__rpow__", other, modulus, vm)
     }
 
+    fn py_cmp_op(&self, other: &Value, op: CmpOperator, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        if self.get(vm.heap).native_list().is_none() {
+            return Ok(None);
+        }
+        let name = match op {
+            CmpOperator::Lt => "__lt__",
+            CmpOperator::LtE => "__le__",
+            CmpOperator::Gt => "__gt__",
+            CmpOperator::GtE => "__ge__",
+            _ => unreachable!("comparison slot requires an ordering operator"),
+        };
+        let result = call_binary_dunder(self.id(), name, ArgValues::One(other.clone_with_heap(vm.heap)), vm)?;
+        if let Some(result) = result {
+            defer_drop!(result, vm);
+            Ok(Some(result.py_bool(vm)?))
+        } else {
+            Ok(None)
+        }
+    }
+
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         let key = key.clone_with_heap(vm.heap);
         instance_call_dunder_sync(self.id(), "__getitem__", Some(key), vm)?
@@ -414,8 +448,31 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
         TypeRef::Class(self.get(vm.heap).class)
     }
 
-    fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
-        None
+    fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
+        let id = self.get(vm.heap).native_list()?;
+        match vm.heap.get(id) {
+            HeapData::List(list) => Some(list.len()),
+            _ => None,
+        }
+    }
+
+    fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {
+        if self.get(vm.heap).native_list().is_none() {
+            return Ok(true);
+        }
+        if let Some(result) = instance_call_dunder_sync(self.id(), "__bool__", None, vm)? {
+            defer_drop!(result, vm);
+            if let Value::Bool(value) = result {
+                Ok(*value)
+            } else {
+                Err(ExcType::type_error(format!(
+                    "__bool__ should return bool, returned {}",
+                    result.py_type_name(vm)
+                )))
+            }
+        } else {
+            list_subclass_len(self.id(), vm).map(|len| len != 0)
+        }
     }
 
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
@@ -472,6 +529,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
         let class_id = instance_class(self_id, vm);
         if let Some(field_names) = dataclasses::generated_fields(class_id, "__repr__", vm) {
             dataclasses::dataclass_repr_fmt(self_id, &field_names, f, vm, heap_ids)
+        } else if let Some(id) = self.get(vm.heap).native_list()
+            && class_dunder(class_id, "__repr__", vm).is_none()
+        {
+            PyValue::from_heap(id, vm.heap).py_repr_fmt(f, vm, heap_ids)
         } else if let Some(s) = instance_call_str_dunder(self_id, "__repr__", vm)? {
             defer_drop!(s, vm);
             Ok(f.write_str(s.as_str(vm).expect("__repr__ result is validated"))?)
@@ -580,6 +641,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
 impl HeapItem for Instance {
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         stack.push(self.class);
+        stack.extend(self.native_list);
         self.attrs.py_dec_ref_ids(stack);
     }
 }
@@ -872,6 +934,18 @@ pub(crate) fn instance_call_dunder_sync(
     call_dunder_args_sync(self_id, dunder, args, vm)
 }
 
+pub(crate) fn list_subclass_len(id: HeapId, vm: &mut VM<'_>) -> RunResult<i64> {
+    let result = instance_call_dunder_sync(id, "__len__", None, vm)?
+        .ok_or_else(|| ExcType::type_error_no_len(&class_name(instance_class(id, vm), vm.heap, vm.interns)))?;
+    defer_drop!(result, vm);
+    let len = result.as_int(vm)?;
+    if len < 0 {
+        Err(ExcType::value_error("__len__() should return >= 0"))
+    } else {
+        Ok(len)
+    }
+}
+
 /// Validates integer conversion results, normalizing the permitted bool subclass.
 fn call_int_dunder(self_id: HeapId, dunder: &'static str, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
     match instance_call_dunder_sync(self_id, dunder, None, vm)? {
@@ -985,7 +1059,7 @@ pub(crate) fn instance_defines_iter(self_id: HeapId, vm: &VM<'_>) -> bool {
 /// `None` value opts the class out of the protocol wants
 /// [`class_defines_not_none`] instead.
 pub(crate) fn class_defines(class_id: HeapId, dunder: &str, vm: &VM<'_>) -> bool {
-    class_dunder(class_id, dunder, vm).is_some()
+    matches!(vm.heap.get(class_id), HeapData::Class(class) if class.lookup_member(dunder, vm.heap, vm.interns).is_some())
 }
 
 /// Whether `class_id` defines `dunder` as something other than `None`.
@@ -996,7 +1070,14 @@ pub(crate) fn class_defines(class_id: HeapId, dunder: &str, vm: &VM<'_>) -> bool
 /// general — `__next__ = None` keeps the class an iterator (see
 /// [`HeapObjectRead::py_is_iterator`]), so use [`class_defines`] there.
 pub(crate) fn class_defines_not_none(class_id: HeapId, dunder: &str, vm: &VM<'_>) -> bool {
-    matches!(class_dunder(class_id, dunder, vm), Some(member) if !matches!(member, Value::None))
+    let HeapData::Class(class) = vm.heap.get(class_id) else {
+        return false;
+    };
+    match class.lookup_member(dunder, vm.heap, vm.interns) {
+        Some(ClassMember::List(_)) => true,
+        Some(ClassMember::Python(value)) => !matches!(value, Value::None),
+        None => false,
+    }
 }
 
 /// Borrows a dunder from `class_id`'s namespace or its ancestors', or `None` if absent.
@@ -1049,11 +1130,17 @@ pub(crate) fn subclass_overrides(lhs: &Value, rhs: &Value, dunder: Option<&str>,
     }
 }
 
-/// The heap half of [`subclass_overrides`]: both operands must be instances.
 #[inline(never)]
 fn heap_subclass_overrides(lhs_id: HeapId, rhs_id: HeapId, dunder: Option<&str>, vm: &VM<'_>) -> bool {
-    let (HeapData::Instance(lhs), HeapData::Instance(rhs)) = (vm.heap.get(lhs_id), vm.heap.get(rhs_id)) else {
+    let HeapData::Instance(rhs) = vm.heap.get(rhs_id) else {
         return false;
+    };
+    let lhs = match vm.heap.get(lhs_id) {
+        HeapData::List(_) if rhs.native_list().is_some() => {
+            return dunder.is_none_or(|dunder| class_lookup(rhs.class, dunder, vm.heap, vm.interns).is_some());
+        }
+        HeapData::Instance(lhs) => lhs,
+        _ => return false,
     };
     let (lhs_class, rhs_class) = (lhs.class, rhs.class);
     if lhs_class == rhs_class || !TypeRef::Class(rhs_class).is_subclass_of(TypeRef::Class(lhs_class), vm.heap) {
@@ -1123,7 +1210,13 @@ fn instance_user_hash(self_id: HeapId, vm: &mut VM<'_>) -> RunResult<Option<Hash
 
 /// Looks up a member through the class's MRO and clones it out, or `None` if absent.
 pub(crate) fn class_member(class_id: HeapId, name: &str, vm: &VM<'_>) -> Option<Value> {
-    class_lookup(class_id, name, vm.heap, vm.interns).map(|v| v.clone_with_heap(vm.heap))
+    let HeapData::Class(class) = vm.heap.get(class_id) else {
+        return None;
+    };
+    Some(match class.lookup_member(name, vm.heap, vm.interns)? {
+        ClassMember::Python(value) => value.clone_with_heap(vm.heap),
+        ClassMember::List(key) => list_member(key, None, vm),
+    })
 }
 
 /// Returns a class object's name for error messages / repr.
@@ -1147,7 +1240,12 @@ pub(crate) fn class_name<'i>(class_id: HeapId, heap: &Heap, interns: &'i Interns
 
 /// Binds a class member before invoking an ordinary or implicit special method.
 fn call_member_bound(member: &Value, self_id: HeapId, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
-    descriptor::call_member(member, self_id, args, vm)
+    if matches!(member, Value::NativeMethod(_)) {
+        vm.heap.inc_ref(self_id);
+        vm.call_function(member, args.prepend(Value::Ref(self_id)))
+    } else {
+        descriptor::call_member(member, self_id, args, vm)
+    }
 }
 
 /// What a function found on an instance's class binds to: the instance, except

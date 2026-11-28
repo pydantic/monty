@@ -181,15 +181,15 @@ fn create_class(
     descriptor::finish_class(class_value, kwargs, vm)
 }
 
-/// Validates the `bases` tuple of a new class, returning the bases it names.
-///
-/// Native bases must explicitly opt in to Python subclassing.
+/// Validates the bases of a new class, including the native layout inherited from them.
 fn class_bases(bases: &Value, vm: &VM<'_>) -> RunResult<Vec<TypeRef>> {
     let Some(tuple) = bases.get_as::<Tuple>(vm.heap) else {
         let got = bases.py_type(vm).cpython_arg_name(vm.heap, vm.interns);
         return Err(ExcType::type_error_bad_arg_pos("type.__new__", 2, "tuple", got));
     };
     let mut out: Vec<TypeRef> = Vec::with_capacity(tuple.as_slice().len());
+    let mut layout = None;
+    let mut unsupported = None;
     for (index, base) in tuple.as_slice().iter().enumerate() {
         vm.heap.tracker.check_time_every(index)?;
         let Some(base) = TypeRef::from_value(base, vm.heap) else {
@@ -199,26 +199,37 @@ fn class_bases(bases: &Value, vm: &VM<'_>) -> RunResult<Vec<TypeRef>> {
             ));
         };
         let name = base.dunder_name(vm.heap, vm.interns);
-        match base {
-            TypeRef::Native(ty) if ty.def().accepts_python_subclasses => {}
+        let base_layout = match base {
+            TypeRef::Native(ty) if ty.def().accepts_python_subclasses => (ty != Type::Object).then_some(ty),
             TypeRef::Native(ty) if !ty.def().basetype => {
                 return Err(ExcType::type_error(format!(
                     "type '{}' is not an acceptable base type",
                     ty.name()
                 )));
             }
-            TypeRef::Class(id) if matches!(vm.heap.get(id), HeapData::Class(_)) => {}
+            TypeRef::Class(id) if let HeapData::Class(class) = vm.heap.get(id) => class.native_layout(),
             _ => {
-                return Err(ExcType::type_error(format!(
-                    "Monty does not support subclassing '{name}': classes can only inherit from classes \
-                     defined in Python and object"
-                )));
+                unsupported.get_or_insert(name.clone());
+                base.native()
             }
+        };
+        if let Some(base_layout) = base_layout {
+            if layout.is_some_and(|layout| layout != base_layout)
+                && (layout == Some(Type::List) || base_layout == Type::List)
+            {
+                return Err(ExcType::type_error("multiple bases have instance lay-out conflict"));
+            }
+            layout = Some(base_layout);
         }
         if out.contains(&base) {
             return Err(ExcType::type_error(format!("duplicate base class {name}")));
         }
         out.push(base);
+    }
+    if let Some(name) = unsupported {
+        return Err(ExcType::type_error(format!(
+            "Monty does not support subclassing '{name}': classes can only inherit from classes defined in Python, object and list"
+        )));
     }
     Ok(out)
 }

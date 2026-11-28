@@ -2150,7 +2150,7 @@ impl<'h> VM<'h> {
                 // Pattern matching
                 Opcode::MatchShape => {
                     let (length, flags) = self.current_frame.fetch_u16_u8();
-                    self.match_shape(length, flags);
+                    self.match_shape(length, flags)?;
                 }
                 Opcode::MatchKeys => {
                     let mode = self.current_frame.fetch_u8();

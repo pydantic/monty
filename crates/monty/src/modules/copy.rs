@@ -14,7 +14,7 @@ use crate::{
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    types::{Dict, List, Module, Type, hash_table::TableCursor, instance_call_copy_hook},
+    types::{Dict, Instance, List, Module, Type, hash_table::TableCursor, instance_call_copy_hook},
     value::{VALUE_SIZE, Value},
 };
 
@@ -141,10 +141,22 @@ fn shallow_copy(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
                 if let Some(copy) = instance_call_copy_hook(id, "__copy__", None, vm)? {
                     Ok(copy)
                 } else {
-                    let pairs = clone_attrs(id, vm)?;
                     let copy_id = instance.allocate_empty_like(vm);
-                    let filled = insert_attrs(copy_id, pairs, vm);
-                    release_on_error(Value::Ref(copy_id), filled, vm)
+                    let mut copy = DropGuard::new(Value::Ref(copy_id), vm);
+                    let (value, vm) = copy.as_parts_mut();
+                    if let Some(src) = instance.get(vm.heap).native_list() {
+                        let src = vm.heap.read_as::<List>(src).expect("source owns list storage");
+                        let dst = value
+                            .get_as::<Instance>(vm.heap)
+                            .and_then(Instance::native_list)
+                            .expect("copy owns list storage");
+                        let dst = vm.heap.read_as::<List>(dst).expect("copy owns list storage");
+                        let items = src.clone_all_items(vm)?;
+                        dst.get_mut(vm.heap).extend_owned(items);
+                    }
+                    let pairs = clone_attrs(id, vm)?;
+                    insert_attrs(copy_id, pairs, vm)?;
+                    Ok(copy.into_inner())
                 }
             }
             // A new binding over the same receiver and function, as CPython's
@@ -415,6 +427,14 @@ pub(crate) fn deep_copy_attrs(
     let mut guard = DropGuard::new(Value::Ref(copy_id), vm);
     let (copy, vm) = guard.as_parts_mut();
     memo.insert(source, copy, vm)?;
+    if let Some(src) = source.get_as::<Instance>(vm.heap).and_then(Instance::native_list) {
+        let src = vm.heap.read_as::<List>(src).expect("source owns list storage");
+        let dst = copy
+            .get_as::<Instance>(vm.heap)
+            .and_then(Instance::native_list)
+            .expect("copy owns list storage");
+        src.deep_copy_items_into(dst, memo, vm)?;
+    }
     let expected_len = attrs(source_id, vm).len();
     // Preflighted whole, for the reason the dict copy is: the loop below
     // rejects a resize rather than following it, so this is the final width.

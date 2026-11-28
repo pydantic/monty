@@ -130,6 +130,258 @@ else:
 }
 
 #[test]
+fn native_list_subclasses_share_one_layout() {
+    run(r"
+class Mixin:
+    label = 'from mixin'
+
+class Left(list, object):
+    pass
+
+class Right(list):
+    pass
+
+class Child(Mixin, Left, Right):
+    pass
+
+xs = Child([1, 2])
+assert type(xs) is Child
+assert Child.__mro__ == (Child, Mixin, Left, Right, list, object)
+assert isinstance(xs, list) and issubclass(Child, list)
+assert xs.label == 'from mixin'
+assert xs == [1, 2] == xs
+assert xs < [2] and [0] < xs
+assert list.__lt__(xs, [2])
+assert 1 in xs and list(xs) == [1, 2]
+assert type(xs[:]) is list and type(xs.copy()) is list
+assert hash(type(xs)) == hash(Child)
+try:
+    hash(xs)
+except TypeError:
+    pass
+else:
+    assert False
+
+saved = xs.append
+saved(3)
+Child.append(xs, 4)
+getattr(xs, 'append')(5)
+assert xs == [1, 2, 3, 4, 5]
+assert [0] + xs == [0, 1, 2, 3, 4, 5]
+assert xs * 2 == [1, 2, 3, 4, 5, 1, 2, 3, 4, 5]
+ys = type('Dynamic', (Child,), {})([1])
+alias = ys
+ys += ys
+ys *= 2
+assert ys is alias and ys == [1, 1, 1, 1]
+assert list.__iadd__(ys, [2]) is ys
+assert list.__imul__(ys, 1) is ys
+assert ys == [1, 1, 1, 1, 2]
+");
+    run_err(
+        "class Conflict(list, dict): pass",
+        "multiple bases have instance lay-out conflict",
+    );
+    run_err(
+        "class Left(list): pass\nclass Conflict(Left, dict): pass",
+        "multiple bases have instance lay-out conflict",
+    );
+}
+
+#[test]
+fn native_list_storage_and_python_overrides() {
+    run(r"
+class After:
+    def append(self, value):
+        raise AssertionError('list precedes this mixin')
+
+    def __len__(self):
+        return 42
+
+class NativeFirst(list, After):
+    pass
+
+native = NativeFirst([1])
+native.append(2)
+assert len(native) == 2
+
+class Override(NativeFirst):
+    def __init__(self, value):
+        self.received = value
+
+    def append(self, item):
+        self.last = item
+
+    def __len__(self):
+        return 99
+
+    def __getitem__(self, index):
+        return 'override'
+
+    def __setitem__(self, index, value):
+        self.assigned = value
+
+    def __iadd__(self, other):
+        return 'replacement'
+
+    def __eq__(self, other):
+        return 'reflected'
+
+    def __gt__(self, other):
+        return True
+
+xs = Override([1])
+assert xs.received == [1]
+assert list.__len__(xs) == 0
+xs.append(2)
+assert xs.last == 2 and list.__len__(xs) == 0
+list.append(xs, 3)
+assert xs[0] == 'override' and list.__getitem__(xs, 0) == 3
+xs[0] = 4
+assert xs.assigned == 4 and list.__getitem__(xs, 0) == 3
+list.__setitem__(xs, 0, 5)
+assert len(xs) == 99 and list.__len__(xs) == 1
+assert ([8] == xs) == 'reflected'
+assert [8] < xs
+assert not list.__gt__(xs, [8])
+xs += [6]
+assert xs == 'replacement'
+
+class Empty(list):
+    def __len__(self):
+        return 1
+
+assert bool(Empty())
+assert not bool(Leftover := NativeFirst())
+list.__init__(Leftover, [4])
+assert Leftover == [4]
+list.__init__(Leftover, Leftover)
+assert Leftover == []
+
+class CustomNew(list):
+    def __new__(cls, items):
+        return list.__new__(cls)
+
+assert type(CustomNew([1])) is CustomNew
+assert CustomNew([1]) == [1]
+uninitialized = CustomNew.__new__(CustomNew, [1])
+assert type(uninitialized) is CustomNew and uninitialized == []
+try:
+    object.__new__(CustomNew)
+except TypeError:
+    pass
+else:
+    assert False
+try:
+    list.append(object, 1)
+except TypeError:
+    pass
+else:
+    assert False
+");
+}
+
+#[test]
+fn native_list_subclasses_keep_contents_in_copy_and_conversion() {
+    let code = r"
+import copy
+import json
+
+class Items(list):
+    __init__ = list.__init__
+
+items = Items([[1], 2])
+items.first = items[0]
+shallow = copy.copy(items)
+deep = copy.deepcopy(items)
+assert type(shallow) is type(deep) is Items
+assert shallow == deep == items
+assert shallow.first is shallow[0] is items[0]
+assert deep.first is deep[0] and deep.first is not items[0]
+assert json.dumps(items) == '[[1], 2]'
+
+match items:
+    case [a, b]:
+        assert a is items.first and b == 2
+    case _:
+        assert False
+match items:
+    case Items(entire):
+        assert entire is items
+    case _:
+        assert False
+
+class Sibling(list):
+    pass
+
+items.__class__ = Sibling
+assert type(items) is Sibling and items == [[1], 2]
+try:
+    items.__class__ = type('Plain', (), {})
+except TypeError:
+    pass
+else:
+    assert False
+
+cycle = Items()
+cycle.append(cycle)
+copied = copy.deepcopy(cycle)
+assert copied[0] is copied
+items
+";
+    let output = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default())
+        .unwrap()
+        .run_no_limits(vec![])
+        .unwrap();
+    assert_eq!(
+        output,
+        MontyObject::list([MontyObject::list([MontyObject::int(1)]), MontyObject::int(2)])
+    );
+}
+
+#[test]
+fn native_list_subclass_survives_snapshot() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        "class Items(list): pass\nitems = Items([1, 2])\nitems.label = 3\nappend = items.append\n",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    let bytes = dump("test.py", None, &[], SessionRef::Idle(&repl)).unwrap();
+    let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else {
+        panic!("expected an idle session");
+    };
+    let output = restored
+        .feed_run(
+            "assert type(items) is Items\nappend(4)\nassert items == [1, 2, 4]\nitems.label",
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_eq!(output, MontyObject::int(3));
+}
+
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn native_list_storage_cycles_are_collected() {
+    let code = r"
+def make_cycle():
+    class Items(list): pass
+    items = Items()
+    items.append(items)
+    assert repr(items) == '[[...]]'
+
+make_cycle()
+";
+    let output = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default())
+        .unwrap()
+        .run_ref_counts(vec![])
+        .unwrap();
+    assert!(output.unreachable.is_empty(), "{:?}", output.unreachable);
+}
+
+#[test]
 fn deeply_nested_subclass_checks_respect_recursion_limits() {
     let code = r"
 class Parent: pass

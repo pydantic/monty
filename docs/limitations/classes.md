@@ -45,22 +45,20 @@ class and method decorators (including `property`, `classmethod`, and `staticmet
 `type()` constructor. The `__enter__`/`__exit__` divergences are in
 [with.md](with.md).
 
-Classes can inherit from other classes and from `object`, singly or with
-multiple bases. The MRO is CPython's C3 linearisation (`__mro__`, `mro()`,
-`__bases__`), and inherited methods, class variables and dunders resolve through
-it. `isinstance`, `issubclass`,
+Classes can inherit from other Python classes, `object` and `list`, singly or with multiple bases.
+Inherited methods, class variables and dunders resolve through CPython's C3 method resolution order (`__mro__`). `isinstance`, `issubclass`,
 `__new__`, `__init_subclass__` with class keyword arguments, and the
 subclass-first rule for reflected operators and `==` all follow CPython.
 
 ## Inheritance
 
-- **Native bases must opt in.** `object` is the only native base currently enabled. Subclassing a native type CPython
-    allows (`int`, `list`, `dict`, `Exception`, `ValueError`, `datetime.date`, a
-    `namedtuple` class, a host class, ...) raises
-    `TypeError: Monty does not support subclassing 'int': classes can only inherit from classes defined in Python and object`.
-    Types CPython refuses (`bool`, `range`, ...) raise CPython's
-    `type 'bool' is not an acceptable base type`. In particular there are no
-    user-defined exception classes yet (see [exceptions.md](exceptions.md)).
+- **Native bases must opt in.** `object` and `list` are supported.
+    Other native or host-provided classes, such as `dict`, `int`, and `Exception`, raise `TypeError`.
+    Types CPython refuses, such as `bool` and `range`, still raise `type 'bool' is not an acceptable base type`.
+- **One native storage layout per class.** A class can inherit multiple paths to `list` and include Python mixins.
+    Combining `list` and `dict` raises `TypeError: multiple bases have instance lay-out conflict`.
+- **List subclass values cross to the host as plain lists.** Session snapshots retain the subclass and its attributes.
+    Parameterized class bases such as `list[int]` and subscripting a list subclass such as `Items[int]` are unsupported.
 - **No `super()`**: the name is undefined, so `super().__init__()` raises
     `NameError: name 'super' is not defined`. Call the base class explicitly
     (`Base.__init__(self, ...)`, `object.__init_subclass__(**kwargs)`).
@@ -100,9 +98,8 @@ order and error wording, but with these divergences:
 
 ## Divergences from CPython
 
-- **Default `repr`** (no user `__repr__`) is `<Foo object at 0x..>` using the
-    **bare** class name, where CPython uses the qualified name
-    `<module.Foo object at 0x..>`.
+- **Default `repr`** for instances without native storage uses the bare class name, as in `<Foo object at 0x..>`.
+    CPython uses a qualified name such as `<module.Foo object at 0x..>`.
 - **`__init__`/method argument-count errors** name the method without the
     class qualifier, e.g. `__init__() missing 1 required positional argument: 'y'`, where CPython says
     `Foo.__init__() missing ...`.
@@ -111,22 +108,17 @@ order and error wording, but with these divergences:
 - **Python-defined bound methods report `function`, not `method`.** `type(obj.method)` is
     `<class 'function'>` where CPython says `<class 'method'>`; Monty has no
     dedicated `method` type.
-- **Ordering comparisons on instances raise, but a user `__lt__`/`__gt__`/… is
-    not dispatched.** `a < b` on instances of a class with no comparison dunders
-    raises `TypeError: '<' not supported between instances of 'Foo' and 'Foo'`
-    (matching CPython). A class that *defines* `__lt__` etc. still raises: those
-    dunders are not dispatched (see the not-dispatched dunder list below).
+- **Ordering comparisons dispatch on list subclasses.** Monty truth-tests the result of an ordering override.
+    Ordering on instances without native storage raises `TypeError`.
 - **`__repr__`/`__str__` cannot suspend**: they are run to completion
     synchronously, so a `__repr__`/`__str__` that calls an external/OS function
     raises rather than yielding to the host. `__init__` and regular methods
     *can* suspend on external/OS calls.
 - **Only a plain-function `__init__` can suspend.** When `__init__` is bound to
     something else (a builtin, another class, a bound method, ...), it is called
-    with CPython's descriptor-binding semantics (no `self` prepended unless it is
-    a plain function) and CPython's `None`-return contract is enforced, but it
-    runs to completion synchronously, so it cannot yield to the host, and an
-    external-function `__init__` raises `NotImplementedError` rather than
-    suspending.
+    synchronously and must return `None`.
+    A native method descriptor, such as `list.__init__`, binds the new instance as its receiver.
+    An external-function `__init__` raises `NotImplementedError`.
 - **`__eq__`/`__hash__`/`__index__` cannot suspend**: like `__repr__`/`__str__`
     they run to completion synchronously, so one that calls an external/OS
     function raises rather than yielding to the host. An exception raised by
@@ -137,8 +129,8 @@ order and error wording, but with these divergences:
     `__trunc__`, binary numeric dunders (including reflected forms), `__getitem__` and `__setitem__` run synchronously.
     An external or OS call raises `NotImplementedError` rather than yielding to the host.
     `__call__` uses the ordinary suspendable call path.
-- **Ordering dunders are still not dispatched**; see the entry above.
-    Instances are always truthy (no `__bool__`/`__len__` dispatch).
+- **Truth testing** on list subclasses uses `__bool__` and falls back to `__len__`.
+    Instances without native storage are always truthy.
 - **Python-defined bound methods compare and hash by identity**: each `obj.method` access
     creates a fresh object, so `obj.method == obj.method` is `False` and two
     accesses hash differently. CPython compares/hashes bound methods by
@@ -436,7 +428,7 @@ every construction request. Divergences:
 
 ## What does NOT exist for user code
 
-- Subclassing native types and exceptions (see "Inheritance" above).
+- Subclassing native types other than `object` and `list`.
 - Metaclasses and any other metaclass-driven namespace
     customization.
 - `__slots__`.
@@ -450,11 +442,9 @@ every construction request. Divergences:
     `...<N lines>...`), where CPython pins the individual decorator that raised.
     Every decorator in a stack reports that same location; only the callee frame
     identifies which one raised.
-- Dunder protocols not dispatched for user-defined instances include `__new__`, `__ne__`, ordering comparisons,
-    `__bool__`, `__len__`, `__complex__`, `__format__`, and all in-place arithmetic dunders (`__iadd__`, etc.).
-    Augmented assignment falls back to binary arithmetic rather than calling an in-place dunder,
-    except `@=`, which is rejected at compile time.
-    `__ne__` is always the negation of `__eq__`, so a custom `__ne__` is ignored.
+- Monty uses the negation of `__eq__` for `!=` and has no dispatch for `__complex__` or `__format__`.
+    List subclasses can override `__iadd__` and `__imul__`.
+    Other augmented assignments use binary arithmetic. The compiler rejects `@=`.
 - **Returning `bool` from `__int__` or `__index__` does not emit a `DeprecationWarning`.**
 - **Subscript assignment does not dispatch `__index__`.** `lst[obj] = x` raises
     `TypeError: list indices must be integers or slices, not Foo` where CPython
@@ -560,7 +550,7 @@ of `AttributeError`, so `except AttributeError:` catches it, as in CPython's
     `__doc__` and `__name__` cannot be reassigned on the property object.
 - `classmethod` and `staticmethod` expose `__func__`, `__wrapped__`, and `__name__`, but do not copy
     other function metadata (including `__doc__`) or expose a writable wrapper `__dict__`.
-- Descriptor types cannot be subclassed, since sandbox classes can only inherit from other sandbox classes and `object`.
+- Descriptor types cannot be subclassed.
 - Native operations that already run Python hooks synchronously, including dataclass comparison and repr,
     also require descriptor reads to finish synchronously.
     Data-descriptor setters in the synthesized dataclass initializer also cannot suspend; see [dataclasses.md](dataclasses.md).

@@ -667,6 +667,8 @@ native_types! {
         .basetype()
         .class_getitem()
         .sequence_repeat()
+        .accepts_python_subclasses()
+        .subtype_call(super::list::adapt_list_subclass)
         .ctor(Constructor::Value(List::init)),
     Tuple("tuple")
         .subtype_call(super::namedtuple::call_tuple_descriptor)
