@@ -36,9 +36,9 @@ access raises `AttributeError`.
 - `sys.hash_info` — the 9 fields CPython 3.14 reports for 64-bit platforms:
     `width=64`, `modulus=2**61 - 1`, `inf=314159`, `nan=0`, `imag=1000003`,
     `algorithm='siphash13'`, `hash_bits=64`, `seed_bits=128`, `cutoff=0`.
-    These constants are exposed for stdlib compatibility (such as `fractions.Fraction`).
+    These constants are exposed for stdlib code that reads `sys.hash_info`.
     Note that Monty's string, float, and container hashing uses its own algorithm
-    and does not follow SipHash-1-3 (see [builtins.md](builtins.md)).
+    and does not reproduce CPython's SipHash-1-3 hashes (see [builtins.md](builtins.md)).
 - `sys.executable`, `sys.prefix`, `sys.exec_prefix`, `sys.base_prefix`,
     `sys.base_exec_prefix` — the empty string. The sandbox has no install tree,
     and CPython documents the empty string for a path it cannot determine.

@@ -245,7 +245,7 @@ fn float_info(vm: &VM<'_>) -> Value {
 ///
 /// Modulus is $P = 2^{61}-1$, width is 64 bits, inf is 314159, and the default algorithm
 /// is siphash13. Monty's internal hash algorithms diverge for strings and containers,
-/// but numeric constants are exposed for standard library compatibility (e.g. `fractions`).
+/// but numeric constants are exposed for standard library compatibility.
 fn hash_info(vm: &VM<'_>) -> Value {
     let named_tuple = NamedTuple::new(
         EitherStr::Interned(vm.interns.intern_static(StaticStrings::SysHashInfo)),
