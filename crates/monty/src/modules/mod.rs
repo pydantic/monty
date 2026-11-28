@@ -349,6 +349,45 @@ impl fmt::Display for ModuleFunctions {
 }
 
 impl ModuleFunctions {
+    /// The Python module name defining this module function.
+    #[must_use]
+    pub(crate) fn module_name(self) -> &'static str {
+        match self {
+            Self::Asyncio(_) => "asyncio",
+            Self::Collections(_) => "collections",
+            Self::Json(_) => "json",
+            Self::Math(_) => "math",
+            Self::Os(_) => "os",
+            Self::OsPath(_) => "posixpath",
+            Self::Re(_) => "re",
+            Self::Unicodedata(_) => "unicodedata",
+            Self::Itertools(_) => "itertools",
+            Self::Dataclasses(_) => "dataclasses",
+            Self::Functools(_) => "functools",
+            Self::Base64(_) => "base64",
+            Self::Binascii(_) => "binascii",
+            Self::Random(_) => "random",
+            Self::Copy(_) => "copy",
+            Self::Descriptor(_) => "builtins",
+            Self::Frozen(_) => "_frozen",
+            Self::Time(_) => "time",
+            Self::Hashlib(_) => "hashlib",
+            Self::Bisect(_) => "bisect",
+            Self::Csv(_) => "csv",
+            Self::Tomllib(_) => "tomllib",
+            Self::Decimal(_) => "decimal",
+            Self::Fnmatch(_) => "fnmatch",
+            Self::Typing(_) => "typing",
+            Self::Annotationlib(_) => "annotationlib",
+            Self::Statistics(_) => "statistics",
+            Self::Io(_) => "_io",
+            #[cfg(feature = "test-hooks")]
+            Self::Gc(_) => "gc",
+            #[cfg(feature = "test-hooks")]
+            Self::Sys(_) => "sys",
+        }
+    }
+
     /// Calls the module function with the given arguments.
     ///
     /// Returns `CallResult` to support both immediate values and OS calls that
@@ -393,5 +432,79 @@ impl ModuleFunctions {
     /// Writes the Python repr() string for this function to a formatter.
     pub fn py_repr_fmt<W: Write>(self, f: &mut W, py_id: impl fmt::LowerHex) -> fmt::Result {
         write!(f, "<function {self} at 0x{py_id:x}>")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_module_functions_module_name() {
+        let cases: &[(ModuleFunctions, &str)] = &[
+            (ModuleFunctions::Asyncio(asyncio::AsyncioFunctions::Gather), "asyncio"),
+            (
+                ModuleFunctions::Collections(collections::CollectionsFunctions::Namedtuple),
+                "collections",
+            ),
+            (ModuleFunctions::Json(json::JsonFunctions::Loads), "json"),
+            (ModuleFunctions::Math(math::MathFunctions::Floor), "math"),
+            (ModuleFunctions::Os(os::OsFunctions::Getenv), "os"),
+            (ModuleFunctions::OsPath(os_path::OsPathFunctions::Abspath), "posixpath"),
+            (ModuleFunctions::Re(re::ReFunctions::Compile), "re"),
+            (
+                ModuleFunctions::Unicodedata(unicodedata::UnicodedataFunctions::Category),
+                "unicodedata",
+            ),
+            (
+                ModuleFunctions::Itertools(itertools::ItertoolsFunctions::Tee),
+                "itertools",
+            ),
+            (
+                ModuleFunctions::Dataclasses(dataclasses::DataclassesFunctions::Dataclass),
+                "dataclasses",
+            ),
+            (
+                ModuleFunctions::Functools(functools::FunctoolsFunctions::Reduce),
+                "functools",
+            ),
+            (ModuleFunctions::Base64(base64::Base64Functions::B64Encode), "base64"),
+            (
+                ModuleFunctions::Binascii(binascii::BinasciiFunctions::Hexlify),
+                "binascii",
+            ),
+            (ModuleFunctions::Random(random::RandomFunctions::Random), "random"),
+            (ModuleFunctions::Copy(copy::CopyFunctions::Copy), "copy"),
+            (ModuleFunctions::Descriptor(DescriptorMethod::Get), "builtins"),
+            (ModuleFunctions::Frozen(FrozenFunctions::AliasWith), "_frozen"),
+            (ModuleFunctions::Time(time::TimeFunctions::Time), "time"),
+            (ModuleFunctions::Hashlib(hashlib::HashlibFunctions::Md5), "hashlib"),
+            (ModuleFunctions::Bisect(bisect::BisectFunctions::BisectLeft), "bisect"),
+            (ModuleFunctions::Csv(csv::CsvFunctions::Reader), "csv"),
+            (ModuleFunctions::Tomllib(tomllib::TomllibFunctions::Loads), "tomllib"),
+            (
+                ModuleFunctions::Decimal(decimal::DecimalFunctions::Getcontext),
+                "decimal",
+            ),
+            (ModuleFunctions::Fnmatch(fnmatch::FnmatchFunctions::Fnmatch), "fnmatch"),
+            (ModuleFunctions::Typing(typing::TypingFunctions::GetTypeHints), "typing"),
+            (
+                ModuleFunctions::Annotationlib(annotationlib::AnnotationlibFunctions::GetAnnotations),
+                "annotationlib",
+            ),
+            (
+                ModuleFunctions::Statistics(statistics::StatisticsFunctions::Mean),
+                "statistics",
+            ),
+            (ModuleFunctions::Io(_io::IoFunctions::OpenCode), "_io"),
+            #[cfg(feature = "test-hooks")]
+            (ModuleFunctions::Gc(gc::GcFunctions::Collect), "gc"),
+            #[cfg(feature = "test-hooks")]
+            (ModuleFunctions::Sys(sys::SysFunctions::Setrecursionlimit), "sys"),
+        ];
+
+        for &(mf, expected_name) in cases {
+            assert_eq!(mf.module_name(), expected_name);
+        }
     }
 }

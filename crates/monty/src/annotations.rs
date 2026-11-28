@@ -33,9 +33,8 @@ def __monty_class_annotations(cls, annotate, classdict, call_annotate, cache):
     return result
 ";
 
-/// `f.__annotate__` and `f.__annotations__` of a `def`, the only attributes
-/// Monty's functions have (see `limitations/language.md`); `None` for any other
-/// name. `globals` is the exec dict the `def` was made under, if any.
+/// `f.__name__`, `f.__qualname__`, `f.__doc__`, `f.__module__`, `f.__annotate__`,
+/// and `f.__annotations__` of a `def`, closure, or function with defaults.
 pub(crate) fn function_getattr(
     func_id: FunctionId,
     globals: Option<HeapId>,
@@ -43,6 +42,24 @@ pub(crate) fn function_getattr(
     vm: &mut VM<'_>,
 ) -> Option<RunResult<CallResult>> {
     match attr {
+        "__name__" | "__qualname__" => {
+            let function = vm.interns.get_function(func_id);
+            Some(Ok(CallResult::Value(Value::InternString(function.name.name_id))))
+        }
+        "__doc__" => Some(Ok(CallResult::Value(Value::None))),
+        "__module__" => {
+            if let Some(globals_id) = globals
+                && let HeapData::Dict(dict) = vm.heap.get(globals_id)
+            {
+                return match dict.get_by_str(StaticStrings::DunderName.into(), vm.heap, vm.interns) {
+                    Some(mod_name) => Some(Ok(CallResult::Value(mod_name.clone_with_heap(vm.heap)))),
+                    None => Some(Ok(CallResult::Value(Value::None))),
+                };
+            }
+            Some(Ok(CallResult::Value(Value::InternString(
+                vm.interns.intern_static(StaticStrings::DunderMain),
+            ))))
+        }
         "__annotate__" => Some(Ok(CallResult::Value(function_annotate(func_id, globals, vm)))),
         "__annotations__" => Some(function_annotations(func_id, globals, vm)),
         _ => None,

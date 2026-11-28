@@ -65,8 +65,8 @@ For compilation and runtime limits, see [resource limits](resource_limits.md).
 - User-defined exception classes, and subclasses of other native types.
     Classes inherit only from classes defined in Python and `object`, so the built-in exception types are a fixed set.
 - Function attributes.
-    `fn.__name__`, `fn.__doc__` and friends raise `AttributeError`, and new attributes cannot be set — so
-    `functools.wraps`-style metadata copying and registries keyed on `fn.__name__` have no equivalent.
+    Functions have no `__dict__`, and new attributes cannot be set (`fn.tag = True` raises `AttributeError`).
+    `fn.__qualname__` lacks scope prefixes and `fn.__doc__` is always `None`; see [language.md](language.md#function-objects).
 - `compile`, `globals` and `__import__` — all raise `NameError`.
     `eval` and `exec` exist (source text only), and so does `locals()`; see [eval_exec.md](eval_exec.md).
 - Third-party packages.

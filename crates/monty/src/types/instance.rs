@@ -634,7 +634,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BoundMethod> {
         match attr.as_str(vm.interns) {
             "__func__" => return Ok(Some(CallResult::Value(bound.func.clone_with_heap(vm.heap)))),
             "__self__" => return Ok(Some(CallResult::Value(bound.instance.clone_with_heap(vm.heap)))),
-            "__annotations__" | "__annotate__" => {}
+            "__annotations__" | "__annotate__" | "__name__" | "__qualname__" | "__doc__" | "__module__" => {}
             _ => return Ok(None),
         }
         let func = self.get(vm.heap).func.clone_with_heap(vm);

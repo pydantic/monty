@@ -37,8 +37,8 @@ Passing a non-iterable to a call, `f(*1)`, reports
 list literal. CPython instead names the callable by its module-qualified
 `__qualname__`: `__main__.f() argument after * must be an iterable, not int`,
 and correspondingly `__main__.C.m()`, `__main__.<lambda>()` or
-`__main__.outer.<locals>.inner()`. Monty has neither function `__qualname__`
-nor module-qualified names (see the class-name note in [collections.md](collections.md)), so
+`__main__.outer.<locals>.inner()`. Monty's function `__qualname__` lacks module
+and enclosing-scope qualification (see the class-name note in [collections.md](collections.md)), so
 it reports the generic form.
 
 Unpacking a named tuple into too few targets reports its total length, for example
@@ -192,17 +192,15 @@ nor safe to surface in the sandbox.
 
 ## Function objects
 
-A function exposes only `__annotations__` and `__annotate__` (see [typing.md](typing.md#annotations)):
-`__name__`, `__doc__`, `__qualname__` and `__module__` all raise
-`AttributeError: 'function' object has no attribute '<name>'`, and attributes cannot be set —
-`fn.tag = True` raises
-`AttributeError: 'function' object has no attribute 'tag' and no __dict__ for setting new attributes`. CPython supports
-all of these.
+Functions support read-only `__name__`, `__qualname__`, `__doc__`, `__module__`, `__annotate__`, and `__annotations__`.
 
-This bounds what a decorator can do: it can call, wrap, store or replace the
-function it receives, but cannot ask the function about itself, so
-`functools.wraps`-style metadata copying, registries keyed by `fn.__name__`, and
-attribute tagging for later discovery all have no equivalent.
+Divergences from CPython:
+
+- `__qualname__`: returns only the function's base identifier (`fn.__name__`). Monty does not track enclosing scopes at compile time, so nested functions and methods do not carry scope prefixes (`outer.<locals>.inner` or `Class.method`).
+- `__doc__`: always returns `None`. Docstrings in function bodies are discarded at compile time.
+- `__module__`: resolved on each access from the defining module's `__name__` global, rather than snapshotted at definition time.
+- Functions in the `os` module report `__module__ == 'os'` across all platforms rather than CPython's underlying platform module (`'posix'` or `'nt'`).
+- Attributes cannot be set on functions — `fn.tag = True` raises `AttributeError: 'function' object has no attribute 'tag' and no __dict__ for setting new attributes`. Functions have no `__dict__`.
 
 ## Walrus assignments in lambda defaults
 
