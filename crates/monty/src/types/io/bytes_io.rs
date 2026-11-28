@@ -16,7 +16,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
-    heap::{DropGuard, HeapData, HeapId, HeapItem, HeapObjectRead},
+    heap::{DropGuard, HeapId, HeapItem, HeapObjectRead},
     intern::StaticStrings,
     py_attrs::PyAttrs,
     py_value::PyValue,
@@ -54,7 +54,7 @@ impl BytesIo {
         defer_drop!(initial_bytes, vm);
         let buf = initial_payload(initial_bytes, vm)?;
         let stream = Self { buf, ..Self::default() };
-        Ok(Value::Ref(vm.heap.allocate(HeapData::BytesIo(Box::new(stream)))))
+        Ok(Value::allocate(stream, vm.heap))
     }
 
     /// What `copy.copy` builds: the data and position; a closed stream refuses.
@@ -382,7 +382,7 @@ impl<'h> HeapObjectRead<'h, BytesIo> {
             }
         }
         let (lines, vm) = lines_guard.into_parts();
-        Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(lines)))))
+        Ok(Value::allocate(List::new(lines), vm.heap))
     }
 
     /// Writes one `bytes` value, returning its length; the type is checked first.

@@ -80,7 +80,7 @@ impl VM<'_> {
                 Err(error) if error.is_catchable(ExcType::IndexError) => break,
                 Err(error) => return Err(error),
             };
-            let is_str = item.as_str(this).is_some();
+            let is_str = item.is_str();
             names.push(item);
             if !is_str {
                 break;

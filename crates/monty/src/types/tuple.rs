@@ -34,6 +34,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead},
+    heap_data::HeapKind,
     modules::copy::{Memo, PyDeepCopy, deep_copy_slots},
     py_attrs::PyAttrs,
     resource_checks::{check_repeat_size, repeated_len},
@@ -96,7 +97,7 @@ impl Tuple {
     /// ensure refcounts are properly managed.
     #[must_use]
     fn new(items: TupleVec) -> Self {
-        let contains_refs = items.iter().any(|v| matches!(v, Value::Ref(_)));
+        let contains_refs = items.iter().any(|v| matches!(v, Value::Ref(..)));
         Self {
             items,
             contains_refs,
@@ -131,7 +132,7 @@ impl Tuple {
                 Ok(vm.heap.get_empty_tuple())
             }
             // Named tuples still need conversion to a plain tuple.
-            Some(v @ Value::Ref(id)) if matches!(vm.heap.get(id), HeapData::Tuple(_)) => Ok(v),
+            Some(v @ Value::Ref(HeapKind::Tuple, _)) => Ok(v),
             Some(v) => {
                 let items = collect_owned_iterable(v, vm)?;
                 Ok(allocate_tuple(items, vm.heap))
@@ -531,7 +532,7 @@ impl HeapItem for Tuple {
             return;
         }
         for obj in &mut self.items {
-            if let Value::Ref(id) = obj {
+            if let Value::Ref(_, id) = obj {
                 stack.push(*id);
                 #[cfg(feature = "memory-model-checks")]
                 obj.dec_ref_forget();

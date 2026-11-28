@@ -260,7 +260,7 @@ pub(crate) fn py_lt(a: &Value, b: &Value, vm: &mut VM<'_>) -> RunResult<bool> {
         // A `NaN` operand is unordered, so `<` is `False`.
         _ if let (Some(a), Some(b)) = (Number::of(a), Number::of(b)) => Ok(a.partial_cmp(b) == Some(Ordering::Less)),
         _ if let (Some(a), Some(b)) = (a.as_str(vm), b.as_str(vm)) => Ok(a < b),
-        (Value::Ref(_), _) | (_, Value::Ref(_)) => vm.cmp_values(CmpOperator::Lt, a, b),
+        (Value::Ref(..), _) | (_, Value::Ref(..)) => vm.cmp_values(CmpOperator::Lt, a, b),
         _ => match a.py_cmp(b, vm)? {
             CmpOrder::Ordered(ordering) => Ok(ordering.is_lt()),
             CmpOrder::Unordered => Ok(false),

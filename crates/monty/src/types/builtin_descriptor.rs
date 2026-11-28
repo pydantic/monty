@@ -11,6 +11,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     hash::{HashValue, identity_hash},
     heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    heap_data::HeapKind,
     modules::ModuleFunctions,
     value::{EitherStr, Value},
 };
@@ -34,7 +35,7 @@ impl BuiltinDescriptor {
     /// Include every owned edge, including names installed by __set_name__, in cycle collection.
     pub(crate) fn visit_children(&self, on_child: &mut impl FnMut(HeapId)) {
         let mut visit = |value: &Value| {
-            if let Value::Ref(id) = value {
+            if let Value::Ref(_, id) = value {
                 on_child(*id);
             }
         };
@@ -138,18 +139,18 @@ pub(crate) fn staticmethod_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<V
 
 /// Transfer the wrapper's owned values into the heap.
 fn allocate(descriptor: BuiltinDescriptor, vm: &mut VM<'_>) -> Value {
-    Value::Ref(vm.heap.allocate(HeapData::BuiltinDescriptor(Box::new(descriptor))))
+    Value::allocate(descriptor, vm.heap)
 }
 
 /// Bind an implicit attribute read using its instance and owning sandbox class.
 pub(crate) fn get(id: HeapId, instance: Option<HeapId>, owner: HeapId, vm: &mut VM<'_>) -> RunResult<CallResult> {
     let instance = instance.map_or(Value::None, |id| {
         vm.heap.inc_ref(id);
-        Value::Ref(id)
+        Value::Ref(HeapKind::Instance, id)
     });
     defer_drop!(instance, vm);
     vm.heap.inc_ref(owner);
-    let owner = Value::Ref(owner);
+    let owner = Value::Ref(HeapKind::Class, owner);
     defer_drop!(owner, vm);
     protocol_get(id, instance, Some(owner), vm)
 }
@@ -170,13 +171,11 @@ fn protocol_get(id: HeapId, instance: &Value, owner: Option<&Value>, vm: &mut VM
                 Some(owner) if !matches!(owner, Value::None) => owner.clone_with_heap(vm.heap),
                 _ => type_of_ref(vm, instance),
             };
-            Ok(CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::BoundMethod(
-                super::BoundMethod { instance, func },
-            )))))
+            Ok(CallResult::Value(super::BoundMethod::allocate(instance, func, vm.heap)))
         }
         BuiltinDescriptor::Property { .. } if matches!(instance, Value::None) => {
             vm.heap.inc_ref(id);
-            Ok(CallResult::Value(Value::Ref(id)))
+            Ok(CallResult::Value(Value::Ref(HeapKind::BuiltinDescriptor, id)))
         }
         BuiltinDescriptor::Property { fget, .. } => {
             let function = fget.clone_with_heap(vm);
@@ -288,7 +287,7 @@ impl DescriptorMethod {
             let AccessorArgs { receiver, function } = AccessorArgs::from_args(args, vm)?;
             defer_drop!(receiver, vm);
             defer_drop!(function, vm);
-            if let Value::Ref(id) = receiver
+            if let Value::Ref(_, id) = receiver
                 && let HeapData::BuiltinDescriptor(descriptor) = vm.heap.get(*id)
                 && let BuiltinDescriptor::Property {
                     fget,
@@ -321,7 +320,7 @@ impl DescriptorMethod {
         };
         let args = args.into_pos_only(keyword_name, vm.heap)?;
         defer_drop!(args, vm);
-        let Some(Value::Ref(id)) = args.as_slice().first() else {
+        let Some(Value::Ref(_, id)) = args.as_slice().first() else {
             return Err(ExcType::type_error("invalid descriptor receiver"));
         };
         if !matches!(vm.heap.get(*id), HeapData::BuiltinDescriptor(_)) {
@@ -478,7 +477,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BuiltinDescriptor> {
 fn function_name(function: &Value, vm: &VM<'_>) -> Option<String> {
     let id = match function {
         Value::DefFunction(id) => *id,
-        Value::Ref(id) => match vm.heap.get(*id) {
+        Value::Ref(_, id) => match vm.heap.get(*id) {
             HeapData::Closure(f) => f.func_id,
             HeapData::FunctionDefaults(f) => f.func_id,
             _ => return None,

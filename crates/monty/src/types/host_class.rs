@@ -21,6 +21,7 @@ use crate::{
         BorrowedHeapRead, BorrowedHeapReadMut, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem,
         HeapObjectRead, HeapRead, HeapReadMut, HeapReader, heap_read_ref_as_field, heap_read_ref_as_field_mut,
     },
+    heap_data::HeapKind,
     intern::Interns,
     types::{Type, TypeRef, Union},
     value::{EitherStr, Value},
@@ -290,7 +291,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
         if attr_name == "__class__" {
             let class_id = self.get(vm.heap).class_id();
             vm.heap.inc_ref(class_id);
-            return Ok(Some(CallResult::Value(Value::Ref(class_id))));
+            return Ok(Some(CallResult::Value(Value::Ref(HeapKind::HostClassType, class_id))));
         }
         match self.get(vm.heap).attrs.get_by_str(attr_name, vm.heap, vm.interns) {
             Some(value) => Ok(Some(CallResult::Value(value.clone_with_heap(vm.heap)))),

@@ -13,7 +13,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     frozen::{FrozenFunction, FrozenFunctions},
     heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
-    heap_data::FunctionDefaults,
+    heap_data::{FunctionDefaults, HeapKind},
     intern::{FunctionId, StaticStrings},
     modules::ModuleFunctions,
     types::{Dict, dict},
@@ -122,7 +122,7 @@ pub(crate) fn class_annotations(class_id: HeapId, vm: &mut VM<'_>) -> RunResult<
         vm.call_frozen_exact(
             FrozenFunction::ClassAnnotations,
             [
-                Value::Ref(class_id),
+                Value::Ref(HeapKind::Class, class_id),
                 annotate.clone_with_heap(vm),
                 classdict.clone_with_heap(vm),
                 Value::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::CallAnnotate)),
@@ -257,10 +257,10 @@ pub(crate) fn cache_class_annotations_helper(args: ArgValues, vm: &mut VM<'_>) -
     let (cls, annotations) = args.get_two_args("cache", vm.heap)?;
     defer_drop!(cls, vm);
     defer_drop!(annotations, vm);
-    let Value::Ref(class_id) = cls else {
+    let Value::Ref(_, class_id) = cls else {
         unreachable!("frozen code passes the class")
     };
-    if !matches!(annotations, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Dict(_))) {
+    if !matches!(annotations, Value::Ref(HeapKind::Dict, _)) {
         let type_name = annotations.py_type_name(vm);
         return Err(ExcType::type_error(format!(
             "__annotate__ returned non-dict of type '{type_name}'"

@@ -16,7 +16,7 @@ use crate::{
     bytecode::{FrameExit, NAME_CALLABLE, NAME_GLOBAL_ONLY},
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
-    heap_data::CellValue,
+    heap_data::{CellValue, HeapKind},
     intern::{CompileInterns, FunctionId, StringId},
     prepare::SnippetNames,
     types::{Dict, ForwardRef},
@@ -316,14 +316,14 @@ impl<'h> VM<'h> {
             None if self.namespace_frame().function_id.is_none() => self.snapshot_globals()?,
             None => self.snapshot_locals()?,
         };
-        Ok(Value::Ref(dict_id))
+        Ok(Value::Ref(HeapKind::Dict, dict_id))
     }
 
     /// A fresh dict of the bound module globals, for `locals()` at module scope.
     fn snapshot_globals(&mut self) -> RunResult<HeapId> {
         let dict_id = self.heap.allocate(HeapData::Dict(Dict::new()));
         // Owned by the guard until every entry is in, so a failed insert frees it.
-        let mut dict_guard = DropGuard::new(Value::Ref(dict_id), self);
+        let mut dict_guard = DropGuard::new(Value::Ref(HeapKind::Dict, dict_id), self);
         let (_, this) = dict_guard.as_parts_mut();
         for slot in 0..this.global_names.len() {
             if !matches!(this.globals[slot], Value::Undefined) {
@@ -530,7 +530,7 @@ impl<'h> VM<'h> {
     pub(crate) fn snapshot_locals(&mut self) -> RunResult<HeapId> {
         let dict_id = self.heap.allocate(HeapData::Dict(Dict::new()));
         // Owned by the guard until every entry is in, so a failed insert frees it.
-        let mut dict_guard = DropGuard::new(Value::Ref(dict_id), self);
+        let mut dict_guard = DropGuard::new(Value::Ref(HeapKind::Dict, dict_id), self);
         let (_, this) = dict_guard.as_parts_mut();
         let frame = this.namespace_frame();
         let base = frame.stack_base();

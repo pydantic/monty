@@ -22,6 +22,7 @@ use crate::{
         ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead,
         HeapReadMut, HeapReadOutput, HeapReader,
     },
+    heap_data::HeapKind,
     intern::{Interns, StaticStrings, StringId},
     modules::{
         collections::{
@@ -35,7 +36,7 @@ use crate::{
     },
     py_attrs::PyAttrs,
     types::{
-        Type, TypeRef,
+        Bytes, HeapStr, LongInt, Type, TypeRef,
         hash_table::{
             CloneTableEntry, Live, PyHashTable, Slot, TableCursor, TableEntry, TableProbe, TableScan, TableSource,
             TableWalk,
@@ -153,7 +154,7 @@ impl DictKind {
 
     /// Whether its factory retains an object in the interpreter heap.
     fn contains_refs(&self) -> bool {
-        matches!(self.0.as_deref(), Some(DictSpecial::Default(Some(Value::Ref(_)))))
+        matches!(self.0.as_deref(), Some(DictSpecial::Default(Some(Value::Ref(..)))))
     }
 }
 
@@ -248,7 +249,7 @@ impl Dict {
     /// `None`), taking ownership of the factory reference. Called once at
     /// construction; the factory joins the dict's `contains_refs` accounting.
     pub fn make_defaultdict(&mut self, factory: Option<Value>) {
-        if matches!(factory, Some(Value::Ref(_))) {
+        if matches!(factory, Some(Value::Ref(..))) {
             self.contains_refs = true;
         }
         self.kind = DictKind::defaultdict(factory);
@@ -319,7 +320,7 @@ impl Dict {
     /// returning the previous factory for the caller to drop. Only valid on a
     /// defaultdict.
     pub fn replace_default_factory(&mut self, factory: Option<Value>) -> Option<Value> {
-        if matches!(factory, Some(Value::Ref(_))) {
+        if matches!(factory, Some(Value::Ref(..))) {
             self.contains_refs = true;
         }
         // The `default_factory =` setter only calls this on an existing
@@ -381,7 +382,7 @@ impl Dict {
     pub fn set_json_string_key(&mut self, key: Value, value: Value, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
         debug_assert!(key.as_str(vm).is_some());
 
-        if matches!(key, Value::Ref(_)) || matches!(value, Value::Ref(_)) {
+        if matches!(key, Value::Ref(..)) || matches!(value, Value::Ref(..)) {
             self.contains_refs = true;
         }
 
@@ -647,7 +648,7 @@ impl<'h> HeapReadMut<'h, Dict> {
             .table
             .find(hash, |entry| json_key_equals_str(&entry.key, key_str, heap, interns));
         let dict = self.get_mut(heap);
-        dict.contains_refs |= matches!(value, Value::Ref(_));
+        dict.contains_refs |= matches!(value, Value::Ref(..));
         let entry = DictEntry {
             key: Value::InternString(key),
             value,
@@ -696,7 +697,7 @@ impl<'h> HeapReadMut<'h, Dict> {
         growth: GrowthCheck,
     ) -> RunResult<Option<Value>> {
         // Track if we're adding a reference for GC optimization
-        if matches!(key, Value::Ref(_)) || matches!(value, Value::Ref(_)) {
+        if matches!(key, Value::Ref(..)) || matches!(value, Value::Ref(..)) {
             self.get_mut(vm.heap).contains_refs = true;
         }
 
@@ -868,12 +869,9 @@ pub(crate) fn probe_native_eq(candidate: &Value, key: &Value, vm: &VM<'_>) -> Op
             Value::InternString(id) => eq_str(vm.interns.get_str(*id), key, vm),
             Value::InlineString(text) => eq_str(text.as_str(), key, vm),
             Value::InternBytes(id) => eq_bytes(vm.interns.get_bytes(*id), key, vm),
-            Value::Ref(id) => match vm.heap.get(*id) {
-                HeapData::Str(s) => eq_str(s.as_str(), key, vm),
-                HeapData::Bytes(b) => eq_bytes(b.as_slice(), key, vm),
-                HeapData::LongInt(li) => eq_bigint(li.inner(), key, vm),
-                _ => None,
-            },
+            _ if let Some(s) = candidate.get_as::<HeapStr>(vm.heap) => eq_str(s.as_str(), key, vm),
+            _ if let Some(b) = candidate.get_as::<Bytes>(vm.heap) => eq_bytes(b.as_slice(), key, vm),
+            _ if let Some(li) = candidate.get_as::<LongInt>(vm.heap) => eq_bigint(li.inner(), key, vm),
             _ => None,
         }
     }
@@ -886,11 +884,11 @@ pub(crate) fn probe_native_eq(candidate: &Value, key: &Value, vm: &VM<'_>) -> Op
 /// (tuples, frozensets) recurse into element comparisons that might; those and
 /// any unlisted heap type return false. A conservative fast-path filter for
 /// the dict/set probes, not a complete classification.
-pub(crate) fn eq_is_native(value: &Value, heap: &Heap) -> bool {
+pub(crate) fn eq_is_native(value: &Value, _heap: &Heap) -> bool {
     match value {
-        Value::Ref(id) => matches!(
-            heap.get(*id),
-            HeapData::Str(_) | HeapData::Bytes(_) | HeapData::LongInt(_) | HeapData::Range(_)
+        Value::Ref(kind, _) => matches!(
+            kind,
+            HeapKind::Str | HeapKind::Bytes | HeapKind::LongInt | HeapKind::Range
         ),
         _ => true,
     }
@@ -945,7 +943,7 @@ impl<'h> HeapReadMut<'h, Dict> {
     fn merge_from_value(&self, other_value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         let mut guard = DropGuard::new(other_value, vm);
         let (other_value, vm) = guard.as_parts_mut();
-        if let Value::Ref(id) = other_value {
+        if let Value::Ref(HeapKind::Dict, id) = other_value {
             let src_id = *id;
             if let HeapReadOutput::Dict(src) = vm.heap.read(src_id) {
                 // Self-merges preserve all entries; only later keyword overrides can change them.
@@ -1568,7 +1566,7 @@ impl HeapItem for Dict {
         // Release the default_factory (a defaultdict with a heap-ref factory, e.g.
         // a lambda). MUST be reported here and in `for_each_child_id` identically.
         if let Some(DictSpecial::Default(Some(factory))) = self.kind.0.as_deref_mut()
-            && let Value::Ref(id) = factory
+            && let Value::Ref(_, id) = factory
         {
             stack.push(*id);
             #[cfg(feature = "memory-model-checks")]
@@ -1580,12 +1578,12 @@ impl HeapItem for Dict {
         }
         // Only called on a dict being freed, so its entries can be taken.
         for entry in &mut self.table.take_entries() {
-            if let Value::Ref(id) = &entry.key {
+            if let Value::Ref(_, id) = &entry.key {
                 stack.push(*id);
                 #[cfg(feature = "memory-model-checks")]
                 entry.key.dec_ref_forget();
             }
-            if let Value::Ref(id) = &entry.value {
+            if let Value::Ref(_, id) = &entry.value {
                 stack.push(*id);
                 #[cfg(feature = "memory-model-checks")]
                 entry.value.dec_ref_forget();
@@ -1846,7 +1844,7 @@ fn dict_setdefault<'h>(dict: &HeapReadMut<'h, Dict>, args: ArgValues, vm: &mut V
         let default = default.unwrap_or(Value::None);
         let result = default.clone_with_heap(vm.heap);
         let dict = dict.get_mut(vm.heap);
-        dict.contains_refs |= matches!(key, Value::Ref(_)) || matches!(default, Value::Ref(_));
+        dict.contains_refs |= matches!(key, Value::Ref(..)) || matches!(default, Value::Ref(..));
         dict.table.push(DictEntry {
             key,
             value: default,
@@ -1993,7 +1991,7 @@ macro_rules! impl_dict_iterator {
                     cursor: TableCursor::new(expected_len),
                 })));
                 vm.heap.inc_ref(dict);
-                Value::Ref(id)
+                Value::Ref(<Self as crate::heap::HeapPayload>::KIND, id)
             }
 
             /// Returns the retained dictionary id for GC tracing.
@@ -2113,7 +2111,7 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, Dict> {
     #[inline(never)]
     fn py_deep_copy(&self, source: &Value, memo: &mut Memo, vm: &mut VM<'h>) -> RunResult<Value> {
         let copy_id = self.allocate_empty_deep_copy(memo, vm)?;
-        let mut guard = DropGuard::new(Value::Ref(copy_id), vm);
+        let mut guard = DropGuard::new(Value::Ref(HeapKind::Dict, copy_id), vm);
         let (copy, vm) = guard.as_parts_mut();
         memo.insert(source, copy, vm)?;
         let expected_len = self.get(vm.heap).len();

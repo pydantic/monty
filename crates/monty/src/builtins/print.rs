@@ -110,7 +110,7 @@ fn print_target<'a>(file: &'a Value, vm: &VM<'_>) -> RunResult<PrintTarget<'a>> 
     match file {
         Value::None | Value::Marker(Marker(StaticStrings::Stdout)) => Ok(PrintTarget::Output(PrintStream::Stdout)),
         Value::Marker(Marker(StaticStrings::Stderr)) => Ok(PrintTarget::Output(PrintStream::Stderr)),
-        file if is_memory_stream(file, vm.heap) => Ok(PrintTarget::Stream(file)),
+        file if is_memory_stream(file) => Ok(PrintTarget::Stream(file)),
         _ => Err(SimpleException::new_msg(
             ExcType::TypeError,
             format!(

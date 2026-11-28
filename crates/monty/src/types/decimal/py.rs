@@ -31,6 +31,7 @@ use crate::{
     expressions::CmpOperator,
     hash::{HashValue, hash_f64, hash_python_long_int, identity_hash},
     heap::{DropWithContext, HeapData, HeapId, HeapObjectRead},
+    heap_data::HeapKind,
     intern::StaticStrings,
     py_attrs::PyAttrs,
     py_value::PyValue,
@@ -74,7 +75,7 @@ fn context_arg(value: &Value, vm: &mut VM<'_>) -> RunResult<HeapId> {
     if matches!(value, Value::None) {
         Ok(current_context(vm))
     } else {
-        as_context(value, vm).ok_or_else(ExcType::decimal_optional_context)
+        as_context(value).ok_or_else(ExcType::decimal_optional_context)
     }
 }
 
@@ -182,7 +183,7 @@ pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     if matches!(value, Value::Undefined) {
         return Ok(decimal_value(Decimal::zero(false, 0), vm));
     }
-    if value.get_as::<Decimal>(vm.heap).is_some() {
+    if matches!(value, Value::Ref(HeapKind::Decimal, _)) {
         return Ok(value);
     }
     defer_drop!(value, vm);
@@ -298,7 +299,7 @@ fn from_float_arg(value: &Value, vm: &VM<'_>) -> RunResult<Decimal> {
 /// `Decimal.from_number(number)`: an `int`, `float` or `Decimal`, exactly.
 pub(crate) fn class_from_number(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("Decimal.from_number", vm.heap)?;
-    if value.get_as::<Decimal>(vm.heap).is_some() {
+    if matches!(value, Value::Ref(HeapKind::Decimal, _)) {
         return Ok(value);
     }
     defer_drop!(value, vm);
@@ -412,8 +413,8 @@ fn ordering_against(id: HeapId, other: &Value, reflected: bool, vm: &mut VM<'_>)
 /// when either operand is a `Decimal`; `None` when neither is.
 pub(crate) fn cmp_order(lhs: &Value, rhs: &Value, vm: &mut VM<'_>) -> RunResult<Option<CmpOrder>> {
     let (id, other, reflected) = match (lhs, rhs) {
-        (Value::Ref(id), _) if matches!(vm.heap.get(*id), HeapData::Decimal(_)) => (*id, rhs, false),
-        (_, Value::Ref(id)) if matches!(vm.heap.get(*id), HeapData::Decimal(_)) => (*id, lhs, true),
+        (Value::Ref(HeapKind::Decimal, id), _) => (*id, rhs, false),
+        (_, Value::Ref(HeapKind::Decimal, id)) => (*id, lhs, true),
         _ => return Ok(None),
     };
     Ok(Some(
@@ -899,7 +900,7 @@ impl<'h> HeapObjectRead<'h, Decimal> {
                 // C `_decimal`'s locale override (`thousands_sep`, `decimal_point`,
                 // `grouping`) is checked but not applied: see limitations/decimal.md.
                 if let Some(override_) = override_
-                    && !matches!(override_, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Dict(_)))
+                    && !matches!(override_, Value::Ref(HeapKind::Dict, _))
                 {
                     return Err(ExcType::type_error("optional argument must be a dict"));
                 }
@@ -1394,7 +1395,7 @@ pub(crate) fn call_context_method(
             let args = args.reject_kwargs(&qualname, vm.heap)?;
             let a = args.get_one_arg(&qualname, vm.heap)?;
             defer_drop!(a, vm);
-            if op == UnaryOp::Canonical && a.get_as::<Decimal>(vm.heap).is_none() {
+            if op == UnaryOp::Canonical && !matches!(a, Value::Ref(HeapKind::Decimal, _)) {
                 return Err(ExcType::type_error("argument must be a Decimal"));
             }
             let result = with_ctx(vm, ctx_id, |ctx, vm| unary_op(op, &*convert(a, vm)?, ctx))?;

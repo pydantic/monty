@@ -933,7 +933,7 @@ fn choices(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<
     let cumulative = if matches!(cum_weights, Value::None) {
         if matches!(weights, Value::None) {
             None
-        } else if matches!(weights, Value::Int(_) | Value::Bool(_)) || weights.as_long_int(vm).is_some() {
+        } else if matches!(weights, Value::Int(_) | Value::Bool(_)) || weights.is_long_int() {
             // The common mistake `choices(pop, 5)`, which CPython names too,
             // for any int (`k=True` for a bool, as CPython's f-string prints).
             let k = weights.py_str(vm)?;

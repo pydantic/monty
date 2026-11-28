@@ -22,6 +22,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
     heap::{Heap, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    heap_data::HeapKind,
     intern::StaticStrings,
     py_attrs::PyAttrs,
     types::{
@@ -318,7 +319,7 @@ impl FromValue for DeltaComponent {
         match value {
             Value::Bool(b) => Ok(Self(i128::from(b))),
             Value::Int(i) => Ok(Self(i128::from(i))),
-            _ if value.as_long_int(vm).is_some() => {
+            _ if value.is_long_int() => {
                 value.drop_with(vm);
                 Err(FromValueFail::Raise(ExcType::overflow_c_int()))
             }
@@ -454,7 +455,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
     }
 
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        match other.read_heap(vm) {
+        match other.read_heap_kind(vm, &[HeapKind::Date, HeapKind::DateTime, HeapKind::TimeDelta]) {
             Some(HeapReadOutput::Date(other)) => {
                 date::py_add(*other.get(vm.heap), *self.get(vm.heap), vm.heap).map(Some)
             }

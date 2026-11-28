@@ -213,6 +213,16 @@ macro_rules! define_heap_data {
         $(#[$meta:meta])*
         $variant:ident($storage:ident $payload:ty)
     ),* $(,)?) => {
+        /// Payload variant carried by a heap reference, independent of its Python type.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+        #[repr(u8)]
+        pub(crate) enum HeapKind {
+            $(
+                $(#[$meta])*
+                $variant,
+            )*
+        }
+
         /// Every runtime value that can be stored in the heap arena.
         #[derive(Debug, serde::Serialize, serde::Deserialize)]
         pub(crate) enum HeapData {
@@ -220,6 +230,13 @@ macro_rules! define_heap_data {
                 $(#[$meta])*
                 $variant(heap_storage_type!($storage $payload)),
             )*
+        }
+        impl HeapData {
+            pub(crate) fn kind(&self) -> HeapKind {
+                match self {
+                    $(Self::$variant(_) => HeapKind::$variant,)*
+                }
+            }
         }
     };
 }
@@ -333,7 +350,9 @@ impl HeapData {
             | Self::DecimalContextManager(_) => false,
         }
     }
+}
 
+impl HeapKind {
     /// Whether calling a `Ref` to this heap data would succeed at dispatch.
     ///
     /// A conservative subset of the types overriding [`PyTrait::py_call`]: it
@@ -342,104 +361,127 @@ impl HeapData {
     /// dispatch perfectly well. Widening it changes what those builtins accept,
     /// so it is not simply the list of `py_call` overrides.
     #[must_use]
-    pub(crate) fn is_callable(&self) -> bool {
-        if let Self::BuiltinDescriptor(d) = self {
-            return d.kind() == Type::StaticMethod;
-        }
+    pub(crate) fn is_callable(self) -> bool {
         matches!(
             self,
-            Self::Class(_)
-                | Self::BoundMethod(_)
-                | Self::DataclassMethod(_)
-                | Self::Closure(_)
-                | Self::FunctionDefaults(_)
-                | Self::ExtFunction(_)
-                | Self::Partial(_)
-                | Self::GenericAlias(_)
-                | Self::LruCache(_)
+            Self::Class
+                | Self::BoundMethod
+                | Self::DataclassMethod
+                | Self::Closure
+                | Self::FunctionDefaults
+                | Self::ExtFunction
+                | Self::Partial
+                | Self::GenericAlias
+                | Self::LruCache
         )
     }
+}
 
-    /// Returns the Python type of this heap data without requiring VM access.
-    ///
-    /// This is a lightweight alternative to the `PyTrait::py_type` dispatch on
-    /// `HeapReadOutput`, useful in error messages and diagnostics where only a
-    /// `&Heap` is available (not a full `&VM`).
-    #[must_use]
-    pub(crate) fn py_type(&self) -> TypeRef {
-        TypeRef::Native(match self {
-            Self::Str(_) => Type::Str,
-            Self::Bytes(_) => Type::Bytes,
-            Self::List(_) => Type::List,
-            Self::Deque(_) => Type::Deque,
-            Self::Tuple(_) | Self::NamedTuple(_) => Type::Tuple,
-            Self::NamedTupleClass(_) => Type::Type,
-            Self::Dict(_) => Type::Dict,
-            Self::Partial(_) => Type::Partial,
-            Self::Random(_) => Type::Random,
-            Self::HashObject(hash) => hash.algorithm().py_type(),
-            Self::GenericAlias(_) => Type::GenericAlias,
-            Self::Union(_) => Type::Union,
-            Self::ForwardRef(_) => Type::ForwardRef,
-            Self::LruCache(_) => Type::LruCacheWrapper,
-            Self::DictKeysView(_) => Type::DictKeys,
-            Self::DictItemsView(_) => Type::DictItems,
-            Self::DictValuesView(_) => Type::DictValues,
-            Self::Set(_) => Type::Set,
-            Self::FrozenSet(_) => Type::FrozenSet,
-            Self::Closure(_) | Self::FunctionDefaults(_) | Self::ExtFunction(_) => Type::Function,
-            Self::Cell(_) => Type::Cell,
-            Self::Range(_) => Type::Range,
-            Self::Slice(_) => Type::Slice,
-            Self::Exception(e) => Type::from(e.exc_type()),
-            // An instance's type is its class object.
-            Self::HostClass(instance) => return TypeRef::Class(instance.class_id()),
-            Self::Instance(instance) => return TypeRef::Class(instance.class()),
-            // A class object's type is `type`.
-            Self::HostClassType(_) | Self::Class(_) => Type::Type,
-            Self::BuiltinDescriptor(d) => d.kind(),
-            Self::BoundMethod(_) => Type::Function,
-            Self::DataclassField(_) => Type::DataclassField,
-            Self::DataclassMethod(_) => Type::Function,
-            Self::DataclassParams(_) => Type::DataclassParams,
-            Self::LongInt(_) => Type::Int,
-            Self::Complex(_) => Type::Complex,
-            Self::Module(_) => Type::Module,
-            Self::Coroutine(_) | Self::GatherFuture(_) | Self::ExternalFuture(_) => Type::Coroutine,
-            Self::Task(_) => Type::Task,
-            Self::WaitFuture(_) => Type::Coroutine,
-            Self::Path(_) => Type::Path,
-            Self::OpenFile(file) => file.file_type(),
-            Self::StringIo(_) => Type::StringIo,
-            Self::BytesIo(_) => Type::BytesIo,
-            Self::RePattern(_) => Type::RePattern,
-            Self::ReMatch(_) => Type::ReMatch,
-            Self::Date(_) => Type::Date,
-            Self::DateTime(_) => Type::DateTime,
-            Self::Time(_) => Type::Time,
-            Self::TimeDelta(_) => Type::TimeDelta,
-            Self::TimeZone(_) => Type::TimeZone,
-            Self::ListIterator(_) => Type::ListIterator,
-            Self::DequeIterator(_) => Type::DequeIterator,
-            Self::TupleIterator(_) => Type::TupleIterator,
-            Self::StringIterator(iter) => iter.py_type(),
-            Self::BytesIterator(_) => Type::BytesIterator,
-            Self::RangeIterator(_) => Type::RangeIterator,
-            Self::DictKeyIterator(_) => Type::DictKeyIterator,
-            Self::DictItemIterator(_) => Type::DictItemIterator,
-            Self::DictValueIterator(_) => Type::DictValueIterator,
-            Self::SetIterator(_) => Type::SetIterator,
-            Self::CallableIterator(_) => Type::CallableIterator,
-            Self::MapFilter(iter) => iter.py_type(),
-            Self::Generator(_) => Type::WalkGenerator,
-            Self::Itertools(i) => i.py_type(),
-            Self::DirScan(scan) => scan.py_type(),
-            Self::Csv(csv) => csv.py_type(),
-            Self::Decimal(_) => Type::Decimal,
-            Self::DecimalContext(_) => Type::DecimalContext,
-            Self::DecimalSignalDict(_) => Type::DecimalSignalDict,
-            Self::DecimalContextManager(_) => Type::DecimalContextManager,
-        })
+// Heap-only diagnostics use the stored type of a named tuple or dict. Python's
+// type() can also depend on its class or dict flavour and reads those payloads.
+macro_rules! heap_types {
+    (fixed { $($fixed:ident => $ty:ident,)* } payload { $($dynamic:ident($data:pat) => $resolve:expr,)* }) => {
+        impl HeapKind {
+            /// The Python type shared by every object of this kind, when the tag suffices.
+            pub(crate) fn fixed_type(self) -> Option<Type> {
+                match self {
+                    $(Self::$fixed => Some(Type::$ty),)*
+                    $(Self::$dynamic => None,)*
+                }
+            }
+        }
+
+        impl HeapData {
+            /// The type used for diagnostics that only have access to the heap.
+            pub(crate) fn py_type(&self) -> TypeRef {
+                match self {
+                    $(Self::$fixed(_) => Type::$ty.into(),)*
+                    $(Self::$dynamic($data) => $resolve,)*
+                }
+            }
+        }
+    };
+}
+
+heap_types! {
+    fixed {
+        Str => Str,
+        Bytes => Bytes,
+        List => List,
+        Deque => Deque,
+        NamedTupleClass => Type,
+        Partial => Partial,
+        Random => Random,
+        GenericAlias => GenericAlias,
+        Union => Union,
+        ForwardRef => ForwardRef,
+        LruCache => LruCacheWrapper,
+        DictKeysView => DictKeys,
+        DictItemsView => DictItems,
+        DictValuesView => DictValues,
+        Set => Set,
+        FrozenSet => FrozenSet,
+        Cell => Cell,
+        Range => Range,
+        Slice => Slice,
+        HostClassType => Type,
+        Class => Type,
+        DataclassField => DataclassField,
+        DataclassParams => DataclassParams,
+        LongInt => Int,
+        Complex => Complex,
+        Module => Module,
+        Coroutine => Coroutine,
+        GatherFuture => Coroutine,
+        ExternalFuture => Coroutine,
+        Task => Task,
+        WaitFuture => Coroutine,
+        Path => Path,
+        StringIo => StringIo,
+        BytesIo => BytesIo,
+        Generator => WalkGenerator,
+        RePattern => RePattern,
+        ReMatch => ReMatch,
+        Date => Date,
+        DateTime => DateTime,
+        Time => Time,
+        TimeDelta => TimeDelta,
+        TimeZone => TimeZone,
+        ListIterator => ListIterator,
+        DequeIterator => DequeIterator,
+        TupleIterator => TupleIterator,
+        BytesIterator => BytesIterator,
+        RangeIterator => RangeIterator,
+        DictKeyIterator => DictKeyIterator,
+        DictItemIterator => DictItemIterator,
+        DictValueIterator => DictValueIterator,
+        SetIterator => SetIterator,
+        CallableIterator => CallableIterator,
+        Decimal => Decimal,
+        DecimalContext => DecimalContext,
+        DecimalSignalDict => DecimalSignalDict,
+        DecimalContextManager => DecimalContextManager,
+        Tuple => Tuple,
+        Closure => Function,
+        FunctionDefaults => Function,
+        ExtFunction => Function,
+        BoundMethod => Function,
+        DataclassMethod => Function,
+    }
+    payload {
+        NamedTuple(_) => Type::Tuple.into(),
+        Dict(_) => Type::Dict.into(),
+        HashObject(hash) => hash.algorithm().py_type().into(),
+        Exception(e) => Type::from(e.exc_type()).into(),
+        HostClass(instance) => TypeRef::Class(instance.class_id()),
+        Instance(instance) => TypeRef::Class(instance.class()),
+        BuiltinDescriptor(d) => d.kind().into(),
+        OpenFile(file) => file.file_type().into(),
+        StringIterator(iter) => iter.py_type().into(),
+        MapFilter(iter) => iter.py_type().into(),
+        Itertools(i) => i.py_type().into(),
+        DirScan(scan) => scan.py_type().into(),
+        Csv(csv) => csv.py_type().into(),
     }
 }
 
@@ -708,7 +750,7 @@ impl HeapItem for GatherFuture {
                     result.py_dec_ref_ids(stack);
                 }
             }
-            GatherState::Completed(Value::Ref(id)) => stack.push(*id),
+            GatherState::Completed(Value::Ref(_, id)) => stack.push(*id),
             GatherState::Pending | GatherState::Failed(_) | GatherState::Completed(_) => {}
         }
     }

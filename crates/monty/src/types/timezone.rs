@@ -19,7 +19,8 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
-    heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead},
+    heap::{Heap, HeapId, HeapItem, HeapObjectRead},
+    heap_data::HeapKind,
     intern::Interns,
     py_attrs::PyAttrs,
     types::{
@@ -246,7 +247,7 @@ pub(crate) fn allocate_offset(offset_seconds: i32, heap: &Heap) -> Value {
 fn check_tzinfo_dt_arg(method: &str, dt: &Value, heap: &Heap, interns: &Interns) -> RunResult<()> {
     match dt {
         Value::None => Ok(()),
-        Value::Ref(id) if matches!(heap.get(*id), HeapData::DateTime(_)) => Ok(()),
+        Value::Ref(HeapKind::DateTime, _) => Ok(()),
         _ => Err(ExcType::type_error(format!(
             "{method}(dt) argument must be a datetime instance or None, not {}",
             dt.py_type_heap(heap).cpython_arg_name(heap, interns)

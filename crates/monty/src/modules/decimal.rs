@@ -9,6 +9,7 @@ use crate::{
     builtins::Builtins,
     bytecode::VM,
     exception_private::{ExcType, RunResult},
+    heap_data::HeapKind,
     intern::StaticStrings,
     modules::ModuleFunctions,
     types::{
@@ -99,7 +100,7 @@ pub fn create_module(vm: &mut VM<'_>) -> Module {
     ] {
         let id = py_context::template_id(vm, template);
         vm.heap.inc_ref(id);
-        module.set_attr(name, Value::Ref(id), vm);
+        module.set_attr(name, Value::Ref(HeapKind::DecimalContext, id), vm);
     }
     for (name, value) in [
         (StaticStrings::MaxPrec, MAX_PREC),

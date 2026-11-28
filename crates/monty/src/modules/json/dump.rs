@@ -13,7 +13,8 @@ use crate::{
     bytecode::{CallResult, ContainsVM, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapRead},
+    heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapId, HeapRead},
+    heap_data::HeapKind,
     py_value::PyValue,
     sorting::{apply_permutation, sort_indices},
     string_builder::StringBuilder,
@@ -130,8 +131,8 @@ enum EncoderChecks {
 
 impl EncoderChecks {
     /// The checks `json.dumps` (`dump = false`) or `json.dump` makes for `obj`.
-    fn for_call(obj: &Value, dump: bool, vm: &VM<'_>) -> Self {
-        match (obj.is_str(vm.heap), dump) {
+    fn for_call(obj: &Value, dump: bool) -> Self {
+        match (obj.is_str(), dump) {
             (false, _) => Self::All,
             (true, false) => Self::Unpack,
             (true, true) => Self::Indent,
@@ -196,7 +197,7 @@ pub(super) fn call_dumps(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         default_fn,
     };
     defer_drop!(kwargs, vm);
-    let config = JsonDumpsConfig::from_kwargs(kwargs, EncoderChecks::for_call(obj, false, vm), vm)?;
+    let config = JsonDumpsConfig::from_kwargs(kwargs, EncoderChecks::for_call(obj, false), vm)?;
     let output = encode(obj, &config, &kwargs.default_fn, vm)?;
     Ok(allocate_string(output, vm.heap))
 }
@@ -234,9 +235,9 @@ pub(super) fn call_dump(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResul
         default_fn,
     };
     defer_drop!(kwargs, vm);
-    let config = JsonDumpsConfig::from_kwargs(kwargs, EncoderChecks::for_call(obj, true, vm), vm)?;
+    let config = JsonDumpsConfig::from_kwargs(kwargs, EncoderChecks::for_call(obj, true), vm)?;
 
-    let early_target = if is_container(obj, vm) {
+    let early_target = if is_container(obj) {
         Some(FileTarget::writer(fp, vm)?)
     } else {
         None
@@ -270,14 +271,8 @@ fn encode(obj: &Value, config: &JsonDumpsConfig, default: &Value, vm: &mut VM<'_
 
 /// Whether CPython's encoder would yield a chunk of `value` (its opening
 /// bracket) before any of its elements could fail to encode.
-fn is_container(value: &Value, vm: &VM<'_>) -> bool {
-    match value {
-        Value::Ref(heap_id) => matches!(
-            vm.heap.get(*heap_id),
-            HeapData::List(_) | HeapData::Tuple(_) | HeapData::Dict(_)
-        ),
-        _ => false,
-    }
+fn is_container(value: &Value) -> bool {
+    matches!(value, Value::Ref(HeapKind::List | HeapKind::Tuple | HeapKind::Dict, _))
 }
 
 /// Argument shape for `json.dumps(obj, *, indent=None, sort_keys=False,
@@ -556,7 +551,7 @@ impl<'h> Encoder<'_, 'h> {
     fn serialize_fallback(&mut self, value: &Value, depth: usize) -> RunResult<()> {
         match (self.default, value) {
             (Value::None, _) => Err(not_serializable(value, self.vm)),
-            (_, Value::Ref(id)) => self.with_entered_container(*id, |enc| enc.serialize_default(value, depth)),
+            (_, Value::Ref(_, id)) => self.with_entered_container(*id, |enc| enc.serialize_default(value, depth)),
             // Immediates (a builtin function, say) have no heap identity to mark.
             _ => self.serialize_default(value, depth),
         }
@@ -649,7 +644,7 @@ impl<'h> Encoder<'_, 'h> {
     fn serialize_dict(&mut self, entries: &mut Vec<(Value, Value)>, depth: usize) -> RunResult<()> {
         if self.config.skipkeys() {
             skip_disallowed_dict_keys(entries, self.vm);
-        } else if let Some((key, _)) = entries.iter().find(|(key, _)| !is_json_key_allowed(key, self.vm)) {
+        } else if let Some((key, _)) = entries.iter().find(|(key, _)| !is_json_key_allowed(key)) {
             return Err(ExcType::json_invalid_key_error(&key.py_type_name(self.vm)));
         }
 
@@ -751,7 +746,7 @@ fn skip_disallowed_dict_keys(entries: &mut Vec<(Value, Value)>, vm: &mut VM<'_>)
     // Use two pointers to preserve relative order
     let mut write = 0;
     for read in 0..entries.len() {
-        if is_json_key_allowed(&entries[read].0, vm) {
+        if is_json_key_allowed(&entries[read].0) {
             if write != read {
                 entries.swap(write, read);
             }
@@ -767,10 +762,17 @@ fn skip_disallowed_dict_keys(entries: &mut Vec<(Value, Value)>, vm: &mut VM<'_>)
 ///
 /// CPython accepts strings, integers, floats, booleans, and `None`, then
 /// coerces the non-string cases to JSON strings during output.
-fn is_json_key_allowed(value: &Value, vm: &VM<'_>) -> bool {
+fn is_json_key_allowed(value: &Value) -> bool {
     matches!(
-        value.py_value(vm),
-        PyValue::None | PyValue::Bool(_) | PyValue::Int(_) | PyValue::Float(_) | PyValue::Str(_)
+        value,
+        Value::None
+            | Value::Bool(_)
+            | Value::Int(_)
+            | Value::InternLongInt(_)
+            | Value::Float(_)
+            | Value::InlineString(_)
+            | Value::InternString(_)
+            | Value::Ref(HeapKind::Str | HeapKind::LongInt, _)
     )
 }
 

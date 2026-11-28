@@ -182,10 +182,10 @@ impl Module {
         }
         if self.attrs.has_refs() {
             for (k, v) in &self.attrs {
-                if let Value::Ref(id) = k {
+                if let Value::Ref(_, id) = k {
                     on_child(*id);
                 }
-                if let Value::Ref(id) = v {
+                if let Value::Ref(_, id) = v {
                     on_child(*id);
                 }
             }

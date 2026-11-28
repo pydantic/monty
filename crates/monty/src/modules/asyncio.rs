@@ -24,7 +24,8 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{Heap, HeapData},
+    heap::Heap,
+    heap_data::HeapKind,
     heap_traits::DropGuard,
     intern::StaticStrings,
     modules::{
@@ -225,15 +226,14 @@ pub(crate) fn gather(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     for arg in awaitables.iter() {
         if !matches!(
             arg,
-            Value::Ref(id)
-                if matches!(
-                    vm.heap.get(*id),
-                    HeapData::Coroutine(_)
-                        | HeapData::ExternalFuture(_)
-                        | HeapData::GatherFuture(_)
-                        | HeapData::Task(_)
-                        | HeapData::WaitFuture(_)
-                )
+            Value::Ref(
+                HeapKind::Coroutine
+                    | HeapKind::ExternalFuture
+                    | HeapKind::GatherFuture
+                    | HeapKind::Task
+                    | HeapKind::WaitFuture,
+                _
+            )
         ) {
             return Err(ExcType::type_error(
                 "An asyncio.Future, a coroutine or an awaitable is required",

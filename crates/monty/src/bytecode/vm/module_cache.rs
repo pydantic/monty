@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 
 use crate::{
     heap::{ContainsHeap, DropWithContext, HeapId},
+    heap_data::HeapKind,
     value::Value,
 };
 
@@ -37,7 +38,7 @@ impl ModuleCache {
     pub fn get(&self, name: &str, heap: &impl ContainsHeap) -> Option<Value> {
         self.0.get(name).map(|cached| {
             heap.heap().inc_ref(cached.module);
-            Value::Ref(cached.module)
+            Value::Ref(HeapKind::Module, cached.module)
         })
     }
 

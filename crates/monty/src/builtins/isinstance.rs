@@ -5,8 +5,9 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{HeapData, HeapRead, HeapReadOutput},
-    types::{Tuple, TypeRef},
+    heap::HeapRead,
+    heap_data::HeapKind,
+    types::{Tuple, TypeRef, Union},
     value::Value,
 };
 
@@ -26,18 +27,14 @@ pub fn builtin_isinstance(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> 
 /// A type (native or a class) matches when `type(obj)` is it or inherits from
 /// it; a tuple or a union matches when any member does, tested in order.
 pub(crate) fn isinstance_check(obj: &Value, classinfo: &Value, vm: &mut VM<'_>) -> RunResult<bool> {
-    if let Some(class) = TypeRef::from_value(classinfo, vm.heap) {
+    if let Some(class) = TypeRef::from_value(classinfo) {
         return Ok(instance_of(obj, class, vm));
     }
     match classinfo {
-        Value::Ref(id) if let HeapReadOutput::Tuple(tuple) = vm.heap.read(*id) => {
-            isinstance_check_tuple(obj, &tuple, vm)
-        }
-        Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::GenericAlias(_)) => {
-            Err(ExcType::isinstance_parameterized_generic())
-        }
+        value if let Some(tuple) = value.read_as::<Tuple>(vm.heap) => isinstance_check_tuple(obj, &tuple, vm),
+        Value::Ref(HeapKind::GenericAlias, _) => Err(ExcType::isinstance_parameterized_generic()),
         // `int | None`: true when any member matches, tested in order.
-        Value::Ref(id) if let HeapData::Union(union) = vm.heap.get(*id) => {
+        value if let Some(union) = value.get_as::<Union>(vm.heap) => {
             let args = union.args(vm.heap);
             defer_drop!(args, vm);
             let Some(members) = args.read_as::<Tuple>(vm.heap) else {
@@ -63,14 +60,14 @@ fn isinstance_check_tuple<'h>(obj: &Value, tuple: &HeapRead<'h, Tuple>, vm: &mut
         // Each entry may walk the whole MRO, so a long flat tuple needs polling too.
         vm.heap.tracker.check_time_every(i)?;
         let item = &tuple.get(vm.heap).as_slice()[i];
-        if let Some(class) = TypeRef::from_value(item, vm.heap) {
+        if let Some(class) = TypeRef::from_value(item) {
             if instance_of(obj, class, vm) {
                 return Ok(true);
             }
             continue;
         }
         match item {
-            Value::Ref(nested_id) if let HeapReadOutput::Tuple(nested) = vm.heap.read(*nested_id) => {
+            value if let Some(nested) = value.read_as::<Tuple>(vm.heap) => {
                 // A tuple can hold itself many times over, so walking nested
                 // tuples is exponential in their depth: bound it by time.
                 vm.heap.tracker.check_time()?;
@@ -78,10 +75,10 @@ fn isinstance_check_tuple<'h>(obj: &Value, tuple: &HeapRead<'h, Tuple>, vm: &mut
                     return Ok(true);
                 }
             }
-            Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::GenericAlias(_)) => {
+            Value::Ref(HeapKind::GenericAlias, _) => {
                 return Err(ExcType::isinstance_parameterized_generic());
             }
-            Value::Ref(id) if let HeapData::Union(union) = vm.heap.get(*id) => {
+            value if let Some(union) = value.get_as::<Union>(vm.heap) => {
                 let args = union.args(vm.heap);
                 defer_drop!(args, vm);
                 let Some(members) = args.read_as::<Tuple>(vm.heap) else {

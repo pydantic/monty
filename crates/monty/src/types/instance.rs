@@ -16,6 +16,7 @@ use crate::{
         BorrowedHeapReadMut, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead,
         HeapReadMut, HeapReadOutput, heap_read_ref_as_field_mut,
     },
+    heap_data::HeapKind,
     intern::Interns,
     modules::{
         ModuleFunctions,
@@ -192,16 +193,16 @@ impl<'h> HeapReadMut<'h, Instance> {
     /// class is compatible; the instance takes `value`'s reference to it.
     fn assign_class(&self, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         match value {
-            Value::Ref(id) if matches!(vm.heap.get(id), HeapData::Class(_)) => {
+            Value::Ref(HeapKind::Class, _) => {
                 // The instance takes over `value`'s reference to the new class.
                 let class_id = value.into_ref_id().expect("matched a reference");
                 let previous = mem::replace(&mut self.get_mut(vm.heap).class, class_id);
-                Value::Ref(previous).drop_with(vm);
+                Value::Ref(HeapKind::Class, previous).drop_with(vm);
                 Ok(())
             }
             other => {
                 defer_drop!(other, vm);
-                Err(match TypeRef::from_value(other, vm.heap) {
+                Err(match TypeRef::from_value(other) {
                     Some(TypeRef::Native(_)) => ExcType::type_error(
                         "__class__ assignment only supported for mutable types or ModuleType subclasses",
                     ),
@@ -412,7 +413,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
         if let Some(member) = descriptor::data_member(self.get(vm.heap).class(), name.as_str(vm.interns), vm) {
             defer_drop!(member, vm);
             vm.heap.inc_ref(self.id());
-            let object = Value::Ref(self.id());
+            let object = Value::Ref(HeapKind::Instance, self.id());
             defer_drop!(object, vm);
             let result = descriptor::mutate(member, object, Some(value), vm)?.require_synchronous(vm)?;
             result.drop_with(vm);
@@ -554,7 +555,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
                 vm.heap.inc_ref(exc_id);
                 (
                     Value::Builtin(Builtins::Type(Type::from(e.exc_type()))),
-                    Value::Ref(exc_id),
+                    Value::Ref(HeapKind::Exception, exc_id),
                 )
             }
             None => (Value::None, Value::None),
@@ -682,7 +683,7 @@ fn instance_call_attr(id: HeapId, attr: &EitherStr, args: ArgValues, vm: &mut VM
             let member = member.clone_with_heap(vm.heap);
             defer_drop!(member, vm);
             vm.heap.inc_ref(receiver);
-            vm.call_function(member, args.prepend(Value::Ref(receiver)))
+            vm.call_function(member, args.prepend(Value::Ref(vm.heap.get(receiver).kind(), receiver)))
         }
         resolution => {
             if let Some(callable) = resolution.into_value(vm) {
@@ -732,7 +733,7 @@ pub(crate) enum FastAttributeLookupResult {
 
 /// Share read precedence with bytecode while leaving Python getters to the caller.
 pub(crate) fn lookup_attribute_fast(object: &Value, attr: &EitherStr, vm: &VM<'_>) -> FastAttributeLookupResult {
-    let Value::Ref(id) = object else {
+    let Value::Ref(_, id) = object else {
         return FastAttributeLookupResult::Inconclusive;
     };
 
@@ -790,7 +791,7 @@ fn instance_call_str_dunder(self_id: HeapId, dunder: &'static str, vm: &mut VM<'
     };
     // CPython requires `__repr__`/`__str__` to return a `str`; reject any other
     // type with the same TypeError, dropping the offending return value.
-    if result.is_str(vm.heap) {
+    if result.is_str() {
         Ok(Some(result))
     } else {
         let exc = ExcType::type_error(format!(
@@ -823,7 +824,7 @@ fn call_int_dunder(self_id: HeapId, dunder: &'static str, vm: &mut VM<'_>) -> Ru
         Some(Value::Bool(b)) => Ok(Some(Value::Int(i64::from(b)))),
         Some(result) => {
             if matches!(result, Value::Int(_) | Value::InternLongInt(_))
-                || matches!(&result, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::LongInt(_)))
+                || matches!(&result, Value::Ref(HeapKind::LongInt, _))
             {
                 Ok(Some(result))
             } else {
@@ -988,7 +989,7 @@ pub(crate) fn class_lookup<'v>(class_id: HeapId, name: &str, heap: &'v Heap, int
 #[inline]
 pub(crate) fn subclass_overrides(lhs: &Value, rhs: &Value, dunder: Option<&str>, vm: &VM<'_>) -> bool {
     match (lhs, rhs) {
-        (Value::Ref(lhs_id), Value::Ref(rhs_id)) => heap_subclass_overrides(*lhs_id, *rhs_id, dunder, vm),
+        (Value::Ref(_, lhs_id), Value::Ref(_, rhs_id)) => heap_subclass_overrides(*lhs_id, *rhs_id, dunder, vm),
         _ => false,
     }
 }
@@ -1028,10 +1029,10 @@ fn instance_class(self_id: HeapId, vm: &VM<'_>) -> HeapId {
 /// callers interpret `NotImplemented` according to their comparison mode. A
 /// `@dataclass`-generated `__eq__` runs natively rather than through a call.
 pub(crate) fn instance_user_eq(self_id: HeapId, other: &Value, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
-    if !matches!(vm.heap.get(self_id), HeapData::Instance(_)) {
+    let HeapData::Instance(instance) = vm.heap.get(self_id) else {
         return Ok(None);
-    }
-    let class_id = instance_class(self_id, vm);
+    };
+    let class_id = instance.class();
     if let Some(field_names) = dataclasses::generated_fields(class_id, "__eq__", vm) {
         let equal = dataclasses::dataclass_eq(self_id, &field_names, other, vm)?;
         Ok(Some(equal.map_or(Value::NotImplemented, Value::Bool)))
@@ -1108,23 +1109,23 @@ pub(super) fn implicit_receiver(attr: &str, self_id: HeapId, class_id: HeapId) -
 /// Whether a value is a user-defined function (so it should bind `self` when
 /// accessed as a method). Class variables that are not functions are returned
 /// unbound.
-pub(crate) fn is_method_value(value: &Value, vm: &VM<'_>) -> bool {
+pub(crate) fn is_method_value(value: &Value) -> bool {
     match value {
         Value::DefFunction(_) => true,
-        Value::Ref(id) => is_heap_method(vm.heap.get(*id)),
+        Value::Ref(kind, _) => is_heap_method(*kind),
         _ => false,
     }
 }
 
-fn is_heap_method(data: &HeapData) -> bool {
+fn is_heap_method(kind: HeapKind) -> bool {
     // Partial and cache wrappers bind the instance after arguments they already carry.
     matches!(
-        data,
-        HeapData::Closure(_)
-            | HeapData::FunctionDefaults(_)
-            | HeapData::Partial(_)
-            | HeapData::LruCache(_)
-            | HeapData::DataclassMethod(_)
+        kind,
+        HeapKind::Closure
+            | HeapKind::FunctionDefaults
+            | HeapKind::Partial
+            | HeapKind::LruCache
+            | HeapKind::DataclassMethod
     )
 }
 
@@ -1163,10 +1164,11 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, BoundMethod> {
 /// Binds a callable to an owned reference to its receiver.
 pub(crate) fn bind_method(func: &Value, receiver: HeapId, vm: &VM<'_>) -> Value {
     vm.heap.inc_ref(receiver);
-    Value::Ref(vm.heap.allocate(HeapData::BoundMethod(BoundMethod {
-        instance: Value::Ref(receiver),
-        func: func.clone_with_heap(vm.heap),
-    })))
+    BoundMethod::allocate(
+        Value::Ref(vm.heap.get(receiver).kind(), receiver),
+        func.clone_with_heap(vm.heap),
+        vm.heap,
+    )
 }
 
 #[cfg(test)]

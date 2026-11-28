@@ -22,7 +22,6 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::HeapData,
     intern::StaticStrings,
     modules::ModuleFunctions,
     py_value::PyValue,
@@ -1068,12 +1067,7 @@ fn a85_wrapcol(wrapcol: &Value, floor: u8, vm: &mut VM<'_>) -> RunResult<usize> 
 /// past the address space is not an error — everything lands on one line.
 /// Having beaten a floor of 1, such a width can only be large and positive.
 fn a85_width(wrapcol: &Value, vm: &mut VM<'_>) -> RunResult<usize> {
-    let long = match wrapcol {
-        Value::InternLongInt(_) => true,
-        Value::Ref(heap_id) => matches!(vm.heap.get(*heap_id), HeapData::LongInt(_)),
-        _ => false,
-    };
-    if long {
+    if wrapcol.is_long_int() {
         Ok(usize::MAX)
     } else {
         Ok(usize::try_from(wrapcol.as_int(vm)?).unwrap_or(usize::MAX))

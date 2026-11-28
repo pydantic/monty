@@ -27,12 +27,11 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException, unhashable_type_message},
     hash::HashValue,
-    heap::{
-        ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput,
-    },
+    heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapId, HeapItem, HeapObjectRead},
+    heap_data::HeapKind,
     intern::StaticStrings,
     types::{
-        LazyHeapSet, List, PyTrait, Tuple, Type, TypeRef, Union,
+        HostClassType, LazyHeapSet, List, NamedTupleClass, PyTrait, Tuple, Type, TypeRef, Union,
         instance::class_name,
         key_hash::hash_or_culprit,
         list::repr_should_truncate,
@@ -130,7 +129,7 @@ impl GenericAlias {
     fn allocate(origin: AliasOrigin, key: Value, vm: &mut VM<'_>) -> Value {
         // A tuple key is `__args__` itself, as in CPython, so `tuple[()]`
         // has empty args and `list[int, str]` two.
-        let is_tuple = matches!(&key, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Tuple(_)));
+        let is_tuple = matches!(&key, Value::Ref(HeapKind::Tuple, _));
         let args = if is_tuple {
             key
         } else {
@@ -180,7 +179,7 @@ impl GenericAlias {
 
     /// Invokes `on_child` for the heap id this alias owns (GC trace hook).
     pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
-        if let Value::Ref(id) = self.args {
+        if let Value::Ref(_, id) = self.args {
             on_child(id);
         }
     }
@@ -573,7 +572,7 @@ fn flatten_annotated(key: Value, vm: &mut VM<'_>) -> RunResult<Value> {
 /// are distinct values. Takes ownership of `key` and returns the args tuple.
 fn literal_params(key: Value, vm: &mut VM<'_>) -> RunResult<Value> {
     defer_drop!(key, vm);
-    let written = if matches!(key.read_heap(vm), Some(HeapReadOutput::Tuple(_))) {
+    let written = if matches!(key, Value::Ref(HeapKind::Tuple, _)) {
         tuple_items(key, vm)?
     } else {
         smallvec![key.clone_with_heap(vm)]
@@ -865,12 +864,9 @@ pub(crate) fn repr_type_arg(
     match item {
         Value::Ellipsis => Ok(f.write_str("...")?),
         Value::Builtin(Builtins::Type(ty)) => Ok(f.write_str(ty.name())?),
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Class(_) => Ok(f.write_str(&class_name(*id, vm.heap, vm.interns))?),
-            HeapData::NamedTupleClass(class) => Ok(f.write_str(class.name(vm.interns))?),
-            HeapData::HostClassType(class) => Ok(f.write_str(class.name(vm.interns))?),
-            _ => item.py_repr_fmt(f, vm, heap_ids),
-        },
+        Value::Ref(HeapKind::Class, id) => Ok(f.write_str(&class_name(*id, vm.heap, vm.interns))?),
+        _ if let Some(class) = item.get_as::<NamedTupleClass>(vm.heap) => Ok(f.write_str(class.name(vm.interns))?),
+        _ if let Some(class) = item.get_as::<HostClassType>(vm.heap) => Ok(f.write_str(class.name(vm.interns))?),
         _ => item.py_repr_fmt(f, vm, heap_ids),
     }
 }

@@ -2,7 +2,7 @@
 
 use crate::{
     bytecode::VM,
-    heap::{DropWithContext, HeapData},
+    heap::DropWithContext,
     intern::StaticStrings,
     types::{Dict, Module},
     value::Value,
@@ -23,8 +23,8 @@ pub fn create_module(vm: &mut VM<'_>) -> Module {
         old.drop_with(vm);
     }
 
-    let errorcode = vm.heap.allocate(HeapData::Dict(errorcode));
-    module.set_attr(StaticStrings::Errorcode, Value::Ref(errorcode), vm);
+    let errorcode = Value::allocate(errorcode, vm.heap);
+    module.set_attr(StaticStrings::Errorcode, errorcode, vm);
     module
 }
 

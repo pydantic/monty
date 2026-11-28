@@ -14,6 +14,7 @@ use crate::{
     },
     expressions::CmpOperator,
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
+    heap_data::HeapKind,
     intern::{StaticStrings, StringId},
     types::{LazyHeapSet, PyTrait, Tuple, Type, TypeRef},
     value::Value,
@@ -189,7 +190,7 @@ impl VM<'_> {
                 }
             },
         };
-        let Value::Ref(raised_id) = &raised else {
+        let Value::Ref(_, raised_id) = &raised else {
             unreachable!("exceptions are heap values")
         };
         self.set_exception_cause(*raised_id, cause);
@@ -201,7 +202,7 @@ impl VM<'_> {
     /// caller to release and report.
     fn exception_object(&mut self, value: Value) -> Result<Value, Value> {
         match value {
-            Value::Ref(id) if matches!(self.heap.get(id), HeapData::Exception(_)) => Ok(value),
+            Value::Ref(HeapKind::Exception, _) => Ok(value),
             Value::Builtin(Builtins::Type(ty)) if let Some(exc_type) = ty.exc_type() => {
                 Ok(self.allocate_exception(exc_type))
             }
@@ -221,7 +222,7 @@ impl VM<'_> {
             HeapReadOutput::Exception(exc) => exc.get_mut(self.heap).set_cause(cause),
             _ => unreachable!("set_exception_cause is only called on exceptions"),
         };
-        previous.map(Value::Ref).drop_with(self);
+        previous.map(|id| Value::Ref(HeapKind::Exception, id)).drop_with(self);
     }
 
     /// Records the exception being handled as `__context__` of the newly raised
@@ -231,13 +232,13 @@ impl VM<'_> {
     /// equivalent CPython code is C and leaves the user's handled exception in place.
     fn attach_context(&mut self, raised: &Value) -> Result<(), ResourceError> {
         let handled = self.exception_stack.iter().rev().find_map(|caught| match caught {
-            CaughtException::Value(Value::Ref(id)) => Some(*id),
+            CaughtException::Value(Value::Ref(_, id)) => Some(*id),
             _ => None,
         });
         let Some(handled_id) = handled else {
             return Ok(());
         };
-        let Value::Ref(raised_id) = raised else {
+        let Value::Ref(_, raised_id) = raised else {
             return Ok(());
         };
         if *raised_id == handled_id {
@@ -277,7 +278,7 @@ impl VM<'_> {
             HeapReadOutput::Exception(exc) => exc.get_mut(self.heap).set_context(context),
             _ => unreachable!("set_exception_context is only called on exceptions"),
         };
-        previous.map(Value::Ref).drop_with(self);
+        previous.map(|id| Value::Ref(HeapKind::Exception, id)).drop_with(self);
     }
 
     /// Re-raises the active exception without replacing a user traceback with an internal handler.
@@ -676,7 +677,7 @@ impl VM<'_> {
             unreachable!("a fresh RuntimeError is catchable")
         };
         let replacement = self.create_exception_value(raise);
-        let Value::Ref(id) = &replacement else {
+        let Value::Ref(_, id) = &replacement else {
             unreachable!("raised exceptions are heap objects")
         };
         self.set_exception_context(*id, stop.clone_with_heap(self).into_ref_id());
@@ -735,7 +736,7 @@ impl VM<'_> {
     /// Every native exception class carries an `ExcType`, so only a user class
     /// needs its MRO walked.
     fn exception_class(&self, value: &Value) -> Option<TypeRef> {
-        match TypeRef::from_value(value, self.heap)? {
+        match TypeRef::from_value(value)? {
             native @ TypeRef::Native(ty) => ty.exc_type().is_some().then_some(native),
             class => class
                 .is_subclass_of(TypeRef::Native(Type::BaseException), self.heap)

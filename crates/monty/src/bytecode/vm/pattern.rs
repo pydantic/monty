@@ -18,13 +18,13 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     frozen::{FrozenFunction, FrozenFunctions},
     heap::{DropGuard, DropWithContext, HeapData, HeapReadOutput},
+    heap_data::HeapKind,
     modules::ModuleFunctions,
     types::{
         Dict, PyTrait, Tuple, Type, TypeRef, descriptor,
         instance::{FastAttributeLookupResult, class_dunder, lookup_attribute_fast},
         key_hash::set_element_hash,
         tuple::allocate_tuple,
-        type_ref::is_class_like,
     },
     value::{EitherStr, Value},
 };
@@ -137,7 +137,7 @@ impl VM<'_> {
         defer_drop!(kwd_names, this);
         defer_drop!(cls, this);
         defer_drop!(subject, this);
-        if !is_class_object(cls, this) {
+        if TypeRef::from_value(cls).is_none() {
             return Err(ExcType::type_error("called match pattern must be a class"));
         }
         if !isinstance_check(subject, cls, this)? {
@@ -146,7 +146,7 @@ impl VM<'_> {
             return Ok(());
         }
         if nargs > 0
-            && matches!(cls, Value::Ref(id)
+            && matches!(cls, Value::Ref(HeapKind::Class, id)
             if !descriptor::class_descriptor_free(*id, this)
                 && class_dunder(*id, "__match_args__", this)
                 .is_some_and(|member| descriptor::has_get(member, this)))
@@ -210,9 +210,7 @@ impl VM<'_> {
         };
         let nargs =
             u8::try_from(*nargs).map_err(|_| ExcType::type_error("class pattern count must be between 0 and 255"))?;
-        if !is_class_object(cls, this)
-            || !matches!(keywords, Value::Ref(id) if matches!(this.heap.get(*id), HeapData::Tuple(_)))
-        {
+        if TypeRef::from_value(cls).is_none() || !matches!(keywords, Value::Ref(HeapKind::Tuple, _)) {
             return Err(ExcType::type_error(
                 "class pattern helper requires a class and keyword tuple",
             ));
@@ -353,7 +351,7 @@ fn build_rest_dict(subject: &Value, keys: &Value, vm: &mut VM<'_>) -> RunResult<
     let pairs = dict.clone_all_pairs(vm)?;
     let rest = Dict::from_pairs(pairs, vm)?;
     let rest_id = vm.heap.allocate(HeapData::Dict(rest));
-    let mut guard = DropGuard::new(Value::Ref(rest_id), vm);
+    let mut guard = DropGuard::new(Value::Ref(HeapKind::Dict, rest_id), vm);
     let (_, vm) = guard.as_parts();
     let HeapReadOutput::Dict(rest) = vm.heap.read(rest_id) else {
         unreachable!("just allocated as a dict")
@@ -402,15 +400,6 @@ fn class_pattern_names(
     Ok(guard.into_inner())
 }
 
-/// Whether `value` is something `isinstance` accepts as a single class.
-fn is_class_object(value: &Value, vm: &VM<'_>) -> bool {
-    match value {
-        Value::Builtin(Builtins::Type(_)) => true,
-        Value::Ref(id) => is_class_like(vm.heap.get(*id)),
-        _ => false,
-    }
-}
-
 /// Resolves `cls.__match_args__` for the first `nargs` positional sub-patterns.
 ///
 /// Builtins carry no `__match_args__`: the self-matching ones accept one
@@ -426,7 +415,7 @@ fn class_match_args(cls: &Value, nargs: usize, vm: &mut VM<'_>) -> RunResult<Mat
             Ok(())
         }
     };
-    let Value::Ref(cls_id) = cls else {
+    let Value::Ref(_, cls_id) = cls else {
         return match cls {
             Value::Builtin(Builtins::Type(t)) if SELF_MATCHING_TYPES.contains(t) => {
                 check_count(1, vm).map(|()| MatchArgs::SelfMatch)
@@ -499,7 +488,7 @@ fn positional_count_error(cls: &Value, allowed: usize, given: usize, vm: &VM<'_>
 
 /// The class's `__name__`, as CPython's class pattern errors spell it.
 fn class_pattern_name(cls: &Value, vm: &VM<'_>) -> String {
-    match TypeRef::from_value(cls, vm.heap) {
+    match TypeRef::from_value(cls) {
         Some(ty) => ty.dunder_name(vm.heap, vm.interns).into_owned(),
         None => cls.py_type_name(vm).to_string(),
     }

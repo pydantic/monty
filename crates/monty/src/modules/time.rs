@@ -24,13 +24,13 @@ use crate::{
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropWithContext, HeapReadOutput},
+    heap::DropWithContext,
     intern::StaticStrings,
     modules::ModuleFunctions,
     os_dispatch::PostConversionEffect,
     string_builder::StringBuilder,
     types::{
-        Module, NamedTuple, PyTrait, date, datetime as datetime_type,
+        Module, NamedTuple, PyTrait, Tuple, date, datetime as datetime_type,
         datetime::{TimestampRounding, sandbox_instant, sandbox_local_wall_clock},
         str::allocate_string,
         timezone::tzname_string,
@@ -794,10 +794,9 @@ fn time_fields(value: &Value, name: &str, vm: &mut VM<'_>) -> RunResult<TimeFiel
 /// The nine core integers of a time tuple, plus the zone an 11-field
 /// `struct_time` carries. Rejects anything else with CPython's wording.
 fn time_tuple_parts(value: &Value, name: &str, vm: &VM<'_>) -> RunResult<([i64; 9], Option<MontyTimeZone>)> {
-    let read = value.read_heap(vm);
-    let items = match &read {
-        Some(HeapReadOutput::Tuple(tuple)) => tuple.get(vm.heap).as_slice(),
-        Some(HeapReadOutput::NamedTuple(tuple)) => tuple.get(vm.heap).items(),
+    let items = match value {
+        _ if let Some(tuple) = value.get_as::<Tuple>(vm.heap) => tuple.as_slice(),
+        _ if let Some(tuple) = value.get_as::<NamedTuple>(vm.heap) => tuple.items(),
         _ => return Err(ExcType::type_error("Tuple or struct_time argument required".to_owned())),
     };
     if !matches!(items.len(), 9 | 11) {

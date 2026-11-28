@@ -6,6 +6,7 @@ use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
     heap::{Heap, HeapData, HeapReader},
+    heap_data::HeapKind,
     intern::{CompileInterns, Interns},
     run::{Program, SessionTables},
     types::{Bytes, List, LongInt, NamedTuple, str::allocate_string},
@@ -129,7 +130,7 @@ fn i32_conversions() {
         let id = vm
             .heap
             .allocate(HeapData::LongInt(LongInt::new(BigInt::from(i64::MAX) + 1)));
-        let val = Value::Ref(id);
+        let val = Value::Ref(HeapKind::LongInt, id);
         assert!(matches!(i32::from_value(val, vm), Err(FromValueFail::Raise(_))));
 
         let type_err = i32::type_error("str").into_python_exception(vm.interns, |_| None);
@@ -157,7 +158,7 @@ fn i64_conversions() {
         let id = vm
             .heap
             .allocate(HeapData::LongInt(LongInt::new(BigInt::from(i64::MAX) + 1)));
-        let val = Value::Ref(id);
+        let val = Value::Ref(HeapKind::LongInt, id);
         assert!(matches!(i64::from_value(val, vm), Err(FromValueFail::Raise(_))));
 
         let type_err = i64::type_error("str").into_python_exception(vm.interns, |_| None);
@@ -185,7 +186,7 @@ fn isize_conversions() {
         let id = vm
             .heap
             .allocate(HeapData::LongInt(LongInt::new(BigInt::from(i64::MAX) + 1)));
-        let val = Value::Ref(id);
+        let val = Value::Ref(HeapKind::LongInt, id);
         assert!(matches!(isize::from_value(val, vm), Err(FromValueFail::Raise(_))));
 
         let type_err = isize::type_error("str").into_python_exception(vm.interns, |_| None);
@@ -218,21 +219,21 @@ fn u64_conversions() {
 
         // Negative BigInt
         let id = vm.heap.allocate(HeapData::LongInt(LongInt::new(BigInt::from(-100))));
-        let val = Value::Ref(id);
+        let val = Value::Ref(HeapKind::LongInt, id);
         assert!(matches!(u64::from_value(val, vm), Err(FromValueFail::Raise(_))));
 
         // Positive BigInt within u64
         let id = vm
             .heap
             .allocate(HeapData::LongInt(LongInt::new(BigInt::from(u64::MAX))));
-        let val = Value::Ref(id);
+        let val = Value::Ref(HeapKind::LongInt, id);
         assert_eq!(u64::from_value(val, vm).unwrap(), u64::MAX);
 
         // BigInt overflow
         let id = vm
             .heap
             .allocate(HeapData::LongInt(LongInt::new(BigInt::from(u64::MAX) + 1)));
-        let val = Value::Ref(id);
+        let val = Value::Ref(HeapKind::LongInt, id);
         assert!(matches!(u64::from_value(val, vm), Err(FromValueFail::Raise(_))));
 
         let type_err = u64::type_error("str").into_python_exception(vm.interns, |_| None);
@@ -369,8 +370,10 @@ fn default_trait_impls_and_unconstrained() {
 fn long_int_and_index_dunder_edge_cases() {
     with_test_vm(|vm| {
         // non-LongInt heap value
-        let s = allocate_string("a heap-allocated string", vm.heap);
+        let s = allocate_string("long enough to require a heap string", vm.heap);
+        assert!(!s.is_long_int());
         assert!(s.as_long_int(vm).is_none());
+        assert!(!Value::None.is_long_int());
         assert!(Value::None.as_long_int(vm).is_none());
 
         // resolve_index_dunder with None and Str

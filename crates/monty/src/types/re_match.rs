@@ -372,7 +372,7 @@ impl HeapItem for ReMatch {
         // Release the shared subject reference (no-op for an interned subject).
         // `dec_ref_forget` neutralises the `Ref` so the struct's own `Drop`
         // does not trip the `memory-model-checks` leak assertion.
-        if let Value::Ref(id) = &mut self.subject {
+        if let Value::Ref(_, id) = &mut self.subject {
             stack.push(*id);
             #[cfg(feature = "memory-model-checks")]
             self.subject.dec_ref_forget();

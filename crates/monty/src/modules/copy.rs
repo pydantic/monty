@@ -12,6 +12,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
+    heap_data::HeapKind,
     intern::StaticStrings,
     modules::ModuleFunctions,
     types::{Dict, List, Module, Type, hash_table::TableCursor, instance_call_copy_hook},
@@ -99,11 +100,11 @@ fn call_deepcopy(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// [`classify`] settles what happens to each heap type; this only spells out
 /// the rebuilds, which need the typed handle its arm binds.
 fn shallow_copy(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
-    let Value::Ref(id) = value else {
+    let Value::Ref(kind, id) = value else {
         return Ok(value.clone_with_heap(vm.heap));
     };
     let id = *id;
-    match classify(&vm.heap.read(id), vm) {
+    match classify(*kind, id, vm) {
         Copyability::Shared | Copyability::ImmutableContainer => Ok(value.clone_with_heap(vm.heap)),
         Copyability::Refused => Err(cannot_copy(value, vm)),
         Copyability::Rebuilt => match vm.heap.read(id) {
@@ -115,7 +116,7 @@ fn shallow_copy(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
                 let pairs = dict.clone_all_pairs(vm)?;
                 let copy_id = dict.allocate_empty_like(vm);
                 let filled = insert_pairs(copy_id, pairs, vm);
-                release_on_error(Value::Ref(copy_id), filled, vm)
+                release_on_error(Value::Ref(HeapKind::Dict, copy_id), filled, vm)
             }
             HeapReadOutput::Set(set) => {
                 let copy = set.copy(vm)?;
@@ -144,7 +145,7 @@ fn shallow_copy(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
                     let pairs = clone_attrs(id, vm)?;
                     let copy_id = instance.allocate_empty_like(vm);
                     let filled = insert_attrs(copy_id, pairs, vm);
-                    release_on_error(Value::Ref(copy_id), filled, vm)
+                    release_on_error(Value::Ref(HeapKind::Instance, copy_id), filled, vm)
                 }
             }
             // A new binding over the same receiver and function, as CPython's
@@ -164,11 +165,11 @@ fn shallow_copy(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
             // position but not its line-ending history; a closed one refuses.
             HeapReadOutput::StringIo(stream) => {
                 let copy = stream.get(vm.heap).copy(vm)?;
-                Ok(Value::Ref(vm.heap.allocate(HeapData::StringIo(Box::new(copy)))))
+                Ok(Value::allocate(copy, vm.heap))
             }
             HeapReadOutput::BytesIo(stream) => {
                 let copy = stream.get(vm.heap).copy(vm)?;
-                Ok(Value::Ref(vm.heap.allocate(HeapData::BytesIo(Box::new(copy)))))
+                Ok(Value::allocate(copy, vm.heap))
             }
             // `Context.__copy__`: the same settings and flags in a new object.
             HeapReadOutput::DecimalContext(context) => {
@@ -213,7 +214,7 @@ pub(crate) trait PyDeepCopy<'h> {
 /// The whole walk runs inside one call, past no instruction checkpoint, so
 /// every fill loop polls the duration limit as the container iterators do.
 pub(crate) fn deep_copy(source: &Value, memo: &mut Memo, vm: &mut VM<'_>) -> RunResult<Value> {
-    let Value::Ref(id) = source else {
+    let Value::Ref(kind, id) = source else {
         return Ok(source.clone_with_heap(vm.heap));
     };
     let id = *id;
@@ -230,7 +231,7 @@ pub(crate) fn deep_copy(source: &Value, memo: &mut Memo, vm: &mut VM<'_>) -> Run
     // Dispatched here rather than in a function of its own: every frame live
     // across the recursion is paid once per level of nesting. `classify`
     // returns before the recursion, so its frame is not one of them.
-    let copy = match classify(&vm.heap.read(id), vm) {
+    let copy = match classify(*kind, id, vm) {
         Copyability::Shared => Ok(source.clone_with_heap(vm.heap)),
         Copyability::Refused => Err(cannot_copy(source, vm)),
         // An immutable container's items still change, so `deepcopy` rebuilds
@@ -277,7 +278,7 @@ pub(crate) fn deep_copy(source: &Value, memo: &mut Memo, vm: &mut VM<'_>) -> Run
 
 /// What `copy` does with a heap type.
 ///
-/// [`classify`] is the one exhaustive match over `HeapReadOutput`, so a new
+/// [`classify`] is the one exhaustive match over `HeapKind`, so a new
 /// heap type is a compile error there until someone picks a variant here,
 /// rather than falling into "cannot pickle" because nobody looked.
 enum Copyability {
@@ -295,65 +296,68 @@ enum Copyability {
 }
 
 /// Decides what the two passes do with a heap value.
-fn classify<'h>(output: &HeapReadOutput<'h>, vm: &VM<'h>) -> Copyability {
+fn classify(output: HeapKind, id: HeapId, vm: &VM<'_>) -> Copyability {
     match output {
-        HeapReadOutput::List(_)
-        | HeapReadOutput::Dict(_)
-        | HeapReadOutput::Set(_)
-        | HeapReadOutput::Deque(_)
-        | HeapReadOutput::NamedTuple(_)
-        | HeapReadOutput::Instance(_)
-        | HeapReadOutput::BoundMethod(_)
-        | HeapReadOutput::Partial(_)
-        | HeapReadOutput::Random(_)
-        | HeapReadOutput::StringIo(_)
-        | HeapReadOutput::BytesIo(_)
-        | HeapReadOutput::DecimalContext(_) => Copyability::Rebuilt,
+        HeapKind::List
+        | HeapKind::Dict
+        | HeapKind::Set
+        | HeapKind::Deque
+        | HeapKind::NamedTuple
+        | HeapKind::Instance
+        | HeapKind::BoundMethod
+        | HeapKind::Partial
+        | HeapKind::Random
+        | HeapKind::StringIo
+        | HeapKind::BytesIo
+        | HeapKind::DecimalContext => Copyability::Rebuilt,
         // A shallow copy of an immutable container holds the same items, so
         // CPython hands back the original; only `deepcopy` rebuilds these.
-        HeapReadOutput::Tuple(_) | HeapReadOutput::FrozenSet(_) => {
+        HeapKind::Tuple | HeapKind::FrozenSet => {
             Copyability::ImmutableContainer
         }
         // CPython's cache wrappers share their state through both copy operations.
-        HeapReadOutput::LruCache(_) => Copyability::Shared,
-        HeapReadOutput::BuiltinDescriptor(d) => {
-            if d.get(vm.heap).kind() == Type::Property { Copyability::Shared } else { Copyability::Refused }
+        HeapKind::LruCache => Copyability::Shared,
+        HeapKind::BuiltinDescriptor => {
+            let HeapData::BuiltinDescriptor(descriptor) = vm.heap.get(id) else {
+                unreachable!("expected a builtin descriptor");
+            };
+            if descriptor.kind() == Type::Property { Copyability::Shared } else { Copyability::Refused }
         }
         // Leaves and immutable containers Monty can never mutate, so a copy
         // that shared them is indistinguishable from one that rebuilt them.
-        HeapReadOutput::Str(_)
-        | HeapReadOutput::Bytes(_)
-        | HeapReadOutput::LongInt(_)
-        | HeapReadOutput::Complex(_)
-        | HeapReadOutput::Decimal(_)
-        | HeapReadOutput::Range(_)
-        | HeapReadOutput::Slice(_)
-        | HeapReadOutput::RePattern(_)
-        | HeapReadOutput::ReMatch(_)
-        | HeapReadOutput::Exception(_)
-        | HeapReadOutput::Date(_)
-        | HeapReadOutput::Time(_)
-        | HeapReadOutput::DateTime(_)
-        | HeapReadOutput::TimeDelta(_)
-        | HeapReadOutput::TimeZone(_)
-        | HeapReadOutput::Path(_)
+        HeapKind::Str
+        | HeapKind::Bytes
+        | HeapKind::LongInt
+        | HeapKind::Complex
+        | HeapKind::Decimal
+        | HeapKind::Range
+        | HeapKind::Slice
+        | HeapKind::RePattern
+        | HeapKind::ReMatch
+        | HeapKind::Exception
+        | HeapKind::Date
+        | HeapKind::Time
+        | HeapKind::DateTime
+        | HeapKind::TimeDelta
+        | HeapKind::TimeZone
+        | HeapKind::Path
         // Classes and functions. A `def`/`lambda` only reaches the heap once
         // it captures an enclosing scope or evaluates a default; a plain one
         // is a `Value::Function` and never gets here. Their state is mutable
         // (`nonlocal`, class attributes) but CPython shares them anyway, so
         // rebuilding would be the divergence.
-        | HeapReadOutput::Class(_)
-        | HeapReadOutput::NamedTupleClass(_)
-        | HeapReadOutput::HostClassType(_)
-        | HeapReadOutput::Closure(_)
-        | HeapReadOutput::DataclassMethod(_)
+        | HeapKind::Class
+        | HeapKind::NamedTupleClass
+        | HeapKind::HostClassType
+        | HeapKind::Closure
+        | HeapKind::DataclassMethod
         // Type forms: `list[int]` and `int | None`. Nothing can mutate one, so
         // sharing is visible only to `is` — CPython rebuilds them through
         // `operator.getitem`, see `limitations/copy.md`.
-        | HeapReadOutput::GenericAlias(_)
-        | HeapReadOutput::Union(_)
-        | HeapReadOutput::ForwardRef(_)
-        | HeapReadOutput::FunctionDefaults(_) => Copyability::Shared,
+        | HeapKind::GenericAlias
+        | HeapKind::Union
+        | HeapKind::ForwardRef
+        | HeapKind::FunctionDefaults => Copyability::Shared,
         // Refused, with the `TypeError` CPython's pickler raises. Views and
         // iterators are positions into something else; the rest are host
         // objects or interpreter internals with no Python-visible
@@ -362,40 +366,40 @@ fn classify<'h>(output: &HeapReadOutput<'h>, vm: &VM<'h>) -> Copyability {
         // answer lazy attribute reads through the very object it was supposed
         // to be detached from. See `limitations/copy.md` for the cases where
         // CPython manages to copy one of these and Monty does not.
-        HeapReadOutput::HostClass(_)
-        | HeapReadOutput::HashObject(_)
-        | HeapReadOutput::DictKeysView(_)
-        | HeapReadOutput::DictItemsView(_)
-        | HeapReadOutput::DictValuesView(_)
-        | HeapReadOutput::ListIterator(_)
-        | HeapReadOutput::DequeIterator(_)
-        | HeapReadOutput::TupleIterator(_)
-        | HeapReadOutput::StringIterator(_)
-        | HeapReadOutput::BytesIterator(_)
-        | HeapReadOutput::RangeIterator(_)
-        | HeapReadOutput::DictKeyIterator(_)
-        | HeapReadOutput::DictItemIterator(_)
-        | HeapReadOutput::DictValueIterator(_)
-        | HeapReadOutput::SetIterator(_)
-        | HeapReadOutput::CallableIterator(_)
-        | HeapReadOutput::MapFilter(_)
-        | HeapReadOutput::Generator(_)
-        | HeapReadOutput::DirScan(_)
-        | HeapReadOutput::Itertools(_)
-        | HeapReadOutput::Csv(_)
-        | HeapReadOutput::Module(_)
-        | HeapReadOutput::Coroutine(_)
-        | HeapReadOutput::GatherFuture(_)
-        | HeapReadOutput::ExternalFuture(_)
-        | HeapReadOutput::Task(_)
-        | HeapReadOutput::WaitFuture(_)
-        | HeapReadOutput::OpenFile(_)
-        | HeapReadOutput::ExtFunction(_)
-        | HeapReadOutput::Cell(_)
-        | HeapReadOutput::DataclassField(_)
-        | HeapReadOutput::DataclassParams(_)
-        | HeapReadOutput::DecimalSignalDict(_)
-        | HeapReadOutput::DecimalContextManager(_) => Copyability::Refused,
+        HeapKind::HostClass
+        | HeapKind::HashObject
+        | HeapKind::DictKeysView
+        | HeapKind::DictItemsView
+        | HeapKind::DictValuesView
+        | HeapKind::ListIterator
+        | HeapKind::DequeIterator
+        | HeapKind::TupleIterator
+        | HeapKind::StringIterator
+        | HeapKind::BytesIterator
+        | HeapKind::RangeIterator
+        | HeapKind::DictKeyIterator
+        | HeapKind::DictItemIterator
+        | HeapKind::DictValueIterator
+        | HeapKind::SetIterator
+        | HeapKind::CallableIterator
+        | HeapKind::MapFilter
+        | HeapKind::DirScan
+        | HeapKind::Itertools
+        | HeapKind::Csv
+        | HeapKind::Module
+        | HeapKind::Coroutine
+        | HeapKind::GatherFuture
+        | HeapKind::Task
+        | HeapKind::WaitFuture
+        | HeapKind::ExternalFuture
+        | HeapKind::Generator
+        | HeapKind::OpenFile
+        | HeapKind::ExtFunction
+        | HeapKind::Cell
+        | HeapKind::DataclassField
+        | HeapKind::DataclassParams
+        | HeapKind::DecimalSignalDict
+        | HeapKind::DecimalContextManager => Copyability::Refused,
     }
 }
 
@@ -409,7 +413,7 @@ pub(crate) fn deep_copy_attrs(
     memo: &mut Memo,
     vm: &mut VM<'_>,
 ) -> RunResult<Value> {
-    let mut guard = DropGuard::new(Value::Ref(copy_id), vm);
+    let mut guard = DropGuard::new(Value::Ref(HeapKind::Instance, copy_id), vm);
     let (copy, vm) = guard.as_parts_mut();
     memo.insert(source, copy, vm)?;
     let expected_len = attrs(source_id, vm).len();
@@ -505,7 +509,7 @@ impl Memo {
     fn new(memo: Value, vm: &mut VM<'_>) -> RunResult<Self> {
         let dict = match memo {
             Value::None => Value::allocate(Dict::new(), vm.heap),
-            Value::Ref(id) if matches!(vm.heap.read(id), HeapReadOutput::Dict(_)) => memo,
+            Value::Ref(HeapKind::Dict, _) => memo,
             other => {
                 let type_name = other.py_type_name(vm);
                 other.drop_with(vm);

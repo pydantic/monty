@@ -9,6 +9,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
+    heap_data::HeapKind,
     intern::StaticStrings,
     types::{
         Class, Dict, List, OwnedTypeRef, PyTrait, Tuple, Type, TypeRef, descriptor, instance::bind_method,
@@ -110,7 +111,7 @@ fn create_class(
     // namespace keys; Monty has no warnings machinery, so silently accepting
     // them would hide the mistake — raise instead. Validated before cloning
     // any pairs so the error path has nothing to clean up.
-    if let Some((bad_key, _)) = source.iter().find(|(k, _)| !k.is_str(vm.heap)) {
+    if let Some((bad_key, _)) = source.iter().find(|(k, _)| !k.is_str()) {
         let name_str = class_name.as_str(vm.interns);
         let key_type = bad_key.py_type_heap(vm.heap).name(vm.heap, vm.interns);
         return Err(ExcType::type_error(format!(
@@ -118,7 +119,7 @@ fn create_class(
         )));
     }
     let class_cell = match source.get_by_str("__classcell__", vm.heap, vm.interns) {
-        Some(Value::Ref(id)) if matches!(vm.heap.get(*id), HeapData::Cell(_)) => Some(*id),
+        Some(Value::Ref(HeapKind::Cell, id)) => Some(*id),
         Some(bad) => {
             let bad_type = bad.py_type_name_heap(vm.heap, vm.interns);
             return Err(ExcType::type_error(format!(
@@ -193,7 +194,7 @@ fn class_bases(bases: &Value, vm: &VM<'_>) -> RunResult<Vec<TypeRef>> {
     let mut out: Vec<TypeRef> = Vec::with_capacity(tuple.as_slice().len());
     for (index, base) in tuple.as_slice().iter().enumerate() {
         vm.heap.tracker.check_time_every(index)?;
-        let Some(base) = TypeRef::from_value(base, vm.heap) else {
+        let Some(base) = TypeRef::from_value(base) else {
             return Err(ExcType::type_error(
                 "metaclass conflict: the metaclass of a derived class must be a (non-strict) subclass of the \
                  metaclasses of all its bases",
@@ -259,7 +260,7 @@ pub(crate) fn run_init_subclass(class_id: HeapId, kwargs: KwargsValues, vm: &mut
     });
     let Some(hook) = hook.map(|v| v.clone_with_heap(vm.heap)) else {
         vm.heap.inc_ref(class_id);
-        let args = ArgValues::from_parts(vec![Value::Ref(class_id)], kwargs);
+        let args = ArgValues::from_parts(vec![Value::Ref(HeapKind::Class, class_id)], kwargs);
         return builtin_object_init_subclass(vm, args).map(|_| ());
     };
     defer_drop!(hook, vm);
@@ -300,7 +301,7 @@ pub(crate) fn builtin_type_mro(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Va
         return Err(ExcType::type_error("unbound method type.mro() needs an argument"));
     };
     defer_drop!(cls, vm);
-    let Some(ty) = TypeRef::from_value(cls, vm.heap) else {
+    let Some(ty) = TypeRef::from_value(cls) else {
         let got = cls.py_type_name(vm);
         return Err(ExcType::type_error(format!(
             "descriptor 'mro' for 'type' objects doesn't apply to a '{got}' object"

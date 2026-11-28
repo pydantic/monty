@@ -220,7 +220,7 @@ impl Text {
 
     /// `str` or `bytes` text only, else `None`.
     fn extract_text(value: &Value, vm: &VM<'_>) -> Option<Self> {
-        if value.is_str(vm.heap) {
+        if value.is_str() {
             value_as_path_str(value, vm.heap, vm.interns).map(Self::str)
         } else {
             value.as_bytes(vm).map(Self::bytes)

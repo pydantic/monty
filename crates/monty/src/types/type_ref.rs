@@ -12,6 +12,7 @@ use crate::{
     builtins::Builtins,
     exception_private::RunResult,
     heap::{Heap, HeapData, HeapId},
+    heap_data::HeapKind,
     intern::Interns,
     types::{Type, native::NativeMro},
     value::Value,
@@ -59,10 +60,12 @@ impl TypeRef {
 
     /// The type a value denotes, if it is a type object: a native type or a class.
     #[must_use]
-    pub(crate) fn from_value(value: &Value, heap: &Heap) -> Option<Self> {
+    pub(crate) fn from_value(value: &Value) -> Option<Self> {
         match value {
             Value::Builtin(Builtins::Type(ty)) => Some(Self::Native(*ty)),
-            Value::Ref(id) if is_class_like(heap.get(*id)) => Some(Self::Class(*id)),
+            Value::Ref(HeapKind::Class | HeapKind::NamedTupleClass | HeapKind::HostClassType, id) => {
+                Some(Self::Class(*id))
+            }
             _ => None,
         }
     }
@@ -74,7 +77,7 @@ impl TypeRef {
             Self::Native(ty) => Value::Builtin(Builtins::Type(ty)),
             Self::Class(id) => {
                 heap.inc_ref(id);
-                Value::Ref(id)
+                Value::Ref(heap.get(id).kind(), id)
             }
         }
     }
@@ -204,15 +207,6 @@ impl OwnedTypeRef {
             Self::Class(id) => Some(id),
         }
     }
-}
-
-/// Whether heap data is a class object that a [`TypeRef::Class`] may name.
-#[must_use]
-pub(crate) fn is_class_like(data: &HeapData) -> bool {
-    matches!(
-        data,
-        HeapData::Class(_) | HeapData::NamedTupleClass(_) | HeapData::HostClassType(_)
-    )
 }
 
 /// The ancestors stored for a class-like object, excluding itself.

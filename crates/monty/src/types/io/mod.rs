@@ -19,7 +19,8 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{DropWithContext, Heap, HeapData},
+    heap::DropWithContext,
+    heap_data::HeapKind,
     types::PyTrait,
     value::Value,
 };
@@ -29,13 +30,16 @@ use crate::{
 /// Monty cannot hand out these objects' methods as values, so code that
 /// CPython writes as `fp.write(...)` through a looked-up attribute (`json.dump`,
 /// `csv.writer`, `print(file=...)`) must call them by name with `call_attr`.
-pub(crate) fn is_native_stream(value: &Value, heap: &Heap) -> bool {
-    matches!(value, Value::Ref(id) if matches!(heap.get(*id), HeapData::OpenFile(_) | HeapData::StringIo(_) | HeapData::BytesIo(_)))
+pub(crate) fn is_native_stream(value: &Value) -> bool {
+    matches!(
+        value,
+        Value::Ref(HeapKind::OpenFile | HeapKind::StringIo | HeapKind::BytesIo, _)
+    )
 }
 
 /// Whether `value` is a `StringIO` or `BytesIO`, whose methods never suspend.
-pub(crate) fn is_memory_stream(value: &Value, heap: &Heap) -> bool {
-    matches!(value, Value::Ref(id) if matches!(heap.get(*id), HeapData::StringIo(_) | HeapData::BytesIo(_)))
+pub(crate) fn is_memory_stream(value: &Value) -> bool {
+    matches!(value, Value::Ref(HeapKind::StringIo | HeapKind::BytesIo, _))
 }
 
 /// An optional `size`/`hint` argument, as CPython's

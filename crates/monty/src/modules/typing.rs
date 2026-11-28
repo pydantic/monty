@@ -27,6 +27,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     frozen::{FrozenFunction, FrozenFunctions},
     heap::{HeapData, HeapId},
+    heap_data::HeapKind,
     intern::{FunctionId, StaticStrings},
     modules::ModuleFunctions,
     types::{
@@ -584,7 +585,7 @@ pub(crate) fn collect_hints(obj: &Value, request: &HintsRequest, vm: &mut VM<'_>
             defer_drop!(stored, vm);
             // CPython's `annotationlib` rejects a non-dict binding such as `None`.
             if let Some(stored) = stored
-                && !matches!(stored, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Dict(_)))
+                && !matches!(stored, Value::Ref(HeapKind::Dict, _))
             {
                 return Err(not_a_dict_error(class_id, vm));
             }
@@ -651,7 +652,7 @@ impl ForwardRefScopes {
         for scope in [self.globals, self.locals] {
             items.push(scope.map_or(Value::None, |id| {
                 vm.heap.inc_ref(id);
-                Value::Ref(id)
+                Value::Ref(HeapKind::Dict, id)
             }));
         }
         items.push(Value::Bool(self.globals_first));
@@ -753,7 +754,7 @@ fn hint_source(obj: &Value, vm: &VM<'_>) -> HintSource {
     loop {
         let id = match current {
             Value::DefFunction(func_id) => return HintSource::Function(*func_id, None),
-            Value::Ref(id) => *id,
+            Value::Ref(_, id) => *id,
             value if value.is_callable(vm) => return HintSource::Empty,
             _ => return HintSource::NotAnnotatable,
         };
@@ -784,7 +785,7 @@ pub(crate) fn owner_globals(owner: &Value, vm: &VM<'_>) -> Value {
     match hint_source(owner, vm) {
         HintSource::Function(_, Some(dict)) => {
             vm.heap.inc_ref(dict);
-            Value::Ref(dict)
+            Value::Ref(HeapKind::Dict, dict)
         }
         HintSource::Function(_, None) | HintSource::Class(_) => Value::None,
         _ => empty_dict(vm),
@@ -817,7 +818,7 @@ fn class_attr_is_true(class_id: HeapId, name: &str, vm: &mut VM<'_>) -> RunResul
 /// The `ValueError` for a class whose `__annotations__` is bound to a non-dict.
 fn not_a_dict_error(class_id: HeapId, vm: &mut VM<'_>) -> RunError {
     vm.heap.inc_ref(class_id);
-    let class = Value::Ref(class_id);
+    let class = Value::Ref(HeapKind::Class, class_id);
     defer_drop!(class, vm);
     match class.py_repr(vm) {
         Ok(repr) => {
@@ -833,7 +834,7 @@ fn not_a_dict_error(class_id: HeapId, vm: &mut VM<'_>) -> RunError {
 pub(crate) fn namespace_dict(value: &Value, function: &str, param: &str, vm: &VM<'_>) -> RunResult<Option<HeapId>> {
     match value {
         Value::None => Ok(None),
-        Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Dict(_)) => Ok(Some(*id)),
+        Value::Ref(HeapKind::Dict, id) => Ok(Some(*id)),
         _ => Err(ExcType::type_error(format!(
             "{function}() {param} must be a dict, not {}",
             value.py_type_name(vm)

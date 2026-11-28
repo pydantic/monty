@@ -20,6 +20,7 @@ use crate::{
     frozen::{FrozenFunction, FrozenFunctions},
     hash::{HashValue, identity_hash},
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    heap_data::HeapKind,
     intern::StaticStrings,
     modules::ModuleFunctions,
     py_attrs::PyAttrs,
@@ -88,14 +89,14 @@ impl LruCache {
     ///
     /// MUST report exactly the ids [`HeapItem::py_dec_ref_ids`] releases.
     pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
-        if let Some(Value::Ref(id)) = self.func {
+        if let Some(Value::Ref(_, id)) = self.func {
             on_child(id);
         }
         for entry in self.cache.live() {
-            if let Value::Ref(id) = entry.key {
+            if let Value::Ref(_, id) = entry.key {
                 on_child(id);
             }
-            if let Value::Ref(id) = entry.value {
+            if let Value::Ref(_, id) = entry.value {
                 on_child(id);
             }
         }
@@ -168,7 +169,14 @@ pub(crate) fn call(cache_id: HeapId, args: ArgValues, vm: &mut VM<'_>) -> RunRes
         let (key, vm) = key_guard.into_parts();
         vm.call_frozen_exact(
             FrozenFunction::LruCacheMiss,
-            [store, Value::Ref(cache_id), key, function, args, kwargs],
+            [
+                store,
+                Value::Ref(HeapKind::LruCache, cache_id),
+                key,
+                function,
+                args,
+                kwargs,
+            ],
         )
     }
 }

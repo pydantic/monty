@@ -29,6 +29,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, ExceptionValue, RunError, RunResult, SimpleException},
     hash::{HashValue, identity_hash},
     heap::{ContainsHeap, HeapData, HeapId, HeapItem, HeapObjectRead},
+    heap_data::HeapKind,
     identity::Identity,
     intern::StaticStrings,
     os_dispatch::value_as_path_str,
@@ -79,7 +80,7 @@ impl DirScan {
     /// Invokes `on_child` for each heap id this object owns (GC trace hook).
     pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
         if let Self::Walk(walk) = self {
-            if let Value::Ref(id) = &walk.onerror {
+            if let Value::Ref(_, id) = &walk.onerror {
                 on_child(*id);
             }
             if let Some(pending) = &walk.pending {
@@ -353,7 +354,7 @@ fn walk_next<'h>(this: &mut HeapObjectRead<'h, DirScan>, vm: &mut VM<'h>) -> Run
         walk.stack.clear();
         let pending = walk.pending.take();
         if let Some(pending) = pending {
-            Value::Ref(pending.dirnames).drop_with(vm);
+            Value::Ref(HeapKind::List, pending.dirnames).drop_with(vm);
         }
     }
     result
@@ -397,7 +398,7 @@ fn walk_step<'h>(this: &mut HeapObjectRead<'h, DirScan>, vm: &mut VM<'h>) -> Run
                 };
                 let dirs = string_list(dirs, vm);
                 let files = string_list(files, vm);
-                if let (Some(relative), Value::Ref(dirnames)) = (relative, &dirs) {
+                if let (Some(relative), Value::Ref(_, dirnames)) = (relative, &dirs) {
                     vm.heap.inc_ref(*dirnames);
                     walk_mut(this, vm).pending = Some(PendingDirnames {
                         relative,
@@ -428,7 +429,7 @@ fn descend_into_dirnames<'h>(
         spelled,
         dirnames,
     } = pending;
-    let dirnames = Value::Ref(dirnames);
+    let dirnames = Value::Ref(HeapKind::List, dirnames);
     defer_drop!(dirnames, vm);
     let Some(list) = dirnames.get_as::<List>(vm.heap) else {
         unreachable!("a walk's dirnames is always a list")

@@ -15,6 +15,7 @@ use crate::{
     defer_drop,
     exception_private::RunResult,
     heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapObjectRead, HeapRead, HeapReadMut},
+    heap_data::HeapKind,
     types::{
         allocate_tuple,
         itertools::{ItertoolsIter, step::next_item},
@@ -62,12 +63,12 @@ impl GroupBy {
     /// Invokes `on_child` for each heap id this iterator owns (GC trace hook).
     pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
         for value in [&self.source, &self.keyfunc] {
-            if let Value::Ref(id) = value {
+            if let Value::Ref(_, id) = value {
                 on_child(*id);
             }
         }
         for value in [&self.target_key, &self.current_key, &self.current_value] {
-            if let Some(Value::Ref(id)) = value {
+            if let Some(Value::Ref(_, id)) = value {
                 on_child(*id);
             }
         }
@@ -100,7 +101,7 @@ impl Grouper {
     /// Invokes `on_child` for each heap id this iterator owns (GC trace hook).
     pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
         for value in [&self.parent, &self.target_key] {
-            if let Value::Ref(id) = value {
+            if let Value::Ref(_, id) = value {
                 on_child(*id);
             }
         }
@@ -176,7 +177,9 @@ pub(super) fn next<'h>(iter: &mut HeapObjectRead<'h, ItertoolsIter>, vm: &mut VM
     let previous_target = groupby.target_key.replace(target);
     previous_target.drop_with(vm);
     Ok(Some(allocate_tuple(
-        [yielded, Value::Ref(grouper_id)].into_iter().collect(),
+        [yielded, Value::Ref(HeapKind::Itertools, grouper_id)]
+            .into_iter()
+            .collect(),
         vm.heap,
     )))
 }

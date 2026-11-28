@@ -22,14 +22,14 @@ use crate::{
     frozen::FrozenFunction,
     function::{ExactPositionalCall, Function},
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId},
-    heap_data::CellValue,
+    heap_data::{CellValue, Closure, FunctionDefaults, HeapKind},
     intern::{FunctionId, StaticStrings, StringId},
     modules::dataclasses,
     os_dispatch::{PendingEffect, release_pending_effect},
     py_value::PyValue,
     resource_checks::check_estimated_size,
     types::{
-        Dict, Instance, PyTrait, Tuple, Type, TypeRef, descriptor,
+        BoundMethod, Dict, Instance, PyTrait, Tuple, Type, TypeRef, descriptor,
         instance::{class_defines, class_lookup},
     },
     value::{EitherStr, VALUE_SIZE, Value},
@@ -430,8 +430,10 @@ impl<'h> VM<'h> {
         // in an `Option` so the helper can `take()` it only when it
         // actually matches a dunder; on the fall-through path the
         // original `args` is still owned here and goes into `py_call_attr`.
+        // User-defined instances use normal attribute lookup so their attributes can shadow a dunder.
         let mut args_slot = Some(args);
-        if let Value::Ref(heap_id) = obj
+        if let Value::Ref(kind, heap_id) = obj
+            && kind != HeapKind::Instance
             && let Some(result) = dispatch_dunder(name_id, heap_id, this, &mut args_slot)
         {
             defer_drop!(obj, this);
@@ -561,7 +563,7 @@ impl<'h> VM<'h> {
                 // Defined function without defaults, captured variables or a globals dict
                 self.call_def_function(*func_id, &[], &[], None, args)
             }
-            Value::Ref(heap_id) => {
+            Value::Ref(_, heap_id) => {
                 // Could be a closure or function with defaults - check heap
                 self.call_heap_callable(*heap_id, args)
             }
@@ -963,21 +965,18 @@ impl<'h> VM<'h> {
         };
         match value {
             Value::DefFunction(func_id) => Some(parts(*func_id, Box::default(), &[], None)),
-            Value::Ref(id) => match self.heap.get(*id) {
-                HeapData::FunctionDefaults(function) => Some(parts(
-                    function.func_id,
-                    Box::default(),
-                    &function.defaults,
-                    function.globals,
-                )),
-                HeapData::Closure(closure) => Some(parts(
-                    closure.func_id,
-                    closure.cells.clone(),
-                    &closure.defaults,
-                    closure.globals,
-                )),
-                _ => None,
-            },
+            _ if let Some(function) = value.get_as::<FunctionDefaults>(self.heap) => Some(parts(
+                function.func_id,
+                Box::default(),
+                &function.defaults,
+                function.globals,
+            )),
+            _ if let Some(closure) = value.get_as::<Closure>(self.heap) => Some(parts(
+                closure.func_id,
+                closure.cells.clone(),
+                &closure.defaults,
+                closure.globals,
+            )),
             _ => None,
         }
     }
@@ -1067,7 +1066,7 @@ impl<'h> VM<'h> {
 
         for (i, &cell_id) in cells.iter().enumerate() {
             self.heap.inc_ref(cell_id);
-            namespace[func.free_var_slots[i].index()] = Value::Ref(cell_id);
+            namespace[func.free_var_slots[i].index()] = Value::Ref(HeapKind::Cell, cell_id);
         }
     }
 
@@ -1189,7 +1188,7 @@ impl<'h> VM<'h> {
         let mut init_args = DropGuard::new(init_args, this);
         let this = init_args.ctx();
         this.heap.inc_ref(class_id);
-        let instance = this.evaluate_function(new_func, args.prepend(Value::Ref(class_id)))?;
+        let instance = this.evaluate_function(new_func, args.prepend(Value::Ref(HeapKind::Class, class_id)))?;
         let (init_args, this) = init_args.into_parts();
         let instance_class = match instance.py_type(this) {
             TypeRef::Class(actual) if TypeRef::Class(actual).is_subclass_of(TypeRef::Class(class_id), this.heap) => {
@@ -1212,16 +1211,18 @@ impl<'h> VM<'h> {
         let init = class_lookup(class_id, "__init__", self.heap, self.interns).map(|v| v.clone_with_heap(self));
 
         match init {
-            None if matches!(args, ArgValues::Empty) => Ok(CallResult::Value(Value::Ref(instance_id))),
+            None if matches!(args, ArgValues::Empty) => {
+                Ok(CallResult::Value(Value::Ref(HeapKind::Instance, instance_id)))
+            }
             // `object.__init__` ignores extra arguments when `__new__` is overridden.
             None if class_defines(class_id, "__new__", self) => {
                 args.drop_with(self);
-                Ok(CallResult::Value(Value::Ref(instance_id)))
+                Ok(CallResult::Value(Value::Ref(HeapKind::Instance, instance_id)))
             }
             None => {
                 args.drop_with(self);
                 let err = takes_no_arguments(class_id, self);
-                Value::Ref(instance_id).drop_with(self);
+                Value::Ref(HeapKind::Instance, instance_id).drop_with(self);
                 Err(err)
             }
             // A `@dataclass`-generated `__init__` binds its fields natively,
@@ -1230,13 +1231,14 @@ impl<'h> VM<'h> {
             Some(init_func) if dataclasses::is_generated_init(&init_func, self) => {
                 let this = self;
                 defer_drop!(init_func, this);
-                dataclasses::run_init(this, init_func, Value::Ref(instance_id), args).map(CallResult::Value)
+                dataclasses::run_init(this, init_func, Value::Ref(HeapKind::Instance, instance_id), args)
+                    .map(CallResult::Value)
             }
             Some(init_func) => {
                 let this = self;
                 defer_drop!(init_func, this);
                 if descriptor::has_get(init_func, this) {
-                    this.push(Value::Ref(instance_id));
+                    this.push(Value::Ref(HeapKind::Instance, instance_id));
                     match descriptor::call_member(init_func, instance_id, args, this)? {
                         CallResult::FramePushed => {
                             this.current_frame_mut().is_initializer = true;
@@ -1250,9 +1252,9 @@ impl<'h> VM<'h> {
                 // Bound methods already carry their own receiver, and builtins,
                 // classes and other values are called with the constructor
                 // arguments unchanged.
-                let init_args = if this.is_function_value(init_func) {
+                let init_args = if Self::is_function_value(init_func) {
                     this.heap.inc_ref(instance_id);
-                    args.prepend(Value::Ref(instance_id))
+                    args.prepend(Value::Ref(HeapKind::Instance, instance_id))
                 } else {
                     args
                 };
@@ -1260,7 +1262,7 @@ impl<'h> VM<'h> {
                     // Push the instance as the pending result (transferring the
                     // allocation's reference), then run __init__ as a real
                     // (suspendable) frame.
-                    this.push(Value::Ref(instance_id));
+                    this.push(Value::Ref(HeapKind::Instance, instance_id));
                     match this.call_function(init_func, init_args)? {
                         CallResult::FramePushed => {
                             // Mark the just-pushed frame so its return value is
@@ -1281,15 +1283,15 @@ impl<'h> VM<'h> {
                     // ...): run to completion synchronously — no pending instance is
                     // pushed — and enforce CPython's `None`-return contract.
                     match this.evaluate_function(init_func, init_args) {
-                        Ok(Value::None) => Ok(CallResult::Value(Value::Ref(instance_id))),
+                        Ok(Value::None) => Ok(CallResult::Value(Value::Ref(HeapKind::Instance, instance_id))),
                         Ok(result) => {
                             let type_name = result.py_type_name(this);
                             result.drop_with(this);
-                            Value::Ref(instance_id).drop_with(this);
+                            Value::Ref(HeapKind::Instance, instance_id).drop_with(this);
                             Err(ExcType::type_error_init_return(type_name))
                         }
                         Err(e) => {
-                            Value::Ref(instance_id).drop_with(this);
+                            Value::Ref(HeapKind::Instance, instance_id).drop_with(this);
                             Err(e)
                         }
                     }
@@ -1301,15 +1303,15 @@ impl<'h> VM<'h> {
     /// Whether `value` is a plain Python function object (`def`, closure, or
     /// function-with-defaults — sync or async): the kinds that act as descriptors
     /// in CPython and therefore bind an instance when looked up as a class member.
-    fn is_function_value(&self, value: &Value) -> bool {
-        match value {
-            Value::DefFunction(_) => true,
-            Value::Ref(id) => matches!(
-                self.heap.get(*id),
-                HeapData::Closure(_) | HeapData::FunctionDefaults(_) | HeapData::DataclassMethod(_)
-            ),
-            _ => false,
-        }
+    fn is_function_value(value: &Value) -> bool {
+        matches!(
+            value,
+            Value::DefFunction(_)
+                | Value::Ref(
+                    HeapKind::Closure | HeapKind::FunctionDefaults | HeapKind::DataclassMethod,
+                    _
+                )
+        )
     }
 
     /// Whether calling `value` would push a regular synchronous frame
@@ -1325,14 +1327,10 @@ impl<'h> VM<'h> {
         };
         match value {
             Value::DefFunction(func_id) => pushes_frame(*func_id),
-            Value::Ref(id) => match self.heap.get(*id) {
-                HeapData::Closure(closure) => pushes_frame(closure.func_id),
-                HeapData::FunctionDefaults(fd) => pushes_frame(fd.func_id),
-                // Bound methods never wrap another bound method, so this
-                // recursion is at most one level deep.
-                HeapData::BoundMethod(bm) => self.is_plain_sync_function(&bm.func),
-                _ => false,
-            },
+            _ if let Some(closure) = value.get_as::<Closure>(self.heap) => pushes_frame(closure.func_id),
+            _ if let Some(fd) = value.get_as::<FunctionDefaults>(self.heap) => pushes_frame(fd.func_id),
+            // Bound methods never wrap another bound method.
+            _ if let Some(bm) = value.get_as::<BoundMethod>(self.heap) => self.is_plain_sync_function(&bm.func),
             _ => false,
         }
     }
@@ -1386,17 +1384,6 @@ fn dispatch_dunder(
     args: &mut Option<ArgValues>,
 ) -> Option<Result<CallResult, RunError>> {
     let static_str = vm.interns.static_string(name_id)?;
-    // User-defined instances are never intercepted: an explicit
-    // `obj.__enter__()` / `obj.__exit__(a, b, c)` on an instance is an
-    // ordinary method call in CPython — the instance `__dict__` can shadow
-    // the class method and the arguments must reach the user function
-    // verbatim (the trait hooks reduce them to an `Option<HeapId>`, which
-    // is lossy). The `with` statement still uses the trait hooks via the
-    // `BeforeWith`/`WithExit`/`WithExceptStart` opcodes, which perform the
-    // CPython type-level (class-only) lookup.
-    if matches!(vm.heap.get(heap_id), HeapData::Instance(_)) {
-        return None;
-    }
     Some(match static_str {
         StaticStrings::Enter => {
             let args = args.take().expect("dispatch_dunder called with empty args slot");
@@ -1438,7 +1425,7 @@ fn dispatch_exit(heap_id: HeapId, vm: &mut VM<'_>, args: ArgValues) -> Result<Ca
     };
     let _ = (typ, tb);
     let exc = match val {
-        Value::Ref(id) => Some(*id),
+        Value::Ref(_, id) => Some(*id),
         _ => None,
     };
     PyValue::from_heap(heap_id, vm.heap).py_exit(vm, exc)

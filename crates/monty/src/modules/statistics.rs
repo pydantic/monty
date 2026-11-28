@@ -564,7 +564,7 @@ fn mode(vm: &mut VM<'_>, args: ArgValues, all: bool) -> RunResult<Value> {
     let iterator = data.into_py_iter(vm)?.require_synchronous(vm)?;
     let counter = counter_init(vm, ArgValues::One(iterator))?;
     defer_drop!(counter, vm);
-    let Value::Ref(id) = counter else {
+    let Value::Ref(_, id) = counter else {
         unreachable!("Counter is a heap value");
     };
     let pairs = {

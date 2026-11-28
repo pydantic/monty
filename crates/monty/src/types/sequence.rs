@@ -1,6 +1,7 @@
 use crate::{
     exception_private::RunResult,
-    heap::{Heap, HeapData},
+    heap::Heap,
+    types::{List, NamedTuple, Tuple},
     value::{VALUE_SIZE, Value},
 };
 
@@ -15,17 +16,18 @@ impl<'a> SequenceItems<'a> {
 
     /// Borrows list, tuple, and named tuple elements without invoking Python iteration.
     pub(crate) fn from_value(value: &Value, heap: &'a Heap) -> Option<Self> {
-        match heap.get(value.ref_id()?) {
-            HeapData::List(list) => Some(list.items()),
-            data => Self::from_tuple(data),
+        if let Some(list) = value.get_as::<List>(heap) {
+            Some(list.items())
+        } else {
+            Self::from_tuple(value, heap)
         }
     }
 
     /// Borrows the elements of a plain or named tuple.
-    pub(crate) fn from_tuple(data: &'a HeapData) -> Option<Self> {
-        match data {
-            HeapData::Tuple(tuple) => Some(Self::from_slice(tuple.as_slice())),
-            HeapData::NamedTuple(tuple) => Some(Self::from_slice(tuple.items())),
+    pub(crate) fn from_tuple(value: &Value, heap: &'a Heap) -> Option<Self> {
+        match value {
+            _ if let Some(tuple) = value.get_as::<Tuple>(heap) => Some(Self::from_slice(tuple.as_slice())),
+            _ if let Some(tuple) = value.get_as::<NamedTuple>(heap) => Some(Self::from_slice(tuple.items())),
             _ => None,
         }
     }

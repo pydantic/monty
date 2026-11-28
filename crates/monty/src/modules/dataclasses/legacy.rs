@@ -13,6 +13,7 @@
 use super::{DataclassOptions, DataclassParams, Installer, install_generated_methods};
 use crate::{
     heap::{DropWithContext, Heap, HeapData, HeapId, HeapReadOutput, HeapReader},
+    heap_data::HeapKind,
     intern::Interns,
     types::instance::namespace_member,
     value::Value,
@@ -32,11 +33,11 @@ pub(crate) fn upgrade_legacy_classes(heap: &mut Heap, interns: &Interns) {
             .into_iter()
             .map(|id| {
                 heap.inc_ref(id);
-                Value::Ref(id)
+                Value::Ref(HeapKind::Class, id)
             })
             .collect();
         for class in &classes {
-            let Value::Ref(class_id) = *class else {
+            let Value::Ref(_, class_id) = *class else {
                 unreachable!("collected as references")
             };
             upgrade_class(class_id, heap, interns);
@@ -64,7 +65,7 @@ fn legacy_dataclass(class_id: HeapId, heap: &Heap, interns: &Interns) -> Option<
         .get_as::<DataclassParams>(heap)?
         .options();
     match namespace_member(class_id, "__dataclass_fields__", heap, interns) {
-        Some(Value::Ref(id)) if matches!(heap.get(*id), HeapData::Dict(_)) => Some((*id, options)),
+        Some(Value::Ref(HeapKind::Dict, id)) => Some((*id, options)),
         _ => None,
     }
 }

@@ -22,7 +22,7 @@ use crate::{
     fstring::FormatFloat,
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, Heap, HeapId, HeapObjectRead, HeapReadOutput, HeapReader},
-    heap_data::heap_payloads,
+    heap_data::{HeapKind, heap_payloads},
     identity::Identity,
     intern::{FunctionId, StaticStrings},
     modules::{ModuleFunctions, asyncio::task_call_method, collections::defaultdict::defaultdict_missing},
@@ -254,21 +254,23 @@ impl<'h> PyValue<'h> {
     /// Borrows an iterator whose advancement never calls Python or suspends.
     /// Select this path before consuming anything; other sources must use a continuation.
     pub(crate) fn native_iterator(value: &Value, vm: &VM<'h>) -> Option<Self> {
-        value.read_heap(vm).map(PyValue::from).filter(|source| {
-            matches!(
-                source,
-                PyValue::ListIterator(_)
-                    | PyValue::DequeIterator(_)
-                    | PyValue::TupleIterator(_)
-                    | PyValue::StringIterator(_)
-                    | PyValue::BytesIterator(_)
-                    | PyValue::RangeIterator(_)
-                    | PyValue::DictKeyIterator(_)
-                    | PyValue::DictItemIterator(_)
-                    | PyValue::DictValueIterator(_)
-                    | PyValue::SetIterator(_)
+        value
+            .read_heap_kind(
+                vm,
+                &[
+                    HeapKind::ListIterator,
+                    HeapKind::DequeIterator,
+                    HeapKind::TupleIterator,
+                    HeapKind::StringIterator,
+                    HeapKind::BytesIterator,
+                    HeapKind::RangeIterator,
+                    HeapKind::DictKeyIterator,
+                    HeapKind::DictItemIterator,
+                    HeapKind::DictValueIterator,
+                    HeapKind::SetIterator,
+                ],
             )
-        })
+            .map(PyValue::from)
     }
 
     /// Completes advancement for a native consumer that cannot retain a continuation.
@@ -992,7 +994,7 @@ mod tests {
         defer_drop_mut,
         exception_private::ExceptionValue,
         heap::{DropGuard, HeapData, HeapReader},
-        heap_data::CellValue,
+        heap_data::{CellValue, HeapKind},
         intern::{BytesId, CompileInterns, LongIntId, StringId},
         modules::math::MathFunctions,
         run::Executor,
@@ -1079,7 +1081,7 @@ mod tests {
     fn identity_and_unsupported_hash_protocols_survive_conversion() {
         with_vm(|vm, _| {
             let cell_id = vm.heap.allocate(HeapData::Cell(CellValue(Value::None)));
-            let cell = Value::Ref(cell_id);
+            let cell = Value::Ref(HeapKind::Cell, cell_id);
             defer_drop!(cell, vm);
             assert_eq!(cell.py_value(vm).py_hash(vm).unwrap(), Some(identity_hash(cell_id)));
 
@@ -1151,7 +1153,7 @@ mod tests {
         with_vm(|vm, _| {
             let payload_id = vm.heap.allocate(HeapData::List(List::new(Vec::new())));
             {
-                let payload = Value::Ref(payload_id);
+                let payload = Value::Ref(HeapKind::List, payload_id);
                 defer_drop!(payload, vm);
                 let subjects = vec![Value::None, Value::InlineString(InlineStr::new("text").unwrap())];
                 defer_drop!(subjects, vm);

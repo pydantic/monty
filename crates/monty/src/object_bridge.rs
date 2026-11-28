@@ -22,6 +22,7 @@ use crate::{
     defer_drop,
     exception_private::{ExceptionValue, RunError, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
+    heap_data::HeapKind,
     intern::StringId,
     modules::dataclasses,
     types::{
@@ -168,9 +169,9 @@ impl GraphExporter {
     }
 
     /// Records `id`'s node in the memo and pins the object until `finish`.
-    fn memoize(&mut self, id: HeapId, node_id: NodeId, vm: &VM<'_>) {
+    fn memoize(&mut self, kind: HeapKind, id: HeapId, node_id: NodeId, vm: &VM<'_>) {
         vm.heap.inc_ref(id);
-        self.pinned.push(Value::Ref(id));
+        self.pinned.push(Value::Ref(kind, id));
         self.memo.insert(id, node_id);
     }
 
@@ -200,7 +201,7 @@ impl GraphExporter {
             Value::InlineString(text) => MontyNode::String(text.as_str().to_owned()),
             Value::InternBytes(bytes_id) => MontyNode::Bytes(interns.get_bytes(*bytes_id).to_owned()),
             Value::InternLongInt(li_id) => MontyNode::BigInt(interns.get_long_int(*li_id).clone()),
-            Value::Ref(id) => return self.push_ref(*id, value, vm),
+            Value::Ref(kind, id) => return self.push_ref(*kind, *id, value, vm),
             Value::Builtin(Builtins::Type(t)) => match MontyType::from_internal_static(*t) {
                 Some(ty) => MontyNode::Type(ty),
                 None => self.repr_node(value, vm),
@@ -217,12 +218,12 @@ impl GraphExporter {
     /// still being exported is a cycle, anything else is converted then recorded.
     /// `vm.heap.read(id)` yields a `HeapRead` that keeps the entry alive without
     /// borrowing `vm.heap`, so the conversion can recurse.
-    fn push_ref(&mut self, id: HeapId, value: &Value, vm: &mut VM<'_>) -> NodeId {
+    fn push_ref(&mut self, kind: HeapKind, id: HeapId, value: &Value, vm: &mut VM<'_>) -> NodeId {
         if let Some(node_id) = self.memo.get(&id) {
             return *node_id;
         }
         // A host class's type object *is* its shared class node.
-        if matches!(vm.heap.get(id), HeapData::HostClassType(_)) {
+        if kind == HeapKind::HostClassType {
             return self.host_class_node(id, vm);
         }
         if self.in_progress.contains(&id) {
@@ -251,7 +252,7 @@ impl GraphExporter {
             }
         };
         self.in_progress.remove(&id);
-        self.memoize(id, node_id, vm);
+        self.memoize(kind, id, node_id, vm);
         node_id
     }
 
@@ -569,7 +570,7 @@ impl GraphExporter {
             hash: class_hash(class_id, vm),
         }));
         let node_id = self.push_node(node);
-        self.memoize(class_id, node_id, vm);
+        self.memoize(HeapKind::Class, class_id, node_id, vm);
         node_id
     }
 
@@ -606,7 +607,7 @@ impl GraphExporter {
             hash: class_type.hash,
         })));
         if !self.in_progress.contains(&type_id) {
-            self.memoize(type_id, node_id, vm);
+            self.memoize(HeapKind::HostClassType, type_id, node_id, vm);
         }
         node_id
     }
@@ -1079,11 +1080,12 @@ fn import_node(
         MontyNode::ClassType(class) => match vm.heap.resolve_boundary_uuid(&class.id) {
             Some(class_id) if matches!(vm.heap.get(class_id), HeapData::Class(_)) => {
                 vm.heap.inc_ref(class_id);
-                Ok(Value::Ref(class_id))
+                Ok(Value::Ref(HeapKind::Class, class_id))
             }
             _ if class.host_defined => {
                 let attrs = clone_pairs(&class.attrs, built, vm);
-                intern_host_class_type(class.name, class.id, class.is_dataclass, attrs, vm).map(Value::Ref)
+                intern_host_class_type(class.name, class.id, class.is_dataclass, attrs, vm)
+                    .map(|id| Value::Ref(HeapKind::HostClassType, id))
             }
             _ => Err(InvalidInputError::invalid_type(format!(
                 "sandbox class '{}' (id {}) no longer exists",
@@ -1102,7 +1104,7 @@ fn import_node(
                 // TODO: apply `attrs` to the instance so host-side edits
                 // are visible; for now the payload is ignored.
                 vm.heap.inc_ref(id);
-                Ok(Value::Ref(id))
+                Ok(Value::Ref(HeapKind::Instance, id))
             }
             _ if host_classes.contains_key(&class_type) => {
                 let class = &host_classes[&class_type];
@@ -1121,7 +1123,7 @@ fn import_node(
                 Ok(Value::allocate(hc, vm.heap))
             }
             _ => {
-                let Value::Ref(class_id) = built[class_type.index()] else {
+                let Value::Ref(_, class_id) = built[class_type.index()] else {
                     unreachable!("class nodes always import as heap references");
                 };
                 Err(InvalidInputError::invalid_type(format!(

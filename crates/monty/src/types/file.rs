@@ -93,6 +93,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropGuard, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadMut, HeapReadOutput},
+    heap_data::HeapKind,
     intern::StaticStrings,
     os_dispatch::{PostConversionEffect, stat_result_field},
     py_attrs::PyAttrs,
@@ -978,7 +979,7 @@ pub(crate) fn apply_open_name(
 /// [`CallResult::OsCallWithEffect`](crate::bytecode::CallResult::OsCallWithEffect).
 ///
 /// Invariants on entry:
-/// - `result` is `Value::Ref(_)` (or an interned `String`/`Bytes`) coming
+/// - `result` is `Value::Ref(..)` (or an interned `String`/`Bytes`) coming
 ///   from `OsFunction::ReadText` / `ReadBytes`. The host boundary guarantees
 ///   one of these for the OS functions we emit.
 /// - `OpenFile::pending_read` is `Some(_)`. If it isn't (snapshot/restore
@@ -993,7 +994,7 @@ pub(crate) fn apply_open_name(
 /// exception followed by a retry sees no stale slice spec.
 pub(crate) fn apply_buffer_store(file_id: HeapId, result: Value, vm: &mut VM<'_>) -> RunResult<Value> {
     // Ensure `file_id` is dec_ref'd on every path at end of this function.
-    let pin = Value::Ref(file_id);
+    let pin = Value::Ref(HeapKind::OpenFile, file_id);
     defer_drop!(pin, vm);
     let mut result_guard = DropGuard::new(result, vm);
     let (_, vm) = result_guard.as_parts_mut();
@@ -1017,7 +1018,7 @@ pub(crate) fn apply_buffer_store(file_id: HeapId, result: Value, vm: &mut VM<'_>
 /// Installs host content before replaying a consumer that required a loaded file.
 /// Consumes the pin on `file_id` and the host's result.
 pub(crate) fn apply_buffer_load(file_id: HeapId, result: Value, vm: &mut VM<'_>) -> RunResult<()> {
-    let pin = Value::Ref(file_id);
+    let pin = Value::Ref(HeapKind::OpenFile, file_id);
     defer_drop!(pin, vm);
     let HeapReadOutput::OpenFile(file) = vm.heap.read(file_id) else {
         result.drop_with(vm);
@@ -1036,7 +1037,7 @@ pub(crate) fn apply_file_next(
     result: Value,
     vm: &mut VM<'_>,
 ) -> RunResult<Value> {
-    let pin = Value::Ref(file_id);
+    let pin = Value::Ref(HeapKind::OpenFile, file_id);
     defer_drop!(pin, vm);
     let mut default_guard = DropGuard::new(default, vm);
     let (_, vm) = default_guard.as_parts_mut();
@@ -1077,12 +1078,13 @@ fn install_buffer<'h>(file: &HeapReadMut<'h, OpenFile>, result: Value, vm: &mut 
             let bytes = vm.interns.get_bytes(*bytes_id).to_vec();
             Some(Value::allocate(Bytes::new(bytes), vm.heap))
         }
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Str(text) if translate && text.as_str().contains('\r') => {
-                Some(allocate_string_on_heap(translate_newlines(text.as_str()), vm.heap))
-            }
-            _ => None,
-        },
+        _ if translate
+            && let Some(text) = result.as_str(vm)
+            && text.contains('\r') =>
+        {
+            Some(allocate_string_on_heap(translate_newlines(text), vm.heap))
+        }
+        Value::Ref(..) => None,
         _ => {
             return Err(RunError::internal(
                 "install_buffer: OS result must be a string or bytes value",
@@ -1139,7 +1141,7 @@ pub(crate) fn apply_file_seek_end(
     result: &MontyObject,
     vm: &mut VM<'_>,
 ) -> RunResult<Value> {
-    let pin = Value::Ref(file_id);
+    let pin = Value::Ref(HeapKind::OpenFile, file_id);
     defer_drop!(pin, vm);
     let Some(MontyNode::Int(length)) = stat_result_field(result, "st_size") else {
         return Err(RunError::internal(
@@ -1182,7 +1184,7 @@ pub(crate) fn apply_write_position(
     result: Value,
     vm: &mut VM<'_>,
 ) -> RunResult<Value> {
-    let pin = Value::Ref(file_id);
+    let pin = Value::Ref(HeapKind::OpenFile, file_id);
     defer_drop!(pin, vm);
     let mut result_guard = DropGuard::new(result, vm);
     let (result_ref, vm) = result_guard.as_parts_mut();
@@ -1317,7 +1319,7 @@ fn compute_slice_text<'h>(
             ReadSpec::All => {
                 let value = if byte_position == 0 {
                     vm.heap.inc_ref(buffer_id);
-                    Value::Ref(buffer_id)
+                    Value::Ref(HeapKind::Str, buffer_id)
                 } else {
                     allocate_string(tail.to_owned(), vm.heap)
                 };
@@ -1417,7 +1419,7 @@ fn compute_slice_binary<'h>(
             ReadSpec::All => {
                 let value = if clamped_position == 0 {
                     vm.heap.inc_ref(buffer_id);
-                    Value::Ref(buffer_id)
+                    Value::Ref(HeapKind::Bytes, buffer_id)
                 } else {
                     Value::allocate(Bytes::new(tail.to_vec()), vm.heap)
                 };
@@ -1679,7 +1681,7 @@ fn validate_write_data(data: &Value, binary: bool, vm: &VM<'_>) -> RunResult<()>
                 data.py_type_name(vm)
             )))
         }
-    } else if data.is_str(vm.heap) {
+    } else if data.is_str() {
         Ok(())
     } else {
         Err(ExcType::type_error(format!(
@@ -1709,10 +1711,10 @@ fn extract_bytes_payload(data: &Value, vm: &VM<'_>) -> Option<Vec<u8>> {
 }
 
 /// Returns whether a value is a Python `bytes` object.
-fn is_bytes(data: &Value, heap: &Heap) -> bool {
+fn is_bytes(data: &Value, _heap: &Heap) -> bool {
     match data {
         Value::InternBytes(_) => true,
-        Value::Ref(id) => matches!(heap.get(*id), HeapData::Bytes(_)),
+        Value::Ref(kind, _) => matches!(kind, HeapKind::Bytes),
         _ => false,
     }
 }
