@@ -107,6 +107,12 @@ assert os.getcwd.__name__ == 'getcwd'
 assert os.getcwd.__qualname__ == 'getcwd'
 assert os.getcwd.__module__ in ('os', 'posix', 'nt')
 
+import os.path
+
+assert os.path.join.__name__ == 'join'
+assert os.path.join.__qualname__ == 'join'
+assert os.path.join.__module__ == 'posixpath'
+
 
 # --- Bound methods on user classes ---
 class Greeter:

@@ -358,7 +358,7 @@ impl ModuleFunctions {
             Self::Json(_) => "json",
             Self::Math(_) => "math",
             Self::Os(_) => "os",
-            Self::OsPath(_) => "os.path",
+            Self::OsPath(_) => "posixpath",
             Self::Re(_) => "re",
             Self::Unicodedata(_) => "unicodedata",
             Self::Itertools(_) => "itertools",
