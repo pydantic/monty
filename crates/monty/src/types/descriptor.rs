@@ -260,6 +260,8 @@ pub(crate) fn has_get(value: &Value, vm: &VM<'_>) -> bool {
 
 /// A plain function binds an instance; arbitrary descriptors may install a Python frame.
 pub(crate) fn get(value: &Value, instance: Option<HeapId>, owner: HeapId, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    // For a class attribute such as `member = list.append`, a class read keeps the
+    // descriptor unbound. An instance read validates the receiver before binding.
     if let Value::NativeMethod(method) = value {
         let Some(id) = instance else {
             return Ok(CallResult::Value(Value::NativeMethod(*method)));

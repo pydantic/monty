@@ -98,6 +98,9 @@ pub(crate) struct BoundMethod {
 }
 
 impl BoundMethod {
+    /// The Python type reported by `type(obj.method)`.
+    /// Native methods such as `[].append` report `builtin_function_or_method`.
+    /// Monty currently reports Python-defined bound methods as `function`.
     pub(crate) fn kind(&self) -> Type {
         if matches!(self.func, Value::NativeMethod(_)) {
             Type::BuiltinFunction

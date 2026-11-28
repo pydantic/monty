@@ -645,8 +645,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ForwardRef> {
                 text.push_str(attr.as_str(vm.interns));
                 self.compose(text, Precedence::Atom, vm)
             }
-            // Named as CPython does, not by the qualified type name.
+            // Let the native attribute lookup bind registered methods.
             _ if Type::ForwardRef.lookup_attr(attr, vm.interns).is_some() => return Ok(None),
+            // CPython uses the bare type name in this error.
             _ => return Err(ExcType::attribute_error("ForwardRef", attr.as_str(vm.interns))),
         };
         Ok(Some(CallResult::Value(value)))
