@@ -30,6 +30,14 @@ assert repr(2.5) == '2.5'
 assert repr(100.0) == '100.0'
 assert repr(-3.14) == '-3.14'
 assert repr(0.1) == '0.1'
+# an exact tie between the two shortest candidates goes to the even digit
+assert repr(2**50 + 0.25) == '1125899906842624.2'
+assert repr(-(2**50 + 0.25)) == '-1125899906842624.2'
+assert repr(2**50 + 0.75) == '1125899906842624.8'
+assert repr(2**47 + 0.125) == '140737488355328.12'
+assert str(880050140835704.25) == '880050140835704.2'
+assert f'{2**50 + 0.25}' == '1125899906842624.2'
+assert repr([2**50 + 0.25]) == '[1125899906842624.2]'
 
 # === repr of strings (Value::InternString / HeapData::Str) ===
 assert repr('') == "''"

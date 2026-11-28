@@ -168,6 +168,21 @@ impl fmt::Display for FormatFloat {
         // captured in a stack buffer so nothing touches the heap.
         let mut sci = StackStr::new();
         write!(sci, "{:e}", v.abs())?;
+        // Rust breaks an exact tie between two shortest candidates upwards, CPython to the even digit
+        // (`2**50 + 0.25` is `1125899906842624.2`), so only an odd last digit can differ. A tie needs 16+ digits
+        // and, as its midpoint has at most 18 significant digits, at most 25 fractional bits (`5**26 > 10**18`).
+        if (v * 2f64.powi(25)).fract() == 0.0
+            && let Some(digits) = sci.as_str().find('e').map(|e| e - 1)
+            && digits >= 16
+            && sci.as_str().as_bytes().get(digits).is_some_and(|d| d % 2 == 1)
+        {
+            // Exact-precision `{:.Ne}` rounds half to even; keep it only if it still round-trips.
+            let mut even = StackStr::new();
+            write!(even, "{:.*e}", digits - 1, v.abs())?;
+            if even.as_str().parse::<f64>() == Ok(v.abs()) {
+                sci = even;
+            }
+        }
         let sci = sci.as_str();
         let (mantissa, exp_str) = sci.split_once('e').ok_or(fmt::Error)?;
         // `{:e}` always emits a single leading digit, so the integer part is one
